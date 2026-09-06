@@ -1794,6 +1794,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// is supervised identically (non-fatal, port learned via its "ready"
 	// notification, control plane relayed under omlx-proxy:).
 	if b.omlxProxyPath != "" {
+		b.prepareOMLXProxyPort()
 		b.omlxProxySup = newSupervisor("omlx-proxy", defaultRestartPolicy(), b.spawnOMLXProxy)
 		b.configureOMLXProxySupervisorCallbacks(b.omlxProxySup)
 		if err := b.omlxProxySup.Start(); err != nil {

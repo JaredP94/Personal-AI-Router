@@ -141,29 +141,57 @@ func (b *Broker) reconcileOMLXProxyPortOnReadyForGeneration(generation uint64, b
 	b.reconcileAdvertiseOMLX(http.DefaultClient)
 }
 
-// prepareOMLXProxyPort runs after LM Studio facade preparation and before
-// omlx-proxy is spawned. When port 1234 is occupied by the LM Studio proxy
-// or an active listener, it assigns an alternate fallback port upfront so
-// omlx-proxy binds cleanly without an initial crash and recovery cycle.
+// prepareOMLXProxyPort runs before omlx-proxy is spawned. When port 1234
+// is occupied by an active listener or reserved by the broker for lmstudio-proxy,
+// it assigns an alternate fallback port upfront so omlx-proxy binds cleanly
+// on attempt 1 without an initial crash and recovery cycle.
 func (b *Broker) prepareOMLXProxyPort() {
+	b.prepareOMLXProxyPortWithPortCheck(tcpPortAvailable)
+}
+
+func (b *Broker) prepareOMLXProxyPortWithPortCheck(portAvailable func(int) bool) {
 	if b.omlxProxyStartupPort.Load() != 0 {
 		return
 	}
-	if lmPort := b.lmstudioProxyListenPort(); lmPort == 1234 || !tcpPortAvailable(1234) {
-		fallback := b.setOMLXProxyFallback(1234)
-		slog.Info("oMLX proxy port 1234 in use; configured upfront fallback", "fallback", fallback)
+	if b.omlxPort1234Occupied(portAvailable) {
+		fallback := b.setOMLXProxyFallbackWithPortCheck(portAvailable, 1234)
+		slog.Info("oMLX proxy port 1234 in use or reserved for LM Studio; configured upfront fallback", "fallback", fallback)
 	}
 }
 
+func (b *Broker) omlxPort1234Occupied(portAvailable func(int) bool) bool {
+	// If lmstudio-proxy is configured to run, it will bind to port 1234 (unless explicitly configured otherwise).
+	if b.lmstudioProxyPath != "" {
+		stPort := int(b.lmstudioProxyStartupPort.Load())
+		if stPort == 0 || stPort == 1234 {
+			return true
+		}
+	}
+	if lmPort := b.lmstudioProxyListenPort(); lmPort == 1234 {
+		return true
+	}
+	if b.managedLMStudioFacade.Load() {
+		return true
+	}
+	return !portAvailable(1234)
+}
+
 func (b *Broker) setOMLXProxyFallback(excludedPorts ...int) int {
+	return b.setOMLXProxyFallbackWithPortCheck(tcpPortAvailable, excludedPorts...)
+}
+
+func (b *Broker) setOMLXProxyFallbackWithPortCheck(portAvailable func(int) bool, excludedPorts ...int) int {
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		excludedPorts = append(excludedPorts, aliasPort)
 	}
 	if lmPort := b.lmstudioProxyListenPort(); lmPort > 0 {
 		excludedPorts = append(excludedPorts, lmPort)
 	}
+	if lmStPort := int(b.lmstudioProxyStartupPort.Load()); lmStPort > 0 {
+		excludedPorts = append(excludedPorts, lmStPort)
+	}
 	excludedPorts = append(excludedPorts, 1234, 1235)
-	fallback := nextAvailablePortExcluding(1236, excludedPorts, tcpPortAvailable)
+	fallback := nextAvailablePortExcluding(1236, excludedPorts, portAvailable)
 	b.omlxProxyStartupPort.Store(int32(fallback))
 	return fallback
 }
