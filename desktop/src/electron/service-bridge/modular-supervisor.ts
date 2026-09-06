@@ -160,7 +160,11 @@ function booleanValue(value: JsonValue | undefined): boolean {
 export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
-    const rawList = Array.isArray(obj.models) ? obj.models : Array.isArray(obj.data) ? obj.data : null
+    const rawList = Array.isArray(obj.models)
+        ? obj.models
+        : Array.isArray(obj.data)
+          ? obj.data
+          : null
     if (rawList) {
         const names: string[] = []
         for (const entry of rawList) {

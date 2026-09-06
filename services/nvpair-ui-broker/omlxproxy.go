@@ -118,6 +118,7 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 	if method == "ready" {
 		var rp proxyReadyParams
 		if err := json.Unmarshal(params, &rp); err == nil && rp.Port > 0 {
+			b.forwardErrorsClear(subprocessCrashedID("omlx-proxy"))
 			go b.reconcileOMLXProxyPortOnReadyForGeneration(generation, rp.Port)
 		}
 	}
@@ -138,6 +139,20 @@ func (b *Broker) reconcileOMLXProxyPortOnReadyForGeneration(generation uint64, b
 	}
 	b.repushPriority("omlx")
 	b.reconcileAdvertiseOMLX(http.DefaultClient)
+}
+
+// prepareOMLXProxyPort runs after LM Studio facade preparation and before
+// omlx-proxy is spawned. When port 1234 is occupied by the LM Studio proxy
+// or an active listener, it assigns an alternate fallback port upfront so
+// omlx-proxy binds cleanly without an initial crash and recovery cycle.
+func (b *Broker) prepareOMLXProxyPort() {
+	if b.omlxProxyStartupPort.Load() != 0 {
+		return
+	}
+	if lmPort := b.lmstudioProxyListenPort(); lmPort == 1234 || !tcpPortAvailable(1234) {
+		fallback := b.setOMLXProxyFallback(1234)
+		slog.Info("oMLX proxy port 1234 in use; configured upfront fallback", "fallback", fallback)
+	}
 }
 
 func (b *Broker) setOMLXProxyFallback(excludedPorts ...int) int {

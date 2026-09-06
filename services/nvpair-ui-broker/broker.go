@@ -1711,6 +1711,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	}
 	b.prepareManagedOllamaFacade()
 	b.prepareManagedLMStudioFacade()
+	b.prepareOMLXProxyPort()
 
 	// node-info is an auxiliary worker: spawning it lets the broker's own
 	// host advertise its hardware inventory on the network, but it is NOT
