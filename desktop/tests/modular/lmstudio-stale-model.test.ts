@@ -25,9 +25,16 @@ describe('LM Studio model reconciliation', () => {
                 ]
             })
         ).toEqual(['lmstudio-community/phi-3', 'lmstudio-community/gemma-2b'])
+        expect(
+            parseListModelNames({
+                data: [{ id: 'qwen3.5' }, { id: 'deepseek-v4' }]
+            })
+        ).toEqual(['qwen3.5', 'deepseek-v4'])
         expect(parseListModelNames({ models: [] })).toEqual([])
+        expect(parseListModelNames({ data: [] })).toEqual([])
         expect(() => parseListModelNames({ models: null })).toThrow('missing its model array')
         expect(() => parseListModelNames({ models: [{}] })).toThrow('no usable model names')
+        expect(() => parseListModelNames({ data: [{}] })).toThrow('no usable model names')
     })
 
     it('keeps a successful empty local inventory instead of reviving discovery data', () => {

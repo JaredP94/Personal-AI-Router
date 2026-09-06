@@ -160,14 +160,15 @@ function booleanValue(value: JsonValue | undefined): boolean {
 export function parseListModelNames(result: JsonValue | undefined): string[] {
     const obj = objectValue(result)
     if (!obj) throw new Error('list_models returned a non-object response')
-    const names: string[] = []
-    if (Array.isArray(obj.models)) {
-        for (const entry of obj.models) {
+    const rawList = Array.isArray(obj.models) ? obj.models : Array.isArray(obj.data) ? obj.data : null
+    if (rawList) {
+        const names: string[] = []
+        for (const entry of rawList) {
             const row = objectValue(entry)
-            const name = stringValue(row?.name) || stringValue(row?.key)
+            const name = stringValue(row?.name) || stringValue(row?.key) || stringValue(row?.id)
             if (name) names.push(name)
         }
-        if (obj.models.length > 0 && names.length === 0) {
+        if (rawList.length > 0 && names.length === 0) {
             throw new Error('list_models returned no usable model names')
         }
         return names
