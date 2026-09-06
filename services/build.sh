@@ -68,6 +68,7 @@ V_BROKER=$( jq -r --arg k 'nvpair-ui-broker'    '.components[$k]' "$VERSIONS_FIL
 V_CLUMGR=$( jq -r --arg k 'nvpair-cluster-manager' '.components[$k]' "$VERSIONS_FILE")
 V_SCHED=$(  jq -r --arg k 'nvpair-job-scheduler' '.components[$k]' "$VERSIONS_FILE")
 V_TUI=$(    jq -r --arg k 'nvpair-tui'          '.components[$k]' "$VERSIONS_FILE")
+V_OMPROXY=$(jq -r --arg k 'omlx-proxy'          '.components[$k]' "$VERSIONS_FILE")
 
 if [[ -z "$V_PRODUCT" || "$V_PRODUCT" == "null" ]]; then
     echo "ERROR: failed to parse versions.json" >&2
@@ -77,6 +78,7 @@ fi
 printf '  product           = %s\n' "$V_PRODUCT"
 printf '  ollama-proxy      = %s\n' "$V_PROXY"
 printf '  lmstudio-proxy    = %s\n' "$V_LMPROXY"
+printf '  omlx-proxy        = %s\n' "$V_OMPROXY"
 printf '  nvpair-node-info     = %s\n' "$V_NINFO"
 printf '  nvpair-node-scanner  = %s\n' "$V_NSCAN"
 printf '  nvpair-manual-nodes  = %s\n' "$V_MNODES"
@@ -97,23 +99,24 @@ echo
 
 build_subbinary() {
     local idx="$1" name="$2" version="$3"
-    echo "[$idx/13] Building $name (v$version)..."
+    echo "[$idx/14] Building $name (v$version)..."
     (cd "$ROOT/$name" && go build -ldflags "-X main.Version=$version" -o "$name" .)
     echo "      OK"
 }
 build_subbinary 1 ollama-proxy      "$V_PROXY"
 build_subbinary 2 lmstudio-proxy    "$V_LMPROXY"
-build_subbinary 3 nvpair-node-info     "$V_NINFO"
-build_subbinary 4 nvpair-node-scanner  "$V_NSCAN"
-build_subbinary 5 nvpair-manual-nodes  "$V_MNODES"
-build_subbinary 6 nvpair-workload-manager "$V_WLMGR"
-build_subbinary 7 nvpair-errors        "$V_ERRORS"
-build_subbinary 8 nvpair-engine-manager "$V_ENGMGR"
-build_subbinary 9 nvpair-node-settings "$V_NSETTINGS"
-build_subbinary 10 nvpair-ui-broker    "$V_BROKER"
-build_subbinary 11 nvpair-cluster-manager "$V_CLUMGR"
-build_subbinary 12 nvpair-job-scheduler   "$V_SCHED"
-build_subbinary 13 nvpair-tui            "$V_TUI"
+build_subbinary 3 omlx-proxy        "$V_OMPROXY"
+build_subbinary 4 nvpair-node-info     "$V_NINFO"
+build_subbinary 5 nvpair-node-scanner  "$V_NSCAN"
+build_subbinary 6 nvpair-manual-nodes  "$V_MNODES"
+build_subbinary 7 nvpair-workload-manager "$V_WLMGR"
+build_subbinary 8 nvpair-errors        "$V_ERRORS"
+build_subbinary 9 nvpair-engine-manager "$V_ENGMGR"
+build_subbinary 10 nvpair-node-settings "$V_NSETTINGS"
+build_subbinary 11 nvpair-ui-broker    "$V_BROKER"
+build_subbinary 12 nvpair-cluster-manager "$V_CLUMGR"
+build_subbinary 13 nvpair-job-scheduler   "$V_SCHED"
+build_subbinary 14 nvpair-tui            "$V_TUI"
 
 BIN_OUT="$ROOT/build/bin"
 
@@ -132,6 +135,7 @@ rm -rf "$BIN_OUT"
 mkdir -p "$BIN_OUT"
 cp "$ROOT/ollama-proxy/ollama-proxy"         "$BIN_OUT/ollama-proxy"
 cp "$ROOT/lmstudio-proxy/lmstudio-proxy"     "$BIN_OUT/lmstudio-proxy"
+cp "$ROOT/omlx-proxy/omlx-proxy"             "$BIN_OUT/omlx-proxy"
 cp "$ROOT/nvpair-node-info/nvpair-node-info"       "$BIN_OUT/nvpair-node-info"
 cp "$ROOT/nvpair-node-scanner/nvpair-node-scanner" "$BIN_OUT/nvpair-node-scanner"
 cp "$ROOT/nvpair-manual-nodes/nvpair-manual-nodes" "$BIN_OUT/nvpair-manual-nodes"
@@ -151,6 +155,7 @@ echo "========================================"
 echo
 printf '  Proxy:        %s\n' "$BIN_OUT/ollama-proxy"
 printf '  LM Studio Proxy: %s\n' "$BIN_OUT/lmstudio-proxy"
+printf '  oMLX Proxy:      %s\n' "$BIN_OUT/omlx-proxy"
 printf '  Node Info:    %s\n' "$BIN_OUT/nvpair-node-info"
 printf '  Node Scanner: %s\n' "$BIN_OUT/nvpair-node-scanner"
 printf '  Manual Nodes: %s\n' "$BIN_OUT/nvpair-manual-nodes"

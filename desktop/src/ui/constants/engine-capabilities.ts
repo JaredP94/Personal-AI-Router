@@ -43,5 +43,19 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // server. Deleting therefore interrupts inference and needs a warning.
         restartsOnModelDelete: true,
         engineHub: { label: 'LM Studio', url: 'https://lmstudio.ai/models' }
+    },
+    omlx: {
+        hasExpiry: false,
+        hasEject: true,
+        hasInstall: ['darwin'],
+        hasEnginePort: true,
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: true,
+        modelOpsWhenStopped: false,
+        hasDeleteModel: true,
+        engineHub: { label: 'Hugging Face (MLX)', url: 'https://huggingface.co/models?other=mlx' }
     }
 }

@@ -1,0 +1,49 @@
+{
+  "engine": "omlx",
+  "display_name": "oMLX",
+  "manifest_version": 1,
+  "detect": [
+    "~/.omlx/bin/omlx",
+    "/opt/homebrew/bin/omlx",
+    "/usr/local/bin/omlx",
+    "/Applications/oMLX.app/Contents/MacOS/omlx"
+  ],
+  "install": {
+    "fetch": { "url": "https://omlx.ai/install.sh" },
+    "run": ["bash", "{download}"],
+    "mode": "user"
+  },
+  "uninstall": {
+    "run": ["sh", "-c", "pkill -x omlx 2>/dev/null; sleep 2; rm -rf \"$HOME/.omlx\""]
+  },
+  "runtime": {
+    "mode": "command",
+    "port": 1235,
+    "bind": "127.0.0.1",
+    "start": [["{cli}", "serve", "--port", "{port}", "--host", "{host}"]],
+    "stop": { "cmd": ["{cli}", "stop"] },
+    "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 45 },
+    "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
+  },
+  "platforms": {
+    "darwin/arm64": {
+      "runtime": { "cli": "~/.omlx/bin/omlx" }
+    }
+  },
+  "actions": {
+    "list_models": {
+      "description": "List models downloaded and available in oMLX.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "loaded_models": {
+      "description": "List models currently active in memory.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    },
+    "chat": {
+      "description": "OpenAI-compatible chat completions.",
+      "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
+    }
+  }
+}

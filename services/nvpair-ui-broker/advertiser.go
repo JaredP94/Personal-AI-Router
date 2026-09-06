@@ -22,6 +22,7 @@ const (
 	// real port is resolved per poll via localEnginePort.
 	defaultOllamaPort   = 11434
 	defaultLMStudioPort = 1234
+	defaultOMLXPort     = 1235
 
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
@@ -280,6 +281,57 @@ func checkOllamaHealth(client *http.Client, port int) bool {
 // is resolved per poll (see localEnginePort), not hardcoded, so the proxy is
 // never mistaken for LM Studio.
 func checkLMStudioHealth(client *http.Client, port int) bool {
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// runAutoAdvertiseOMLX is the oMLX counterpart of runAutoAdvertise: it polls
+// the local oMLX server and reconciles this node's om service registration
+// against it, so an oMLX host appears on the cluster.
+func (b *Broker) runAutoAdvertiseOMLX(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseOMLX(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseOMLX(client)
+		}
+	}
+}
+
+// reconcileAdvertiseOMLX brings this node's om registration into line with
+// the local oMLX server: it advertises the promoted proxy port (never the engine)
+// and hands the engine's loopback port to the oMLX proxy via node/set-local-backend.
+func (b *Broker) reconcileAdvertiseOMLX(client *http.Client) {
+	enginePort, probe := b.localEnginePort("omlx", defaultOMLXPort)
+	proxyPort := b.omlxProxyListenPort()
+	if proxyPort != 0 && enginePort == proxyPort {
+		enginePort = 0
+		probe = false
+	}
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkOMLXHealth(client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOMLX, Port: proxyPort})
+		b.setProxyLocalBackend(b.getOMLXProxy(), "omlx", enginePort, true)
+	} else {
+		b.unregisterService(noderec.ServiceOMLX)
+		b.setProxyLocalBackend(b.getOMLXProxy(), "omlx", enginePort, false)
+	}
+}
+
+// checkOMLXHealth reports whether a local oMLX server is answering on
+// the given port (OpenAI-compatible /v1/models endpoint).
+func checkOMLXHealth(client *http.Client, port int) bool {
 	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
 	if err != nil {
 		return false

@@ -6,6 +6,7 @@ import type { SupportedPlatform } from '@/shared/types/platform'
 export type ModularProcessName =
     | 'proxy'
     | 'lmstudio-proxy'
+    | 'omlx-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -70,6 +71,19 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // access to be reachable.
         processName: 'lmstudio-proxy',
         baseName: 'lmstudio-proxy',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
+    },
+    {
+        // oMLX reverse proxy — the oMLX counterpart of `ollama-proxy` and
+        // `lmstudio-proxy`, supervised the same way and relayed under the
+        // `omlx-proxy:` namespace (broker 0.41.0, `--omlx-proxy-path`). Like
+        // `ollama-proxy` and `lmstudio-proxy`, it binds its HTTP listener on
+        // all interfaces, so it needs firewall access to be reachable.
+        processName: 'omlx-proxy',
+        baseName: 'omlx-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true,

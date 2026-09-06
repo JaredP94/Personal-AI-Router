@@ -153,6 +153,7 @@ type Broker struct {
 	nodeInfoPath      string
 	proxyPath         string
 	lmstudioProxyPath string
+	omlxProxyPath     string
 	workloadMgrPath   string
 	errorsPath        string
 	engineMgrPath     string
@@ -189,6 +190,9 @@ type Broker struct {
 	lmstudioPortReady                chan struct{}
 	lmstudioPortReadyOnce            sync.Once
 	lmstudioReadyMu                  sync.Mutex
+	omlxProxyStartupPort             atomic.Int32
+	omlxProxyGeneration              atomic.Uint64
+	omlxProxyPublishedGeneration     atomic.Uint64
 	store                            *discoveryStore
 	telemetry                        *telemetryCache
 	// relayDir is the discovery directory, fed by the promoted daemon's
@@ -213,6 +217,7 @@ type Broker struct {
 	nodeInfo      *nodeInfoProcess
 	proxy         *proxyProcess
 	lmstudioProxy *proxyProcess
+	omlxProxy     *proxyProcess
 	workloadMgr   *workloadManagerProcess
 	errorsProc    *errorsProcess
 	engineMgr     *rpcWorker
@@ -228,6 +233,7 @@ type Broker struct {
 	nodeInfoSup      *supervisor
 	proxySup         *supervisor
 	lmstudioProxySup *supervisor
+	omlxProxySup     *supervisor
 	workloadMgrSup   *supervisor
 	errorsSup        *supervisor
 	engineMgrSup     *supervisor
@@ -244,14 +250,16 @@ type Broker struct {
 	subMu      sync.Mutex
 	subscribed bool
 
-	// proxyMu guards proxySubscribed and lmstudioProxySubscribed. The
-	// proxy:<event> / lmstudio-proxy:<event> streams are opt-in like
-	// discovery's: the forward*Notification hooks (on each proxy's reader
-	// goroutine) read the flags while the *:subscribe / *:unsubscribe
-	// handlers (on the read-loop goroutine) flip them.
+	// proxyMu guards proxySubscribed, lmstudioProxySubscribed, and
+	// omlxProxySubscribed. The proxy:<event> / lmstudio-proxy:<event> /
+	// omlx-proxy:<event> streams are opt-in like discovery's: the
+	// forward*Notification hooks (on each proxy's reader goroutine) read the
+	// flags while the *:subscribe / *:unsubscribe handlers (on the read-loop
+	// goroutine) flip them.
 	proxyMu                 sync.Mutex
 	proxySubscribed         bool
 	lmstudioProxySubscribed bool
+	omlxProxySubscribed     bool
 
 	// workloadsMu guards workloadsSubscribed. The workloads:* stream is
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
@@ -330,6 +338,7 @@ type workerPaths struct {
 	nodeInfo      string
 	proxy         string
 	lmstudioProxy string
+	omlxProxy     string
 	workloadMgr   string
 	errors        string
 	engineMgr     string
@@ -369,6 +378,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		nodeInfoPath:       paths.nodeInfo,
 		proxyPath:          paths.proxy,
 		lmstudioProxyPath:  paths.lmstudioProxy,
+		omlxProxyPath:      paths.omlxProxy,
 		workloadMgrPath:    paths.workloadMgr,
 		errorsPath:         paths.errors,
 		engineMgrPath:      paths.engineMgr,
@@ -509,11 +519,13 @@ func (b *Broker) runEngineAvailabilityAfterPortGates(
 	ctx context.Context,
 	runOllama func(context.Context),
 	runLMStudio func(context.Context),
+	runOMLX func(context.Context),
 ) bool {
 	if !b.restoreEnabledEnginesAfterPortGate(ctx) {
 		return false
 	}
 	go runOllama(ctx)
+	go runOMLX(ctx)
 	runLMStudio(ctx)
 	return true
 }
@@ -1464,6 +1476,8 @@ func (b *Broker) proxyForEngine(engine string) *proxyProcess {
 		return b.getProxy()
 	case "lmstudio":
 		return b.getLMStudioProxy()
+	case "omlx":
+		return b.getOMLXProxy()
 	default:
 		return nil
 	}
@@ -1775,11 +1789,27 @@ func (b *Broker) Serve(ctx context.Context) error {
 		b.finishLMStudioProxyTerminal()
 	}
 
+	// omlx-proxy is the oMLX counterpart of ollama-proxy and lmstudio-proxy and
+	// is supervised identically (non-fatal, port learned via its "ready"
+	// notification, control plane relayed under omlx-proxy:).
+	if b.omlxProxyPath != "" {
+		b.omlxProxySup = newSupervisor("omlx-proxy", defaultRestartPolicy(), b.spawnOMLXProxy)
+		b.configureOMLXProxySupervisorCallbacks(b.omlxProxySup)
+		if err := b.omlxProxySup.Start(); err != nil {
+			slog.Warn("omlx-proxy failed to start; continuing without local oMLX proxy", "path", b.omlxProxyPath, "err", err)
+			b.omlxProxySup = nil
+		} else {
+			defer b.omlxProxySup.Stop()
+		}
+	} else {
+		slog.Info("omlx-proxy path not resolved; running without local oMLX proxy")
+	}
+
 	// Restore engines and begin both advertising loops only after both proxy
 	// startup attempts have established either readiness or a terminal outcome.
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
-	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseOMLX)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -1856,6 +1886,10 @@ func (b *Broker) shutdownInferenceStack() {
 	// Stop ingress first so no new inference can arrive while engine-manager is
 	// draining engines. supervisor.Stop uses each proxy's stdin-close/join path;
 	// it never adds a parent-side kill timeout.
+	if b.omlxProxySup != nil {
+		b.omlxProxySup.Stop()
+		b.setOMLXProxy(nil)
+	}
 	if b.lmstudioProxySup != nil {
 		b.lmstudioProxySup.Stop()
 		b.setLMStudioProxy(nil)
@@ -2239,6 +2273,11 @@ func (b *Broker) forwardLogLevel(level string) {
 	if p := b.getLMStudioProxy(); p != nil {
 		if err := p.SetLogLevel(level); err != nil {
 			slog.Warn("failed to forward log/set-level to lmstudio-proxy", "err", err)
+		}
+	}
+	if p := b.getOMLXProxy(); p != nil {
+		if err := p.SetLogLevel(level); err != nil {
+			slog.Warn("failed to forward log/set-level to omlx-proxy", "err", err)
 		}
 	}
 	if wm := b.getWorkloadMgr(); wm != nil {
@@ -2861,6 +2900,46 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to lmstudio-proxy:unsubscribe: %v", err)
 		}
 
+	case "omlx-proxy:set-port":
+		b.handleOMLXProxySetPort(msg)
+
+	case "omlx-proxy:get-status":
+		var result ProxyStatusResult
+		if p := b.getOMLXProxy(); p != nil {
+			ready, port := p.Status()
+			result.Ready = ready
+			result.Port = port
+		}
+		if err := b.codec.Respond(msg.ID, result); err != nil {
+			log.Printf("failed to respond to omlx-proxy:get-status: %v", err)
+		}
+
+	case "omlx-proxy:subscribe":
+		b.proxyMu.Lock()
+		wasSubscribed := b.omlxProxySubscribed
+		b.omlxProxySubscribed = true
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to omlx-proxy:subscribe: %v", err)
+		}
+		if !wasSubscribed {
+			if p := b.getOMLXProxy(); p != nil {
+				if rp := p.ReadyParams(); rp != nil {
+					if err := b.codec.Notify("omlx-proxy:ready", rp); err != nil {
+						slog.Warn("emit baseline omlx-proxy:ready failed", "err", err)
+					}
+				}
+			}
+		}
+
+	case "omlx-proxy:unsubscribe":
+		b.proxyMu.Lock()
+		b.omlxProxySubscribed = false
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to omlx-proxy:unsubscribe: %v", err)
+		}
+
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
 		b.workloadsSubscribed = true
@@ -2940,9 +3019,13 @@ func (b *Broker) handleMessage(msg *Message) {
 		// proxy:get-status, and the subscription methods — are handled by
 		// their own cases above). This makes the broker a thin pass-through
 		// for the proxy's whole control plane without enumerating methods.
-		// lmstudio-proxy:* is checked before proxy:* — though the prefixes
-		// don't actually overlap (lmstudio-proxy: vs proxy:), keeping it
-		// first makes the LM Studio namespace explicit.
+		// lmstudio-proxy:* and omlx-proxy:* are checked before proxy:* — though
+		// the prefixes don't actually overlap (lmstudio-proxy:, omlx-proxy:, proxy:),
+		// keeping them first makes the engine namespaces explicit.
+		if strings.HasPrefix(msg.Method, "omlx-proxy:") {
+			b.relayToOMLXProxy(msg)
+			return
+		}
 		if strings.HasPrefix(msg.Method, "lmstudio-proxy:") {
 			b.relayToLMStudioProxy(msg)
 			return
