@@ -219,13 +219,21 @@ func extractStringsResult(raw json.RawMessage, spec *ActionResult) ([]string, bo
 // matchRow reports whether an element passes an ActionResult row filter.
 // With Match.In set, Match.Field must decode as a JSON string equal to one of
 // In. With Match.Nonempty set, Match.Field must decode as a JSON array with
-// length > 0 (LM Studio /api/v1/models loaded_instances). A missing or
-// wrong-typed field fails the match, so a row we cannot classify is excluded
-// rather than counted as loaded.
+// length > 0 (LM Studio /api/v1/models loaded_instances). With Match.True set,
+// Match.Field must decode as a JSON boolean true (oMLX /v1/models/status loaded).
+// A missing or wrong-typed field fails the match, so a row we cannot classify is
+// excluded rather than counted as loaded.
 func matchRow(el map[string]json.RawMessage, m *ResultMatch) bool {
 	fv, ok := el[m.Field]
 	if !ok {
 		return false
+	}
+	if m.True {
+		var b bool
+		if err := json.Unmarshal(fv, &b); err != nil {
+			return false
+		}
+		return b
 	}
 	if m.Nonempty {
 		var arr []json.RawMessage

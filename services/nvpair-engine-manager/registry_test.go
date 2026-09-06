@@ -370,6 +370,21 @@ func TestBundledManifestsMerge(t *testing.T) {
 	} else {
 		t.Error("lmstudio darwin/arm64 missing")
 	}
+
+	om, ok := reg.Get("omlx")
+	if !ok {
+		t.Fatal("omlx not loaded")
+	}
+	if p, ok := om.PlatformFor("darwin", "arm64"); ok {
+		if p.Runtime.CLI != "~/.omlx/bin/omlx" {
+			t.Errorf("omlx darwin cli: %q", p.Runtime.CLI)
+		}
+		if p.Runtime.Port != 1235 || len(p.Runtime.Start) == 0 {
+			t.Errorf("omlx darwin inherited runtime missing: port=%d start=%v", p.Runtime.Port, p.Runtime.Start)
+		}
+	} else {
+		t.Error("omlx darwin/arm64 missing")
+	}
 }
 
 // TestBundledOllamaReadinessBudget pins the finite startup allowance used by

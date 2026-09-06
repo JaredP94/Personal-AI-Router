@@ -11,11 +11,11 @@
     "nvpair-workload-manager": "0.13.3",
     "nvpair-errors": "0.7.4",
     "nvpair-node-settings": "1.0.4",
-    "nvpair-ui-broker": "0.41.0",
-    "nvpair-engine-manager": "0.17.4",
+    "nvpair-ui-broker": "0.41.1",
+    "nvpair-engine-manager": "0.17.5",
     "nvpair-cluster-manager": "1.1.4",
     "nvpair-job-scheduler": "0.5.0",
     "nvpair-tui": "0.7.2",
-    "omlx-proxy": "0.1.0"
+    "omlx-proxy": "0.1.1"
   }
 }

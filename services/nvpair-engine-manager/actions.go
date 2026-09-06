@@ -125,6 +125,11 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set(engineIdentityProbeHeader, "1")
+	if engine == "omlx" && req.Header.Get("Authorization") == "" {
+		if key := readOMLXAPIKey(); key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+	}
 	client := e.client
 	if engine == "ollama" && action == "run_model" && e.ollamaLoadClient != nil {
 		client = e.ollamaLoadClient
@@ -342,4 +347,34 @@ func (e *Executor) runWithResume(ctx context.Context, argv []string) (string, er
 		case <-time.After(lmsGetResumeBackoff):
 		}
 	}
+}
+
+// readOMLXAPIKey reads the configured API key for oMLX from the OMLX_API_KEY
+// environment variable or ~/.omlx/settings.json, returning empty string if auth
+// is disabled or unconfigured.
+func readOMLXAPIKey() string {
+	if env := os.Getenv("OMLX_API_KEY"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".omlx", "settings.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Auth struct {
+			APIKey                 string `json:"api_key"`
+			SkipAPIKeyVerification bool   `json:"skip_api_key_verification"`
+		} `json:"auth"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if cfg.Auth.SkipAPIKeyVerification {
+		return ""
+	}
+	return cfg.Auth.APIKey
 }

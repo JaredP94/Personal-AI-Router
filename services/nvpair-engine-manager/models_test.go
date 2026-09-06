@@ -86,6 +86,18 @@ func TestExtractStrings(t *testing.T) {
 			spec: &ActionResult{Array: "models", Field: "key", Match: &ResultMatch{Field: "loaded_instances", Nonempty: true}},
 			want: []string{"a"},
 		},
+		{
+			name: "omlx boolean loaded keeps only loaded rows",
+			raw:  `{"models":[{"id":"m1","loaded":true},{"id":"m2","loaded":false},{"id":"m3","loaded":true}]}`,
+			spec: &ActionResult{Array: "models", Field: "id", Match: &ResultMatch{Field: "loaded", True: true}},
+			want: []string{"m1", "m3"},
+		},
+		{
+			name: "boolean match: missing or non-bool field is excluded",
+			raw:  `{"models":[{"id":"m1","loaded":true},{"id":"m2"},{"id":"m3","loaded":"true"}]}`,
+			spec: &ActionResult{Array: "models", Field: "id", Match: &ResultMatch{Field: "loaded", True: true}},
+			want: []string{"m1"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

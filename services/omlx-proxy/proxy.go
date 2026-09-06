@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -700,6 +702,7 @@ type candidate struct {
 	id       string
 	url      *url.URL
 	peerUUID string
+	isSelf   bool
 }
 
 // candidateTransport returns the reverse-proxy / model-list transport for a
@@ -834,6 +837,11 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 			continue
 		}
 		upstream.Header.Set("Accept", "application/json")
+		if cand.isSelf {
+			if key := readOMLXAPIKey(); key != "" {
+				upstream.Header.Set("Authorization", "Bearer "+key)
+			}
+		}
 
 		// A cluster-peer candidate is queried over mTLS to its promoted proxy;
 		// self/manual candidates use the shared plain client.
@@ -1134,6 +1142,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				req.URL.Scheme = cand.url.Scheme
 				req.URL.Host = cand.url.Host
 				req.Host = cand.url.Host
+				if cand.isSelf {
+					if key := readOMLXAPIKey(); key != "" {
+						req.Header.Set("Authorization", "Bearer "+key)
+					}
+				}
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
@@ -1384,9 +1397,10 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 			return
 		}
 		peerUUID := ""
+		isSelf := false
 		switch {
 		case isSelfTarget(u, selfPort):
-			// Our own advertised endpoint (lm now points at this proxy). Serve
+			// Our own advertised endpoint (om now points at this proxy). Serve
 			// it from the explicit local backend — the loopback engine — rather
 			// than dialing our own mTLS ingress, which would recurse. Ranking
 			// still used this node's real (discovered) model list above.
@@ -1396,9 +1410,10 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 				return
 			}
 			u = lb
+			isSelf = true
 		case p.mesh.HasPin(n.ClusterUUID):
 			// A pinned cluster peer: reach it only over mTLS to its promoted
-			// proxy (the lm port now advertises the proxy, not the engine).
+			// proxy (the om port now advertises the proxy, not the engine).
 			// The pin is read from the live mesh refreshed above, not from the
 			// relayed n.Trusted: that flag is the scanner's answer from whenever
 			// it last saw this peer's mDNS record, so a peer discovered before
@@ -1433,6 +1448,7 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 			id:       n.ID,
 			url:      u,
 			peerUUID: peerUUID,
+			isSelf:   isSelf,
 		})
 	}
 
@@ -2041,3 +2057,34 @@ func (p *Proxy) handleMessage(msg *Message) {
 		}
 	}
 }
+
+// readOMLXAPIKey reads the configured API key for oMLX from the OMLX_API_KEY
+// environment variable or ~/.omlx/settings.json, returning empty string if auth
+// is disabled or unconfigured.
+func readOMLXAPIKey() string {
+	if env := os.Getenv("OMLX_API_KEY"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".omlx", "settings.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Auth struct {
+			APIKey                 string `json:"api_key"`
+			SkipAPIKeyVerification bool   `json:"skip_api_key_verification"`
+		} `json:"auth"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if cfg.Auth.SkipAPIKeyVerification {
+		return ""
+	}
+	return cfg.Auth.APIKey
+}
+

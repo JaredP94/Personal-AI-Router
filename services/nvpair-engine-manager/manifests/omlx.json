@@ -20,10 +20,10 @@
     "mode": "command",
     "port": 1235,
     "bind": "127.0.0.1",
-    "start": [["{cli}", "serve", "--port", "{port}", "--host", "{host}"]],
+    "start": [["{cli}", "start"]],
     "stop": { "cmd": ["{cli}", "stop"] },
-    "ready": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "timeout_s": 45 },
-    "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
+    "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 45 },
+    "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
   },
   "platforms": {
     "darwin/arm64": {
@@ -38,8 +38,8 @@
     },
     "loaded_models": {
       "description": "List models currently active in memory.",
-      "http": { "method": "GET", "path": "/v1/models" },
-      "result": { "array": "data", "field": "id" }
+      "http": { "method": "GET", "path": "/v1/models/status" },
+      "result": { "array": "models", "field": "id", "match": { "field": "loaded", "true": true } }
     },
     "chat": {
       "description": "OpenAI-compatible chat completions.",

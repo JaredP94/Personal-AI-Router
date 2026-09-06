@@ -330,12 +330,19 @@ func (b *Broker) reconcileAdvertiseOMLX(client *http.Client) {
 }
 
 // checkOMLXHealth reports whether a local oMLX server is answering on
-// the given port (OpenAI-compatible /v1/models endpoint).
+// the given port (native unauthenticated /health endpoint or /v1/models).
 func checkOMLXHealth(client *http.Client, port int) bool {
-	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/health", port))
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return true
+		}
+	}
+	resp, err = client.Get(fmt.Sprintf("http://localhost:%d/v1/models", port))
 	if err != nil {
 		return false
 	}
 	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
