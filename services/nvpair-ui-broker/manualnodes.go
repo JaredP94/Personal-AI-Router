@@ -41,7 +41,10 @@ type manualNodeStatus struct {
 	// machine is also discovered). Empty until the node-info probe succeeds.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the remote's cluster principal.
-	ClusterUUID string `json:"clusterUuid,omitempty"`
+	ClusterUUID    string              `json:"clusterUuid,omitempty"`
+	Models         []string            `json:"models,omitempty"`
+	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
+	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
 }
 
 type manualNodeStatusEntry struct {
@@ -82,6 +85,14 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	if hostUUID == "" {
 		hostUUID = s.ID
 	}
+	models := s.Models
+	if len(models) == 0 {
+		models = mergeModels(s.OllamaModels, s.LMStudioModels)
+	}
+	modelsByEngine := s.ModelsByEngine
+	if len(modelsByEngine) == 0 {
+		modelsByEngine = manualModelsByEngine(s)
+	}
 	en := EnrichedNode{
 		ID:             s.ID,
 		HostUUID:       hostUUID,
@@ -90,8 +101,9 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		GPUs:           s.GPUs,
 		CPU:            s.CPU,
 		Memory:         s.Memory,
-		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
-		ModelsByEngine: manualModelsByEngine(s),
+		Models:         models,
+		ModelsByEngine: modelsByEngine,
+		LoadedByEngine: s.LoadedByEngine,
 		Clustered:      s.ClusterUUID != "",
 	}
 	if s.Address != "" {
@@ -154,16 +166,50 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		services[noderec.ServiceWorkload] = noderec.ServiceStatus{Port: 14320}
 		services[noderec.ServiceCluster] = noderec.ServiceStatus{Port: 14321}
 	}
-	if s.OllamaUp && s.OllamaPort > 0 {
-		services[noderec.ServiceOllama] = noderec.ServiceStatus{Port: s.OllamaPort}
+	modelsByEngine := s.ModelsByEngine
+	if len(modelsByEngine) == 0 {
+		modelsByEngine = manualModelsByEngine(s)
 	}
-	if s.LMStudioUp && s.LMStudioPort > 0 {
-		services[noderec.ServiceLMStudio] = noderec.ServiceStatus{Port: s.LMStudioPort}
+	ollamaUp := s.OllamaUp
+	if !ollamaUp && modelsByEngine != nil {
+		if _, ok := modelsByEngine["ollama"]; ok {
+			ollamaUp = true
+		}
+	}
+	if ollamaUp {
+		port := s.OllamaPort
+		if port == 0 {
+			port = 11434
+		}
+		services[noderec.ServiceOllama] = noderec.ServiceStatus{Port: port}
+	}
+	lmStudioUp := s.LMStudioUp
+	if !lmStudioUp && modelsByEngine != nil {
+		if _, ok := modelsByEngine["lmstudio"]; ok {
+			lmStudioUp = true
+		}
+	}
+	if lmStudioUp {
+		port := s.LMStudioPort
+		if port == 0 {
+			port = 1234
+		}
+		services[noderec.ServiceLMStudio] = noderec.ServiceStatus{Port: port}
+	}
+	if modelsByEngine != nil {
+		if _, ok := modelsByEngine["omlx"]; ok {
+			services[noderec.ServiceOMLX] = noderec.ServiceStatus{Port: 8000}
+		}
 	}
 
 	ips := []string{}
 	if s.Address != "" {
 		ips = []string{s.Address}
+	}
+
+	models := s.Models
+	if len(models) == 0 {
+		models = mergeModels(s.OllamaModels, s.LMStudioModels)
 	}
 
 	return noderec.DirectoryNode{
@@ -177,8 +223,9 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		GPUs:           s.GPUs,
 		CPU:            s.CPU,
 		Memory:         s.Memory,
-		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
-		ModelsByEngine: manualModelsByEngine(s),
+		Models:         models,
+		ModelsByEngine: modelsByEngine,
+		LoadedByEngine: s.LoadedByEngine,
 		LastSeen:       time.Now().Unix(),
 	}
 }
@@ -266,8 +313,35 @@ type proxyManualNode struct {
 // daemon to carry — so without this explicit add the proxies can't route
 // inference to them even though both workers are broker-owned.
 func (b *Broker) bridgeManualNode(s manualNodeStatus, key string) {
-	b.bridgeToProxy(b.getProxy(), "ollama", s, key, s.OllamaUp, s.OllamaPort, s.OllamaModels)
-	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, s.LMStudioUp, s.LMStudioPort, s.LMStudioModels)
+	ollamaModels := s.OllamaModels
+	if len(ollamaModels) == 0 && s.ModelsByEngine != nil {
+		ollamaModels = s.ModelsByEngine["ollama"]
+	}
+	ollamaUp := s.OllamaUp || len(ollamaModels) > 0
+	ollamaPort := s.OllamaPort
+	if ollamaPort == 0 {
+		ollamaPort = 11434
+	}
+
+	lmStudioModels := s.LMStudioModels
+	if len(lmStudioModels) == 0 && s.ModelsByEngine != nil {
+		lmStudioModels = s.ModelsByEngine["lmstudio"]
+	}
+	lmStudioUp := s.LMStudioUp || len(lmStudioModels) > 0
+	lmStudioPort := s.LMStudioPort
+	if lmStudioPort == 0 {
+		lmStudioPort = 1234
+	}
+
+	b.bridgeToProxy(b.getProxy(), "ollama", s, key, ollamaUp, ollamaPort, ollamaModels)
+	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, lmStudioUp, lmStudioPort, lmStudioModels)
+
+	var omlxModels []string
+	if s.ModelsByEngine != nil {
+		omlxModels = s.ModelsByEngine["omlx"]
+	}
+	omlxUp := len(omlxModels) > 0
+	b.bridgeToProxy(b.getOMLXProxy(), "omlx", s, key, omlxUp, 8000, omlxModels)
 }
 
 // bridgeToProxy adds the node to p when its engine is reachable, or removes it
@@ -302,6 +376,7 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 func (b *Broker) removeManualNodeFromProxies(id string) {
 	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", map[string]string{"id": id}, id)
 	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
+	b.callProxyManual(b.getOMLXProxy(), "omlx", "node/remove-manual", map[string]string{"id": id}, id)
 }
 
 // callProxyManual issues a best-effort node/add-manual|remove-manual to a

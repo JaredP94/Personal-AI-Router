@@ -194,6 +194,69 @@ func TestManualNodeBridgesToRelayDir(t *testing.T) {
 	}
 }
 
+func TestManualNodeModelsAttribution(t *testing.T) {
+	b := newManualTestBroker()
+	const uuid = "remote-node-uuid"
+
+	status := manualNodeStatus{
+		ID:           "TailscaleNode",
+		Address:      "100.107.205.77",
+		HostUUID:     uuid,
+		ClusterUUID:  uuid,
+		NodeInfoUp:   true,
+		NodeInfoPort: 14318,
+		Models:       []string{"llama3:8b", "qwen2.5:7b"},
+		ModelsByEngine: map[string][]string{
+			"ollama":   {"llama3:8b"},
+			"lmstudio": {"qwen2.5:7b"},
+		},
+		LoadedByEngine: map[string][]string{
+			"ollama": {"llama3:8b"},
+		},
+	}
+
+	b.upsertManualNode(status)
+
+	// Check discovery store snapshot
+	snap := b.store.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 node in store snapshot, got %d", len(snap))
+	}
+	sn := snap[0]
+	if len(sn.Models) != 2 || sn.Models[0] != "llama3:8b" || sn.Models[1] != "qwen2.5:7b" {
+		t.Errorf("unexpected Models in snapshot: %#v", sn.Models)
+	}
+	if len(sn.ModelsByEngine["ollama"]) != 1 || sn.ModelsByEngine["ollama"][0] != "llama3:8b" {
+		t.Errorf("unexpected ModelsByEngine[ollama] in snapshot: %#v", sn.ModelsByEngine["ollama"])
+	}
+	if len(sn.ModelsByEngine["lmstudio"]) != 1 || sn.ModelsByEngine["lmstudio"][0] != "qwen2.5:7b" {
+		t.Errorf("unexpected ModelsByEngine[lmstudio] in snapshot: %#v", sn.ModelsByEngine["lmstudio"])
+	}
+	if len(sn.LoadedByEngine["ollama"]) != 1 || sn.LoadedByEngine["ollama"][0] != "llama3:8b" {
+		t.Errorf("unexpected LoadedByEngine[ollama] in snapshot: %#v", sn.LoadedByEngine["ollama"])
+	}
+
+	// Check relayDir
+	nodes := b.relayDir.Snapshot("")
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node in relayDir, got %d", len(nodes))
+	}
+	rn := nodes[0]
+	if len(rn.Models) != 2 {
+		t.Errorf("unexpected Models in relayDir: %#v", rn.Models)
+	}
+	if len(rn.ModelsByEngine["ollama"]) != 1 {
+		t.Errorf("unexpected ModelsByEngine in relayDir: %#v", rn.ModelsByEngine)
+	}
+	// Also ensure ServiceOllama and ServiceLMStudio were inferred from ModelsByEngine
+	if svc, ok := rn.Services[noderec.ServiceOllama]; !ok || svc.Port != 11434 {
+		t.Errorf("ServiceOllama = %+v, want port 11434", svc)
+	}
+	if svc, ok := rn.Services[noderec.ServiceLMStudio]; !ok || svc.Port != 1234 {
+		t.Errorf("ServiceLMStudio = %+v, want port 1234", svc)
+	}
+}
+
 // TestManualAliasesShareKeyUntilLastRemoved covers both removal orders: two
 // manual entries (distinct names/addresses for one machine) resolve
 // to one HostUUID and share a single sourceManual slot. Removing one alias must

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -135,7 +136,10 @@ type ManualNodeStatus struct {
 	// keys on. Empty when node-info didn't report one.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the remote node's cluster principal.
-	ClusterUUID string `json:"clusterUuid,omitempty"`
+	ClusterUUID    string              `json:"clusterUuid,omitempty"`
+	Models         []string            `json:"models,omitempty"`
+	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
+	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
 }
 
 type ReadyParams struct {
@@ -475,6 +479,55 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	if info.ClusterUUID != nil {
 		clusterUUID = *info.ClusterUUID
 	}
+	if clusterUUID == "" && m.mesh != nil && info.HostUUID != "" && m.mesh.HasPin(info.HostUUID) {
+		clusterUUID = info.HostUUID
+	}
+
+	useTLS := entry.TLSPort > 0 || (nodeInfoUp && scheme == "https")
+	emUp, emRes := m.probeEngineManager(addr, clusterUUID, useTLS)
+
+	finalModels := emRes.Models
+	finalModelsByEngine := emRes.ModelsByEngine
+	finalLoadedByEngine := emRes.LoadedByEngine
+
+	if emUp {
+		if finalModelsByEngine != nil {
+			if olModels, ok := finalModelsByEngine["ollama"]; ok {
+				ollamaUp = true
+				ollamaModels = olModels
+			}
+			if lmModels, ok := finalModelsByEngine["lmstudio"]; ok {
+				lmStudioUp = true
+				lmStudioModels = lmModels
+			}
+		}
+		if ollamaUp && (finalModelsByEngine == nil || finalModelsByEngine["ollama"] == nil) && len(ollamaModels) > 0 {
+			if finalModelsByEngine == nil {
+				finalModelsByEngine = make(map[string][]string)
+			}
+			finalModelsByEngine["ollama"] = ollamaModels
+			finalModels = mergeModels(finalModels, ollamaModels)
+		}
+		if lmStudioUp && (finalModelsByEngine == nil || finalModelsByEngine["lmstudio"] == nil) && len(lmStudioModels) > 0 {
+			if finalModelsByEngine == nil {
+				finalModelsByEngine = make(map[string][]string)
+			}
+			finalModelsByEngine["lmstudio"] = lmStudioModels
+			finalModels = mergeModels(finalModels, lmStudioModels)
+		}
+	} else {
+		finalModels = mergeModels(ollamaModels, lmStudioModels)
+		finalModelsByEngine = make(map[string][]string)
+		if len(ollamaModels) > 0 {
+			finalModelsByEngine["ollama"] = ollamaModels
+		}
+		if len(lmStudioModels) > 0 {
+			finalModelsByEngine["lmstudio"] = lmStudioModels
+		}
+		if len(finalModelsByEngine) == 0 {
+			finalModelsByEngine = nil
+		}
+	}
 
 	newStatus := ManualNodeStatus{
 		ID:             id,
@@ -497,9 +550,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		MSSince:        info.MSSince,
 		HostUUID:       info.HostUUID,
 		ClusterUUID:    clusterUUID,
+		Models:         finalModels,
+		ModelsByEngine: finalModelsByEngine,
+		LoadedByEngine: finalLoadedByEngine,
 	}
 
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp || emUp
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
@@ -539,6 +595,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		prev.ClusterUUID != newStatus.ClusterUUID ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
+		!sliceEqual(prev.Models, newStatus.Models) ||
+		!mapsEqual(prev.ModelsByEngine, newStatus.ModelsByEngine) ||
+		!mapsEqual(prev.LoadedByEngine, newStatus.LoadedByEngine) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
@@ -549,7 +608,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		slog.Info("manual node state changed",
 			"node_id", id, "addr", addr,
 			"ollama_up", newStatus.OllamaUp, "node_info_up", newStatus.NodeInfoUp,
-			"models", len(newStatus.OllamaModels), "gpus", len(newStatus.GPUs))
+			"models", len(newStatus.Models), "gpus", len(newStatus.GPUs))
 		m.codec.Notify("node/updated", newStatus)
 	} else {
 		slog.Debug("manual node probe stable",
@@ -601,11 +660,92 @@ func probeFailedID(nodeID string) string {
 	return "manual-nodes:probe-failed:" + nodeID
 }
 
-// lmStudioPort is LM Studio's default OpenAI-API server port, probed the same
-// way Ollama is hardcoded to 11434. A manual node is remote, so (like Ollama)
-// we assume the engine's default port rather than resolving it via the engine
-// manager (which only governs the local engine).
-const lmStudioPort = 1234
+const (
+	lmStudioPort      = 1234
+	engineManagerPort = 14322
+)
+
+type engineManagerModels struct {
+	Models         []string            `json:"models"`
+	ModelsByEngine map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+}
+
+// probeEngineManager checks nvpair-engine-manager's LAN /v1/models endpoint on addr:14322.
+// When reachable, it provides the authoritative model list, per-engine attribution, and
+// loaded-in-memory models across all supported engines (Ollama, LM Studio, oMLX) in a
+// single sweep. Tries cluster mTLS first if clustered, then configured TLS client, then HTTP.
+func (m *Manager) probeEngineManager(addr, clusterUUID string, useTLS bool) (bool, engineManagerModels) {
+	if m.mesh != nil && m.mesh.Clustered() {
+		m.mesh.Refresh()
+		var cfg *tls.Config
+		var ok bool
+		if clusterUUID != "" && m.mesh.HasPin(clusterUUID) {
+			cfg, ok = m.mesh.ClientTLSConfig(clusterUUID)
+		}
+		if !ok {
+			cfg, ok = m.mesh.ClientTLSConfigAny()
+		}
+		if ok {
+			tlsClient := &http.Client{
+				Timeout:   probeTimeout,
+				Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true},
+			}
+			if success, res := m.fetchEngineManagerModels(tlsClient, "https", addr, engineManagerPort); success {
+				return true, res
+			}
+		}
+	}
+
+	if useTLS && m.tlsClient != nil {
+		if success, res := m.fetchEngineManagerModels(m.tlsClient, "https", addr, engineManagerPort); success {
+			return true, res
+		}
+	}
+
+	if success, res := m.fetchEngineManagerModels(m.client, "http", addr, engineManagerPort); success {
+		return true, res
+	}
+
+	return false, engineManagerModels{}
+}
+
+func (m *Manager) fetchEngineManagerModels(client *http.Client, scheme, addr string, port int) (bool, engineManagerModels) {
+	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
+	start := time.Now()
+	resp, err := client.Get(url)
+	if err != nil {
+		slog.Debug("manual probe engine-manager failed",
+			"addr", addr, "port", port, "scheme", scheme, "err", err,
+			"duration_ms", time.Since(start).Milliseconds())
+		return false, engineManagerModels{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual probe engine-manager non-OK",
+			"addr", addr, "port", port, "scheme", scheme, "status", resp.StatusCode,
+			"duration_ms", time.Since(start).Milliseconds())
+		return false, engineManagerModels{}
+	}
+	var res engineManagerModels
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		slog.Debug("manual probe engine-manager decode failed",
+			"addr", addr, "port", port, "scheme", scheme, "err", err,
+			"duration_ms", time.Since(start).Milliseconds())
+		return false, engineManagerModels{}
+	}
+	if len(res.Models) == 0 && len(res.ModelsByEngine) > 0 {
+		for _, mList := range res.ModelsByEngine {
+			res.Models = append(res.Models, mList...)
+		}
+		res.Models = mergeModels(res.Models)
+	}
+	slog.Debug("manual probe engine-manager ok",
+		"addr", addr, "port", port, "scheme", scheme,
+		"models", len(res.Models), "engines", len(res.ModelsByEngine),
+		"duration_ms", time.Since(start).Milliseconds())
+	return true, res
+}
 
 // probeLMStudio checks LM Studio's OpenAI-compatible server on addr:port. A
 // single GET /v1/models doubles as the liveness check and the model list (the
@@ -959,4 +1099,31 @@ func memoryEqual(a, b *MemoryInfo) bool {
 		return false
 	}
 	return *a == *b
+}
+
+func mergeModels(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range lists {
+		for _, m := range l {
+			if m != "" && !seen[m] {
+				seen[m] = true
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+func mapsEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok || !sliceEqual(va, vb) {
+			return false
+		}
+	}
+	return true
 }

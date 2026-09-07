@@ -726,6 +726,56 @@ func TestSyncClusterMembers(t *testing.T) {
 	}
 }
 
+func TestProbeEngineManagerReportsModels(t *testing.T) {
+	m, _, rt := newTestManager()
+
+	infoHost := net.JoinHostPort("node.local", "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"hostUuid":"uuid-node-1"}`)
+	})
+
+	emHost := net.JoinHostPort("node.local", "14322")
+	rt.set(http.MethodGet, emHost, "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{
+			"models": ["llama3:8b", "qwen2.5:7b"],
+			"modelsByEngine": {
+				"ollama": ["llama3:8b"],
+				"lmstudio": ["qwen2.5:7b"]
+			},
+			"loadedByEngine": {
+				"ollama": ["llama3:8b"]
+			}
+		}`)
+	})
+
+	m.addNode(ManualEntry{Address: "node.local", Name: "test-node"})
+	m.probeNode(ManualEntry{Address: "node.local", Name: "test-node"})
+
+	nodes := m.listNodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	n := nodes[0]
+	if !n.OllamaUp {
+		t.Errorf("expected OllamaUp = true")
+	}
+	if !n.LMStudioUp {
+		t.Errorf("expected LMStudioUp = true")
+	}
+	if len(n.Models) != 2 || n.Models[0] != "llama3:8b" || n.Models[1] != "qwen2.5:7b" {
+		t.Errorf("unexpected Models: %#v", n.Models)
+	}
+	if len(n.ModelsByEngine["ollama"]) != 1 || n.ModelsByEngine["ollama"][0] != "llama3:8b" {
+		t.Errorf("unexpected ModelsByEngine[ollama]: %#v", n.ModelsByEngine["ollama"])
+	}
+	if len(n.ModelsByEngine["lmstudio"]) != 1 || n.ModelsByEngine["lmstudio"][0] != "qwen2.5:7b" {
+		t.Errorf("unexpected ModelsByEngine[lmstudio]: %#v", n.ModelsByEngine["lmstudio"])
+	}
+	if len(n.LoadedByEngine["ollama"]) != 1 || n.LoadedByEngine["ollama"][0] != "llama3:8b" {
+		t.Errorf("unexpected LoadedByEngine[ollama]: %#v", n.LoadedByEngine["ollama"])
+	}
+}
+
 func readPipeFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) Message {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
