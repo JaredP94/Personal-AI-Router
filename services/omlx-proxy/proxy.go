@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1605,7 +1606,7 @@ func nodeAdvertisesModel(n Node, model string) bool {
 		return false
 	}
 	for _, available := range n.Models {
-		if available == model {
+		if strings.EqualFold(available, model) {
 			return true
 		}
 	}

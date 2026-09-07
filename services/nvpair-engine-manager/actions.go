@@ -107,7 +107,21 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 		return nil, fmt.Errorf("engine %q is not running", engine)
 	}
 
-	path, err := resolvePlaceholders(act.HTTP.Path, map[string]string{"port": strconv.Itoa(port)})
+	vars := map[string]string{}
+	if len(params) > 0 {
+		var pm map[string]any
+		if err := json.Unmarshal(params, &pm); err == nil {
+			for k, v := range pm {
+				if allowedPlaceholders[k] {
+					continue
+				}
+				vars[k] = fmt.Sprint(v)
+			}
+		}
+	}
+	vars["port"] = strconv.Itoa(port)
+
+	path, err := resolvePlaceholders(act.HTTP.Path, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +145,7 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 		}
 	}
 	client := e.client
-	if engine == "ollama" && action == "run_model" && e.ollamaLoadClient != nil {
+	if ((engine == "ollama" && action == "run_model") || action == "load_model") && e.ollamaLoadClient != nil {
 		client = e.ollamaLoadClient
 	}
 	resp, err := client.Do(req)

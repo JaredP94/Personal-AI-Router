@@ -44,6 +44,14 @@
     "chat": {
       "description": "OpenAI-compatible chat completions.",
       "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
+    },
+    "load_model": {
+      "description": "Load a downloaded model into memory (params: {\"model\": \"<name>\"}).",
+      "http": { "method": "POST", "path": "/v1/models/{model}/load" }
+    },
+    "unload_model": {
+      "description": "Unload a model from memory (params: {\"model\": \"<name>\"}).",
+      "http": { "method": "POST", "path": "/v1/models/{model}/unload" }
     }
   }
 }

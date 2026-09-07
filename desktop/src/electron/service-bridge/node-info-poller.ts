@@ -56,6 +56,7 @@ type PollChoice =
       }
 
 const pollChoices = new Map<string, PollChoice>()
+const lastWorkingHosts = new Map<string, string>()
 
 /** One attempt against one address: what it reported, or why it did not. */
 interface Probe {
@@ -131,6 +132,7 @@ export function stopNodeInfoPoller(): void {
     pollChoices.clear()
     pollBackoffs.clear()
     failingNodes.clear()
+    lastWorkingHosts.clear()
 }
 
 function pollNodeInfoOnce(): void {
@@ -149,6 +151,9 @@ function pollNodeInfoOnce(): void {
     }
     for (const nodeId of pollBackoffs.keys()) {
         if (!polled.has(nodeId)) pollBackoffs.delete(nodeId)
+    }
+    for (const nodeId of lastWorkingHosts.keys()) {
+        if (!polled.has(nodeId)) lastWorkingHosts.delete(nodeId)
     }
 
     for (const target of targets) {
@@ -207,12 +212,15 @@ async function pollTarget(
     }
 
     const rest = remembered ? hosts.filter(host => host !== remembered) : hosts
-    // Cooling down: check only the address the node ranks first, where a recovery
+    // Cooling down: check only the address the node ranks first (or its last-known
+    // working address when remembered before the outage), where a recovery
     // will appear, instead of paying the whole walk again. The cooldown restarts
     // only after a walk that really tried everything, so these cheap checks can
     // never postpone the next one indefinitely.
     const cooling = withinWalkCooldown(pollChoices.get(nodeId), targetKey)
-    const order = cooling ? rest.slice(0, 1) : rest
+    const lastWorking = lastWorkingHosts.get(nodeId)
+    const coolingHost = lastWorking && rest.includes(lastWorking) ? lastWorking : rest[0]
+    const order = cooling ? (coolingHost ? [coolingHost] : []) : rest
 
     // Asked together, because an address that drops connections rather than
     // refusing them costs a full timeout, and paying that per address let one such
@@ -288,6 +296,7 @@ async function probeHost(
 /** Remember the address that answered, and merge the telemetry it reported. */
 function accept(nodeId: string, host: string, port: number, parsed: JsonValue): void {
     pollChoices.set(nodeId, { host, walkedAt: 0 })
+    lastWorkingHosts.set(nodeId, host)
     noteAnswering(nodeId, nodeInfoUrl(host, port))
     getModularBridgeState().mergeNodeInfoResponse(nodeId, parsed)
 }

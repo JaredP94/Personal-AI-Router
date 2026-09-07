@@ -109,3 +109,33 @@ func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
 		t.Fatal("ingress reverse proxy did not use the shared plain Transport")
 	}
 }
+
+func TestLocalReverseProxyInjectsAuthorization(t *testing.T) {
+	t.Setenv("OMLX_API_KEY", "test-omlx-key")
+	p := testProxy(NewDiscovery(), 1235)
+	target := &url.URL{Scheme: "http", Host: "127.0.0.1:1235"}
+	rp := p.newLocalReverseProxy(target)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rp.Director(req)
+
+	if got := req.Header.Get("Authorization"); got != "Bearer test-omlx-key" {
+		t.Fatalf("Authorization header = %q, want Bearer test-omlx-key", got)
+	}
+}
+
+func TestNodeAdvertisesModelCaseInsensitive(t *testing.T) {
+	n := Node{
+		ID:     "node-1",
+		Models: []string{"OsaurusAI--LFM2.5-8B-A1B-MXFP8"},
+	}
+	if !nodeAdvertisesModel(n, "osaurusai--lfm2.5-8b-a1b-mxfp8") {
+		t.Fatal("nodeAdvertisesModel should match case-insensitively")
+	}
+	if !nodeAdvertisesModel(n, "OSAURUSAI--LFM2.5-8B-A1B-MXFP8") {
+		t.Fatal("nodeAdvertisesModel should match uppercase query")
+	}
+	if nodeAdvertisesModel(n, "other-model") {
+		t.Fatal("nodeAdvertisesModel matched different model")
+	}
+}

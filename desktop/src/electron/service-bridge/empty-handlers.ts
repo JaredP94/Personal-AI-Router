@@ -564,7 +564,13 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                             action: 'load_model',
                             params: { model: payload.model }
                         },
-                        failAction('load model')
+                        failAction('load model', {
+                            nodeId: payload.nodeId,
+                            engineType: payload.engineType,
+                            operation: 'load',
+                            modelName: payload.model
+                        }),
+                        true
                     )
                 }
             }
@@ -583,7 +589,13 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
                         action: 'unload_model',
                         params: unloadParams
                     },
-                    failAction('unload model')
+                    failAction('unload model', {
+                        nodeId: payload.nodeId,
+                        engineType: payload.engineType,
+                        operation: 'unload',
+                        modelName: payload.model
+                    }),
+                    true
                 )
             }
             break

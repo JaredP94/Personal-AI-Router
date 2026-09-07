@@ -665,4 +665,49 @@ describe('node info polling', () => {
         await vi.advanceTimersByTimeAsync(0)
         expect(pending).toHaveLength(2)
     })
+
+    it('checks the last working address during walk cooldown when a multi-homed node blips', async () => {
+        mocks.state.getNodeInfoPollTargets.mockReturnValue([
+            {
+                id: 'uuid-multihomed-failover',
+                hosts: ['192.168.1.161', '100.107.205.77'],
+                port: 14318
+            }
+        ])
+        fetchMock.mockImplementation(input =>
+            String(input).includes('100.107.205.77')
+                ? Promise.resolve(answersFor('uuid-multihomed-failover'))
+                : Promise.reject(new Error('EHOSTUNREACH'))
+        )
+
+        startNodeInfoPoller()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(mocks.state.mergeNodeInfoResponse).toHaveBeenCalledWith(
+            'uuid-multihomed-failover',
+            expect.objectContaining({ hostUuid: 'uuid-multihomed-failover' })
+        )
+        mocks.state.mergeNodeInfoResponse.mockClear()
+        fetchMock.mockClear()
+
+        // 100.107.205.77 transiently fails for 1 poll
+        fetchMock.mockRejectedValue(new Error('EHOSTUNREACH'))
+        await vi.advanceTimersByTimeAsync(MODULAR_NODE_INFO_POLL_INTERVAL_MS)
+        fetchMock.mockClear()
+
+        // During walk cooldown, the retry probes the last-known working host (100.107.205.77),
+        // not the dead primary LAN address (192.168.1.161)
+        fetchMock.mockImplementation(input =>
+            String(input).includes('100.107.205.77')
+                ? Promise.resolve(answersFor('uuid-multihomed-failover'))
+                : Promise.reject(new Error('EHOSTUNREACH'))
+        )
+        await vi.advanceTimersByTimeAsync(MODULAR_NODE_INFO_POLL_INTERVAL_MS * 2)
+
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(String(fetchMock.mock.calls[0][0])).toContain('100.107.205.77')
+        expect(mocks.state.mergeNodeInfoResponse).toHaveBeenCalledWith(
+            'uuid-multihomed-failover',
+            expect.objectContaining({ hostUuid: 'uuid-multihomed-failover' })
+        )
+    })
 })

@@ -70,25 +70,75 @@ describe('local model load command', () => {
         )
     })
 
-    it('leaves the LM Studio load path unobserved', async () => {
+    it('observes and attributes a non-Ollama load rejection to the pending model row', async () => {
         await handleServiceBridgeInvoke('engine:command', {
             command: 'loadModel',
-            engineType: 'lm-studio',
+            engineType: 'omlx',
             nodeId: 'local-node',
-            model: 'publisher/demo'
+            model: 'OsaurusAI--LFM2.5-8B-A1B-MXFP8'
         })
 
         expect(mocks.supervisor.sendProcess).toHaveBeenCalledOnce()
-        expect(mocks.supervisor.sendProcess.mock.calls[0]).toHaveLength(4)
-        expect(mocks.supervisor.sendProcess).toHaveBeenCalledWith(
+        const [name, method, params, onFailure, observeResponse] =
+            mocks.supervisor.sendProcess.mock.calls[0]
+        expect([name, method, params, observeResponse]).toEqual([
             'broker',
             'engine:action',
             {
-                engine: 'lmstudio',
+                engine: 'omlx',
                 action: 'load_model',
-                params: { model: 'publisher/demo' }
+                params: { model: 'OsaurusAI--LFM2.5-8B-A1B-MXFP8' }
             },
-            expect.any(Function)
+            true
+        ])
+
+        onFailure('engine "omlx" has no action "load_model"', true)
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Failed to load model on omlx: engine "omlx" has no action "load_model"',
+            'error',
+            'engine-cmd:load model:omlx',
+            {
+                nodeId: 'local-node',
+                engineType: 'omlx',
+                operation: 'load',
+                modelName: 'OsaurusAI--LFM2.5-8B-A1B-MXFP8'
+            }
+        )
+    })
+
+    it('observes and attributes an unload rejection to the pending model row', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'unloadModel',
+            engineType: 'omlx',
+            nodeId: 'local-node',
+            model: 'OsaurusAI--LFM2.5-8B-A1B-MXFP8'
+        })
+
+        expect(mocks.supervisor.sendProcess).toHaveBeenCalledOnce()
+        const [name, method, params, onFailure, observeResponse] =
+            mocks.supervisor.sendProcess.mock.calls[0]
+        expect([name, method, params, observeResponse]).toEqual([
+            'broker',
+            'engine:action',
+            {
+                engine: 'omlx',
+                action: 'unload_model',
+                params: { model: 'OsaurusAI--LFM2.5-8B-A1B-MXFP8' }
+            },
+            true
+        ])
+
+        onFailure('failed to unload model', true)
+        expect(mocks.supervisor.reportError).toHaveBeenCalledWith(
+            'Failed to unload model on omlx: failed to unload model',
+            'error',
+            'engine-cmd:unload model:omlx',
+            {
+                nodeId: 'local-node',
+                engineType: 'omlx',
+                operation: 'unload',
+                modelName: 'OsaurusAI--LFM2.5-8B-A1B-MXFP8'
+            }
         )
     })
 })

@@ -69,6 +69,7 @@ func (s *controlServer) handleModelAction(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.exec.pokeLoaded()
 	w.Header().Set("Content-Type", "application/json")
 	if len(res) == 0 {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})

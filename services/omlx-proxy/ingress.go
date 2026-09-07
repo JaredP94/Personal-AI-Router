@@ -127,6 +127,9 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			if key := readOMLXAPIKey(); key != "" {
+				req.Header.Set("Authorization", "Bearer "+key)
+			}
 		},
 		Transport: p.plainHTTPTransport(),
 		ErrorHandler: func(ew http.ResponseWriter, _ *http.Request, err error) {
