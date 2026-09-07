@@ -33,6 +33,7 @@ import (
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
 	"nvpair-shared/noderec"
+	"nvpair-shared/prefixhash"
 	"nvpair-shared/reach"
 	"nvpair-shared/schedulerwire"
 	"nvpair-shared/splitlisten"
@@ -116,15 +117,16 @@ type RequestStartedEvent struct {
 // which for streaming LM Studio responses is dominated by token
 // generation time and so doesn't really reflect latency at all.
 type RequestEvent struct {
-	ID       string `json:"id"`
-	NodeID   string `json:"node_id,omitempty"`
-	Method   string `json:"method"`
-	Path     string `json:"path"`
-	Target   string `json:"target"`
-	Status   int    `json:"status"`
-	Duration int64  `json:"duration_ms"`
-	TTFB     int64  `json:"ttfb_ms,omitempty"`
-	Error    string `json:"error,omitempty"`
+	CacheAffinity bool   `json:"cache_affinity"`
+	ID            string `json:"id"`
+	NodeID        string `json:"node_id,omitempty"`
+	Method        string `json:"method"`
+	Path          string `json:"path"`
+	Target        string `json:"target"`
+	Status        int    `json:"status"`
+	Duration      int64  `json:"duration_ms"`
+	TTFB          int64  `json:"ttfb_ms,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // Workload lifecycle method names (workload-manager spec 7). The proxy is
@@ -354,6 +356,8 @@ type Proxy struct {
 	// reads priority to form the failover list; reserveCandidate atomically adds
 	// local dispatches before forwarding so a concurrent burst cannot repeatedly
 	// choose from the same stale scheduler state.
+	prt *prefixhash.PrefixRoutingTable
+
 	priorityMu           sync.RWMutex
 	priority             []string
 	priorityPending      map[string]int
@@ -394,6 +398,7 @@ type Proxy struct {
 
 func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 	return &Proxy{
+		prt:       prefixhash.NewPrefixRoutingTable(10000, 5*time.Minute),
 		codec:     codec,
 		discovery: discovery,
 		port:      port,
@@ -952,8 +957,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		routingModel = model
 	}
 	candidates := p.resolveCandidates(routingModel)
+	contextHash := prefixhash.Extract(r.Method, r.URL.Path, bodyBytes)
+	warmNodeID := p.affinityNode(contextHash)
+	cacheAffinity := false
 	if isInf && model != "" {
-		candidates = p.reserveCandidate(candidates)
+		candidates, cacheAffinity = p.reserveCandidateWithAffinity(candidates, warmNodeID)
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
 		if len(candidates) > 0 {
@@ -1112,6 +1120,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// streaming; its wroteErr tells us after the fact whether the client write
 	// failed (dead/half-open client) so we can mark the workload failed.
 	var committedSC *statusCapture
+	var upstreamBody *affinityBodyReader
 
 	// Failover loop: try candidates in order until one returns a
 	// usable response or the list is exhausted. We can only retry before the
@@ -1152,6 +1161,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// Allow-Credentials can pass a credentialed browser fetch. Engines
 				// that publish no policy retain the proxy's permissive 204 fallback.
 				cors.CompletePreflightFallback(resp)
+				upstreamBody = newAffinityBodyReader(resp.Body, resp.Header.Get("Content-Type"))
+				resp.Body = upstreamBody
 				// Committing to this candidate — body stream is about to begin.
 				ttfbMs = time.Since(start).Milliseconds()
 				servedNodeID = cand.id
@@ -1249,13 +1260,30 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		proxy.ServeHTTP(sc, r)
+		copyAborted := serveReverseProxy(proxy, sc, r)
+		if copyAborted {
+			// net/http deliberately aborts a real server handler after a
+			// committed response copy fails. Catch that sentinel so the proxy
+			// can still emit its terminal telemetry and workload failure. The
+			// client connection remains closed; this only restores local cleanup.
+			proxyErr = "upstream response stream aborted"
+			finalStatus = sc.status
+			committedSC = sc
+			break
+		}
 		if !retry {
 			finalStatus = sc.status
 			committedSC = sc
 			break
 		}
 	}
+
+	if contextHash.Full != (prefixhash.Digest{}) && finalStatus == http.StatusOK &&
+		proxyErr == "" && r.Context().Err() == nil && committedSC != nil &&
+		committedSC.wroteErr == nil && upstreamBody != nil && upstreamBody.complete {
+		p.prt.Put(model, contextHash.Full, prefixhash.RouteRecord{NodeID: servedNodeID, Engine: workloadEngine})
+	}
+	cacheAffinity = cacheAffinity && servedNodeID == warmNodeID
 
 	slog.Debug("proxy request complete",
 		"id", reqID,
@@ -1270,15 +1298,16 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	p.codec.Notify("proxy/request", RequestEvent{
-		ID:       reqID,
-		NodeID:   servedNodeID,
-		Method:   r.Method,
-		Path:     r.URL.Path,
-		Target:   servedTarget,
-		Status:   finalStatus,
-		Duration: time.Since(start).Milliseconds(),
-		TTFB:     ttfbMs,
-		Error:    proxyErr,
+		ID:            reqID,
+		NodeID:        servedNodeID,
+		CacheAffinity: cacheAffinity,
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Target:        servedTarget,
+		Status:        finalStatus,
+		Duration:      time.Since(start).Milliseconds(),
+		TTFB:          ttfbMs,
+		Error:         proxyErr,
 	})
 
 	// Terminal workload transition pairs with the workload:started emitted at
@@ -1314,6 +1343,22 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			emitTerminal("completed", "")
 		}
 	}
+}
+
+// serveReverseProxy turns net/http's post-commit copy sentinel back into a
+// result for handleHTTP. It must not swallow application panics.
+func serveReverseProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *http.Request) (aborted bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recovered == http.ErrAbortHandler {
+				aborted = true
+				return
+			}
+			panic(recovered)
+		}
+	}()
+	proxy.ServeHTTP(w, r)
+	return false
 }
 
 // resolveCandidates returns the ordered list of nodes to try for the current
@@ -1470,13 +1515,18 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 // explicit node/select pin bypasses reservations, and unlisted/manual owners
 // retain their existing fallback position.
 func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
+	ordered, _ := p.reserveCandidateWithAffinity(candidates, "")
+	return ordered
+}
+
+func (p *Proxy) reserveCandidateWithAffinity(candidates []candidate, warmNodeID string) ([]candidate, bool) {
 	if len(candidates) == 0 {
-		return candidates
+		return candidates, false
 	}
 	if selectedID := p.SelectedID(); selectedID != "" {
 		for _, cand := range candidates {
 			if cand.id == selectedID {
-				return candidates
+				return candidates, false
 			}
 		}
 	}
@@ -1488,11 +1538,20 @@ func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
 
 	p.priorityMu.Lock()
 	defer p.priorityMu.Unlock()
-	if len(p.priority) == 0 {
-		return candidates
-	}
 	if p.priorityReservations == nil {
 		p.priorityReservations = make(map[string]int)
+	}
+
+	// Check affinity under the same lock as optimistic reservations. An eligible
+	// manual pin was handled above. Missing or overloaded hints leave ordering alone.
+	if index, ok := candidateIndex[warmNodeID]; ok && warmNodeID != "" &&
+		p.priorityPending[warmNodeID]+p.priorityReservations[warmNodeID] <= 1 &&
+		p.priorityGPUPressure[warmNodeID] < schedulerwire.MaxGPUPressure {
+		chosen := candidates[index]
+		p.priorityReservations[warmNodeID]++
+		copy(candidates[1:index+1], candidates[:index])
+		candidates[0] = chosen
+		return candidates, true
 	}
 
 	bestIndex := -1
@@ -1513,7 +1572,7 @@ func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
 		}
 	}
 	if bestIndex < 0 {
-		return candidates
+		return candidates, false
 	}
 
 	chosen := candidates[bestIndex]
@@ -1522,7 +1581,7 @@ func (p *Proxy) reserveCandidate(candidates []candidate) []candidate {
 		copy(candidates[1:bestIndex+1], candidates[:bestIndex])
 		candidates[0] = chosen
 	}
-	return candidates
+	return candidates, false
 }
 
 func nodeAdvertisesModel(n Node, model string) bool {

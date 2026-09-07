@@ -442,3 +442,32 @@ The proxy shuts down gracefully on any of:
 ## Discovery
 
 The proxy does not browse mDNS. On startup it subscribes to the broker's discovery relay for `lm` (LM Studio) nodes (`discovery:subscribe {services:[lm]}`). Targets then arrive as `discovery:nodes` notifications carrying the relay's full filtered node set, and each snapshot replaces the routing overlay wholesale — a departed node is simply absent from the next one — while the diff against the previous overlay is what produces the `node/discovered`, `node/updated`, and `node/removed` notifications. User-added manual nodes are merged on top. Nodes are keyed by the discovery record's stable per-host UUID, so routing survives a machine being renamed. The single `_nvpair-node` browse that feeds the relay lives in the `nvpair-node-scanner` daemon (see its README) — this proxy is a pure consumer of the resulting routing set.
+
+## Prefix-cache affinity
+
+Model-bearing chat and completion requests use passive, process-local routing
+hints. After a successful HTTP 200 body reaches clean EOF and the client remains
+connected, the proxy records the served node against a canonical SHA-256 request
+digest. The table holds at most 10,000 entries, expires hints after five minutes
+without use, and evicts least recently used entries. It retains no prompt or
+response text and is never persisted or shared with peers.
+
+Chat lookup tries prior message boundaries from longest to shortest. This lets a
+follow-up containing an assistant reply match the previous request without
+reading or storing the generated reply. Tools, templates, images, endpoint, and
+other prompt-affecting options separate hint identities. Plain completions use
+the first 1,024 prompt bytes only for prompts at least that long. Ollama supplied
+`context` arrays support repeated-context affinity; advancing response context
+is not predicted. Embeddings and unsupported/malformed bodies use normal routing.
+
+An eligible manual pin wins. Otherwise, the hinted node is promoted only when it
+is in the current model-owner set, pending work plus optimistic reservations is
+at most one, and GPU pressure is below three. Promotion and reservation happen
+under one lock. Other candidates retain their failover order. A successful
+failover records the node that actually served the request.
+
+Every `proxy/request` completion includes `cache_affinity: boolean`: true when
+passive affinity selected the serving node, false for ordinary routing, manual
+pins, or failover away from the hinted node. This reports a routing decision,
+not confirmed KV-cache availability or an engine cache-hit rate. No engine cache
+query API is called; eviction inside the engine may make a hint stale.

@@ -950,6 +950,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
         selfId: await handleGetSelfId()
     }),
 
+    'metrics:get-routing': () => getModularBridgeState().getRoutingMetrics(),
     'nodes:get-initial': () => getModularBridgeState().getNodesInitial(),
     'nodes:remove-member': payload => handleNodeRemoveMember(payload),
 

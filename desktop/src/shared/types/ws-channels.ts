@@ -33,6 +33,7 @@ import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
+import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
 import type {
@@ -59,6 +60,8 @@ interface NodesInitialResponse {
 export interface WsInvokeChannelMap {
     // App bootstrap
     'app:get-initial': { request: void; response: AppInitialSnapshot }
+
+    'metrics:get-routing': { request: void; response: RoutingMetrics[] }
 
     // Nodes
     'nodes:get-initial': { request: void; response: NodesInitialResponse }
@@ -124,6 +127,7 @@ export interface WsPushChannelMap {
 
     // Metrics
     'metrics:update': NodeItemMetrics
+    'metrics:routing-update': RoutingMetrics[]
 
     // Workloads. Removal carries the origin node (`originatedFrom`) because
     // workload ids are a per-node proxy counter (the catalog is keyed by the

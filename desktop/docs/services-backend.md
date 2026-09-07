@@ -346,3 +346,13 @@ The build is cache-aware. CI passes `--force`. Packaging validates that
 - Treat `ws-channels.ts` as the renderer contract and backend JSON-RPC as an
   implementation detail of Electron main.
 - Verify notification payload fields, not only method names.
+
+### Cache-affinity diagnostics
+
+The bridge consumes `proxy/request` from Ollama, LM Studio and oMLX and exposes
+per-engine counters through `metrics:get-routing` and `metrics:routing-update`.
+Service Settings displays the affinity selection rate for the desktop session.
+Only completed POST chat/completion/generate requests with an explicit boolean
+`cache_affinity` enter the denominator, including failures. Model-list and embedding
+requests are excluded. These are passive router selections, not measured engine
+KV-cache hits; no prompt, response or digest is retained by this telemetry.

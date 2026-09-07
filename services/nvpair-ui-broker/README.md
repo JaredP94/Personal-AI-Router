@@ -181,7 +181,7 @@ A few semantics worth knowing:
 | `proxy:node/removed` | `node/removed` | A manual node was removed. |
 | `proxy:node/selection-changed` | `node/selection-changed` | The active upstream changed (`{id}`; empty `id` = auto-select). |
 | `proxy:proxy/request-started` | `proxy/request-started` | An HTTP request began being forwarded. |
-| `proxy:proxy/request` | `proxy/request` | An HTTP request completed (status, durations). |
+| `proxy:proxy/request` | `proxy/request` | An HTTP request completed (status, durations, `cache_affinity` routing decision). |
 
 ```json
 {"jsonrpc":"2.0","method":"proxy:node/discovered","params":{"id":"MY-GPU-BOX","host":"my-gpu-box.local.","port":11434,"addresses":["192.168.1.10"],"txt":["models=llama3"]}}
@@ -562,3 +562,7 @@ Attach to a pre-existing endpoint:
 - **AuthN / AuthZ.** Transport security relies on the parent's pipe / socket ACL. There is no per-message token.
 - **HTTP / WebSocket transport.** JSON-RPC over stdio or pipe only — no web bridge yet. Likely lives in a separate component if/when added.
 - **Automatic workload baseline on subscribe.** `workloads:subscribe` starts only the live stream; clients explicitly request `workloads:get-initial` after subscribing and merge overlapping records. The broker persists bounded terminal history, while active state is rebuilt from live workload reconciliation rather than treated as durable across a full process-tree restart.
+
+Proxy completion notifications preserve the `cache_affinity` boolean unchanged for
+all three engines, including `omlx-proxy:proxy/request`. It describes passive router
+affinity, not an engine-confirmed KV-cache hit.

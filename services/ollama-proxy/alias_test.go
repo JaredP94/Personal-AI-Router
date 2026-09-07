@@ -177,22 +177,24 @@ func TestAliasPortIsAProxySelfTarget(t *testing.T) {
 }
 
 func TestAliasSelfTargetMatchesBoundLoopbackAddressNotPortAlone(t *testing.T) {
-	probe, err := net.Listen("tcp", "127.0.0.2:0")
+	// Use canonical loopback addresses: additional 127/8 addresses need host
+	// configuration on macOS. Only the IPv4 alias needs an actual listener.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("reserve 127.0.0.2 test port: %v", err)
+		t.Fatalf("reserve loopback test port: %v", err)
 	}
 	aliasPort := probe.Addr().(*net.TCPAddr).Port
 	_ = probe.Close()
 
 	disc := NewDiscovery()
-	disc.AddManual(Node{ID: "alias-self", Addresses: []string{"127.0.0.2"}, Port: aliasPort})
-	disc.AddManual(Node{ID: "same-port-other-address", Addresses: []string{"127.0.0.1"}, Port: aliasPort})
+	disc.AddManual(Node{ID: "alias-self", Addresses: []string{"127.0.0.1"}, Port: aliasPort})
+	disc.AddManual(Node{ID: "same-port-other-address", Addresses: []string{"::1"}, Port: aliasPort})
 	primaryPort := freeTCPPort(t)
 	for primaryPort == aliasPort {
 		primaryPort = freeTCPPort(t)
 	}
 	p := NewProxy(NewCodec(rwNop{}), disc, primaryPort)
-	if err := p.setLoopbackAlias(fmt.Sprintf("127.0.0.2:%d", aliasPort)); err != nil {
+	if err := p.setLoopbackAlias(fmt.Sprintf("127.0.0.1:%d", aliasPort)); err != nil {
 		t.Fatal(err)
 	}
 	p.bindLoopbackAlias()
