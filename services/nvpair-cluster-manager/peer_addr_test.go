@@ -133,6 +133,46 @@ func TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress(t *testing.T) {
 	}
 }
 
+func TestResolvePeerAddrs_PrefersLocalLANOverRecordedCGNAT(t *testing.T) {
+	m := newTestManagerPort(t, 14321)
+	peer := "55555555-5555-5555-5555-555555555555"
+	m.browser = newBrowser()
+	m.browser.setRelay([]noderec.DirectoryNode{{
+		HostUUID: peer,
+		Name:     "peer",
+		IP:       "192.168.1.50",
+		IPs:      []string{"192.168.1.50", "100.64.1.2"},
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
+	}})
+
+	// Node was recorded with Tailscale CGNAT address.
+	got := m.resolvePeerAddrs(ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "100.64.1.2", Port: 14321})
+	want := []string{"192.168.1.50:14321", "100.64.1.2:14321"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("resolvePeerAddrs = %v, want LAN first %v", got, want)
+	}
+}
+
+func TestRefreshMemberAddrsFromMDNS_UpgradesCGNATToLAN(t *testing.T) {
+	m := newTestManagerPort(t, 14321)
+	peer := "66666666-6666-6666-6666-666666666666"
+	// Node currently holds Tailscale CGNAT address.
+	m.upsertMember(&ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "100.64.1.2", Port: 14321, State: stateMember})
+	m.browser = newBrowser()
+	m.browser.setRelay([]noderec.DirectoryNode{{
+		HostUUID: peer,
+		Name:     "peer",
+		IP:       "192.168.1.50",
+		IPs:      []string{"192.168.1.50", "100.64.1.2"},
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
+	}})
+
+	m.refreshMemberAddrsFromMDNS()
+	if n, _ := m.memberByNodeID(peer); n.IPAddress != "192.168.1.50" {
+		t.Fatalf("stored address = %q, want upgraded to LAN 192.168.1.50", n.IPAddress)
+	}
+}
+
 func TestConfirmedFirst(t *testing.T) {
 	addrs := []string{"a:1", "b:1", "c:1"}
 	if got := confirmedFirst(addrs, ""); got[0] != "a:1" {

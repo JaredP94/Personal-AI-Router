@@ -98,6 +98,17 @@ func (c *Chooser) expireCooldown(key string) {
 	}
 }
 
+// expireFallbackCooldown ages key's entry past FallbackCooldown, so a test can observe
+// what happens when fallback recovery triggers without waiting out the real duration.
+func (c *Chooser) expireFallbackCooldown(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.cache[key]; ok {
+		e.at = e.at.Add(-FallbackCooldown - time.Second)
+		c.cache[key] = e
+	}
+}
+
 // TestChooseFailsOverToASecondAddress is the reported defect: a peer publishing an
 // address this host cannot reach, alongside one it can, must be dialed at the one
 // it can. Before this, the unreachable address was the only one tried.
@@ -613,5 +624,81 @@ func TestChooseIsConcurrencySafe(t *testing.T) {
 	wg.Wait()
 	if got := choose(c, "peer", candidates); got != "10.0.0.2:14321" {
 		t.Fatalf("Choose = %q, want the accepting address", got)
+	}
+}
+
+// TestFallbackRecoversToPrimaryInChooseWithin: a node settled on a fallback address
+// (e.g. Tailscale) switches back to primary (e.g. Wi-Fi) once primary becomes reachable
+// and the fallback cooldown expires.
+func TestFallbackRecoversToPrimaryInChooseWithin(t *testing.T) {
+	primary := "192.168.1.50:14321"
+	fallback := "100.64.1.2:14321"
+	candidates := []string{primary, fallback}
+
+	// Initially primary is down, fallback is up.
+	f := newFakeNet(fallback)
+	c := newTestChooser(f)
+
+	if got := choose(c, "peer", candidates); got != fallback {
+		t.Fatalf("initial choose = %q, want %q", got, fallback)
+	}
+
+	// Repeated choose within cooldown reuses fallback without dials.
+	before := f.dials.Load()
+	if got := choose(c, "peer", candidates); got != fallback {
+		t.Fatalf("choose during cooldown = %q, want %q", got, fallback)
+	}
+	if got := f.dials.Load(); got != before {
+		t.Fatalf("made %d extra dials during cooldown, want 0", got-before)
+	}
+
+	// Primary (Wi-Fi) recovers.
+	f.mu.Lock()
+	f.accept[primary] = true
+	f.mu.Unlock()
+
+	// Cooldown expires: next ChooseWithin re-evaluates and upgrades to primary.
+	c.expireFallbackCooldown("peer")
+	if got := choose(c, "peer", candidates); got != primary {
+		t.Fatalf("choose after cooldown and primary recovery = %q, want %q", got, primary)
+	}
+}
+
+// TestFallbackRecoversToPrimaryInPrefer: on the request path, a node on fallback
+// continues using fallback for the immediate request without blocking, while a background
+// probe discovers that primary has recovered. Subsequent requests then use primary.
+func TestFallbackRecoversToPrimaryInPrefer(t *testing.T) {
+	primary := "192.168.1.50:14321"
+	fallback := "100.64.1.2:14321"
+	candidates := []string{primary, fallback}
+
+	// Initially primary is down, fallback is up.
+	f := newFakeNet(fallback)
+	c := newTestChooser(f)
+
+	preferred(t, c, "peer", candidates)
+	if got := c.Prefer("peer", candidates); got != fallback {
+		t.Fatalf("initial prefer = %q, want %q", got, fallback)
+	}
+
+	// Primary (Wi-Fi) recovers.
+	f.mu.Lock()
+	f.accept[primary] = true
+	f.mu.Unlock()
+
+	// Cooldown expires: Prefer immediately returns fallback for the current request
+	// and starts a background probe.
+	c.expireFallbackCooldown("peer")
+	if got := c.Prefer("peer", candidates); got != fallback {
+		t.Fatalf("prefer immediately after cooldown = %q, want fallback %q without waiting", got, fallback)
+	}
+
+	// Wait for background probe to complete.
+	waitFor(t, func() bool { return c.Prefer("peer", candidates) == primary },
+		"background confirmation to upgrade to recovered primary")
+
+	// All subsequent requests use recovered primary.
+	if got := c.Prefer("peer", candidates); got != primary {
+		t.Fatalf("subsequent prefer = %q, want primary %q", got, primary)
 	}
 }

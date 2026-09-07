@@ -149,9 +149,29 @@ type storedNode struct {
 // the node the scanner (mDNS) view wins — it's the authoritative discovery
 // record and carries trusted/clusterUuid and per-engine models — falling back
 // to the manual probe when only that source is present.
+//
+// When both sources are present, manual addresses (e.g. Tailscale or static IPs)
+// are merged into the scanner node's address list as fallback candidates behind
+// the scanner's own ranked candidates.
 func (sn storedNode) projected() EnrichedNode {
 	if sn.scanner != nil {
-		return *sn.scanner
+		if sn.manual == nil || len(sn.manual.Addresses) == 0 {
+			return *sn.scanner
+		}
+		res := *sn.scanner
+		seen := make(map[string]bool, len(res.Addresses)+len(sn.manual.Addresses))
+		for _, a := range res.Addresses {
+			seen[a] = true
+		}
+		merged := append([]string(nil), res.Addresses...)
+		for _, a := range sn.manual.Addresses {
+			if !seen[a] && a != "" {
+				seen[a] = true
+				merged = append(merged, a)
+			}
+		}
+		res.Addresses = merged
+		return res
 	}
 	return *sn.manual
 }

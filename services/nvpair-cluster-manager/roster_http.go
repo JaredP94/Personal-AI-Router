@@ -13,6 +13,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"nvpair-shared/netpick"
 )
 
 // reconcileEvery is the heartbeat cadence for catch-up roster reconciles — the
@@ -530,7 +532,13 @@ func (m *Manager) refreshMemberAddrsFromMDNS() {
 		}
 		host := hosts[0]
 		if slices.Contains(hosts, n.IPAddress) {
-			host = n.IPAddress
+			// A peer that still advertises what we hold keeps it, unless hosts[0] is
+			// a strictly higher-ranked address class (e.g. physical private LAN over
+			// Tailscale / CGNAT). This allows seamless upgrade to local Wi-Fi when
+			// reconnecting to the local network.
+			if netpick.ScoreAddress(hosts[0]) <= netpick.ScoreAddress(n.IPAddress) {
+				host = n.IPAddress
+			}
 		}
 		if m.setMemberAddr(n.NodeUUID, host, port) {
 			log.Printf("roster: refreshed peer %s address to %s (from discovery)", n.NodeUUID, joinHostPort(host, port, m.port))
@@ -547,10 +555,9 @@ func (m *Manager) refreshMemberAddrsFromMDNS() {
 // source IP the peer connected from plus the listening port it advertised), then
 // everything the peer currently advertises through mDNS.
 //
-// The recorded address leads but is not the only option, because it can go stale
-// or name a link this host cannot reach while the peer is plainly reachable at
-// another of its addresses. Sitting on the recorded one is how a reconcile came
-// to time out against a peer whose working address was already in hand.
+// The recorded address leads on equal footing, but if it is a lower-ranked class
+// (e.g. CGNAT/Tailscale) than an available physical LAN address from discovery,
+// discovery's top candidate leads so local Wi-Fi is preferred when reachable.
 func (m *Manager) resolvePeerAddrs(n ClusterNode) []string {
 	addrs := make([]string, 0, 4)
 	seen := make(map[string]bool, 4)
@@ -561,19 +568,29 @@ func (m *Manager) resolvePeerAddrs(n ClusterNode) []string {
 		seen[addr] = true
 		addrs = append(addrs, addr)
 	}
-	if n.IPAddress != "" {
-		add(joinHostPort(n.IPAddress, n.Port, m.port))
-	}
+	var hosts []string
+	var port int
 	if m.browser != nil {
-		hosts, port, ok := m.browser.Resolve(n.NodeUUID)
+		var ok bool
+		hosts, port, ok = m.browser.Resolve(n.NodeUUID)
 		if !ok {
 			hosts, port, ok = m.browser.Resolve(n.ID)
 		}
-		if ok {
-			for _, h := range hosts {
-				add(joinHostPort(h, port, m.port))
-			}
+	}
+	leadWithRecorded := n.IPAddress != ""
+	if leadWithRecorded && len(hosts) > 0 {
+		if netpick.ScoreAddress(hosts[0]) > netpick.ScoreAddress(n.IPAddress) {
+			leadWithRecorded = false
 		}
+	}
+	if leadWithRecorded {
+		add(joinHostPort(n.IPAddress, n.Port, m.port))
+	}
+	for _, h := range hosts {
+		add(joinHostPort(h, port, m.port))
+	}
+	if !leadWithRecorded && n.IPAddress != "" {
+		add(joinHostPort(n.IPAddress, n.Port, m.port))
 	}
 	return addrs
 }

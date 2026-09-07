@@ -339,3 +339,33 @@ func TestScannerProcessRoutesAndRemovesTelemetry(t *testing.T) {
 		t.Fatalf("removed telemetry host = %q, want peer-uuid", removed)
 	}
 }
+
+func TestDiscoveryStoreMergesManualAddressesIntoScannerNode(t *testing.T) {
+	const uuid = "shared-uuid-123"
+	s := newDiscoveryStore()
+
+	s.Upsert(EnrichedNode{
+		ID:        "host",
+		HostUUID:  uuid,
+		Addresses: []string{"192.168.1.50"},
+		TXT:       []string{"ip=192.168.1.50"},
+	}, sourceScanner)
+
+	s.Upsert(EnrichedNode{
+		ID:        "host",
+		HostUUID:  uuid,
+		Addresses: []string{"100.64.1.2"},
+	}, sourceManual)
+
+	snap := s.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(snap))
+	}
+	n := snap[0]
+	if n.IPAddress != "192.168.1.50" {
+		t.Errorf("primary IPAddress = %q, want Wi-Fi 192.168.1.50", n.IPAddress)
+	}
+	if len(n.IPAddresses) != 2 || n.IPAddresses[0] != "192.168.1.50" || n.IPAddresses[1] != "100.64.1.2" {
+		t.Errorf("IPAddresses = %v, want [192.168.1.50, 100.64.1.2]", n.IPAddresses)
+	}
+}

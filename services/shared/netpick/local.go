@@ -138,6 +138,17 @@ type localIface struct {
 	addrs        []localAddr
 }
 
+// isTailscaleOverlay reports whether an interface or address belongs to Tailscale.
+// It matches interfaces named "tailscale" or IPv4 addresses within the RFC 6598
+// Carrier-Grade NAT block (100.64.0.0/10) allocated for Tailscale CGNAT.
+func isTailscaleOverlay(ifaceName string, ip net.IP) bool {
+	if strings.Contains(strings.ToLower(ifaceName), "tailscale") {
+		return true
+	}
+	ip4 := ip.To4()
+	return ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64
+}
+
 // candidate is one rankable local address with every tier key resolved, so the
 // sort is a pure comparison over already-gathered facts.
 type candidate struct {
@@ -148,11 +159,13 @@ type candidate struct {
 	// and dropping it would deny that pair its fast path. It just must never be
 	// the canonical answer while any qualified address exists.
 	qualified   bool
+	sendFailed  bool
 	peerSeen    bool
 	peerOnLink  bool
 	routeSource bool
 	physical    int
 	score       int
+	tailscale   bool
 }
 
 // betterThan orders candidates by descending strength of evidence, ending in the
@@ -196,47 +209,35 @@ func (c candidate) betterThan(o candidate) bool {
 // network, but it may still be one specific peer's best path.
 //
 // Virtual adapters are held back further still, to a second pass that runs only
-// when the first produced no address that could be the fleet's. On the
-// overwhelmingly common host with a qualified physical address, an unproven
-// overlay address is never published — the ambiguity is not worth the entry.
-// Otherwise one of them may be the only address any peer can use, and the
-// alternative is advertising nothing usable at all.
-//
-// The gate is a qualified physical candidate rather than any physical candidate,
-// because the unqualified ones are exactly the addresses this ranking exists to
-// demote: a host whose only real NIC holds a direct-connect /30 would otherwise
-// publish that /30 and suppress the LAN address it holds on a Hyper-V external
-// switch. When the overlay pass runs, the unqualified physical addresses are
-// published behind it rather than dropped — a /30 link is still real for the
-// machine on its far end.
+// when the first produced no address that could be the fleet's. On a host with a
+// qualified physical address (e.g. Wi-Fi or Ethernet), that physical address is
+// canonical ("ip=") and leading in "ips=", while routable Tailscale overlay
+// addresses and peer-proven addresses are published as fallback candidates behind
+// it. Non-routable host-only virtual adapters (Docker, WSL, VirtualBox) remain
+// suppressed unless proven.
 func rankLocal(ifaces []localIface, ev Evidence, routeIP string) []string {
 	physical := rankIfaces(ifaces, ev, routeIP, false)
 	overlay := rankIfaces(ifaces, ev, routeIP, true)
 	// qualified is betterThan's first key, so the leading candidate alone answers
 	// whether this host has any qualified physical address.
 	if len(physical) > 0 && physical[0].qualified {
-		return addresses(append(physical, peerProven(overlay)...))
+		return addresses(append(physical, overlayFallbacks(overlay)...))
 	}
 	return addresses(append(overlay, physical...))
 }
 
-// peerProven keeps the candidates a remote peer has demonstrably connected to.
-//
-// It is how an overlay address survives a host that has a qualified physical
-// address. Qualification is judged from this host's own vantage point, and a LAN
-// address that qualifies is still unreachable from a peer that only shares a
-// tunnel with us — so a completed inbound connection to a tunnel address is the
-// one signal that keeps that peer working. Published last, never canonical, on
-// exactly the same footing as an unqualified physical address: real for one
-// specific peer, and not the fleet's network.
-func peerProven(cands []candidate) []candidate {
-	proven := make([]candidate, 0, len(cands))
+// overlayFallbacks keeps overlay candidates that should be published as fallback
+// options behind physical LAN addresses: proven inbound connections, and routable
+// Tailscale overlay addresses. Non-routable host-only virtual adapters (Docker, WSL,
+// VirtualBox) remain suppressed unless a peer has actually connected to them.
+func overlayFallbacks(cands []candidate) []candidate {
+	fallbacks := make([]candidate, 0, len(cands))
 	for _, c := range cands {
-		if c.peerSeen {
-			proven = append(proven, c)
+		if (c.peerSeen || c.tailscale) && !c.sendFailed {
+			fallbacks = append(fallbacks, c)
 		}
 	}
-	return proven
+	return fallbacks
 }
 
 // addresses reduces ranked candidates to the address list to publish, keeping
@@ -291,11 +292,13 @@ func rankIfaces(ifaces []localIface, ev Evidence, routeIP string, virtual bool) 
 			cands = append(cands, candidate{
 				ip:          ip4.String(),
 				qualified:   !ifi.pointToPoint && !narrow && !sendFailed,
+				sendFailed:  sendFailed,
 				peerSeen:    ev.peerObserved(ip4.String()),
 				peerOnLink:  peerOnLink,
 				routeSource: routeIP != "" && ip4.String() == routeIP,
 				physical:    physical,
 				score:       scoreIP(ip4),
+				tailscale:   isTailscaleOverlay(ifi.name, ip4),
 			})
 		}
 	}

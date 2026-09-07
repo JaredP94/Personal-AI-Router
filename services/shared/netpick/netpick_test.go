@@ -302,6 +302,29 @@ func TestRankLocal_OverlayRunsWhenNoPhysicalAddressQualifies(t *testing.T) {
 	assertRanked(t, rankLocal(ifaces, ev, ""), []string{"100.101.102.103", "10.0.0.5"})
 }
 
+// TestRankLocal_TailscaleOverlayPublishedBehindPhysical: when a physical Wi-Fi
+// interface is present and qualified, Wi-Fi is canonical ("ip="), and Tailscale is
+// published as a fallback candidate in "ips=". Non-routable host-only adapters (Docker,
+// VirtualBox) remain excluded.
+func TestRankLocal_TailscaleOverlayPublishedBehindPhysical(t *testing.T) {
+	ifaces := []localIface{
+		{name: "wlan0", addrs: []localAddr{{ip: "192.168.1.50", prefixLen: 24}}},
+		{name: "tailscale0", addrs: []localAddr{{ip: "100.80.1.2", prefixLen: 32}}},
+		{name: "vboxnet0", addrs: []localAddr{{ip: "192.168.56.1", prefixLen: 24}}},
+		{name: "docker0", addrs: []localAddr{{ip: "172.17.0.1", prefixLen: 16}}},
+	}
+	assertRanked(t, rankLocal(ifaces, Evidence{}, ""), []string{"192.168.1.50", "100.80.1.2"})
+}
+
+func TestScoreAddress(t *testing.T) {
+	if ScoreAddress("192.168.1.1") <= ScoreAddress("100.64.1.2") {
+		t.Fatal("ScoreAddress for private LAN must outrank CGNAT/Tailscale")
+	}
+	if ScoreAddress("10.0.0.1") <= ScoreAddress("169.254.1.1") {
+		t.Fatal("ScoreAddress for private LAN must outrank link-local")
+	}
+}
+
 // assertRanked compares a ranking to the exact list expected, in order.
 func assertRanked(t *testing.T, got, want []string) {
 	t.Helper()

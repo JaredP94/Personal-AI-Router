@@ -146,6 +146,11 @@ func first(dial DialFunc, candidates []string, timeout time.Duration, deadline t
 // discovery cycle, so recovery still needs no explicit Forget.
 const UnconfirmedCooldown = 5 * time.Second
 
+// FallbackCooldown is how long an address settled on a fallback candidate
+// (address != candidates[0]) is reused before checking whether its preferred
+// primary candidate (candidates[0], e.g. local Wi-Fi) has recovered.
+const FallbackCooldown = 15 * time.Second
+
 // choice is the address chosen for a node plus the candidate list it was chosen
 // from. The fingerprint is how a republished list is noticed at all; what happens
 // then depends on whether the address survived it (see reuse).
@@ -162,19 +167,54 @@ type choice struct {
 	at          time.Time
 }
 
-// reuse reports the address to return without probing, and whether it can be.
-func (c choice) reuse(candidates []string, fingerprint string, now time.Time) (string, bool) {
+// reusePrefer reports whether the cached address can be returned immediately for a request,
+// and whether a background probe should be triggered to check if the primary candidate
+// has recovered.
+func (c choice) reusePrefer(candidates []string, fingerprint string, now time.Time) (string, bool, bool) {
 	if c.fingerprint == fingerprint {
-		return c.address, c.settled || now.Sub(c.at) < UnconfirmedCooldown
+		if !c.settled {
+			return c.address, now.Sub(c.at) < UnconfirmedCooldown, false
+		}
+		if len(candidates) > 0 && c.address == candidates[0] {
+			return c.address, true, false
+		}
+		// Settled on a fallback candidate: check if FallbackCooldown expired
+		if now.Sub(c.at) < FallbackCooldown {
+			return c.address, true, false
+		}
+		return c.address, true, true
 	}
-	// The node republished its list, so it has re-ranked — possibly onto an address
-	// it now has better evidence for. A settled address it still claims is kept
-	// anyway: a connection this host has actually made is better evidence for how
-	// this host reaches that node than the node's own ranking, which it derives
-	// from what it can see from where it sits. Dropping an address with nothing
-	// wrong with it costs a reconnect and can land somewhere worse. An address the
-	// node stopped claiming is a different matter, and is walked away from.
-	return c.address, c.settled && slices.Contains(candidates, c.address)
+	// Fingerprint changed (candidate list republished)
+	if !c.settled || !slices.Contains(candidates, c.address) {
+		return c.address, false, false
+	}
+	if len(candidates) > 0 && c.address == candidates[0] {
+		return c.address, true, false
+	}
+	// Fallback candidate kept across republish, but probe to see if primary works
+	return c.address, true, true
+}
+
+// reuseSync reports whether the cached address can be returned without probing for synchronous
+// callers (ChooseWithin). If on a fallback candidate whose cooldown expired or whose fingerprint
+// changed, it returns keep = false so the caller re-evaluates the candidate list.
+func (c choice) reuseSync(candidates []string, fingerprint string, now time.Time) (string, bool) {
+	if c.fingerprint == fingerprint {
+		if !c.settled {
+			return c.address, now.Sub(c.at) < UnconfirmedCooldown
+		}
+		if len(candidates) > 0 && c.address == candidates[0] {
+			return c.address, true
+		}
+		return c.address, now.Sub(c.at) < FallbackCooldown
+	}
+	if !c.settled || !slices.Contains(candidates, c.address) {
+		return c.address, false
+	}
+	if len(candidates) > 0 && c.address == candidates[0] {
+		return c.address, true
+	}
+	return c.address, now.Sub(c.at) < FallbackCooldown
 }
 
 // Chooser remembers which address worked for each node so a repeated dial costs
@@ -260,7 +300,15 @@ func (c *Chooser) Prefer(key string, candidates []string) string {
 	fingerprint := strings.Join(candidates, "|")
 
 	c.mu.Lock()
-	if address, ok := c.reuse(key, candidates, fingerprint, time.Now()); ok {
+	address, keep, probe := c.reusePrefer(key, candidates, fingerprint, time.Now())
+	if keep {
+		if probe && !c.probing[key] {
+			c.probing[key] = true
+			generation := c.generation[key]
+			c.mu.Unlock()
+			go c.confirm(key, candidates, fingerprint, generation)
+			return address
+		}
 		c.mu.Unlock()
 		return address
 	}
@@ -299,7 +347,7 @@ func (c *Chooser) ChooseWithin(ctx context.Context, key string, candidates []str
 	deadline, _ := ctx.Deadline()
 
 	c.mu.Lock()
-	if address, ok := c.reuse(key, candidates, fingerprint, time.Now()); ok {
+	if address, ok := c.reuseSync(key, candidates, fingerprint, time.Now()); ok {
 		c.mu.Unlock()
 		return address
 	}
@@ -327,19 +375,39 @@ func (c *Chooser) confirm(key string, candidates []string, fingerprint string, g
 	c.mu.Unlock()
 }
 
-// reuse returns the remembered address for key when it can be used as-is. Callers
-// hold c.mu.
-func (c *Chooser) reuse(key string, candidates []string, fingerprint string, now time.Time) (string, bool) {
+// reusePrefer returns the remembered address for key for an asynchronous/request
+// path. When on a fallback candidate whose cooldown expired or whose candidate list
+// moved, it returns probe = true so Prefer can start a background confirmation while
+// continuing to return the working fallback address. Callers hold c.mu.
+func (c *Chooser) reusePrefer(key string, candidates []string, fingerprint string, now time.Time) (string, bool, bool) {
+	e, ok := c.cache[key]
+	if !ok {
+		return "", false, false
+	}
+	address, keep, probe := e.reusePrefer(candidates, fingerprint, now)
+	if !keep {
+		return "", false, false
+	}
+	e.fingerprint = fingerprint
+	if probe {
+		e.at = now
+	}
+	c.cache[key] = e
+	return address, true, probe
+}
+
+// reuseSync returns the remembered address for key for a synchronous path (ChooseWithin).
+// When on a fallback candidate whose cooldown expired, it returns keep = false so
+// the caller confirms the candidate list synchronously. Callers hold c.mu.
+func (c *Chooser) reuseSync(key string, candidates []string, fingerprint string, now time.Time) (string, bool) {
 	e, ok := c.cache[key]
 	if !ok {
 		return "", false
 	}
-	address, keep := e.reuse(candidates, fingerprint, now)
+	address, keep := e.reuseSync(candidates, fingerprint, now)
 	if !keep {
 		return "", false
 	}
-	// Re-stamp the list this answer now belongs to, so an address kept across a
-	// re-rank does not re-scan the new list on every later call.
 	e.fingerprint = fingerprint
 	c.cache[key] = e
 	return address, true

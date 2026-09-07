@@ -66,6 +66,16 @@ func dockerDefaultBridge(ip net.IP) bool {
 	return ip4 != nil && ip4[0] == 172 && ip4[1] == 17
 }
 
+// ScoreIP rates an IP for LAN reachability from a peer; higher is better.
+func ScoreIP(ip net.IP) int {
+	return scoreIP(ip)
+}
+
+// ScoreAddress rates an IP address string for LAN reachability from a peer; higher is better.
+func ScoreAddress(addr string) int {
+	return scoreIP(net.ParseIP(strings.TrimSpace(addr)))
+}
+
 // scoreIP rates an IP for LAN reachability from a peer; higher is better. It
 // works from the IP alone — the only thing an observer has for a remote peer —
 // so it can only demote what is unusable by construction. It cannot tell a LAN
