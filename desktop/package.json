@@ -1,6 +1,6 @@
 {
     "name": "nvpair",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "description": "Personal AI Router",
     "engines": {
         "node": ">=25.5.0"
