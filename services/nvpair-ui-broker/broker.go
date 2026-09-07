@@ -162,6 +162,7 @@ type Broker struct {
 	clusterMgrPath    string
 	schedulerPath     string
 	clusterDir        string
+	mesh              *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -387,6 +388,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		clusterMgrPath:     paths.clusterMgr,
 		schedulerPath:      paths.scheduler,
 		clusterDir:         paths.clusterDir,
+		mesh:               clustertrust.Open(paths.clusterDir),
 		store:              newDiscoveryStore(),
 		telemetry:          newTelemetryCache(),
 		relayDir:           relay.NewDirectory(),
@@ -1124,15 +1126,14 @@ func (b *Broker) applyClusterIdentityChange() {
 // rather than cached: membership changes under the broker while it runs, and this
 // is the value peers key their pins on.
 func (b *Broker) clusterPrincipal() string {
-	if b.clusterDir == "" {
+	if b.mesh == nil {
 		return ""
 	}
-	mesh := clustertrust.Open(b.clusterDir)
-	mesh.Refresh()
-	if !mesh.Clustered() {
+	b.mesh.Refresh()
+	if !b.mesh.Clustered() {
 		return ""
 	}
-	return mesh.NodeUUID()
+	return b.mesh.NodeUUID()
 }
 
 // pushClusterIdentityToNodeInfo sends node-info the current cluster principal.
@@ -1279,6 +1280,8 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	key := en.storeKey()
 	receivedAt := time.Now()
 
+	b.annotateManualTrust(&en, s)
+
 	b.manualMu.Lock()
 	oldKey, existed := b.manualNodeKeys[s.ID]
 	b.manualNodeKeys[s.ID] = key
@@ -1287,6 +1290,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 
 	b.store.Upsert(en, sourceManual)
 	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
+	if b.relayDir != nil {
+		b.relayDir.Apply(noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(s, key))
+	}
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
@@ -1330,12 +1336,19 @@ func (b *Broker) reprojectOrRelease(key string) {
 	survivor, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
 	if ok {
-		b.store.Upsert(manualToEnriched(survivor.status), sourceManual)
+		en := manualToEnriched(survivor.status)
+		b.annotateManualTrust(&en, survivor.status)
+		b.store.Upsert(en, sourceManual)
+		if b.relayDir != nil {
+			b.relayDir.Apply(noderec.NotifyNodeUpdated, b.manualToDirectoryNode(survivor.status, key))
+		}
 		b.bridgeManualNode(survivor.status, key)
 		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
 		return
 	}
-	b.store.Remove(key, sourceManual)
+	if b.store.Remove(key, sourceManual) && b.relayDir != nil {
+		b.relayDir.Apply(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
+	}
 	b.removeManualNodeFromProxies(key)
 	b.removeTelemetry(sourceManual, key)
 }
@@ -1377,7 +1390,9 @@ func (b *Broker) clearManualNodesState() {
 		}
 		seen[key] = true
 		// Drop only the manual claim; a co-located scanner node keeps its record.
-		b.store.Remove(key, sourceManual)
+		if b.store.Remove(key, sourceManual) && b.relayDir != nil {
+			b.relayDir.Apply(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
+		}
 		b.removeTelemetry(sourceManual, key)
 		// Pull the now-orphaned node out of every proxy too, so inference
 		// doesn't keep a stale manual target the crashed prober can no
@@ -2377,6 +2392,7 @@ func (b *Broker) applyClusterTrustChange() {
 		go sc.reloadTrust()
 	}
 	go b.pushClusterIdentityToNodeInfo()
+	go b.refreshManualNodesTrust()
 }
 
 // forwardWorkloadManagerNotification is the hook startWorkloadManager

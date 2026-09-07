@@ -28,6 +28,7 @@ type manualNodeStatus struct {
 	LMStudioUp     bool        `json:"lmstudio_up"`
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
+	NodeInfoUp     bool        `json:"node_info_up"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	GPUs           []GPUInfo   `json:"gpus"`
 	CPU            *CPUInfo    `json:"cpu"`
@@ -39,6 +40,8 @@ type manualNodeStatus struct {
 	// identity as mDNS-discovered nodes (and dedup with itself when the same
 	// machine is also discovered). Empty until the node-info probe succeeds.
 	HostUUID string `json:"hostUuid,omitempty"`
+	// ClusterUUID is the remote's cluster principal.
+	ClusterUUID string `json:"clusterUuid,omitempty"`
 }
 
 type manualNodeStatusEntry struct {
@@ -89,11 +92,114 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		Memory:         s.Memory,
 		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
 		ModelsByEngine: manualModelsByEngine(s),
+		Clustered:      s.ClusterUUID != "",
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}
 	}
+	txt := []string{
+		noderec.KeySchema + "=" + noderec.SchemaVersion,
+		noderec.KeyHostUUID + "=" + hostUUID,
+	}
+	if s.Address != "" {
+		txt = append(txt, noderec.KeyIP+"="+s.Address)
+	}
+	if s.ClusterUUID != "" {
+		txt = append(txt, noderec.KeyClusterUUID+"="+s.ClusterUUID)
+	}
+	en.TXT = txt
 	return en
+}
+
+func (b *Broker) annotateManualTrust(en *EnrichedNode, s manualNodeStatus) {
+	if b.mesh == nil {
+		return
+	}
+	b.mesh.Refresh()
+	if (s.ClusterUUID != "" && b.mesh.HasPin(s.ClusterUUID)) ||
+		(en.HostUUID != "" && b.mesh.HasPin(en.HostUUID)) {
+		en.Trusted = true
+		en.Clustered = true
+	}
+}
+
+func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.DirectoryNode {
+	hostUUID := s.HostUUID
+	if hostUUID == "" {
+		hostUUID = key
+	}
+	trusted := false
+	clusterUUID := s.ClusterUUID
+	if b.mesh != nil {
+		b.mesh.Refresh()
+		if clusterUUID != "" && b.mesh.HasPin(clusterUUID) {
+			trusted = true
+		} else if hostUUID != "" && b.mesh.HasPin(hostUUID) {
+			trusted = true
+			if clusterUUID == "" {
+				clusterUUID = hostUUID
+			}
+		}
+	}
+	services := make(map[noderec.ServiceKey]noderec.ServiceStatus)
+	if s.NodeInfoUp {
+		port := s.NodeInfoPort
+		if port == 0 {
+			port = 14318
+		}
+		services[noderec.ServiceNodeInfo] = noderec.ServiceStatus{Port: port}
+		services[noderec.ServiceEngineManager] = noderec.ServiceStatus{Port: 14322}
+		services[noderec.ServiceEngineControl] = noderec.ServiceStatus{Port: 14323}
+		services[noderec.ServiceErrors] = noderec.ServiceStatus{Port: 14319}
+		services[noderec.ServiceWorkload] = noderec.ServiceStatus{Port: 14320}
+		services[noderec.ServiceCluster] = noderec.ServiceStatus{Port: 14321}
+	}
+	if s.OllamaUp && s.OllamaPort > 0 {
+		services[noderec.ServiceOllama] = noderec.ServiceStatus{Port: s.OllamaPort}
+	}
+	if s.LMStudioUp && s.LMStudioPort > 0 {
+		services[noderec.ServiceLMStudio] = noderec.ServiceStatus{Port: s.LMStudioPort}
+	}
+
+	ips := []string{}
+	if s.Address != "" {
+		ips = []string{s.Address}
+	}
+
+	return noderec.DirectoryNode{
+		HostUUID:       hostUUID,
+		Name:           s.ID,
+		IP:             s.Address,
+		IPs:            ips,
+		ClusterUUID:    clusterUUID,
+		Trusted:        trusted,
+		Services:       services,
+		GPUs:           s.GPUs,
+		CPU:            s.CPU,
+		Memory:         s.Memory,
+		Models:         mergeModels(s.OllamaModels, s.LMStudioModels),
+		ModelsByEngine: manualModelsByEngine(s),
+		LastSeen:       time.Now().Unix(),
+	}
+}
+
+func (b *Broker) refreshManualNodesTrust() {
+	b.manualMu.Lock()
+	entries := make([]manualNodeStatusEntry, 0, len(b.manualNodeStatuses))
+	for _, entry := range b.manualNodeStatuses {
+		entries = append(entries, entry)
+	}
+	b.manualMu.Unlock()
+
+	for _, entry := range entries {
+		en := manualToEnriched(entry.status)
+		key := en.storeKey()
+		b.annotateManualTrust(&en, entry.status)
+		b.store.Upsert(en, sourceManual)
+		if b.relayDir != nil {
+			b.relayDir.Apply(noderec.NotifyNodeUpdated, b.manualToDirectoryNode(entry.status, key))
+		}
+	}
 }
 
 // manualModelsByEngine builds the per-engine attribution for a manual node from

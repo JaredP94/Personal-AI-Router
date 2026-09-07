@@ -8,9 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -641,6 +644,86 @@ func TestNotificationIsIgnored(t *testing.T) {
 		t.Fatalf("notification mutated state: %#v", got)
 	}
 	assertNoCaptureMethod(t, rw, "")
+}
+
+func TestSyncClusterMembers(t *testing.T) {
+	clusterDir := t.TempDir()
+	selfUUID := "11111111-1111-1111-1111-111111111111"
+	peerUUID := "22222222-2222-2222-2222-222222222222"
+
+	// Write self identity
+	idJSON := fmt.Sprintf(`{"node_uuid": %q}`, selfUUID)
+	if err := os.WriteFile(filepath.Join(clusterDir, "identity.json"), []byte(idJSON), 0o600); err != nil {
+		t.Fatalf("write identity.json: %v", err)
+	}
+
+	// Write members.json with self and remote peer
+	members := []clusterMemberEntry{
+		{
+			ID:        "Self",
+			NodeUUID:  selfUUID,
+			Name:      "Self",
+			IPAddress: "127.0.0.1",
+			State:     "member",
+		},
+		{
+			ID:        "Peer",
+			NodeUUID:  peerUUID,
+			Name:      "Peer",
+			IPAddress: "100.107.205.77",
+			State:     "member",
+		},
+	}
+	data, err := json.Marshal(members)
+	if err != nil {
+		t.Fatalf("marshal members: %v", err)
+	}
+	membersPath := filepath.Join(clusterDir, "members.json")
+	if err := os.WriteFile(membersPath, data, 0o600); err != nil {
+		t.Fatalf("write members.json: %v", err)
+	}
+
+	rw := newCaptureRW()
+	m, err := NewManager(NewCodec(rw), tlsClientOptions{}, nil, clusterDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	m.syncClusterMembers()
+
+	nodes := m.listNodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 synced node, got %d: %#v", len(nodes), nodes)
+	}
+	if nodes[0].HostUUID != peerUUID {
+		t.Fatalf("expected HostUUID %s, got %s", peerUUID, nodes[0].HostUUID)
+	}
+	if nodes[0].ClusterUUID != peerUUID {
+		t.Fatalf("expected ClusterUUID %s, got %s", peerUUID, nodes[0].ClusterUUID)
+	}
+	if nodes[0].Address != "100.107.205.77" {
+		t.Fatalf("expected Address 100.107.205.77, got %s", nodes[0].Address)
+	}
+
+	// Now remove peer from members.json
+	onlySelf := []clusterMemberEntry{members[0]}
+	dataSelf, err := json.Marshal(onlySelf)
+	if err != nil {
+		t.Fatalf("marshal onlySelf: %v", err)
+	}
+	// Touch mtime slightly in future to ensure mod time changes
+	future := time.Now().Add(2 * time.Second)
+	if err := os.WriteFile(membersPath, dataSelf, 0o600); err != nil {
+		t.Fatalf("write updated members.json: %v", err)
+	}
+	_ = os.Chtimes(membersPath, future, future)
+
+	m.syncClusterMembers()
+
+	nodesAfter := m.listNodes()
+	if len(nodesAfter) != 0 {
+		t.Fatalf("expected 0 nodes after removal, got %d: %#v", len(nodesAfter), nodesAfter)
+	}
 }
 
 func readPipeFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) Message {

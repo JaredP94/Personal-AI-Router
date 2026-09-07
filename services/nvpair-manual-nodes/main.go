@@ -80,7 +80,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
-	mgr, err := NewManager(codec, tlsOpts, mesh)
+	mgr, err := NewManager(codec, tlsOpts, mesh, *clusterDir)
 	if err != nil {
 		log.Fatalf("failed to construct manager: %v", err)
 	}

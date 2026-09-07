@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"nvpair-shared/noderec"
+	"nvpair-ui-broker/relay"
 )
 
 // TestDiscoveryStoreRekeysOnRename verifies that a discovered node changing
@@ -131,11 +132,66 @@ func newManualTestBroker() *Broker {
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
 		store:              newDiscoveryStore(),
 		telemetry:          newTelemetryCache(),
+		relayDir:           relay.NewDirectory(),
 	}
 }
 
 func manualStatus(id, addr, uuid string) manualNodeStatus {
 	return manualNodeStatus{ID: id, Address: addr, HostUUID: uuid, NodeInfoPort: 14318}
+}
+
+func TestManualNodeBridgesToRelayDir(t *testing.T) {
+	b := newManualTestBroker()
+	const uuid = "remote-node-uuid"
+
+	status := manualNodeStatus{
+		ID:           "Retirement-Plan",
+		Address:      "100.107.205.77",
+		HostUUID:     uuid,
+		ClusterUUID:  uuid,
+		NodeInfoUp:   true,
+		NodeInfoPort: 14318,
+		OllamaUp:     true,
+		OllamaPort:   11434,
+	}
+
+	b.upsertManualNode(status)
+
+	// Check relayDir
+	nodes := b.relayDir.Snapshot("")
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node in relayDir, got %d", len(nodes))
+	}
+	n := nodes[0]
+	if n.HostUUID != uuid {
+		t.Errorf("HostUUID = %q, want %q", n.HostUUID, uuid)
+	}
+	if n.IP != "100.107.205.77" {
+		t.Errorf("IP = %q, want 100.107.205.77", n.IP)
+	}
+	if n.ClusterUUID != uuid {
+		t.Errorf("ClusterUUID = %q, want %q", n.ClusterUUID, uuid)
+	}
+	// Check services: ec, em, ni, ol
+	if svc, ok := n.Services[noderec.ServiceEngineControl]; !ok || svc.Port != 14323 {
+		t.Errorf("ServiceEngineControl = %+v, want port 14323", svc)
+	}
+	if svc, ok := n.Services[noderec.ServiceEngineManager]; !ok || svc.Port != 14322 {
+		t.Errorf("ServiceEngineManager = %+v, want port 14322", svc)
+	}
+	if svc, ok := n.Services[noderec.ServiceNodeInfo]; !ok || svc.Port != 14318 {
+		t.Errorf("ServiceNodeInfo = %+v, want port 14318", svc)
+	}
+	if svc, ok := n.Services[noderec.ServiceOllama]; !ok || svc.Port != 11434 {
+		t.Errorf("ServiceOllama = %+v, want port 11434", svc)
+	}
+
+	// Remove node
+	b.removeManualNode("Retirement-Plan")
+	nodesAfter := b.relayDir.Snapshot("")
+	if len(nodesAfter) != 0 {
+		t.Fatalf("expected 0 nodes in relayDir after removal, got %d", len(nodesAfter))
+	}
 }
 
 // TestManualAliasesShareKeyUntilLastRemoved covers both removal orders: two

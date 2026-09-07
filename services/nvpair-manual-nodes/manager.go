@@ -12,13 +12,17 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
+	"nvpair-shared/nodeid"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -78,6 +82,8 @@ type NodeInfoResponse struct {
 	// machine if it's also discovered over mDNS. Empty when the remote
 	// predates this field or isn't a NVPAIR node-info server.
 	HostUUID string `json:"hostUuid,omitempty"`
+	// ClusterUUID is the cluster principal this node currently holds.
+	ClusterUUID *string `json:"clusterUuid,omitempty"`
 }
 
 // ManualEntry is the user-supplied identity of a manually added
@@ -128,6 +134,8 @@ type ManualNodeStatus struct {
 	// manual node carries the same permanent identity the rest of the system
 	// keys on. Empty when node-info didn't report one.
 	HostUUID string `json:"hostUuid,omitempty"`
+	// ClusterUUID is the remote node's cluster principal.
+	ClusterUUID string `json:"clusterUuid,omitempty"`
 }
 
 type ReadyParams struct {
@@ -135,8 +143,9 @@ type ReadyParams struct {
 }
 
 type trackedNode struct {
-	entry  ManualEntry
-	status ManualNodeStatus
+	entry       ManualEntry
+	status      ManualNodeStatus
+	fromCluster bool
 
 	// consecutiveFails counts back-to-back probes where neither
 	// service answered (OllamaUp && NodeInfoUp both false). Reset
@@ -145,6 +154,14 @@ type trackedNode struct {
 	// probeFailThreshold so a single transient failure doesn't
 	// generate UI noise.
 	consecutiveFails int
+}
+
+type clusterMemberEntry struct {
+	ID        string `json:"id"`
+	NodeUUID  string `json:"nodeUuid"`
+	Name      string `json:"name"`
+	IPAddress string `json:"ipAddress"`
+	State     string `json:"state"`
 }
 
 type Manager struct {
@@ -169,17 +186,24 @@ type Manager struct {
 	// pin-gated and serves no plaintext listener.
 	mesh *clustertrust.Mesh
 
+	clusterDir       string
+	lastMembersMtime time.Time
+
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
 }
 
-func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh) (*Manager, error) {
+func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh, clusterDir ...string) (*Manager, error) {
 	tlsClient, err := buildTLSClient(tlsOpts, probeTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("build TLS client: %w", err)
 	}
 	if tlsClient == nil {
 		tlsClient = &http.Client{Timeout: probeTimeout, Transport: noKeepAliveTransport()}
+	}
+	var cDir string
+	if len(clusterDir) > 0 {
+		cDir = clusterDir[0]
 	}
 	return &Manager{
 		codec: codec,
@@ -188,8 +212,9 @@ func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh)
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
 		},
-		tlsClient: tlsClient,
-		nodes:     make(map[string]*trackedNode),
+		tlsClient:  tlsClient,
+		clusterDir: cDir,
+		nodes:      make(map[string]*trackedNode),
 	}, nil
 }
 
@@ -212,6 +237,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to send ready notification: %w", err)
 	}
 
+	m.syncClusterMembers()
 	go m.probeLoop(ctx)
 
 	return m.readLoop(ctx)
@@ -221,13 +247,164 @@ func (m *Manager) probeLoop(ctx context.Context) {
 	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
 
+	clusterTicker := time.NewTicker(2 * time.Second)
+	defer clusterTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-clusterTicker.C:
+			m.syncClusterMembers()
 		case <-ticker.C:
+			m.syncClusterMembers()
 			m.probeAll(ctx)
 		}
+	}
+}
+
+func (m *Manager) syncClusterMembers() {
+	if m.clusterDir == "" {
+		return
+	}
+	membersPath := filepath.Join(m.clusterDir, "members.json")
+	fi, err := os.Stat(membersPath)
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	if !fi.ModTime().After(m.lastMembersMtime) {
+		m.mu.Unlock()
+		return
+	}
+	m.lastMembersMtime = fi.ModTime()
+	m.mu.Unlock()
+
+	data, err := os.ReadFile(membersPath)
+	if err != nil {
+		return
+	}
+	var members []clusterMemberEntry
+	if err := json.Unmarshal(data, &members); err != nil {
+		slog.Warn("syncClusterMembers: failed to unmarshal members.json", "err", err)
+		return
+	}
+
+	var selfUUID string
+	if data, err := os.ReadFile(filepath.Join(m.clusterDir, "identity.json")); err == nil {
+		var idFile struct {
+			NodeUUID string `json:"node_uuid"`
+		}
+		if err := json.Unmarshal(data, &idFile); err == nil && idFile.NodeUUID != "" {
+			selfUUID = idFile.NodeUUID
+		}
+	}
+	if selfUUID == "" && m.mesh != nil {
+		selfUUID = m.mesh.NodeUUID()
+	}
+	if selfUUID == "" {
+		selfUUID = nodeid.Resolve(filepath.Dir(m.clusterDir))
+	}
+
+	activeMembers := make(map[string]clusterMemberEntry)
+	for _, member := range members {
+		if member.State != "member" {
+			continue
+		}
+		if member.NodeUUID != "" && member.NodeUUID == selfUUID {
+			continue
+		}
+		ip := strings.TrimSpace(member.IPAddress)
+		if ip == "" || ip == "127.0.0.1" || ip == "::1" || ip == "localhost" {
+			continue
+		}
+		activeMembers[member.NodeUUID] = member
+	}
+
+	m.mu.Lock()
+	var toProbe []ManualEntry
+	var toRemove []string
+
+	for id, tn := range m.nodes {
+		if !tn.fromCluster {
+			continue
+		}
+		found := false
+		for _, member := range activeMembers {
+			if (tn.status.HostUUID != "" && tn.status.HostUUID == member.NodeUUID) ||
+				tn.entry.Address == member.IPAddress {
+				found = true
+				break
+			}
+		}
+		if !found {
+			toRemove = append(toRemove, id)
+		}
+	}
+
+	for _, id := range toRemove {
+		delete(m.nodes, id)
+	}
+
+	for _, member := range activeMembers {
+		var existing *trackedNode
+		for _, tn := range m.nodes {
+			if (tn.status.HostUUID != "" && tn.status.HostUUID == member.NodeUUID) ||
+				tn.entry.Address == member.IPAddress {
+				existing = tn
+				break
+			}
+		}
+
+		if existing != nil {
+			if existing.status.HostUUID == "" {
+				existing.status.HostUUID = member.NodeUUID
+			}
+			continue
+		}
+
+		entry := ManualEntry{
+			Address: member.IPAddress,
+			Name:    member.Name,
+		}
+		id := nodeID(entry)
+		status := ManualNodeStatus{
+			ID:           id,
+			Name:         entry.Name,
+			Address:      entry.Address,
+			HostUUID:     member.NodeUUID,
+			ClusterUUID:  member.NodeUUID,
+			OllamaPort:   11434,
+			NodeInfoPort: 14318,
+		}
+		m.nodes[id] = &trackedNode{
+			entry:       entry,
+			status:      status,
+			fromCluster: true,
+		}
+		toProbe = append(toProbe, entry)
+	}
+	m.mu.Unlock()
+
+	for _, id := range toRemove {
+		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
+		_ = m.codec.Notify("errors:clear", errors.ClearParams{ID: probeFailedID(id)})
+	}
+
+	for _, entry := range toProbe {
+		go func(e ManualEntry) {
+			m.probeNode(e)
+			id := nodeID(e)
+			m.mu.RLock()
+			tn, ok := m.nodes[id]
+			if !ok {
+				m.mu.RUnlock()
+				return
+			}
+			st := tn.status
+			m.mu.RUnlock()
+			m.codec.Notify("node/discovered", st)
+		}(entry)
 	}
 }
 
@@ -279,6 +456,25 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 	}
 	nodeInfoUp, info := m.probeNodeInfo(probeClient, scheme, addr, nodeInfoPort)
+	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() {
+		m.mesh.Refresh()
+		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
+			tlsClient := &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
+			for _, port := range []int{14319, 14318} {
+				if up, tlsInfo := m.probeNodeInfo(tlsClient, "https", addr, port); up {
+					nodeInfoUp = true
+					info = tlsInfo
+					nodeInfoPort = port
+					break
+				}
+			}
+		}
+	}
+
+	var clusterUUID string
+	if info.ClusterUUID != nil {
+		clusterUUID = *info.ClusterUUID
+	}
 
 	newStatus := ManualNodeStatus{
 		ID:             id,
@@ -300,6 +496,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		TelemetryValid: info.TelemetryValid,
 		MSSince:        info.MSSince,
 		HostUUID:       info.HostUUID,
+		ClusterUUID:    clusterUUID,
 	}
 
 	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp
@@ -320,6 +517,12 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	if !nodeInfoUp && newStatus.HostUUID == "" {
 		newStatus.HostUUID = prev.HostUUID
 	}
+	if newStatus.ClusterUUID == "" {
+		newStatus.ClusterUUID = prev.ClusterUUID
+	}
+	if newStatus.ClusterUUID == "" && m.mesh != nil && newStatus.HostUUID != "" && m.mesh.HasPin(newStatus.HostUUID) {
+		newStatus.ClusterUUID = newStatus.HostUUID
+	}
 	tn.status = newStatus
 	if reachable {
 		tn.consecutiveFails = 0
@@ -333,6 +536,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		prev.LMStudioUp != newStatus.LMStudioUp ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
+		prev.ClusterUUID != newStatus.ClusterUUID ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
