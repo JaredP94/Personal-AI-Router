@@ -690,6 +690,9 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	waitPortServing(t, port)
+	if _, image, ok := pidOnPort(port); !ok || image == "" {
+		t.Skip("host cannot resolve the PID/image owning a port; skipping PID-precise stop test")
+	}
 
 	m := testEngineManifest(bin)
 	key := runtime.GOOS + "/" + runtime.GOARCH
