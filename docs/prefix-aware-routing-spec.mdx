@@ -5,16 +5,65 @@ SPDX-License-Identifier: Apache-2.0
 
 # Specification: Engine-Agnostic Prefix-Cache & Conversation-Aware Routing
 
+## Implementation status
+
+Implemented in the Go shared `prefixhash` package and the oMLX, LM Studio, and
+Ollama proxies, with oMLX as the primary end-to-end validation target. This is
+**passive prefix affinity**, not an engine cache-query extension. The original
+design below is refined by these implementation decisions:
+
+- Chat extraction returns all prior message-boundary digests, longest first.
+  The previous request excludes its generated assistant reply; testing only
+  `messages[0:N-1]` on the next turn would never match normal conversations.
+  Incremental, domain-separated SHA-256 hashing keeps extraction linear in
+  prompt size and includes canonical prompt-affecting options.
+- Request identities include endpoint and tools/template/image settings. Engine
+  isolation comes from per-proxy tables and the engine tag in each record.
+- Registration requires HTTP 200, a clean upstream EOF, no client write failure,
+  and a non-cancelled request. Streaming OpenAI-compatible responses must also
+  carry a terminal `data: [DONE]` with no later non-blank event; native Ollama
+  streams must likewise end at `done: true`. It cannot prove continued engine
+  KV-cache residence. Failover records the serving node.
+- Affinity load includes local optimistic reservations. The eligibility check,
+  promotion, and reservation use the existing scheduler lock and retain manual
+  pin precedence and failover order.
+- Plain completions require at least 1,024 bytes before prefix affinity applies.
+  Ollama supplied context arrays can identify repeated context only; updated
+  response token arrays are not parsed or retained.
+- Diagnostics report the percentage of supported inference completion events
+  with `cache_affinity=true`. This is a routing metric, not an engine cache-hit
+  rate. No prompt text or digest is added to notifications.
+
+The table retains digests and operational metadata only. Prompt and response
+bytes necessarily transit the inference HTTP path and exist transiently in
+request buffers; the privacy requirement applies to logs, control-plane events,
+and retained affinity records. SHA-256 is not encryption and does not prevent
+guessing low-entropy prompts from a digest, so digests are neither logged nor
+shared with peers.
+
+See [implementation validation](cache-affinity-validation.mdx) for the executed
+checks, live oMLX evidence, and outstanding cluster-test limits.
+
+### Implemented API and data model
+
+`prefixhash.Extract(method, path, body)` returns a `Context` containing the
+model, the full request digest, and prior message-boundary digests ordered from
+longest to shortest. `prefixhash.NewPrefixRoutingTable(capacity, ttl)` provides a
+process-local LRU with `Lookup` and `Put`; records contain only the serving node
+ID and engine name. Each proxy owns its own table and calls
+`affinityNode`/`reserveCandidateWithAffinity` around its existing scheduler
+priority state. This is the current implementation contract.
+
 ## 1. Overview & Objectives
 
-In large language model (LLM) inference, multi-turn conversations and long-prompt workflows (such as coding assistants, agentic loops, and RAG pipelines) repeatedly reuse significant portions of the prompt context across successive requests. Modern inference engines (Ollama, LM Studio, vLLM, TensorRT-LLM, `llama.cpp`) maintain an in-memory **Key-Value (KV) cache** for prompt prefixes. When a request hits a node holding the warm KV cache for that prefix, **prompt prefill is bypassed**, reducing Time-To-First-Byte (TTFB) from seconds to milliseconds.
+In large language model (LLM) inference, multi-turn conversations and long-prompt workflows (such as coding assistants, agentic loops, and RAG pipelines) repeatedly reuse significant portions of the prompt context across successive requests. Modern inference engines (Ollama, LM Studio, vLLM, TensorRT-LLM, `llama.cpp`) maintain an in-memory **Key-Value (KV) cache** for prompt prefixes. When a request hits a node holding the warm KV cache for that prefix, cached prefix prefill may be reduced, improving Time-To-First-Byte (TTFB); the benefit depends on engine cache state and workload.
 
 ### Current Limitation in PAIR
 PAIR routes every HTTP request as an independent, stateless event. Under concurrent load or multi-node clustering with duplicate models, consecutive conversational turns can easily be steered to different nodes due to GPU pressure metrics or in-flight reservations. This results in severe **cache thrashing** and forces secondary nodes to recompute the entire context history from token zero.
 
 ### Design Goals
 1. **Engine Agnostic:** Support OpenAI chat/completions format, Ollama format, and easily extend to Anthropic or future engine interfaces (vLLM, TensorRT-LLM) without core proxy rewrites.
-2. **Zero Plaintext Leakage (Strict Privacy):** Never log, store, or transmit prompt text, messages, or completion bodies. Use deterministic, one-way cryptographic digests (SHA-256) only.
+2. **Zero Plaintext Leakage (Strict Privacy):** Never log or retain prompt text, messages, or completion bodies in routing hints or control-plane events. Inference HTTP necessarily forwards these bytes; routing hints use SHA-256 digests only.
 3. **Passive / Router-Side Implementation:** Zero dependency on engine-level KV cache query APIs. The router tracks prefix disposition locally.
 4. **Adaptive Load Balancing vs. Cache Affinity:** Prioritize warm cache nodes while intelligently bypassing affinity if the cached node is offline or heavily saturated.
 5. **Deterministic Failover:** Retain PAIR's existing ordered failover list semantics.
@@ -46,7 +95,11 @@ flowchart TD
 
 ---
 
-## 3. Core Component Design
+## 3. Historical design notes (superseded)
+
+The following proposal material preserves the original rationale. Its interface
+names, file layout, and map-based table sketch are not the implementation;
+refer to the implemented API above and the Go source instead.
 
 ### 3.1 Prefix Extractor Interface (`nvpair-shared/prefixhash`)
 
@@ -182,13 +235,13 @@ A common pitfall of cache routing is overloading a warm node while idle nodes si
 In accordance with PAIR security rules:
 - **No Text in Logs or Transits:** The PRT keys are strictly formatted as:
   `<model_name>:<hex_encoded_sha256_digest>` (e.g., `llama3.2:3b:9f83c12a...`).
-- **One-Way Canonicalization:** Prompts cannot be reverse-engineered from SHA-256 digests.
+- **One-Way Canonicalization:** SHA-256 digests are one-way identities but can expose low-entropy content to guessing attacks; keep them process-local and out of logs.
 - **Memory-Only PRT:** The PRT is purely transient in RAM. It is never written to disk during checkpointing or crash logging.
 - **mTLS Cluster Sync (Optional Extension):** If PRT hints are gossiped across nodes via `nvpair-workload-manager`, only the tuple `(Digest, NodeUUID, Timestamp)` is transmitted over mTLS on port `14320`.
 
 ---
 
-## 6. Implementation Plan & File Modifications
+## 6. Historical implementation plan (superseded)
 
 ### Step 1: Shared Extractor & Table Package
 - Create `services/shared/prefixhash/`:
@@ -225,4 +278,4 @@ In accordance with PAIR security rules:
    - Send follow-up turn in an existing conversation previously on Node A.
    - *Verification:* The router must bypass Node A and dispatch to idle Node B.
 4. **Zero Plaintext Verification:**
-   - Inspect all stdout, stderr, JSON-RPC envelopes, and memory dumps. No prompt strings or message contents may appear.
+   - Inspect stdout, stderr, JSON-RPC envelopes, and retained routing records for synthetic prompt canaries. They must not appear there. Request/response buffers in process memory necessarily contain inference data transiently.

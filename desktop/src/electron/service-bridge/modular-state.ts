@@ -11,6 +11,7 @@ import type {
     ModelItem
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
+import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
@@ -905,6 +906,16 @@ function sameModelsByEngine(
 }
 
 class ModularBridgeState {
+    private routingMetrics: RoutingMetrics[] = PROXY_ENGINES.map(engineType => ({
+        engineType,
+        requests: 0,
+        cacheAffinityHits: 0
+    }))
+
+    getRoutingMetrics(): RoutingMetrics[] {
+        return this.routingMetrics.map(row => ({ ...row }))
+    }
+
     private nodes = new Map<string, ModularNode>()
     private brokerNodeIds = new Set<string>()
     private errors: ServiceError[] = []
@@ -2310,6 +2321,23 @@ class ModularBridgeState {
     }
 
     private handleProxyNotification(notification: JsonRpcNotification, engine: ProxyEngine): void {
+        if (notification.method === 'proxy/request') {
+            const params = objectValue(notification.params)
+            const path = stringValue(params?.path)
+            if (params?.method !== 'POST' || typeof params.cache_affinity !== 'boolean') return
+            if (
+                !['/v1/chat/completions', '/v1/completions', '/api/chat', '/api/generate'].includes(
+                    path
+                )
+            )
+                return
+            const row = this.routingMetrics.find(metric => metric.engineType === engine)
+            if (!row) return
+            row.requests += 1
+            if (params.cache_affinity) row.cacheAffinityHits += 1
+            emitBridgePush('metrics:routing-update', this.getRoutingMetrics())
+            return
+        }
         if (notification.method === 'ready') {
             const params = objectValue(notification.params)
             // Trust the broker-reported port only. If `ready` carries no port we

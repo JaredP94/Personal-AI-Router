@@ -11,6 +11,7 @@ import type {
 } from '@/shared/types/cluster'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
+import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
@@ -100,6 +101,8 @@ export interface IErrorsApi {
 }
 
 export interface IMetricsApi {
+    getRouting(): Promise<RoutingMetrics[]>
+    onRoutingUpdate(callback: (metrics: RoutingMetrics[]) => void): () => void
     /** Periodic hardware metrics update (CPU, GPU, memory) for a node. */
     onUpdate(callback: (metrics: NodeItemMetrics) => void): () => void
 }
@@ -182,6 +185,8 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             onUpdate: cb => transport.subscribePush('errors:update', cb)
         },
         metrics: {
+            getRouting: () => transport.invoke('metrics:get-routing'),
+            onRoutingUpdate: cb => transport.subscribePush('metrics:routing-update', cb),
             onUpdate: cb => transport.subscribePush('metrics:update', cb)
         }
     }

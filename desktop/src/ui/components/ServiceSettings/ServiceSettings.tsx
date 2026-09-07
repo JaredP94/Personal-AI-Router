@@ -25,6 +25,7 @@ import { isElectron } from '@/ui/api/bootstrap'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import ApplicationUpdatesCard from './UpdatesSettings'
 import VersionsCard from './VersionsCard'
+import RoutingDiagnostics from './RoutingDiagnostics'
 import WipeAppDataCard from './WipeAppDataCard'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { useInferenceDemoStore } from '@/ui/stores/inference-demo.store'
@@ -381,6 +382,7 @@ export default function ServiceSettings() {
                 <ApplicationUpdatesCard />
             </Flex>
 
+            <RoutingDiagnostics />
             <VersionsCard />
         </Stack>
     )

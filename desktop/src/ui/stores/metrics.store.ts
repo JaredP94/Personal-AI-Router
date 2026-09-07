@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { create } from 'zustand'
+import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { PerformanceMetric } from '@/ui/types/types'
 
@@ -20,6 +21,7 @@ export interface NodeMetricsHistory {
 }
 
 interface MetricsStore {
+    routingMetrics: RoutingMetrics[]
     nodeMetrics: Map<string, NodeMetricsHistory>
     generation: number
     initialize: () => void
@@ -44,6 +46,7 @@ function createPrefill(baseTs: number): PerformanceMetric[] {
 }
 
 export const useMetricsStore = create<MetricsStore>((set, get) => ({
+    routingMetrics: [],
     nodeMetrics: new Map(),
     generation: 0,
 
@@ -53,6 +56,20 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
 
     initialize: () => {
         if (!window.pairApi) return
+
+        let receivedRoutingUpdate = false
+        unsubs.push(
+            window.pairApi.metrics.onRoutingUpdate(routingMetrics => {
+                receivedRoutingUpdate = true
+                set({ routingMetrics })
+            })
+        )
+        void window.pairApi.metrics
+            .getRouting()
+            .then(routingMetrics => {
+                if (!receivedRoutingUpdate) set({ routingMetrics })
+            })
+            .catch(() => {})
 
         unsubs.push(
             window.pairApi.nodes.onRemove((nodeId: string) => {

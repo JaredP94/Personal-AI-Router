@@ -287,9 +287,18 @@ per-engine inventory advertises the requested model. Within that owner set, or
 across all candidates when the request has no parsed model, the order is:
 
 1. **A manually selected node**, if one is pinned.
-2. **The scheduler's priority order**, which is the normal case.
-3. **Remaining nodes by stable node ID**, so cold start and unlisted nodes are
+2. **A recent prefix-cache hint**, when the eligible node has at most one pending
+   job plus optimistic reservations and GPU pressure below three.
+3. **The scheduler's priority order**, when no usable affinity hint applies.
+4. **Remaining nodes by stable node ID**, so cold start and unlisted nodes are
    predictable rather than random.
+
+Prefix-cache hints are passive and local to each proxy process. Successful HTTP
+200 responses that reach clean EOF register only request digests and node metadata
+in a bounded LRU table (10,000 entries, five-minute idle expiry). Follow-up chat
+requests match the longest previously served message prefix, including across
+assistant replies. No response text is retained, and the hint does not prove
+that an engine still holds the KV cache. See [Prefix-aware routing](prefix-aware-routing-spec.mdx).
 
 Manual selection is a proxy capability rather than a desktop feature. The desktop
 application never pins a node. It renders routing state and lets the scheduler

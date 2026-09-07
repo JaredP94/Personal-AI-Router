@@ -24,20 +24,22 @@ type proxyNode struct {
 	Port int    `json:"port"`
 }
 
-// proxyEngine is one of the two reverse proxies the broker fronts. Both
+// proxyEngine is one of the reverse proxies the broker fronts. All
 // speak the same routing/failover contract; only the JSON-RPC prefix and
 // label differ.
 type proxyEngine struct {
-	label    string // "Ollama" / "LM Studio"
-	prefix   string // "proxy" / "lmstudio-proxy"
-	ready    bool
-	port     int
-	selected string
-	nodes    []proxyNode
-	table    table.Model
+	label             string // "Ollama" / "LM Studio" / "oMLX"
+	prefix            string // "proxy" / "lmstudio-proxy" / "omlx-proxy"
+	ready             bool
+	port              int
+	selected          string
+	requests          uint64
+	cacheAffinityHits uint64
+	nodes             []proxyNode
+	table             table.Model
 }
 
-// proxiesView shows both reverse proxies: per-engine status (ready/port/
+// proxiesView shows the reverse proxies: per-engine status (ready/port/
 // selected node) and the focused engine's discovered upstreams, with
 // actions to select a node and set the listen port.
 type proxiesView struct {
@@ -92,6 +94,7 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 		engines: []*proxyEngine{
 			{label: "Ollama", prefix: "proxy", table: newTable(nil)},
 			{label: "LM Studio", prefix: "lmstudio-proxy", table: newTable(nil)},
+			{label: "oMLX", prefix: "omlx-proxy", table: newTable(nil)},
 		},
 	}
 	return v
@@ -169,7 +172,7 @@ func (v *proxiesView) SetSize(w, h int) {
 	for _, e := range v.engines {
 		e.table.SetColumns(cols)
 		e.table.SetWidth(w)
-		e.table.SetHeight(clampWidth(h-6, 1))
+		e.table.SetHeight(clampWidth(h-len(v.engines)-5, 1))
 	}
 }
 
@@ -213,11 +216,32 @@ func (v *proxiesView) Update(msg tea.Msg) tea.Cmd {
 func (v *proxiesView) handleNotification(msg *rpc.Message) tea.Cmd {
 	idx := -1
 	switch {
+	case strings.HasPrefix(msg.Method, "omlx-proxy:"):
+		idx = 2
 	case strings.HasPrefix(msg.Method, "lmstudio-proxy:"):
 		idx = 1
 	case strings.HasPrefix(msg.Method, "proxy:"):
 		idx = 0
 	default:
+		return nil
+	}
+	if strings.HasSuffix(msg.Method, ":proxy/request") {
+		var r struct {
+			Method        string `json:"method"`
+			Path          string `json:"path"`
+			CacheAffinity *bool  `json:"cache_affinity"`
+		}
+		if decodeParams(msg.Params, &r) != nil || r.Method != "POST" || r.CacheAffinity == nil {
+			return nil
+		}
+		switch r.Path {
+		case "/v1/chat/completions", "/v1/completions", "/api/chat", "/api/generate":
+			e := v.engines[idx]
+			e.requests++
+			if *r.CacheAffinity {
+				e.cacheAffinityHits++
+			}
+		}
 		return nil
 	}
 	if strings.HasSuffix(msg.Method, ":ready") {
@@ -322,7 +346,7 @@ func (v *proxiesView) View() string {
 		b.WriteString(v.engineStatusLine(i, e))
 		b.WriteByte('\n')
 	}
-	b.WriteByte('\n')
+	b.WriteString("Affinity counts completed inference requests observed this session; not engine KV-cache hits.\n\n")
 	focused := v.engines[v.focus]
 	b.WriteString(titleStyle.Render(focused.label + " upstreams"))
 	b.WriteByte('\n')
@@ -353,7 +377,11 @@ func (v *proxiesView) engineStatusLine(i int, e *proxyEngine) string {
 	if i == v.focus {
 		marker = "> "
 	}
-	return fmt.Sprintf("%s%-10s %s  selected=%s", marker, e.label, state, sel)
+	affinity := "n/a (0 requests)"
+	if e.requests > 0 {
+		affinity = fmt.Sprintf("%.1f%% (%d/%d)", 100*float64(e.cacheAffinityHits)/float64(e.requests), e.cacheAffinityHits, e.requests)
+	}
+	return fmt.Sprintf("%s%-10s %s  selected=%s  cache affinity=%s", marker, e.label, state, sel, affinity)
 }
 
 func (v *proxiesView) Help() []key.Binding {

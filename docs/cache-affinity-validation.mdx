@@ -1,0 +1,115 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Cache-affinity implementation validation
+
+Validated September 6–7, 2026 against the implementation on
+`codex/cache-checked-routing`. The design is
+[prefix-aware routing](prefix-aware-routing-spec.mdx). Affinity is a passive
+routing hint; it does not query or confirm engine KV-cache availability.
+
+## Implemented behavior
+
+- Shared canonical request hashing, including previous message boundaries so a
+  follow-up with an assistant reply matches the previous request.
+- Per-proxy, per-model, memory-only LRU tables: 10,000 entries and five-minute
+  idle TTL. No prompt/response bodies or digests in new telemetry.
+- oMLX, LM Studio and Ollama integration: model eligibility and manual pins take
+  precedence; affinity requires pending work plus local reservations at most one
+  and GPU pressure below three. Existing failover order is preserved.
+- Successful HTTP 200 streams reaching clean EOF register the actual serving
+  node. Failed, truncated and cancelled requests do not establish new hints.
+- Completion telemetry and desktop/TUI diagnostics report affinity selection
+  rates rather than claiming engine cache hits.
+
+## Passing checks
+
+- `make check`: SPDX, build-script verification, lint, all three TypeScript
+  targets, service contracts, and 209 desktop unit tests.
+- `npm run dead-code:check`: no findings.
+- `go test -race ./...` in `services/shared`, `services/omlx-proxy`,
+  `services/lmstudio-proxy`, `services/nvpair-ui-broker`, and `services/nvpair-tui`.
+- `go test -race ./...` in `services/ollama-proxy`, including the portable
+  loopback-alias test.
+- `go test ./...` in `services/tests`: all 83 cross-process tests pass after
+  the running development app released its fixed service ports.
+- A real HTTP server with a deliberately truncated upstream stream now emits a
+  failed `proxy/request` event for all three proxies and does not register a
+  cache-affinity hint. This covers `net/http`'s post-commit abort path.
+- Compiled oMLX binary: five conversational turns with two fixture engines,
+  scheduler priority inversion, failure on turn three, exact request replay,
+  correct serving-node telemetry, and stdout/stderr privacy canaries. Observed
+  affinity flags: `false, true, false, true, true`.
+- Version-stamped builds verified with `--version`: oMLX proxy `0.2.0`, LM Studio
+  proxy `0.17.0`, Ollama proxy `0.27.0`, and TUI `0.8.0`.
+
+## Live oMLX smoke test
+
+The opt-in `TestLiveOMLXCacheAffinityConversation` passed under the race detector
+with five streamed turns through the newly compiled proxy, using
+`Qwen--Qwen3.5-0.8B` on installed oMLX `0.6.4`. Hardware was Apple M5 Max with
+128 GiB RAM, macOS `26.6.2`, and Go `1.27.1` on darwin/arm64.
+
+Test conditions: one engine/node, sequential requests, maximum 16 output tokens,
+temperature zero, thinking disabled. No separate warm-up or cache clearing was
+performed. Existing engine settings were retained; a temporary engine process
+was started with user authorization and exited cleanly after the test. Each
+completed turn was followed by a zero-pending scheduler snapshot because the
+standalone test proxy has no broker driving scheduler feedback.
+
+All five responses completed with HTTP 200 and the SSE end marker. Affinity flags
+were `false, true, true, true, true`. This proves live API/stream compatibility
+and affinity telemetry. Confirmed engine cache hits and comparative performance
+were not measured.
+
+To repeat against an existing local engine, run from `services/omlx-proxy`:
+
+```bash
+PAIR_OMLX_LIVE_URL=http://127.0.0.1:1235 \
+PAIR_OMLX_LIVE_MODEL=Qwen--Qwen3.5-0.8B \
+go test -race -run '^TestLiveOMLXCacheAffinityConversation$' -count=1 -v
+```
+
+The test reads existing local oMLX authentication without printing keys. Without
+both opt-in variables it skips; an explicitly configured unavailable engine
+fails the test.
+
+## Physical two-node oMLX validation
+
+On September 7, 2026, the local Apple M5 Max host and paired
+`Retirement-Plan.local` host both served `Qwen--Qwen3.5-0.8B` through temporary
+oMLX proxies built from this checkout. The proxies used each host's existing
+PAIR cluster-trust directory; the paired-Mac path was mTLS at
+`192.168.1.161:1236`, forwarding only to that host's loopback oMLX server.
+
+The local proxy began local-first. Its first request completed on
+`local-physical` with `cache_affinity: false`. After the priority was switched
+to the paired host, a matching continuation still completed on `local-physical`
+with `cache_affinity: true`. An unrelated request then completed on the paired
+host with `cache_affinity: false`. Finally, after restoring local-first priority,
+a matching continuation completed on the paired host with `cache_affinity: true`.
+Every request returned HTTP 200.
+
+This proves bidirectional physical routing and cache-affinity selection across
+the two oMLX nodes, including priority inversion in each direction. The test
+used generic short prompts and did not log prompt or completion bodies. The
+temporary proxy binaries, control pipes, server processes, and test logs were
+removed afterward. Both hosts' oMLX API-key settings were restored; the copied
+model remains on the paired host for future local testing.
+
+## Remaining validation limits
+
+Confirmed engine cache hits and comparative performance remain intentionally
+unclaimed. PAIR does not query engine cache state; its diagnostics report
+affinity selection decisions only.
+
+## macOS arm64 package
+
+The final unsigned package is available locally at
+`desktop/release/0.2.0/mac/NVPAIR-Setup-0.2.0-arm64.dmg` with SHA-256
+`88b320ecbf054cc216d782ba0aa6e2df3f43592a091dcc807222177c7a51df14`.
+The matching ZIP has SHA-256
+`bf93e72153194bb994157c87d1792128a9b390e523e900a50be535beb5989988`.
+It has not been installed or signed.
