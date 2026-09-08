@@ -30,6 +30,35 @@ across both, with each node reporting live GPU and memory use.](assets/pair-demo
 one, and both report live GPU and memory use throughout.
 [Watch the full clip](assets/pair-demo.mp4).*
 
+## About This Fork & Upstream Alignment
+
+This repository ([JaredP94/Personal-AI-Router](https://github.com/JaredP94/Personal-AI-Router)) is an actively maintained fork of [NVIDIA/Personal-AI-Router](https://github.com/NVIDIA/Personal-AI-Router). It is maintained in direct alignment with the upstream project, continually incorporating upstream changes, fixes, and architectural updates as new releases are published.
+
+This project exists as a forward-looking extension that introduces practical feature enhancements, network topology flexibility, and engine integrations that are valuable to have today:
+
+### Summary of Enhancements vs. Upstream
+
+1. **oMLX Engine Integration (Apple Silicon Native MLX)**
+   - First-class support for [oMLX](https://github.com/jaredp94/omlx) as a supervised local inference engine alongside Ollama and LM Studio.
+   - Includes a dedicated `omlx-proxy` service, broker supervision, mDNS discovery (`om`), OpenAI-compatible ingress, dynamic fallback port negotiation, and full desktop UI integration.
+
+2. **Prefix Cache-Aware Routing (KV-Cache Affinity)**
+   - Dynamic prompt and conversation prefix hashing across Ollama, LM Studio, and oMLX proxies.
+   - Routes conversational turns and shared-prompt workloads to nodes that already hold warm KV cache state, dramatically cutting Time-to-First-Token (TTFT) and eliminating redundant prompt prefill computation.
+   - Adds live telemetry and diagnostics in **Settings → Service → Routing Diagnostics**.
+
+3. **Tailscale Overlay & Multi-Network Clustering**
+   - **Automatic Tailscale Discovery**: Synchronizes and bridges confirmed cluster members over Tailscale overlay networks (`100.64.0.0/10` CGNAT) directly into the broker relay directory.
+   - **Wi-Fi Preference with Dynamic Fallback**: Prefers low-latency physical Wi-Fi/Ethernet connections when available and cleanly falls back to Tailscale when roaming, with an automatic 15-second dynamic recovery probe.
+
+4. **Remote Node Engine & Model Discovery**
+   - Directly probes `nvpair-engine-manager` over cluster mTLS on remote nodes.
+   - Automatically discovers running engines, `modelsByEngine`, and `loadedByEngine` across the cluster, seamlessly bridging remote models into local Ollama, LM Studio, and oMLX proxies.
+
+5. **Automated Zero-Quarantine macOS Installation & Updates**
+   - Provides a one-line automated installer and updater script (`scripts/install-mac.sh`) that installs and upgrades releases via Terminal without triggering macOS Gatekeeper quarantine (`xattr -cr`).
+   - Adapts the desktop in-app updates card on macOS to provide 1-click update command copying and direct GitHub release navigation.
+
 ## What is supported
 
 | | |
@@ -38,7 +67,7 @@ one, and both report live GPU and memory use throughout.
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
 | **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
-| **Inference engines** | Ollama and LM Studio |
+| **Inference engines** | Ollama, LM Studio, and oMLX (Apple Silicon MLX) |
 
 **PAIR running on a machine does not mean an engine will.** PAIR itself runs on
 any supported Windows, Linux, or macOS machine. Each engine sets its own requirements
@@ -66,17 +95,24 @@ tells you when a newer release exists and installs it on your say-so from
 **Settings → Service**. A build you make yourself is unsigned and checks no
 update feed, so you would upgrade it by pulling and rebuilding.
 
-Download PAIR from the
-[GitHub releases page](https://github.com/NVIDIA/Personal-AI-Router/releases).
+Download PAIR from this fork's
+[GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases)
+(upstream official releases are hosted at [NVIDIA/Personal-AI-Router](https://github.com/NVIDIA/Personal-AI-Router/releases)).
 Release downloads include:
 
 - a Windows installer;
 - a Debian package for Linux; and
 - a macOS disk image.
 
-**On Windows and macOS,** double-click the download and follow the installer's
-usual prompts — on macOS that means dragging NVIDIA Personal AI Router to your
-**Applications** folder.
+**On macOS,** you can install or update directly via Terminal with a single command to bypass Gatekeeper quarantine (`xattr -cr`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
+```
+
+Alternatively, double-click the downloaded `.dmg` and drag NVIDIA Personal AI Router to your **Applications** folder.
+
+**On Windows,** double-click the installer download and follow the prompts.
 
 **On Linux,** install the package from the directory you downloaded it into:
 
