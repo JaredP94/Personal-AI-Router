@@ -28,6 +28,9 @@ type manualNodeStatus struct {
 	LMStudioUp     bool        `json:"lmstudio_up"`
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
+	OMLXUp         bool        `json:"omlx_up"`
+	OMLXPort       int         `json:"omlx_port"`
+	OMLXModels     []string    `json:"omlx_models,omitempty"`
 	NodeInfoUp     bool        `json:"node_info_up"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	GPUs           []GPUInfo   `json:"gpus"`
@@ -87,7 +90,7 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	}
 	models := s.Models
 	if len(models) == 0 {
-		models = mergeModels(s.OllamaModels, s.LMStudioModels)
+		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels)
 	}
 	modelsByEngine := s.ModelsByEngine
 	if len(modelsByEngine) == 0 {
@@ -196,10 +199,18 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		}
 		services[noderec.ServiceLMStudio] = noderec.ServiceStatus{Port: port}
 	}
-	if modelsByEngine != nil {
+	omlxUp := s.OMLXUp
+	if !omlxUp && modelsByEngine != nil {
 		if _, ok := modelsByEngine["omlx"]; ok {
-			services[noderec.ServiceOMLX] = noderec.ServiceStatus{Port: 8000}
+			omlxUp = true
 		}
+	}
+	if omlxUp {
+		port := s.OMLXPort
+		if port == 0 {
+			port = 1236
+		}
+		services[noderec.ServiceOMLX] = noderec.ServiceStatus{Port: port}
 	}
 
 	ips := []string{}
@@ -209,7 +220,7 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 
 	models := s.Models
 	if len(models) == 0 {
-		models = mergeModels(s.OllamaModels, s.LMStudioModels)
+		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels)
 	}
 
 	return noderec.DirectoryNode{
@@ -261,6 +272,9 @@ func manualModelsByEngine(s manualNodeStatus) map[string][]string {
 	}
 	if len(s.LMStudioModels) > 0 {
 		byEngine["lmstudio"] = s.LMStudioModels
+	}
+	if len(s.OMLXModels) > 0 {
+		byEngine["omlx"] = s.OMLXModels
 	}
 	if len(byEngine) == 0 {
 		return nil
@@ -337,11 +351,17 @@ func (b *Broker) bridgeManualNode(s manualNodeStatus, key string) {
 	b.bridgeToProxy(b.getLMStudioProxy(), "lmstudio", s, key, lmStudioUp, lmStudioPort, lmStudioModels)
 
 	var omlxModels []string
-	if s.ModelsByEngine != nil {
+	if len(s.OMLXModels) > 0 {
+		omlxModels = s.OMLXModels
+	} else if s.ModelsByEngine != nil {
 		omlxModels = s.ModelsByEngine["omlx"]
 	}
-	omlxUp := len(omlxModels) > 0
-	b.bridgeToProxy(b.getOMLXProxy(), "omlx", s, key, omlxUp, 8000, omlxModels)
+	omlxUp := s.OMLXUp || len(omlxModels) > 0
+	omlxPort := s.OMLXPort
+	if omlxPort == 0 {
+		omlxPort = 1236
+	}
+	b.bridgeToProxy(b.getOMLXProxy(), "omlx", s, key, omlxUp, omlxPort, omlxModels)
 }
 
 // bridgeToProxy adds the node to p when its engine is reachable, or removes it

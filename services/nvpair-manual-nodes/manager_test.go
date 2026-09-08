@@ -157,6 +157,59 @@ func TestProbeLMStudioReportsModels(t *testing.T) {
 	}
 }
 
+// configureHealthyOMLX registers a 200 GET /v1/models on addr:1236
+// returning the given model ids in the OpenAI list shape.
+func configureHealthyOMLX(rt *fakeRoundTripper, addr string, models []string) {
+	host := net.JoinHostPort(addr, "1236")
+	rt.set(http.MethodGet, host, "/v1/models", func(*http.Request) (*http.Response, error) {
+		var payload struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		payload.Object = "list"
+		for _, id := range models {
+			payload.Data = append(payload.Data, struct {
+				ID string `json:"id"`
+			}{ID: id})
+		}
+		data, _ := json.Marshal(payload)
+		return httpJSON(http.StatusOK, string(data))
+	})
+}
+
+// TestProbeOMLXReportsModels covers the oMLX probe: a reachable
+// server reports up with its model ids parsed from /v1/models, a loopback-only
+// 403 proxy also reports up, and an absent one reports down.
+func TestProbeOMLXReportsModels(t *testing.T) {
+	m, _, rt := newTestManager()
+	configureHealthyOMLX(rt, "node.local", []string{"mlx-qwen", "mlx-llama"})
+
+	up, models := m.probeOMLX("node.local", omlxPort)
+	if !up {
+		t.Fatal("expected omlx up")
+	}
+	if len(models) != 2 || models[0] != "mlx-qwen" || models[1] != "mlx-llama" {
+		t.Fatalf("models = %#v", models)
+	}
+
+	// Loopback-only proxy 403 response
+	loopbackHost := net.JoinHostPort("loopback.local", "1236")
+	rt.set(http.MethodGet, loopbackHost, "/v1/models", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusForbidden, `{"code":"loopback-only","error":"loopback only"}`)
+	})
+	lbUp, _ := m.probeOMLX("loopback.local", omlxPort)
+	if !lbUp {
+		t.Fatal("expected loopback-only omlx-proxy to report up")
+	}
+
+	downUp, downModels := m.probeOMLX("absent.local", omlxPort)
+	if downUp || downModels != nil {
+		t.Fatalf("expected absent omlx down, got up=%v models=%#v", downUp, downModels)
+	}
+}
+
 func requestMessage(id int, method string, params any) *Message {
 	idData, _ := json.Marshal(id)
 	idRaw := json.RawMessage(idData)
@@ -737,13 +790,15 @@ func TestProbeEngineManagerReportsModels(t *testing.T) {
 	emHost := net.JoinHostPort("node.local", "14322")
 	rt.set(http.MethodGet, emHost, "/v1/models", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusOK, `{
-			"models": ["llama3:8b", "qwen2.5:7b"],
+			"models": ["llama3:8b", "qwen2.5:7b", "mlx-qwen"],
 			"modelsByEngine": {
 				"ollama": ["llama3:8b"],
-				"lmstudio": ["qwen2.5:7b"]
+				"lmstudio": ["qwen2.5:7b"],
+				"omlx": ["mlx-qwen"]
 			},
 			"loadedByEngine": {
-				"ollama": ["llama3:8b"]
+				"ollama": ["llama3:8b"],
+				"omlx": ["mlx-qwen"]
 			}
 		}`)
 	})
@@ -762,7 +817,13 @@ func TestProbeEngineManagerReportsModels(t *testing.T) {
 	if !n.LMStudioUp {
 		t.Errorf("expected LMStudioUp = true")
 	}
-	if len(n.Models) != 2 || n.Models[0] != "llama3:8b" || n.Models[1] != "qwen2.5:7b" {
+	if !n.OMLXUp {
+		t.Errorf("expected OMLXUp = true")
+	}
+	if n.OMLXPort != 1236 {
+		t.Errorf("expected OMLXPort = 1236, got %d", n.OMLXPort)
+	}
+	if len(n.Models) != 3 || n.Models[0] != "llama3:8b" || n.Models[1] != "qwen2.5:7b" || n.Models[2] != "mlx-qwen" {
 		t.Errorf("unexpected Models: %#v", n.Models)
 	}
 	if len(n.ModelsByEngine["ollama"]) != 1 || n.ModelsByEngine["ollama"][0] != "llama3:8b" {
@@ -771,8 +832,14 @@ func TestProbeEngineManagerReportsModels(t *testing.T) {
 	if len(n.ModelsByEngine["lmstudio"]) != 1 || n.ModelsByEngine["lmstudio"][0] != "qwen2.5:7b" {
 		t.Errorf("unexpected ModelsByEngine[lmstudio]: %#v", n.ModelsByEngine["lmstudio"])
 	}
+	if len(n.ModelsByEngine["omlx"]) != 1 || n.ModelsByEngine["omlx"][0] != "mlx-qwen" {
+		t.Errorf("unexpected ModelsByEngine[omlx]: %#v", n.ModelsByEngine["omlx"])
+	}
 	if len(n.LoadedByEngine["ollama"]) != 1 || n.LoadedByEngine["ollama"][0] != "llama3:8b" {
 		t.Errorf("unexpected LoadedByEngine[ollama]: %#v", n.LoadedByEngine["ollama"])
+	}
+	if len(n.LoadedByEngine["omlx"]) != 1 || n.LoadedByEngine["omlx"][0] != "mlx-qwen" {
+		t.Errorf("unexpected LoadedByEngine[omlx]: %#v", n.LoadedByEngine["omlx"])
 	}
 }
 

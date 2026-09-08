@@ -205,13 +205,15 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 		ClusterUUID:  uuid,
 		NodeInfoUp:   true,
 		NodeInfoPort: 14318,
-		Models:       []string{"llama3:8b", "qwen2.5:7b"},
+		Models:       []string{"llama3:8b", "qwen2.5:7b", "mlx-qwen"},
 		ModelsByEngine: map[string][]string{
 			"ollama":   {"llama3:8b"},
 			"lmstudio": {"qwen2.5:7b"},
+			"omlx":     {"mlx-qwen"},
 		},
 		LoadedByEngine: map[string][]string{
 			"ollama": {"llama3:8b"},
+			"omlx":   {"mlx-qwen"},
 		},
 	}
 
@@ -223,7 +225,7 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 		t.Fatalf("expected 1 node in store snapshot, got %d", len(snap))
 	}
 	sn := snap[0]
-	if len(sn.Models) != 2 || sn.Models[0] != "llama3:8b" || sn.Models[1] != "qwen2.5:7b" {
+	if len(sn.Models) != 3 || sn.Models[0] != "llama3:8b" || sn.Models[1] != "qwen2.5:7b" || sn.Models[2] != "mlx-qwen" {
 		t.Errorf("unexpected Models in snapshot: %#v", sn.Models)
 	}
 	if len(sn.ModelsByEngine["ollama"]) != 1 || sn.ModelsByEngine["ollama"][0] != "llama3:8b" {
@@ -232,8 +234,14 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 	if len(sn.ModelsByEngine["lmstudio"]) != 1 || sn.ModelsByEngine["lmstudio"][0] != "qwen2.5:7b" {
 		t.Errorf("unexpected ModelsByEngine[lmstudio] in snapshot: %#v", sn.ModelsByEngine["lmstudio"])
 	}
+	if len(sn.ModelsByEngine["omlx"]) != 1 || sn.ModelsByEngine["omlx"][0] != "mlx-qwen" {
+		t.Errorf("unexpected ModelsByEngine[omlx] in snapshot: %#v", sn.ModelsByEngine["omlx"])
+	}
 	if len(sn.LoadedByEngine["ollama"]) != 1 || sn.LoadedByEngine["ollama"][0] != "llama3:8b" {
 		t.Errorf("unexpected LoadedByEngine[ollama] in snapshot: %#v", sn.LoadedByEngine["ollama"])
+	}
+	if len(sn.LoadedByEngine["omlx"]) != 1 || sn.LoadedByEngine["omlx"][0] != "mlx-qwen" {
+		t.Errorf("unexpected LoadedByEngine[omlx] in snapshot: %#v", sn.LoadedByEngine["omlx"])
 	}
 
 	// Check relayDir
@@ -242,18 +250,24 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 		t.Fatalf("expected 1 node in relayDir, got %d", len(nodes))
 	}
 	rn := nodes[0]
-	if len(rn.Models) != 2 {
+	if len(rn.Models) != 3 {
 		t.Errorf("unexpected Models in relayDir: %#v", rn.Models)
 	}
 	if len(rn.ModelsByEngine["ollama"]) != 1 {
 		t.Errorf("unexpected ModelsByEngine in relayDir: %#v", rn.ModelsByEngine)
 	}
-	// Also ensure ServiceOllama and ServiceLMStudio were inferred from ModelsByEngine
+	if len(rn.ModelsByEngine["omlx"]) != 1 {
+		t.Errorf("unexpected ModelsByEngine in relayDir: %#v", rn.ModelsByEngine)
+	}
+	// Also ensure ServiceOllama, ServiceLMStudio, and ServiceOMLX were inferred from ModelsByEngine
 	if svc, ok := rn.Services[noderec.ServiceOllama]; !ok || svc.Port != 11434 {
 		t.Errorf("ServiceOllama = %+v, want port 11434", svc)
 	}
 	if svc, ok := rn.Services[noderec.ServiceLMStudio]; !ok || svc.Port != 1234 {
 		t.Errorf("ServiceLMStudio = %+v, want port 1234", svc)
+	}
+	if svc, ok := rn.Services[noderec.ServiceOMLX]; !ok || svc.Port != 1236 {
+		t.Errorf("ServiceOMLX = %+v, want port 1236", svc)
 	}
 }
 

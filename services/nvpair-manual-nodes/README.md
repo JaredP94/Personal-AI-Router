@@ -50,6 +50,9 @@ Emitted when a manually added node has been probed and its initial status determ
     "lmstudio_up":true,
     "lmstudio_port":1234,
     "lmstudio_models":["qwen2.5-7b-instruct"],
+    "omlx_up":true,
+    "omlx_port":1236,
+    "omlx_models":["mlx-community/Qwen2.5-7B-Instruct-4bit"],
     "node_info_up":true,
     "node_info_port":14318,
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
@@ -60,7 +63,7 @@ Emitted when a manually added node has been probed and its initial status determ
 }
 ```
 
-Each node is probed for both inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`) and LM Studio on its default `:1234` (`GET /v1/models`, which doubles as the liveness check and the model list). `lmstudio_up` / `lmstudio_port` / `lmstudio_models` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run either engine, both, or neither.
+Each node is probed for inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`), and oMLX on its default `:1236` (OpenAI-compatible `/v1/models` or loopback-only 403 proxy identification). Nodes running `nvpair-engine-manager` on `:14322` are also probed for authoritative multi-engine inventory. `lmstudio_*` and `omlx_*` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` and `omlx-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run any engine combination.
 
 ### `node/updated`
 

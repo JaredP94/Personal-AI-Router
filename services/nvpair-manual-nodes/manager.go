@@ -122,6 +122,9 @@ type ManualNodeStatus struct {
 	LMStudioUp     bool        `json:"lmstudio_up"`
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
+	OMLXUp         bool        `json:"omlx_up,omitempty"`
+	OMLXPort       int         `json:"omlx_port,omitempty"`
+	OMLXModels     []string    `json:"omlx_models,omitempty"`
 	NodeInfoUp     bool        `json:"node_info_up"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	TLSEnabled     bool        `json:"tls_enabled,omitempty"`
@@ -434,6 +437,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 
 	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
 	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
+	omlxUp, omlxModels := m.probeOMLX(addr, omlxPort)
 
 	// Pick scheme + port + client based on the entry's TLS hint.
 	// The operator decides which scheme this manual node uses; we
@@ -500,6 +504,10 @@ func (m *Manager) probeNode(entry ManualEntry) {
 				lmStudioUp = true
 				lmStudioModels = lmModels
 			}
+			if omModels, ok := finalModelsByEngine["omlx"]; ok {
+				omlxUp = true
+				omlxModels = omModels
+			}
 		}
 		if ollamaUp && (finalModelsByEngine == nil || finalModelsByEngine["ollama"] == nil) && len(ollamaModels) > 0 {
 			if finalModelsByEngine == nil {
@@ -515,14 +523,24 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			finalModelsByEngine["lmstudio"] = lmStudioModels
 			finalModels = mergeModels(finalModels, lmStudioModels)
 		}
+		if omlxUp && (finalModelsByEngine == nil || finalModelsByEngine["omlx"] == nil) && len(omlxModels) > 0 {
+			if finalModelsByEngine == nil {
+				finalModelsByEngine = make(map[string][]string)
+			}
+			finalModelsByEngine["omlx"] = omlxModels
+			finalModels = mergeModels(finalModels, omlxModels)
+		}
 	} else {
-		finalModels = mergeModels(ollamaModels, lmStudioModels)
+		finalModels = mergeModels(ollamaModels, lmStudioModels, omlxModels)
 		finalModelsByEngine = make(map[string][]string)
 		if len(ollamaModels) > 0 {
 			finalModelsByEngine["ollama"] = ollamaModels
 		}
 		if len(lmStudioModels) > 0 {
 			finalModelsByEngine["lmstudio"] = lmStudioModels
+		}
+		if len(omlxModels) > 0 {
+			finalModelsByEngine["omlx"] = omlxModels
 		}
 		if len(finalModelsByEngine) == 0 {
 			finalModelsByEngine = nil
@@ -539,6 +557,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		LMStudioUp:     lmStudioUp,
 		LMStudioPort:   lmStudioPort,
 		LMStudioModels: lmStudioModels,
+		OMLXUp:         omlxUp,
+		OMLXPort:       omlxPort,
+		OMLXModels:     omlxModels,
 		NodeInfoUp:     nodeInfoUp,
 		NodeInfoPort:   nodeInfoPort,
 		TLSEnabled:     entry.TLSPort > 0,
@@ -555,7 +576,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		LoadedByEngine: finalLoadedByEngine,
 	}
 
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.NodeInfoUp || emUp
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.OMLXUp || newStatus.NodeInfoUp || emUp
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
@@ -590,11 +611,14 @@ func (m *Manager) probeNode(entry ManualEntry) {
 
 	changed := prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
+		prev.OMLXUp != newStatus.OMLXUp ||
+		prev.OMLXPort != newStatus.OMLXPort ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
 		prev.ClusterUUID != newStatus.ClusterUUID ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
+		!sliceEqual(prev.OMLXModels, newStatus.OMLXModels) ||
 		!sliceEqual(prev.Models, newStatus.Models) ||
 		!mapsEqual(prev.ModelsByEngine, newStatus.ModelsByEngine) ||
 		!mapsEqual(prev.LoadedByEngine, newStatus.LoadedByEngine) ||
@@ -662,6 +686,7 @@ func probeFailedID(nodeID string) string {
 
 const (
 	lmStudioPort      = 1234
+	omlxPort          = 1236
 	engineManagerPort = 14322
 )
 
@@ -785,6 +810,58 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 		}
 	}
 	slog.Debug("manual probe lmstudio up",
+		"addr", addr, "port", port, "models", len(models),
+		"duration_ms", time.Since(start).Milliseconds())
+	return true, models
+}
+
+// probeOMLX checks oMLX's OpenAI-compatible server on addr:port. A single
+// GET /v1/models doubles as the liveness check and the model list.
+// If the target is an omlx-proxy rejecting plaintext from non-loopback,
+// it returns 403 Forbidden with "loopback-only", identifying the service.
+func (m *Manager) probeOMLX(addr string, port int) (bool, []string) {
+	url := "http://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
+	start := time.Now()
+	resp, err := m.client.Get(url)
+	if err != nil {
+		slog.Debug("manual probe omlx failed",
+			"addr", addr, "port", port, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		return false, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		var errResp struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Code == "loopback-only" {
+			slog.Debug("manual probe omlx proxy identified via loopback-only 403", "addr", addr, "port", port)
+			return true, nil
+		}
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual probe omlx non-OK",
+			"addr", addr, "port", port, "status", resp.StatusCode,
+			"duration_ms", time.Since(start).Milliseconds())
+		return false, nil
+	}
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		slog.Debug("manual probe omlx up (models parse failed)",
+			"addr", addr, "port", port, "err", err)
+		return true, nil
+	}
+	models := make([]string, 0, len(result.Data))
+	for _, d := range result.Data {
+		if d.ID != "" {
+			models = append(models, d.ID)
+		}
+	}
+	slog.Debug("manual probe omlx up",
 		"addr", addr, "port", port, "models", len(models),
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, models
