@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: nvpair-phoenix
+    restart: unless-stopped
+    ports:
+      - "6006:6006" # Phoenix UI and OTLP HTTP
+      - "4317:4317" # OTLP gRPC collector
+    environment:
+      - PHOENIX_PORT=6006
+      - PHOENIX_GRPC_PORT=4317
+      - PHOENIX_SQL_DATABASE_URL=sqlite:////data/phoenix.db
+    volumes:
+      - nvpair-phoenix-data:/data
+
+volumes:
+  nvpair-phoenix-data:
+    driver: local
