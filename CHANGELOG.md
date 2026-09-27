@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-09-27
+
+### Fixed
+- **In-App Restart & Install**: Fixed an issue where the "Restart & install" button was unresponsive due to an uncaught `ENOENT` error writing the detached installer script to a non-existent Application Support `tmp` directory.
+- **Temp Directory Initialization**: Ensured the Application Support `tmp` directory is created recursively when initializing Electron paths in `setPaths` and before writing the updater script.
+- **Installer Reliability**: Added a 20-second watchdog to the macOS detached updater script to terminate unresponsive processes, cleared quarantine flags on the replaced application bundle (`xattr -cr`), and wrapped connector cleanup in shutdown fallbacks.
+- **Update UI Feedback**: Added immediate "Restarting…" button feedback and surfaced error messages when update installation fails.
+
 ## [0.3.9] - 2026-09-27
 
 ### Added
