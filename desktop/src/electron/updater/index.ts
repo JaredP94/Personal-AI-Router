@@ -285,12 +285,23 @@ export async function quitAndInstallUpdate(): Promise<void> {
         return
     }
     if (!app.isPackaged) return
+    activeUpdateOperation = 'install'
     if (process.platform === 'darwin') {
         const targetVersion = status.latestVersion ?? pendingDownloadedVersion
         if (!targetVersion) return
-        await quitAndInstallMacUpdate(targetVersion)
+        try {
+            await quitAndInstallMacUpdate(targetVersion)
+            activeUpdateOperation = null
+        } catch (err) {
+            failUpdate(err, 'install')
+        }
         return
     }
-    await destroyConnector({ force: true })
-    autoUpdater.quitAndInstall()
+    try {
+        await destroyConnector({ force: true })
+        autoUpdater.quitAndInstall()
+        activeUpdateOperation = null
+    } catch (err) {
+        failUpdate(err, 'install')
+    }
 }

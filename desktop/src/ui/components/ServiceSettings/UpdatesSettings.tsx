@@ -34,14 +34,21 @@ function phaseLabel(status: UpdateStatus): string {
 export default function ApplicationUpdatesCard() {
     const [status, setStatus] = useState<UpdateStatus | null>(null)
     const [copied, setCopied] = useState(false)
+    const [installing, setInstalling] = useState(false)
 
     useEffect(() => {
         if (!isElectron) return
         window.windowApi.update
             .getStatus()
-            .then(setStatus)
+            .then(s => {
+                setStatus(s)
+                if (s.phase !== 'downloaded') setInstalling(false)
+            })
             .catch(() => {})
-        return window.windowApi.update.onStatusChanged(setStatus)
+        return window.windowApi.update.onStatusChanged(s => {
+            setStatus(s)
+            if (s.phase !== 'downloaded') setInstalling(false)
+        })
     }, [])
 
     const runCheck = useCallback(() => {
@@ -56,7 +63,10 @@ export default function ApplicationUpdatesCard() {
 
     const runInstall = useCallback(() => {
         if (!isElectron) return
-        void window.windowApi.update.install()
+        setInstalling(true)
+        window.windowApi.update.install().catch(() => {
+            setInstalling(false)
+        })
     }, [])
 
     const handleCopyCommand = useCallback(() => {
@@ -136,8 +146,9 @@ export default function ApplicationUpdatesCard() {
                                     color="brand"
                                     size="small"
                                     onClick={runInstall}
+                                    disabled={installing}
                                 >
-                                    Restart &amp; install
+                                    {installing ? 'Restarting…' : 'Restart & install'}
                                 </Button>
                             )}
                             {isMac && (showDownload || showInstall) && (

@@ -3,9 +3,12 @@
 
 export const UPDATE_CHECK_ERROR_MESSAGE = 'Error checking for updates'
 const UPDATE_DOWNLOAD_ERROR_MESSAGE = 'Error downloading update'
+const UPDATE_INSTALL_ERROR_MESSAGE = 'Error installing update'
 
-export type UpdateOperation = 'check' | 'download'
+export type UpdateOperation = 'check' | 'download' | 'install'
 
 export function userFacingUpdateError(operation: UpdateOperation): string {
-    return operation === 'download' ? UPDATE_DOWNLOAD_ERROR_MESSAGE : UPDATE_CHECK_ERROR_MESSAGE
+    if (operation === 'download') return UPDATE_DOWNLOAD_ERROR_MESSAGE
+    if (operation === 'install') return UPDATE_INSTALL_ERROR_MESSAGE
+    return UPDATE_CHECK_ERROR_MESSAGE
 }

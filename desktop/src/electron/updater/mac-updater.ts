@@ -8,6 +8,7 @@ import http from 'http'
 import https from 'https'
 import path from 'path'
 import log from 'electron-log'
+import getErrorString from '@/shared/utils/get-error-string'
 import { destroyConnector } from '@/electron/connector'
 import {
     clearPendingUpdate,
@@ -157,7 +158,13 @@ export async function quitAndInstallMacUpdate(version: string): Promise<void> {
 
     log.info(`[mac-updater] Preparing detached installer for ${appPath} using ${dmgPath}`)
 
-    const scriptPath = path.join(app.getPath('temp'), `nvpair-update-${Date.now()}.sh`)
+    const tempDir = app.getPath('temp')
+    try {
+        fs.mkdirSync(tempDir, { recursive: true })
+    } catch {
+        /* best-effort */
+    }
+    const scriptPath = path.join(tempDir, `nvpair-update-${Date.now()}.sh`)
     const scriptContent = `#!/usr/bin/env bash
 set -e
 
@@ -166,8 +173,14 @@ DMG_PATH="$2"
 DEST_APP="$3"
 SCRIPT_PATH="$4"
 
+COUNT=0
 while kill -0 "$APP_PID" 2>/dev/null; do
     sleep 0.5
+    COUNT=$((COUNT + 1))
+    if [ "$COUNT" -ge 40 ]; then
+        kill -9 "$APP_PID" 2>/dev/null || true
+        break
+    fi
 done
 sleep 1
 
@@ -204,6 +217,8 @@ if [ -d "$DEST_APP/Contents/MacOS" ]; then
     chmod -R +x "$DEST_APP/Contents/MacOS" 2>/dev/null || true
 fi
 
+xattr -cr "$DEST_APP" 2>/dev/null || true
+
 hdiutil detach "$TMP_MOUNT" -quiet || hdiutil detach "$TMP_MOUNT" -force -quiet || true
 TMP_MOUNT=""
 
@@ -223,6 +238,13 @@ open "$DEST_APP"
     child.unref()
 
     clearPendingUpdate()
-    await destroyConnector({ force: true })
+    try {
+        await destroyConnector({ force: true })
+    } catch (err) {
+        log.warn(`[mac-updater] Connector cleanup failed: ${getErrorString(err)}`)
+    }
+    setTimeout(() => {
+        app.exit(0)
+    }, 5000).unref()
     app.quit()
 }

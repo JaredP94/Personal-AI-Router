@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { app } from 'electron'
+import { mkdirSync } from 'fs'
 import { platform } from 'os'
 import path from 'path'
 import { currentPlatform } from '@/shared/utils/platform'
@@ -66,7 +67,14 @@ export const setPaths = async (): Promise<void> => {
     app.setPath('logs', path.join(APP_DIR, 'logs'))
     app.setAppLogsPath(path.join(APP_DIR, 'logs'))
     app.setPath('crashDumps', path.join(APP_DIR, 'crash'))
-    app.setPath('temp', path.join(APP_DIR, 'tmp'))
+    const tmpDir = path.join(APP_DIR, 'tmp')
+    try {
+        mkdirSync(tmpDir, { recursive: true })
+    } catch {
+        /* best-effort */
+    }
+
+    app.setPath('temp', tmpDir)
     app.setPath('userCache', path.join(APP_DIR, 'cache'))
 
     return
