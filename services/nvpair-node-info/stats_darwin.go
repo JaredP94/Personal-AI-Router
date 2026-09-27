@@ -42,6 +42,9 @@ type statsCollector struct {
 	readGPU    func(context.Context) (darwinGPUReading, error)
 	interval   time.Duration
 
+	lastSnapshot atomic.Int64
+	wakeGPU      chan struct{}
+
 	gpuWarning sync.Once
 	cancel     context.CancelFunc
 	done       sync.WaitGroup
@@ -69,8 +72,10 @@ func newDarwinStatsCollector(
 		readMemory: readMemory,
 		readGPU:    readGPU,
 		interval:   interval,
+		wakeGPU:    make(chan struct{}, 1),
 		cancel:     cancel,
 	}
+	c.lastSnapshot.Store(time.Now().UnixNano())
 	c.latest.Store(initialDarwinMemorySnapshot(readMemory))
 	c.prevCPU = readCPU()
 	c.done.Add(2)
@@ -101,16 +106,41 @@ func (c *statsCollector) runSystem(ctx context.Context) {
 	}
 }
 
+func (c *statsCollector) gpuInterval() time.Duration {
+	baseInterval := c.interval
+	if baseInterval <= 0 {
+		baseInterval = statsTickInterval
+	}
+	idleThreshold := statsIdleThreshold
+	idleInterval := statsIdleInterval
+	if baseInterval < statsTickInterval {
+		idleThreshold = 3 * baseInterval
+		idleInterval = 5 * baseInterval
+	}
+	last := c.lastSnapshot.Load()
+	if last == 0 || time.Since(time.Unix(0, last)) > idleThreshold {
+		return idleInterval
+	}
+	return baseInterval
+}
+
 func (c *statsCollector) runGPU(ctx context.Context) {
 	defer c.done.Done()
 	for {
 		c.collectGPU(ctx)
-		timer := time.NewTimer(c.interval)
+		timer := time.NewTimer(c.gpuInterval())
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
+		case <-c.wakeGPU:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 		}
 	}
 }
@@ -153,6 +183,18 @@ func (c *statsCollector) decodeSystemSnapshot() *statsSnapshot {
 }
 
 func (c *statsCollector) Snapshot() statsSnapshot {
+	now := time.Now().UnixNano()
+	prev := c.lastSnapshot.Swap(now)
+	idleThreshold := statsIdleThreshold
+	if c.interval > 0 && c.interval < statsTickInterval {
+		idleThreshold = 3 * c.interval
+	}
+	if c.wakeGPU != nil && (prev == 0 || time.Since(time.Unix(0, prev)) > idleThreshold) {
+		select {
+		case c.wakeGPU <- struct{}{}:
+		default:
+		}
+	}
 	p := c.latest.Load()
 	if p == nil {
 		return statsSnapshot{}

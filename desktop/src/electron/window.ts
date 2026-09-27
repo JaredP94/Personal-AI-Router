@@ -292,6 +292,10 @@ export function createOverviewWindow(): void {
         wakeNodeInfoPoller()
     })
 
+    window.on('restore', () => {
+        wakeNodeInfoPoller()
+    })
+
     window.on('closed', () => {
         overviewWindow = null
         overviewReady = false

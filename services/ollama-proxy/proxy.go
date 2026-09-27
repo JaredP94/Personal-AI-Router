@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/bufpool"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/errors"
@@ -403,6 +404,8 @@ type Proxy struct {
 	// from 1 — without it, two concurrent cross-engine jobs, or a reused id
 	// after a restart, would collide in the broker's store.
 	runID string
+
+	bufPool *bufpool.Pool
 }
 
 func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
@@ -414,6 +417,7 @@ func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 		targets:   reach.NewChooser(),
 		runID:     newRunID(),
 		activity:  nodeactivity.NewReporter(activityReportInterval),
+		bufPool:   bufpool.New(),
 	}
 }
 
@@ -1341,7 +1345,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
-			Transport: p.candidateTransport(cand),
+			Transport:  p.candidateTransport(cand),
+			BufferPool: p.bufPool,
 			// ModifyResponse fires when the upstream's status line + headers
 			// have arrived but before the body streams. That's both the retry
 			// decision point and, on commit, the time-to-first-byte boundary.

@@ -254,3 +254,45 @@ func TestDynamicGPUReadingFromIORegistry(t *testing.T) {
 		t.Fatalf("utilization samples = %d, want 2", reading.utilizationSamples)
 	}
 }
+
+func TestDarwinCollectorAdaptiveGPUInterval(t *testing.T) {
+	var gpuReads atomic.Uint64
+	readGPU := func(ctx context.Context) (darwinGPUReading, error) {
+		gpuReads.Add(1)
+		return darwinGPUReading{
+			inventory:          []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
+			stats:              map[string]gpuStat{"ioreg:2a": {UtilizationPct: 50}},
+			utilizationSamples: 1,
+		}, nil
+	}
+
+	interval := 10 * time.Millisecond
+	c := newDarwinStatsCollector(
+		func() darwinCPUTimes { return darwinCPUTimes{idle: 20, total: 100, valid: true} },
+		func() (uint64, bool) { return 8 << 30, true },
+		readGPU,
+		interval,
+	)
+	defer c.Stop()
+
+	// Initially active: initial read happens right away.
+	time.Sleep(35 * time.Millisecond)
+	initialReads := gpuReads.Load()
+	if initialReads == 0 {
+		t.Fatal("expected at least 1 GPU read during active phase")
+	}
+
+	// Wait long enough for idle threshold (3 * interval = 30ms) to trigger.
+	// We wait 70ms without calling Snapshot().
+	time.Sleep(70 * time.Millisecond)
+	idleReads := gpuReads.Load()
+
+	// Calling Snapshot() should immediately wake the collector from idle.
+	c.Snapshot()
+	time.Sleep(5 * time.Millisecond)
+	wokenReads := gpuReads.Load()
+	if wokenReads <= idleReads {
+		t.Fatalf("expected Snapshot() to wake collector from idle: idleReads=%d, wokenReads=%d", idleReads, wokenReads)
+	}
+}
+

@@ -30,8 +30,10 @@ import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { InferenceDemoToast } from '@/ui/components/InferenceDemoToast'
 
 function MainApp() {
-    const { connected, selfId } = useConnectionStore(state => state)
-    const { fetchedNodes, clearNodes } = useNodesStore(state => state)
+    const connected = useConnectionStore(state => state.connected)
+    const selfId = useConnectionStore(state => state.selfId)
+    const fetchedNodes = useNodesStore(state => state.fetchedNodes)
+    const clearNodes = useNodesStore(state => state.clearNodes)
     const activeTab = useOverviewUiStore(state => state.activeTab)
     const settingsSubTab = useOverviewUiStore(state => state.settingsSubTab)
     const serviceSettingsOpen = activeTab === 'settings' && settingsSubTab === 'service'

@@ -131,7 +131,8 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 				req.Header.Set("Authorization", "Bearer "+key)
 			}
 		},
-		Transport: p.plainHTTPTransport(),
+		Transport:  p.plainHTTPTransport(),
+		BufferPool: p.bufPool,
 		ErrorHandler: func(ew http.ResponseWriter, _ *http.Request, err error) {
 			slog.Warn("cluster ingress upstream error", "target", target.Host, "err", err)
 			writeIngressError(ew, http.StatusBadGateway, "backend-error", "local inference backend error")

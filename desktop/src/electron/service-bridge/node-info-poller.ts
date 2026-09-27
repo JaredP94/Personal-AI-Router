@@ -117,7 +117,7 @@ function hasVisibleUiWindow(): boolean {
     try {
         const windows = BrowserWindow.getAllWindows()
         if (windows.length === 0) return true
-        return windows.some(w => !w.isDestroyed() && w.isVisible())
+        return windows.some(w => !w.isDestroyed() && w.isVisible() && !w.isMinimized())
     } catch {
         return true
     }

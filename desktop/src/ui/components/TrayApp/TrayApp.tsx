@@ -64,6 +64,7 @@ export default function TrayApp() {
     }, [pendingInviteCount])
 
     useEffect(() => {
+        if (!isVisible) return
         const el = contentRef.current
         if (!el) return
 
@@ -87,7 +88,7 @@ export default function TrayApp() {
             observer.disconnect()
             window.removeEventListener('focus', onFocus)
         }
-    }, [])
+    }, [isVisible])
 
     const scrollMaxHeight = maxHeight > 0 ? maxHeight - 52 : undefined
 

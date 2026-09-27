@@ -75,6 +75,9 @@ type statsCollector struct {
 	// re-spawn (and re-warn about) a missing binary every tick.
 	nvidiaUnavailable atomic.Bool
 
+	lastSnapshot  atomic.Int64
+	lastGPUSample time.Time
+
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
@@ -90,6 +93,7 @@ func startStatsCollector() *statsCollector {
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}
+	c.lastSnapshot.Store(time.Now().UnixNano())
 	c.latest.Store(initialMemorySnapshot(readMemoryUsed))
 	// Prime the CPU baseline so the first tick produces a real delta rather
 	// than a spurious reading (with no previous sample, util reports 0).
@@ -143,8 +147,13 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	gpu := make(map[string]gpuStat)
 	sampledAt := time.Time{}
-	if c.decodeGPU(gpu) {
-		sampledAt = time.Now()
+	lastRead := c.lastSnapshot.Load()
+	isIdle := lastRead != 0 && time.Since(time.Unix(0, lastRead)) > statsIdleThreshold
+	if !isIdle || time.Since(c.lastGPUSample) >= statsIdleInterval {
+		if c.decodeGPU(gpu) {
+			sampledAt = time.Now()
+			c.lastGPUSample = sampledAt
+		}
 	}
 	applyGPUStats(previous, snap, gpu, sampledAt)
 	return snap
@@ -177,6 +186,7 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 // callers — the value is immutable post-publish. Returns a zero-value
 // snapshot before the first tick, so callers need no nil checks.
 func (c *statsCollector) Snapshot() statsSnapshot {
+	c.lastSnapshot.Store(time.Now().UnixNano())
 	p := c.latest.Load()
 	if p == nil {
 		return statsSnapshot{}
