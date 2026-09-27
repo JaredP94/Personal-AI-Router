@@ -6,6 +6,7 @@ import './NodeActive.css'
 
 export default function NodeActive({ show, color }: { show: boolean; color: string }) {
     const borderColor = useMemo(() => {
+        if (!show) return { first: '', second: '', third: '', fourth: '' }
         const first = `${color}87`
         const second = `${color}30`
         const third = `${color}75`
@@ -16,11 +17,12 @@ export default function NodeActive({ show, color }: { show: boolean; color: stri
             third,
             fourth
         }
-    }, [color])
+    }, [color, show])
 
     const activeShadow = useMemo(() => {
+        if (!show) return ''
         return `0 0 2px 1px ${borderColor.first}, 0 0 15px ${borderColor.second}, 0 0 30px ${borderColor.third}, 0 0 60px ${borderColor.fourth}`
-    }, [borderColor])
+    }, [borderColor, show])
 
     const ringClass = useMemo(() => {
         return `ring-item`
@@ -39,10 +41,14 @@ export default function NodeActive({ show, color }: { show: boolean; color: stri
         }
     }, [activeShadow])
 
+    if (!show) {
+        return null
+    }
+
     return (
         <div
             className={`ring-outer-container transition-opacity duration-300`}
-            style={{ opacity: show ? 1 : 0 }}
+            style={{ opacity: 1 }}
         >
             <div className="ring-inner-container">
                 <div className="ring-glow" style={glowStyle} />

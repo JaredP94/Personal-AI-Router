@@ -176,3 +176,80 @@ func TestDirectorySnapshotFilterAndSort(t *testing.T) {
 		t.Fatalf("snapshot(ol) = %d, want 2", len(ol))
 	}
 }
+
+func TestDirectoryDeduplicatesIdenticalApply(t *testing.T) {
+	d := NewDirectory()
+	sub := &recordingSub{}
+	d.Subscribe(&Subscriber{Filter: noderec.SubscribeParams{}, Send: sub.send})
+
+	d.Apply(noderec.NotifyNodeDiscovered, olNode("a"))
+	if len(sub.snaps) != 1 {
+		t.Fatalf("expected 1 delivery on first discovery, got %d", len(sub.snaps))
+	}
+
+	// Re-applying identical node should be deduplicated and produce no new delivery.
+	d.Apply(noderec.NotifyNodeUpdated, olNode("a"))
+	if len(sub.snaps) != 1 {
+		t.Errorf("expected still 1 delivery after identical update, got %d", len(sub.snaps))
+	}
+
+	// Removing absent node should also not trigger delivery.
+	d.Apply(noderec.NotifyNodeRemoved, olNode("non-existent"))
+	if len(sub.snaps) != 1 {
+		t.Errorf("expected still 1 delivery after absent removal, got %d", len(sub.snaps))
+	}
+}
+
+func TestDirectoryScannerPrecedenceOverManual(t *testing.T) {
+	d := NewDirectory()
+	sub := &recordingSub{}
+	d.Subscribe(&Subscriber{Filter: noderec.SubscribeParams{}, Send: sub.send})
+
+	scannerNode := noderec.DirectoryNode{
+		HostUUID: "uuid-1",
+		Name:     "workstation.local",
+		IP:       "192.168.1.50",
+		IPs:      []string{"192.168.1.50"},
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+	}
+	d.ApplySource(SourceScanner, noderec.NotifyNodeDiscovered, scannerNode)
+	if len(sub.snaps) != 1 {
+		t.Fatalf("expected 1 delivery, got %d", len(sub.snaps))
+	}
+	if sub.last()[0].Name != "workstation.local" {
+		t.Errorf("expected name workstation.local, got %s", sub.last()[0].Name)
+	}
+
+	// Manual update for the same hostUuid should NOT overwrite scanner's name, but should merge manual IP.
+	manualNode := noderec.DirectoryNode{
+		HostUUID: "uuid-1",
+		Name:     "100.100.100.1",
+		IP:       "100.100.100.1",
+		IPs:      []string{"100.100.100.1"},
+		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+	}
+	d.ApplySource(SourceManual, noderec.NotifyNodeDiscovered, manualNode)
+	if len(sub.snaps) != 2 {
+		t.Fatalf("expected 2 deliveries (due to new IP merged), got %d", len(sub.snaps))
+	}
+	// Name must remain the scanner's authoritative hostname
+	last := sub.last()[0]
+	if last.Name != "workstation.local" {
+		t.Errorf("expected scanner Name to take precedence, got %s", last.Name)
+	}
+	if !reflect.DeepEqual(last.IPs, []string{"192.168.1.50", "100.100.100.1"}) {
+		t.Errorf("expected merged IPs [192.168.1.50 100.100.100.1], got %v", last.IPs)
+	}
+
+	// Repeated manual probe with the same data should be completely deduplicated (no flapping!)
+	d.ApplySource(SourceManual, noderec.NotifyNodeUpdated, manualNode)
+	if len(sub.snaps) != 2 {
+		t.Errorf("expected no extra delivery on repeated manual probe, got %d", len(sub.snaps))
+	}
+
+	// Repeated scanner refresh with the same data should also be deduplicated
+	d.ApplySource(SourceScanner, noderec.NotifyNodeUpdated, scannerNode)
+	if len(sub.snaps) != 2 {
+		t.Errorf("expected no extra delivery on repeated scanner refresh, got %d", len(sub.snaps))
+	}
+}

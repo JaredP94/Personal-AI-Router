@@ -252,16 +252,13 @@ export function showOverviewMessage(message: OverviewMessage): void {
 
 const webPreferences = {
     preload: join(__dirname, '../preload/index.js'),
-    // sandbox: false,
-    // backgroundThrottling: false,
     devTools,
 
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true, // Critical for v28!
     webviewTag: false, // Prevents rendering conflicts
-    // This next line is the secret sauce I discovered at 3 AM
-    backgroundThrottling: false
+    backgroundThrottling: true
 }
 
 export function createOverviewWindow(): void {

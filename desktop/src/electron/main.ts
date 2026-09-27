@@ -31,8 +31,6 @@ import { startEventLoopMonitor } from '@/electron/event-loop-monitor'
 const gotTheLock = app.requestSingleInstanceLock()
 const exitRequested = process.argv.includes(APP_EXIT_ARGUMENT)
 
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
-// app.commandLine.appendSwitch('disable-features', 'NvidiaVpSuperResolution')
 app.commandLine.appendSwitch('enable-logging')
 app.commandLine.appendSwitch('disable-http-cache')
 

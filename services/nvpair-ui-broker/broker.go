@@ -1291,7 +1291,7 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	b.store.Upsert(en, sourceManual)
 	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
 	if b.relayDir != nil {
-		b.relayDir.Apply(noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(s, key))
+		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(s, key))
 	}
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
@@ -1340,14 +1340,14 @@ func (b *Broker) reprojectOrRelease(key string) {
 		b.annotateManualTrust(&en, survivor.status)
 		b.store.Upsert(en, sourceManual)
 		if b.relayDir != nil {
-			b.relayDir.Apply(noderec.NotifyNodeUpdated, b.manualToDirectoryNode(survivor.status, key))
+			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeUpdated, b.manualToDirectoryNode(survivor.status, key))
 		}
 		b.bridgeManualNode(survivor.status, key)
 		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
 		return
 	}
 	if b.store.Remove(key, sourceManual) && b.relayDir != nil {
-		b.relayDir.Apply(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
+		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
 	}
 	b.removeManualNodeFromProxies(key)
 	b.removeTelemetry(sourceManual, key)
@@ -1391,7 +1391,7 @@ func (b *Broker) clearManualNodesState() {
 		seen[key] = true
 		// Drop only the manual claim; a co-located scanner node keeps its record.
 		if b.store.Remove(key, sourceManual) && b.relayDir != nil {
-			b.relayDir.Apply(noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
+			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
 		}
 		b.removeTelemetry(sourceManual, key)
 		// Pull the now-orphaned node out of every proxy too, so inference

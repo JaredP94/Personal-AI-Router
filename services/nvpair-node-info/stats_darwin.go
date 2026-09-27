@@ -17,7 +17,7 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
-const statsTickInterval = time.Second
+const statsTickInterval = 2 * time.Second
 
 type darwinCPUTimes struct {
 	idle  float64

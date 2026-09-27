@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"nvpair-shared/noderec"
+
+	"nvpair-ui-broker/relay"
 )
 
 // manualNodeStatus is the subset of nvpair-manual-nodes' ManualNodeStatus the
@@ -255,7 +257,7 @@ func (b *Broker) refreshManualNodesTrust() {
 		b.annotateManualTrust(&en, entry.status)
 		b.store.Upsert(en, sourceManual)
 		if b.relayDir != nil {
-			b.relayDir.Apply(noderec.NotifyNodeUpdated, b.manualToDirectoryNode(entry.status, key))
+			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeUpdated, b.manualToDirectoryNode(entry.status, key))
 		}
 	}
 }

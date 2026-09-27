@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -173,7 +174,10 @@ func (sn storedNode) projected() EnrichedNode {
 		res.Addresses = merged
 		return res
 	}
-	return *sn.manual
+	if sn.manual != nil {
+		return *sn.manual
+	}
+	return EnrichedNode{}
 }
 
 // claimed reports whether any source still owns this record.
@@ -248,12 +252,16 @@ func (s *discoveryStore) Upsert(n EnrichedNode, source nodeSource) {
 	cp := n
 	s.mu.Lock()
 	sn := s.nodes[key]
+	hadPrior := sn.claimed()
+	prevProjected := sn.projected()
 	sn.setSource(source, &cp)
 	sn.lastSeen = time.Now()
 	s.nodes[key] = sn
+	newProjected := sn.projected()
+	changed := !hadPrior || !enrichedNodeEqual(prevProjected, newProjected)
 	cb := s.onChange
 	s.mu.Unlock()
-	if cb != nil {
+	if cb != nil && changed {
 		cb()
 	}
 }
@@ -277,20 +285,63 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 		slog.Debug("remove for a node this source doesn't own", "key", key)
 		return false
 	}
+	prevProjected := sn.projected()
 	sn.setSource(source, nil)
 	gone := !sn.claimed()
+	var changed bool
 	if gone {
 		delete(s.nodes, key)
+		changed = true
 	} else {
 		sn.lastSeen = time.Now()
 		s.nodes[key] = sn
+		newProjected := sn.projected()
+		changed = !enrichedNodeEqual(prevProjected, newProjected)
 	}
 	cb := s.onChange
 	s.mu.Unlock()
-	if cb != nil {
+	if cb != nil && changed {
 		cb()
 	}
 	return gone
+}
+
+func enrichedNodeEqual(a, b EnrichedNode) bool {
+	if a.ID != b.ID || a.HostUUID != b.HostUUID || a.Host != b.Host || a.Port != b.Port ||
+		a.Trusted != b.Trusted || a.Clustered != b.Clustered {
+		return false
+	}
+	if !slices.Equal(a.Addresses, b.Addresses) || !slices.Equal(a.TXT, b.TXT) || !slices.Equal(a.Models, b.Models) {
+		return false
+	}
+	if !slices.Equal(a.GPUs, b.GPUs) {
+		return false
+	}
+	if (a.CPU == nil) != (b.CPU == nil) || (a.CPU != nil && *a.CPU != *b.CPU) {
+		return false
+	}
+	if (a.Memory == nil) != (b.Memory == nil) || (a.Memory != nil && *a.Memory != *b.Memory) {
+		return false
+	}
+	if len(a.ModelsByEngine) != len(b.ModelsByEngine) {
+		return false
+	}
+	for k, va := range a.ModelsByEngine {
+		vb, ok := b.ModelsByEngine[k]
+		if !ok || !slices.Equal(va, vb) {
+			return false
+		}
+	}
+	if len(a.LoadedByEngine) != len(b.LoadedByEngine) {
+		return false
+	}
+	for k, va := range a.LoadedByEngine {
+		vb, ok := b.LoadedByEngine[k]
+		if !ok || !slices.Equal(va, vb) {
+			return false
+		}
+	}
+	return true
 }
 
 // Snapshot returns the narrow wire-format view used by
@@ -599,7 +650,7 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 		// services) and the client-facing store (discovery:get-nodes /
 		// nodes-changed, merging manual nodes), carrying the trusted annotation.
 		if s.relayDir != nil {
-			s.relayDir.Apply(method, ev.Node)
+			s.relayDir.ApplySource(relay.SourceScanner, method, ev.Node)
 		}
 		if method == noderec.NotifyNodeRemoved && s.onTelemetryRemoved != nil {
 			s.onTelemetryRemoved(ev.Node.HostUUID)

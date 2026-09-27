@@ -124,6 +124,42 @@ interface PendingActionsState {
 
 let unsubs: Array<() => void> = []
 let sweepTimer: ReturnType<typeof setInterval> | null = null
+let initialized = false
+
+function clearSweepTimer(): void {
+    if (sweepTimer !== null) {
+        clearInterval(sweepTimer)
+        sweepTimer = null
+    }
+}
+
+function ensureSweepTimer(
+    get: () => PendingActionsState,
+    set: (partial: Partial<PendingActionsState>) => void
+): void {
+    if (sweepTimer !== null) return
+    sweepTimer = setInterval(() => {
+        const now = Date.now()
+        const toClear: string[] = []
+        for (const [key, p] of get().pending) {
+            if (now >= p.expiresAt) toClear.push(key)
+        }
+        if (toClear.length > 0) {
+            const current = get().pending
+            let next: Map<string, PendingAction> | null = null
+            for (const key of toClear) {
+                if (current.has(key)) {
+                    if (!next) next = new Map(current)
+                    next.delete(key)
+                }
+            }
+            if (next) set({ pending: next })
+        }
+        if (get().pending.size === 0) {
+            clearSweepTimer()
+        }
+    }, SWEEP_INTERVAL_MS)
+}
 
 /**
  * Last-known modular connector status. The store only initializes on connect,
@@ -158,6 +194,7 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                 expiresAt
             })
             set({ pending: next })
+            ensureSweepTimer(get, set)
             return
         }
 
@@ -171,6 +208,7 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                 expiresAt
             })
             set({ pending: next })
+            ensureSweepTimer(get, set)
         }
     },
 
@@ -183,7 +221,8 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
     initialize: () => {
         // Guard against double-subscribe: initialize() runs on connect and again
         // after a leave-cluster refresh without an intervening cleanup().
-        if (sweepTimer !== null) return
+        if (initialized) return
+        initialized = true
 
         const clearKeys = (keys: string[]): void => {
             if (keys.length === 0) return
@@ -195,7 +234,12 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                     next.delete(key)
                 }
             }
-            if (next) set({ pending: next })
+            if (next) {
+                set({ pending: next })
+                if (next.size === 0) {
+                    clearSweepTimer()
+                }
+            }
         }
 
         if (window.pairApi) {
@@ -273,28 +317,22 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
                     connectorStatus = status.connectorStatus
                     if (status.connectorStatus === 'disconnected' && get().pending.size > 0) {
                         set({ pending: new Map() })
+                        clearSweepTimer()
                     }
                 })
             )
         }
 
-        sweepTimer = setInterval(() => {
-            const now = Date.now()
-            const toClear: string[] = []
-            for (const [key, p] of get().pending) {
-                if (now >= p.expiresAt) toClear.push(key)
-            }
-            clearKeys(toClear)
-        }, SWEEP_INTERVAL_MS)
+        if (get().pending.size > 0) {
+            ensureSweepTimer(get, set)
+        }
     },
 
     cleanup: () => {
         unsubs.forEach(u => u())
         unsubs = []
-        if (sweepTimer !== null) {
-            clearInterval(sweepTimer)
-            sweepTimer = null
-        }
+        clearSweepTimer()
+        initialized = false
         if (get().pending.size > 0) set({ pending: new Map() })
     }
 }))

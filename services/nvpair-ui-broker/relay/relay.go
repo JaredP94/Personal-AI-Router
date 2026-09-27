@@ -16,6 +16,7 @@
 package relay
 
 import (
+	"slices"
 	"sort"
 	"sync"
 
@@ -102,20 +103,106 @@ type Subscriber struct {
 	sendMu sync.Mutex
 }
 
+// Source identifies whether an update comes from the network scanner or manual nodes.
+type Source int
+
+const (
+	SourceScanner Source = iota
+	SourceManual
+)
+
+type directoryEntry struct {
+	scanner *noderec.DirectoryNode
+	manual  *noderec.DirectoryNode
+}
+
+func (e directoryEntry) projected() (noderec.DirectoryNode, bool) {
+	if e.scanner != nil {
+		res := *e.scanner
+		if e.manual != nil && len(e.manual.IPs) > 0 {
+			seen := make(map[string]bool, len(res.IPs)+len(e.manual.IPs))
+			for _, ip := range res.IPs {
+				seen[ip] = true
+			}
+			merged := append([]string(nil), res.IPs...)
+			for _, ip := range e.manual.IPs {
+				if !seen[ip] && ip != "" {
+					seen[ip] = true
+					merged = append(merged, ip)
+				}
+			}
+			res.IPs = merged
+		}
+		return res, true
+	}
+	if e.manual != nil {
+		return *e.manual, true
+	}
+	return noderec.DirectoryNode{}, false
+}
+
+func directoryNodeEqual(a, b noderec.DirectoryNode) bool {
+	if a.HostUUID != b.HostUUID || a.Name != b.Name || a.IP != b.IP || a.ClusterUUID != b.ClusterUUID || a.Trusted != b.Trusted {
+		return false
+	}
+	if !slices.Equal(a.IPs, b.IPs) || !slices.Equal(a.Models, b.Models) {
+		return false
+	}
+	if len(a.Services) != len(b.Services) {
+		return false
+	}
+	for k, va := range a.Services {
+		vb, ok := b.Services[k]
+		if !ok || va != vb {
+			return false
+		}
+	}
+	if len(a.ModelsByEngine) != len(b.ModelsByEngine) {
+		return false
+	}
+	for k, va := range a.ModelsByEngine {
+		vb, ok := b.ModelsByEngine[k]
+		if !ok || !slices.Equal(va, vb) {
+			return false
+		}
+	}
+	if len(a.LoadedByEngine) != len(b.LoadedByEngine) {
+		return false
+	}
+	for k, va := range a.LoadedByEngine {
+		vb, ok := b.LoadedByEngine[k]
+		if !ok || !slices.Equal(va, vb) {
+			return false
+		}
+	}
+	if !slices.Equal(a.GPUs, b.GPUs) {
+		return false
+	}
+	if (a.CPU == nil) != (b.CPU == nil) || (a.CPU != nil && *a.CPU != *b.CPU) {
+		return false
+	}
+	if (a.Memory == nil) != (b.Memory == nil) || (a.Memory != nil && *a.Memory != *b.Memory) {
+		return false
+	}
+	return true
+}
+
 // Directory is the broker's view of all LAN nodes (keyed by hostUuid) plus its
 // subscriber set. It's fed by the daemon's node-* events via Apply and queried
 // by discovery:get-nodes via Snapshot.
 type Directory struct {
-	mu     sync.Mutex
-	nodes  map[string]noderec.DirectoryNode
-	subs   map[int]*Subscriber
-	nextID int
+	mu      sync.Mutex
+	entries map[string]directoryEntry
+	nodes   map[string]noderec.DirectoryNode
+	subs    map[int]*Subscriber
+	nextID  int
 }
 
 func NewDirectory() *Directory {
 	return &Directory{
-		nodes: make(map[string]noderec.DirectoryNode),
-		subs:  make(map[int]*Subscriber),
+		entries: make(map[string]directoryEntry),
+		nodes:   make(map[string]noderec.DirectoryNode),
+		subs:    make(map[int]*Subscriber),
 	}
 }
 
@@ -167,26 +254,63 @@ func (d *Directory) Unsubscribe(id int) {
 	d.mu.Unlock()
 }
 
-// Apply folds a daemon node-* delta into the directory, then re-sends every
-// subscriber its full filtered snapshot. method (one of noderec.NotifyNode{
-// Discovered,Updated,Removed}) only updates the directory — removed drops the
-// node by hostUuid, discovered/updated upsert it. Every subscriber is re-pushed
-// on any change (not just those matching the changed node) so each consumer's
-// set is always the authoritative current list; the push is idempotent (the
-// consumer replaces with the same set), so a re-push for an unrelated change is a
-// cheap no-op at this scale.
+// Apply folds a daemon node-* delta into the directory (defaulting to SourceScanner),
+// then re-sends every subscriber its full filtered snapshot if the directory changed.
 func (d *Directory) Apply(method string, node noderec.DirectoryNode) {
-	d.mu.Lock()
-	if method == noderec.NotifyNodeRemoved {
-		delete(d.nodes, node.HostUUID)
-	} else {
-		d.nodes[node.HostUUID] = node
+	d.ApplySource(SourceScanner, method, node)
+}
+
+// ApplySource folds a node delta from a specific source (scanner or manual) into the
+// directory. When both sources report the same hostUuid, the scanner view takes
+// precedence (authoritative hostname/mDNS identity) with manual addresses merged as
+// fallbacks, preventing oscillation. Deliveries to subscribers are only made when
+// the projected node state actually changes.
+func (d *Directory) ApplySource(source Source, method string, node noderec.DirectoryNode) {
+	if node.HostUUID == "" {
+		return
 	}
+	d.mu.Lock()
+	entry := d.entries[node.HostUUID]
+	prevNode, hadPrev := d.nodes[node.HostUUID]
+
+	if method == noderec.NotifyNodeRemoved {
+		if source == SourceScanner {
+			entry.scanner = nil
+		} else {
+			entry.manual = nil
+		}
+	} else {
+		cp := node
+		if source == SourceScanner {
+			entry.scanner = &cp
+		} else {
+			entry.manual = &cp
+		}
+	}
+
+	proj, exists := entry.projected()
+	var changed bool
+	if exists {
+		d.entries[node.HostUUID] = entry
+		d.nodes[node.HostUUID] = proj
+		changed = !hadPrev || !directoryNodeEqual(prevNode, proj)
+	} else {
+		delete(d.entries, node.HostUUID)
+		delete(d.nodes, node.HostUUID)
+		changed = hadPrev
+	}
+
+	if !changed {
+		d.mu.Unlock()
+		return
+	}
+
 	subs := make([]*Subscriber, 0, len(d.subs))
 	for _, s := range d.subs {
 		subs = append(subs, s)
 	}
 	d.mu.Unlock()
+
 	// Deliver captures each subscriber's snapshot at send time (under its
 	// per-subscriber lock), so this fan-out and a concurrent initial delivery
 	// can't reorder into a stale set.

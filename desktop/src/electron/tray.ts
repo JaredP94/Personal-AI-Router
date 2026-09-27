@@ -80,6 +80,10 @@ class TrayManager {
 
             this.isVisible = true
             this.retryCount = 0
+            if (this.visibilityInterval) {
+                clearInterval(this.visibilityInterval)
+                this.visibilityInterval = undefined
+            }
             log.info({ sublevel: 'lifecycle', message: 'Tray initialized successfully' })
         } catch (error) {
             log.error({ sublevel: 'lifecycle', message: `Failed to initialize tray: ${error}` })
@@ -279,10 +283,14 @@ class TrayManager {
     }
 
     private setupVisibilityCheck(): void {
+        if (this.visibilityInterval) clearInterval(this.visibilityInterval)
         this.visibilityInterval = setInterval(() => {
             if (!this.isVisible && this.retryCount < MAX_RETRIES) {
                 log.warn({ sublevel: 'lifecycle', message: 'Tray not visible, recreating' })
                 this.recreateTray()
+            } else if (this.visibilityInterval) {
+                clearInterval(this.visibilityInterval)
+                this.visibilityInterval = undefined
             }
         }, VISIBILITY_CHECK_INTERVAL)
     }
