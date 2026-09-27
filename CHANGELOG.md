@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-09-27
+
 ### Added
 - **ReverseProxy Buffer Pooling**: Introduced `bufpool.Pool` in `nvpair-shared` backed by `sync.Pool` (32 KB buffers). Wired into local ingress and outbound reverse proxies across Ollama, LM Studio, and oMLX proxies, eliminating buffer allocations during high-throughput streaming inference.
 - **Adaptive GPU Sampling**: Scaled GPU telemetry collection in `nvpair-node-info` (`/usr/sbin/ioreg` on macOS, `nvidia-smi` on Linux) to dynamically transition from a 2-second active interval to a 10-second idle interval when no clients query `Snapshot()` for >6 seconds. Client requests wake the GPU worker immediately with zero latency.
