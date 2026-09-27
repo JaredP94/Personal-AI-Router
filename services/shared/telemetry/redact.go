@@ -6,11 +6,13 @@ package telemetry
 import "strings"
 
 var sensitiveHeaderKeys = map[string]struct{}{
-	"authorization": {},
-	"cookie":        {},
-	"x-pair-pin":    {},
-	"x-api-key":     {},
-	"proxy-auth":    {},
+	"authorization":       {},
+	"cookie":              {},
+	"x-pair-pin":          {},
+	"x-api-key":           {},
+	"proxy-auth":          {},
+	"proxy-authorization": {},
+	"set-cookie":          {},
 }
 
 func RedactHeaders(headers map[string][]string) map[string]string {
