@@ -25,6 +25,12 @@ import {
     readPendingUpdateVersion,
     writePendingUpdateVersion
 } from '@/electron/updater/pending-update-store'
+import {
+    cleanOldMacDmgs,
+    downloadMacUpdate,
+    getCachedMacDmgPath,
+    quitAndInstallMacUpdate
+} from '@/electron/updater/mac-updater'
 
 const { autoUpdater } = electronUpdater
 
@@ -124,6 +130,10 @@ function loadPendingDownloadedVersion(): void {
         clearPendingUpdate()
         return
     }
+    if (process.platform === 'darwin' && !getCachedMacDmgPath(marker)) {
+        clearPendingUpdate()
+        return
+    }
     pendingDownloadedVersion = marker
 }
 
@@ -138,10 +148,19 @@ export function initializeUpdater(): void {
     if (!app.isPackaged) return
 
     loadPendingDownloadedVersion()
+    if (process.platform === 'darwin') {
+        cleanOldMacDmgs(pkg.version)
+    }
 
     autoUpdater.logger = log
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false
+
+    autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: 'JaredP94',
+        repo: 'Personal-AI-Router'
+    })
 
     autoUpdater.on('checking-for-update', () => {
         setStatus({ phase: 'checking', error: null })
@@ -154,10 +173,16 @@ export function initializeUpdater(): void {
             downloadPercent: null,
             error: null
         })
-        // A previously downloaded update is still cached on disk; re-arm
-        // electron-updater so `quitAndInstall` works and the install button
-        // returns without a real re-download.
-        if (pendingDownloadedVersion === info.version) {
+        if (process.platform === 'darwin') {
+            if (pendingDownloadedVersion === info.version && getCachedMacDmgPath(info.version)) {
+                setStatus({
+                    phase: 'downloaded',
+                    latestVersion: info.version,
+                    downloadPercent: 100,
+                    error: null
+                })
+            }
+        } else if (pendingDownloadedVersion === info.version) {
             void downloadUpdate()
         }
     })
@@ -223,6 +248,29 @@ export async function downloadUpdate(): Promise<void> {
     // Emit the downloading state immediately so the UI gives deterministic
     // feedback before electron-updater's first download-progress event.
     setStatus({ phase: 'downloading', downloadPercent: null, error: null })
+    if (process.platform === 'darwin') {
+        const targetVersion = status.latestVersion
+        if (!targetVersion) {
+            failUpdate(new Error('No update version available to download'), 'download')
+            return
+        }
+        try {
+            await downloadMacUpdate(targetVersion, percent => {
+                setStatus({ phase: 'downloading', downloadPercent: percent })
+            })
+            activeUpdateOperation = null
+            pendingDownloadedVersion = targetVersion
+            setStatus({
+                phase: 'downloaded',
+                latestVersion: targetVersion,
+                downloadPercent: 100,
+                error: null
+            })
+        } catch (err) {
+            failUpdate(err, 'download')
+        }
+        return
+    }
     try {
         await autoUpdater.downloadUpdate()
         activeUpdateOperation = null
@@ -237,6 +285,12 @@ export async function quitAndInstallUpdate(): Promise<void> {
         return
     }
     if (!app.isPackaged) return
+    if (process.platform === 'darwin') {
+        const targetVersion = status.latestVersion ?? pendingDownloadedVersion
+        if (!targetVersion) return
+        await quitAndInstallMacUpdate(targetVersion)
+        return
+    }
     await destroyConnector({ force: true })
     autoUpdater.quitAndInstall()
 }

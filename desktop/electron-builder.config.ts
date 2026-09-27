@@ -247,9 +247,11 @@ const config: Configuration = {
     directories: {
         output
     },
-    // The public build never publishes. NVIDIA's update-feed publishing is
-    // layered on by internal-build/electron-builder.config.ts.
-    publish: null,
+    publish: {
+        provider: 'github',
+        owner: 'JaredP94',
+        repo: 'Personal-AI-Router'
+    },
     /**
      * Positive whitelist. The main/preload bundles inline every npm dep they
      * touch (electron.vite.config.ts does not externalize anything), so the
@@ -290,6 +292,11 @@ const config: Configuration = {
             // by the broker.
             from: INFERENCE_DISPATCHER_RESOURCE_DIR,
             to: INFERENCE_DISPATCHER_RESOURCE_DIR
+        },
+        {
+            // Automated installer / updater script for macOS
+            from: '../scripts/install-mac.sh',
+            to: 'scripts/install-mac.sh'
         },
         {
             // Repo-root wipe scripts (append-only inventory). Packaged builds call

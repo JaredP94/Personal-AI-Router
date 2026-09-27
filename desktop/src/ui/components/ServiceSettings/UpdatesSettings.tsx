@@ -120,53 +120,35 @@ export default function ApplicationUpdatesCard() {
                                     Check for updates
                                 </Button>
                             )}
-                            {isMac && (showDownload || showInstall) ? (
-                                <Stack gap="2" className="pt-2">
-                                    <Text kind="body/regular/sm" className="text-subtle-color">
-                                        Run the install script in Terminal to update without
-                                        Gatekeeper quarantine:
-                                    </Text>
-                                    <Flex gap="2" align="center" wrap="wrap">
-                                        <Button
-                                            kind="primary"
-                                            color="brand"
-                                            size="small"
-                                            onClick={handleCopyCommand}
-                                        >
-                                            {copied ? 'Command copied!' : 'Copy update command'}
-                                        </Button>
-                                        <Button
-                                            kind="secondary"
-                                            size="small"
-                                            onClick={handleOpenRelease}
-                                        >
-                                            View release
-                                        </Button>
-                                    </Flex>
-                                </Stack>
-                            ) : (
-                                <>
-                                    {showDownload && (
-                                        <Button
-                                            kind="primary"
-                                            color="brand"
-                                            size="small"
-                                            onClick={runDownload}
-                                        >
-                                            Download update
-                                        </Button>
-                                    )}
-                                    {showInstall && (
-                                        <Button
-                                            kind="primary"
-                                            color="brand"
-                                            size="small"
-                                            onClick={runInstall}
-                                        >
-                                            Restart &amp; install
-                                        </Button>
-                                    )}
-                                </>
+                            {showDownload && (
+                                <Button
+                                    kind="primary"
+                                    color="brand"
+                                    size="small"
+                                    onClick={runDownload}
+                                >
+                                    Download update
+                                </Button>
+                            )}
+                            {showInstall && (
+                                <Button
+                                    kind="primary"
+                                    color="brand"
+                                    size="small"
+                                    onClick={runInstall}
+                                >
+                                    Restart &amp; install
+                                </Button>
+                            )}
+                            {isMac && (showDownload || showInstall) && (
+                                <Button kind="secondary" size="small" onClick={handleCopyCommand}>
+                                    {copied ? 'Command copied!' : 'Copy update command'}
+                                </Button>
+                            )}
+                            {(showDownload || showInstall) && (
+                                <Button kind="secondary" size="small" onClick={handleOpenRelease}>
+                                    View release
+                                </Button>
                             )}
                         </>
                     ) : (
