@@ -32,6 +32,7 @@ export const MODULAR_DEFAULT_LOG_LEVEL: ModularLogLevel = 'warn'
 // for CPU/GPU/VRAM/memory metrics. Everything else flows over JSON-RPC. Healthy
 // nodes use this cadence; repeated failures back off to the cap below.
 export const MODULAR_NODE_INFO_POLL_INTERVAL_MS = 2_000
+export const MODULAR_NODE_INFO_IDLE_POLL_INTERVAL_MS = 30_000
 export const MODULAR_NODE_INFO_POLL_BACKOFF_MAX_MS = 30_000
 // One attempt against one address. In the steady state that is the whole cost of
 // a node's poll: the poller remembers the address that answered and asks only

@@ -81,6 +81,7 @@ export interface IpcChannelMap {
     // -- Tray --
     'tray:resize': { request: number; response: number }
     'tray:show-menu': { request: void; response: void }
+    'tray:is-visible': { request: void; response: boolean }
 
     // -- Service lifecycle (controls the CLI child process) --
     'service:get-status': { request: void; response: ServiceStatus }
@@ -142,6 +143,8 @@ export interface IpcChannelMap {
 export interface IpcPushChannelMap {
     /** Node-local Inference Demo progress. Broadcast to every window. */
     'demo:state': DemoState
+    /** Tray window visibility state changes. */
+    'tray:visibility': boolean
 }
 
 export type IpcPushChannelKey = keyof IpcPushChannelMap

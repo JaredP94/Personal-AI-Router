@@ -8,6 +8,7 @@ import { is } from '@electron-toolkit/utils'
 import type { OverviewCommand, OverviewMessage } from '@/shared/types/overview'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { openExternalSafe } from '@/electron/open-external'
+import { wakeNodeInfoPoller } from '@/electron/service-bridge/node-info-poller'
 
 const MIN_DIMENSION = 420
 
@@ -266,6 +267,7 @@ export function createOverviewWindow(): void {
     if (currentWindow) {
         currentWindow.show()
         currentWindow.focus()
+        wakeNodeInfoPoller()
         return
     }
 
@@ -285,6 +287,10 @@ export function createOverviewWindow(): void {
 
     overviewReady = false
     overviewWindow = window
+
+    window.on('show', () => {
+        wakeNodeInfoPoller()
+    })
 
     window.on('closed', () => {
         overviewWindow = null

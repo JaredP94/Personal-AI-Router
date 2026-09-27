@@ -4,7 +4,12 @@
 import { app, BrowserWindow, clipboard, Menu, nativeImage } from 'electron'
 import { safeHandle } from '@/electron/ipc/safe-handle'
 import { openExternalSafe } from '@/electron/open-external'
-import { createOverviewWindow, focusNodeInOverview, markOverviewReady } from '@/electron/window'
+import {
+    createOverviewWindow,
+    focusNodeInOverview,
+    getTrayWindow,
+    markOverviewReady
+} from '@/electron/window'
 import { warmEngineHubs } from '@/electron/model-hub'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 import { resizeTrayWindow } from '@/electron/tray'
@@ -63,6 +68,11 @@ export function registerWindowIpc(): void {
 
     safeHandle('tray:resize', (_event, height) => {
         return resizeTrayWindow(height)
+    })
+
+    safeHandle('tray:is-visible', () => {
+        const win = getTrayWindow()
+        return win && !win.isDestroyed() ? win.isVisible() : false
     })
 
     safeHandle('tray:show-menu', event => {

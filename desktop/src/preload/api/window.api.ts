@@ -24,6 +24,8 @@ export interface IWindowActionApi {
     openExternal(url: string): Promise<void>
     quit(): Promise<void>
     resizeTray(height: number): Promise<number>
+    isTrayVisible(): Promise<boolean>
+    onTrayVisibilityChanged(callback: (visible: boolean) => void): () => void
     showTrayMenu(): Promise<void>
     copyToClipboard(text: string): Promise<void>
     /** PNG/JPEG/WebP/etc. bytes as standard base64; main uses `clipboard.writeImage`. */
@@ -58,6 +60,14 @@ export const windowActionApi: IWindowActionApi = {
     openExternal: url => invokeAndUnwrap<void>(ipcRenderer.invoke('window:open-external', url)),
     quit: () => invokeAndUnwrap<void>(ipcRenderer.invoke('window:quit')),
     resizeTray: height => invokeAndUnwrap<number>(ipcRenderer.invoke('tray:resize', height)),
+    isTrayVisible: () => invokeAndUnwrap<boolean>(ipcRenderer.invoke('tray:is-visible')),
+    onTrayVisibilityChanged: callback => {
+        const handler = (_event: Electron.IpcRendererEvent, visible: boolean) => {
+            callback(visible)
+        }
+        ipcRenderer.on('tray:visibility', handler)
+        return () => ipcRenderer.removeListener('tray:visibility', handler)
+    },
     showTrayMenu: () => invokeAndUnwrap<void>(ipcRenderer.invoke('tray:show-menu')),
     copyToClipboard: text =>
         invokeAndUnwrap<void>(ipcRenderer.invoke('window:copy-to-clipboard', text)),

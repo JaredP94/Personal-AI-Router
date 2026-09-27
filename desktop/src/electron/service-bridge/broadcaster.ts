@@ -15,6 +15,7 @@ export function emitBridgePush<C extends WsPushChannel>(
     const message: ServiceBridgePushMessage<C> = { channel, payload }
     for (const window of BrowserWindow.getAllWindows()) {
         if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+        if (channel === 'metrics:update' && !window.isVisible()) continue
         window.webContents.send(PUSH_CHANNEL, message)
     }
     // Mirror to in-process subscribers so non-window consumers see the same

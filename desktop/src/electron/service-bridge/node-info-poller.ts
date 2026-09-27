@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { BrowserWindow } from 'electron'
 import { getModularBridgeState } from './modular-state'
 import type { JsonValue } from './json-rpc-subprocess'
 import getErrorString from '@/shared/utils/get-error-string'
@@ -9,6 +10,7 @@ import {
     MODULAR_NODE_INFO_PATH,
     MODULAR_NODE_INFO_POLL_BACKOFF_MAX_MS,
     MODULAR_NODE_INFO_POLL_INTERVAL_MS,
+    MODULAR_NODE_INFO_IDLE_POLL_INTERVAL_MS,
     MODULAR_NODE_INFO_POLL_TIMEOUT_MS,
     MODULAR_NODE_INFO_WALK_COOLDOWN_MS
 } from '@/shared/constants/modular-runtime'
@@ -16,7 +18,7 @@ import {
 const log = createStructuredLogger('service-bridge')
 const NODE_INFO_ERROR_BODY_DRAIN_LIMIT_BYTES = 64 * 1024
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
  * Aborted by {@link stopNodeInfoPoller}, which is how a poll already mid-fetch is
@@ -111,17 +113,51 @@ interface ReportedOutage {
  */
 const failingNodes = new Map<string, ReportedOutage>()
 
+function hasVisibleUiWindow(): boolean {
+    try {
+        const windows = BrowserWindow.getAllWindows()
+        if (windows.length === 0) return true
+        return windows.some(w => !w.isDestroyed() && w.isVisible())
+    } catch {
+        return true
+    }
+}
+
+function scheduleNextPoll(delayMs?: number): void {
+    if (pollTimer !== null) {
+        clearTimeout(pollTimer)
+        pollTimer = null
+    }
+    const delay =
+        delayMs !== undefined
+            ? delayMs
+            : hasVisibleUiWindow()
+              ? MODULAR_NODE_INFO_POLL_INTERVAL_MS
+              : MODULAR_NODE_INFO_IDLE_POLL_INTERVAL_MS
+    pollTimer = setTimeout(pollNodeInfoTick, delay)
+}
+
+function pollNodeInfoTick(): void {
+    pollNodeInfoOnce()
+    scheduleNextPoll()
+}
+
 export function startNodeInfoPoller(): void {
-    if (pollTimer) return
+    if (pollTimer !== null || pollRun !== null) return
 
     pollRun = new AbortController()
     pollNodeInfoOnce()
-    pollTimer = setInterval(pollNodeInfoOnce, MODULAR_NODE_INFO_POLL_INTERVAL_MS)
+    scheduleNextPoll()
+}
+
+export function wakeNodeInfoPoller(): void {
+    if (pollRun === null) return
+    scheduleNextPoll(0)
 }
 
 export function stopNodeInfoPoller(): void {
-    if (pollTimer) {
-        clearInterval(pollTimer)
+    if (pollTimer !== null) {
+        clearTimeout(pollTimer)
         pollTimer = null
     }
     // Runs even with no timer left: a poll can still be mid-fetch, and its outcome

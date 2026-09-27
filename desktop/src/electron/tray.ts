@@ -4,6 +4,7 @@
 import { app, BrowserWindow, Menu, nativeImage, screen, Tray } from 'electron'
 import { join } from 'path'
 import { createTrayWindow, getTrayWindow, createOverviewWindow } from '@/electron/window'
+import { wakeNodeInfoPoller } from '@/electron/service-bridge/node-info-poller'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
@@ -179,6 +180,17 @@ class TrayManager {
     }
 
     private setupTrayWindowEvents(win: BrowserWindow): void {
+        win.on('show', () => {
+            wakeNodeInfoPoller()
+            if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+                win.webContents.send('tray:visibility', true)
+            }
+        })
+        win.on('hide', () => {
+            if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+                win.webContents.send('tray:visibility', false)
+            }
+        })
         win.on('blur', () => {
             if (this.blurHidingDisabled) return
             const showAge = Date.now() - this.lastShowAtMs
@@ -323,7 +335,7 @@ class TrayManager {
         this.currentHeight = height
 
         const win = getTrayWindow()
-        if (win && !win.isDestroyed()) {
+        if (win && !win.isDestroyed() && win.isVisible()) {
             win.setResizable(true)
             this.positionTrayWindow(win)
             win.setResizable(false)

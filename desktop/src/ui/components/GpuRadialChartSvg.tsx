@@ -55,6 +55,14 @@ export default function GpuRadialChartSvg({
         while (curr.length < targets.length) curr.push(targets[curr.length])
         curr.length = targets.length
 
+        if (typeof document !== 'undefined' && document.hidden) {
+            for (let i = 0; i < targets.length; i++) {
+                curr[i] = targets[i]
+            }
+            setAnimatedValues([...curr])
+            return
+        }
+
         let cancelled = false
         let rafId: number | undefined
         const tick = () => {

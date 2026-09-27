@@ -24,6 +24,32 @@ export default function TrayApp() {
     const contentRef = useRef<HTMLDivElement>(null)
     const previousClusterPromptCountRef = useRef<number | null>(null)
     const [maxHeight, setMaxHeight] = useState(0)
+    const [isVisible, setIsVisible] = useState(false)
+
+    useEffect(() => {
+        let mounted = true
+        if (window.windowApi?.window?.isTrayVisible) {
+            window.windowApi.window
+                .isTrayVisible()
+                .then(v => {
+                    if (mounted) setIsVisible(v)
+                })
+                .catch(() => {
+                    if (mounted) setIsVisible(true)
+                })
+        } else {
+            setIsVisible(true)
+        }
+
+        const unsub = window.windowApi?.window?.onTrayVisibilityChanged?.(v => {
+            if (mounted) setIsVisible(v)
+        })
+
+        return () => {
+            mounted = false
+            unsub?.()
+        }
+    }, [])
 
     const onlineNodes = useMemo(() => nodes.filter(n => n.status !== 'offline'), [nodes])
     const shellView = resolveShellView({ connectorStatus, connected, fetchedNodes })
@@ -64,6 +90,10 @@ export default function TrayApp() {
     }, [])
 
     const scrollMaxHeight = maxHeight > 0 ? maxHeight - 52 : undefined
+
+    if (!isVisible) {
+        return null
+    }
 
     return (
         <Stack ref={contentRef} className="bg-black w-full select-none relative pb-0.5">
