@@ -86,12 +86,32 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+func init() {
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+}
+
 // InjectHTTPContext injects W3C traceparent into an outgoing HTTP request.
 func InjectHTTPContext(ctx context.Context, req *http.Request) {
+	if req == nil {
+		return
+	}
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 }
 
 // ExtractHTTPContext extracts W3C traceparent from an incoming HTTP request.
 func ExtractHTTPContext(req *http.Request) context.Context {
+	if req == nil {
+		return context.Background()
+	}
+	if req.Header == nil {
+		return req.Context()
+	}
 	return otel.GetTextMapPropagator().Extract(req.Context(), propagation.HeaderCarrier(req.Header))
 }
+
