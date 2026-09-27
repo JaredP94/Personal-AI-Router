@@ -147,6 +147,7 @@ const SKIPPED_EXTENSIONS = new Map([
 const SKIPPED_FILENAMES = new Map([
     ['LICENSE', 'the license text itself'],
     ['THIRD_PARTY_NOTICES.md', 'reproduces third-party license texts, so it carries no NVIDIA header'],
+    ['.DS_Store', 'macOS directory metadata'],
 ])
 
 // Matched as an exact path or a directory prefix, against the repo-relative path.

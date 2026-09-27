@@ -22,3 +22,6 @@ __pycache__/
 
 # Per-machine bookkeeping written by the Cursor agent hooks, not configuration.
 /.cursor/hooks/state/
+
+# macOS metadata
+.DS_Store
