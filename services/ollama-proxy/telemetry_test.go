@@ -199,14 +199,68 @@ func TestOllamaProxyPayloadCaptureEnabled(t *testing.T) {
 	}
 }
 
-func mustAtoi(s string) int {
-	var n int
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
+func TestOllamaProxyCandidateFailureTelemetry(t *testing.T) {
+	// Candidate 0: closes immediately so dial fails
+	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	badServer.Close()
+
+	// Candidate 1: succeeds
+	goodServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"llama3.2:3b","response":"success from candidate 1","done":true}` + "\n"))
+	}))
+	defer goodServer.Close()
+
+	p, exporter := setupTestProxyWithTelemetry(t, false)
+	badNode := nodeForModel(t, "bad-node", badServer.URL, "llama3.2:3b")
+	goodNode := nodeForModel(t, "good-node", goodServer.URL, "llama3.2:3b")
+	p.discovery.AddManual(badNode)
+	p.discovery.AddManual(goodNode)
+	p.SetSelected("bad-node") // bad-node will be tried first
+
+	reqBody := `{"model":"llama3.2:3b","messages":[{"role":"user","content":"test failover"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(reqBody))
+	req.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+
+	p.handlePlain(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected failover to succeed with 200, got %d", rec.Code)
+	}
+
+	spans := exporter.GetSpans()
+	var dispatchSpans []tracetest.SpanStub
+	for _, s := range spans {
+		if s.Name == "pair.engine.dispatch" {
+			dispatchSpans = append(dispatchSpans, s)
 		}
 	}
-	return n
+
+	if len(dispatchSpans) < 2 {
+		t.Fatalf("expected at least 2 dispatch spans due to failover, got %d", len(dispatchSpans))
+	}
+
+	// First dispatch span should be the failed candidate with error status
+	failedSpan := dispatchSpans[0]
+	failedAttrs := attrMap(failedSpan.Attributes)
+	if failedAttrs["http.response.status_code"] == int64(200) {
+		t.Errorf("failed candidate dispatch span should NOT have http.response.status_code = 200")
+	}
+	if failedSpan.Status.Code.String() != "Error" {
+		t.Errorf("failed candidate dispatch span status = %v, want Error", failedSpan.Status.Code)
+	}
+
+	// Second dispatch span should be the successful candidate
+	successSpan := dispatchSpans[1]
+	successAttrs := attrMap(successSpan.Attributes)
+	if successAttrs["http.response.status_code"] != int64(200) {
+		t.Errorf("successful candidate dispatch span status_code = %v, want 200", successAttrs["http.response.status_code"])
+	}
+	if successAttrs["pair.route.failover"] != true {
+		t.Errorf("expected pair.route.failover = true on second attempt")
+	}
 }
 
 func attrMap(kvs []attribute.KeyValue) map[string]any {

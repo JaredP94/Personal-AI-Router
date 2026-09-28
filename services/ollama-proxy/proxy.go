@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"nvpair-shared/applog"
@@ -1574,7 +1575,10 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			if telReader != nil {
 				telReader.finalize()
 			}
-			if sc.status != 0 {
+			if retry || upstreamBody == nil {
+				dispatchSpan.SetStatus(codes.Error, "upstream candidate failed or retry triggered")
+				dispatchSpan.SetAttributes(attribute.Int("http.response.status_code", http.StatusBadGateway))
+			} else if sc.status != 0 {
 				dispatchSpan.SetAttributes(attribute.Int("http.response.status_code", sc.status))
 			}
 			dispatchSpan.End()
