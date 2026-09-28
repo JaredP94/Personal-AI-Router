@@ -26,6 +26,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"nvpair-shared/applog"
 	"nvpair-shared/bufpool"
 	"nvpair-shared/clustertrust"
@@ -39,6 +42,7 @@ import (
 	"nvpair-shared/reach"
 	"nvpair-shared/schedulerwire"
 	"nvpair-shared/splitlisten"
+	"nvpair-shared/telemetry"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -406,9 +410,14 @@ type Proxy struct {
 	runID string
 
 	bufPool *bufpool.Pool
+	telemetry *telemetry.Provider
 }
 
-func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
+func NewProxy(codec *Codec, discovery *Discovery, port int, tel ...*telemetry.Provider) *Proxy {
+	var tp *telemetry.Provider
+	if len(tel) > 0 {
+		tp = tel[0]
+	}
 	return &Proxy{
 		prt:       prefixhash.NewPrefixRoutingTable(10000, 5*time.Minute),
 		codec:     codec,
@@ -418,6 +427,7 @@ func NewProxy(codec *Codec, discovery *Discovery, port int) *Proxy {
 		runID:     newRunID(),
 		activity:  nodeactivity.NewReporter(activityReportInterval),
 		bufPool:   bufpool.New(),
+		telemetry: tp,
 	}
 }
 
@@ -860,9 +870,25 @@ func (p *Proxy) emitWorkload(method string, w Workload) {
 // pinned to that peer's exact server cert. Empty peerUUID means a plain-HTTP
 // dial — the local backend (self) or an explicit manual node.
 type candidate struct {
-	id       string
-	url      *url.URL
-	peerUUID string
+	id          string
+	url         *url.URL
+	peerUUID    string
+	gpuPressure int
+	queueDepth  int
+}
+
+func (p *Proxy) nodeMetrics(nodeID string) (int, int) {
+	p.priorityMu.RLock()
+	defer p.priorityMu.RUnlock()
+	gp := 0
+	if p.priorityGPUPressure != nil {
+		gp = p.priorityGPUPressure[nodeID]
+	}
+	qd := 0
+	if p.priorityPending != nil {
+		qd = p.priorityPending[nodeID]
+	}
+	return gp, qd
 }
 
 // candidateTransport returns the reverse-proxy / model-list transport for a
@@ -1137,20 +1163,50 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-
-	// Allocate the request ID up front so both code paths (rejection
-	// and forward) can stamp the same value into their notification.
-	// The rejection path never emits a Started event, so its ID won't
-	// appear in any orchestrator in-flight map — that's fine; the
-	// completion event still bumps the failed counter regardless of
-	// whether a matching Started was seen.
 	reqID := strconv.FormatUint(p.nextRequestID.Add(1), 10)
 
-	// Parse the request's model before choosing a node. Model eligibility only
-	// applies to inference routes; control endpoints retain their existing
-	// routing behavior even when their JSON happens to contain a model field.
 	bodyBytes, model := bufferBodyAndModel(r)
 	isInf := isInferenceRequest(r.Method, r.URL.Path)
+
+	var ctx = r.Context()
+	var span trace.Span
+	var finalStatus int
+	if isInf {
+		ctx = telemetry.ExtractHTTPContext(r)
+		var rootSpan trace.Span
+		ctx, rootSpan = p.telemetry.Tracer().Start(ctx, "pair.proxy.inference", trace.WithSpanKind(trace.SpanKindServer))
+		span = rootSpan
+		defer func() {
+			if span != nil {
+				if finalStatus != 0 {
+					span.SetAttributes(attribute.Int("http.response.status_code", finalStatus))
+				}
+				span.End()
+			}
+		}()
+		isStreaming := isStreamingRequest(r.URL.Path, bodyBytes)
+		span.SetAttributes(
+			attribute.String("gen_ai.system", "pair"),
+			attribute.String("gen_ai.request.model", model),
+			attribute.String("http.request.method", r.Method),
+			attribute.String("http.route", r.URL.Path),
+			attribute.String("pair.client.protocol", "ollama"),
+			attribute.String("pair.request_id", reqID),
+			attribute.Bool("pair.is_streaming", isStreaming),
+		)
+		recordRequestHeaders(span, r.Header)
+		if p.telemetry.RecordPayloads() {
+			promptStr := extractPrompt(bodyBytes)
+			if promptStr != "" {
+				span.SetAttributes(
+					attribute.String("gen_ai.prompt", promptStr),
+					attribute.String("input.value", promptStr),
+				)
+			}
+		}
+		r = r.WithContext(ctx)
+	}
+
 	routingModel := ""
 	if isInf {
 		routingModel = model
@@ -1161,6 +1217,22 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	cacheAffinity := false
 	if isInf && model != "" {
 		candidates, cacheAffinity = p.reserveCandidateWithAffinity(candidates, warmNodeID)
+	}
+	if isInf {
+		_, schedSpan := p.telemetry.Tracer().Start(ctx, "pair.router.schedule", trace.WithSpanKind(trace.SpanKindInternal))
+		schedAttrs := []attribute.KeyValue{
+			attribute.Int("pair.route.candidate_count", len(candidates)),
+			attribute.Bool("pair.route.cache_affinity", cacheAffinity),
+		}
+		if len(candidates) > 0 {
+			schedAttrs = append(schedAttrs,
+				attribute.String("pair.route.selected_node_id", candidates[0].id),
+				attribute.Int("pair.route.gpu_pressure", candidates[0].gpuPressure),
+				attribute.Int("pair.route.queue_depth", candidates[0].queueDepth),
+			)
+		}
+		schedSpan.SetAttributes(schedAttrs...)
+		schedSpan.End()
 	}
 	if r.Method == http.MethodGet && (r.URL.Path == "/api/tags" || r.URL.Path == "/v1/models") {
 		if len(candidates) > 0 {
@@ -1183,6 +1255,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// With no engine to consult, retain the local permissive preflight used
 		// for engines that do not publish a CORS policy.
 		if cors.WritePreflight(w, r) {
+			finalStatus = http.StatusNoContent
 			return
 		}
 		cors.Apply(w.Header())
@@ -1196,6 +1269,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			"id", reqID, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr, "reason", rejectionError)
 		http.Error(w, rejectionBody, http.StatusBadGateway)
+		finalStatus = http.StatusBadGateway
 		p.codec.Notify("proxy/request", RequestEvent{
 			ID:       reqID,
 			Method:   r.Method,
@@ -1230,7 +1304,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		servedTarget string
 		ttfbMs       int64
 		proxyErr     string
-		finalStatus  int
 		started      bool
 		wl           *Workload
 	)
@@ -1337,11 +1410,41 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		retry := false
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK, idle: idleClientWriteTimeout}
 
+		var dispatchCtx context.Context
+		var dispatchSpan trace.Span
+		var telReader *telemetryBodyReader
+		dispatchStart := time.Now()
+		if isInf {
+			dispatchCtx, dispatchSpan = p.telemetry.Tracer().Start(ctx, "pair.engine.dispatch", trace.WithSpanKind(trace.SpanKindClient))
+			host := cand.url.Hostname()
+			port := 0
+			if pStr := cand.url.Port(); pStr != "" {
+				port, _ = strconv.Atoi(pStr)
+			} else if cand.url.Scheme == "https" {
+				port = 443
+			} else {
+				port = 80
+			}
+			isLocal := isLocalHost(cand.url.Host) || cand.peerUUID == ""
+			dispatchSpan.SetAttributes(
+				attribute.String("pair.route.target_node_id", cand.id),
+				attribute.String("server.address", host),
+				attribute.Int("server.port", port),
+				attribute.Bool("pair.route.is_local", isLocal),
+			)
+			if i > 0 {
+				dispatchSpan.SetAttributes(attribute.Bool("pair.route.failover", true))
+			}
+		}
+
 		proxy := &httputil.ReverseProxy{
 			Director: func(req *http.Request) {
 				req.URL.Scheme = cand.url.Scheme
 				req.URL.Host = cand.url.Host
 				req.Host = cand.url.Host
+				if isInf && dispatchCtx != nil {
+					telemetry.InjectHTTPContext(dispatchCtx, req)
+				}
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
@@ -1362,7 +1465,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// that publish no policy retain the proxy's permissive 204 fallback.
 				cors.CompletePreflightFallback(resp)
 				upstreamBody = newAffinityBodyReader(resp.Body, resp.Header.Get("Content-Type"), r.URL.Path)
-				resp.Body = upstreamBody
+				if isInf && dispatchSpan != nil {
+					telReader = newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, p.telemetry.RecordPayloads())
+					resp.Body = telReader
+				} else {
+					resp.Body = upstreamBody
+				}
 				// Committing to this candidate — body stream is about to begin.
 				ttfbMs = time.Since(start).Milliseconds()
 				servedNodeID = cand.id
@@ -1462,6 +1570,15 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		copyAborted := serveReverseProxy(proxy, sc, r)
+		if isInf && dispatchSpan != nil {
+			if telReader != nil {
+				telReader.finalize()
+			}
+			if sc.status != 0 {
+				dispatchSpan.SetAttributes(attribute.Int("http.response.status_code", sc.status))
+			}
+			dispatchSpan.End()
+		}
 		if copyAborted {
 			// net/http deliberately aborts a real server handler after a
 			// committed response copy fails. Catch that sentinel so the proxy
@@ -1682,10 +1799,13 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 			return
 		}
 		seenHost[u.Host] = true
+		gp, qd := p.nodeMetrics(n.ID)
 		out = append(out, candidate{
-			id:       n.ID,
-			url:      u,
-			peerUUID: peerUUID,
+			id:          n.ID,
+			url:         u,
+			peerUUID:    peerUUID,
+			gpuPressure: gp,
+			queueDepth:  qd,
 		})
 	}
 
