@@ -204,6 +204,7 @@ export default function ObservabilityCard() {
                         <Switch
                             size="small"
                             checked={status?.enabled ?? true}
+                            disabled={status === null}
                             onCheckedChange={handleToggleEnabled}
                             aria-label="OpenTelemetry Tracing"
                         />
@@ -227,6 +228,7 @@ export default function ObservabilityCard() {
                         <Switch
                             size="small"
                             checked={status?.recordPayloads ?? false}
+                            disabled={status === null}
                             onCheckedChange={handleToggleRecordPayloads}
                             aria-label="Capture Prompt & Completion Text (For Evaluations)"
                         />
