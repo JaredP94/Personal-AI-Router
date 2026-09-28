@@ -414,7 +414,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 // _nvpair-node record. Idempotent — only a real change is pushed. Broker-local:
 // the broker registers on behalf of the workers it spawns.
 func (b *Broker) registerService(p noderec.RegisterParams) {
-	if !b.regCache.Register(p) {
+	if b.regCache == nil || !b.regCache.Register(p) {
 		return
 	}
 	if sc := b.getScanner(); sc != nil {
@@ -424,7 +424,7 @@ func (b *Broker) registerService(p noderec.RegisterParams) {
 
 // unregisterService removes a local service from the cache and the daemon.
 func (b *Broker) unregisterService(svc noderec.ServiceKey) {
-	if !b.regCache.Unregister(svc) {
+	if b.regCache == nil || !b.regCache.Unregister(svc) {
 		return
 	}
 	if sc := b.getScanner(); sc != nil {
@@ -1835,6 +1835,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
 	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseOMLX)
+	go b.runAutoAdvertiseTelemetry(ctx)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events

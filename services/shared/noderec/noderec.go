@@ -101,13 +101,16 @@ const (
 	// is pin-based mTLS (cluster peers only) because it performs privileged
 	// operations, and it binds only when the node is clustered.
 	ServiceEngineControl ServiceKey = "ec"
+	// ServiceOTel is the OpenTelemetry OTLP gRPC collector endpoint (Arize Phoenix).
+	// Plain TCP / gRPC over LAN (default port 4317).
+	ServiceOTel ServiceKey = "otel"
 )
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
 	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceOMLX,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceEngineControl, ServiceOTel,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).

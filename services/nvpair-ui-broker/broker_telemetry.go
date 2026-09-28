@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"nvpair-shared/noderec"
 )
 
 // TelemetryStatusResult reports the runtime state of the local Arize Phoenix collector
@@ -321,6 +323,7 @@ func (b *Broker) handleTelemetryStart(msg *Message) {
 
 	if reachable {
 		slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
 	} else {
 		slog.Warn("telemetry collector container started but collector port not responding within deadline", "composePath", composePath, "endpoint", endpoint)
 	}
@@ -354,6 +357,7 @@ func (b *Broker) handleTelemetryStop(msg *Message) {
 		return
 	}
 
+	b.unregisterService(noderec.ServiceOTel)
 	slog.Info("telemetry collector container stopped", "composePath", composePath)
 	status := b.getTelemetryStatus(context.Background())
 	if err := b.codec.Respond(msg.ID, status); err != nil {

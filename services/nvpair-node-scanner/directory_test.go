@@ -14,7 +14,7 @@ func TestToDirectoryNode(t *testing.T) {
 		ID:        "hostA",
 		Host:      "hostA.local.",
 		Addresses: []string{"10.221.0.9", "192.168.1.10"},
-		TXT:       []string{"v=1", "uuid=host-uuid", "cluster-uuid=clu", "ip=192.168.1.10", "ni=14318", "ol=11434"},
+		TXT:       []string{"v=1", "uuid=host-uuid", "cluster-uuid=clu", "ip=192.168.1.10", "ni=14318", "ol=11434", "otel=4317"},
 	}
 	n, ok := toDirectoryNode(raw, true)
 	if !ok {
@@ -32,11 +32,14 @@ func TestToDirectoryNode(t *testing.T) {
 	if !n.Trusted {
 		t.Error("Trusted should reflect the caller-supplied flag")
 	}
-	if !n.HasService(noderec.ServiceNodeInfo) || !n.HasService(noderec.ServiceOllama) {
+	if !n.HasService(noderec.ServiceNodeInfo) || !n.HasService(noderec.ServiceOllama) || !n.HasService(noderec.ServiceOTel) {
 		t.Errorf("services wrong: %+v", n.Services)
 	}
 	if n.Services[noderec.ServiceOllama].Port != 11434 {
 		t.Errorf("ol port = %d", n.Services[noderec.ServiceOllama].Port)
+	}
+	if n.Services[noderec.ServiceOTel].Port != 4317 {
+		t.Errorf("otel port = %d", n.Services[noderec.ServiceOTel].Port)
 	}
 }
 
