@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -92,7 +93,11 @@ func main() {
 	disc := NewDiscovery()
 	proxy := NewProxy(codec, disc, effectivePort, tel)
 	if proxy.telemetry != nil {
-		defer proxy.telemetry.Shutdown(ctx)
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer shutdownCancel()
+			_ = proxy.telemetry.Shutdown(shutdownCtx)
+		}()
 	}
 	for _, aliasAddress := range aliasAddresses {
 		if err := proxy.setLoopbackAlias(aliasAddress); err != nil {

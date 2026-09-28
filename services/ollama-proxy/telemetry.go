@@ -159,12 +159,17 @@ func (r *telemetryBodyReader) recordFirstToken() {
 	})
 }
 
+const (
+	maxTelemetryLineBytes        = 4 << 20 // 4 MiB max line buffer for large non-streaming frames
+	maxRecordedCompletionBytes   = 64 << 10 // 64 KiB cap for recorded completion payload
+)
+
 func (r *telemetryBodyReader) observe(chunk []byte) {
 	r.lineBuf = append(r.lineBuf, chunk...)
 	for {
 		end := bytes.IndexByte(r.lineBuf, '\n')
 		if end < 0 {
-			if len(r.lineBuf) > maxCompletionLineBytes {
+			if len(r.lineBuf) > maxTelemetryLineBytes {
 				r.lineBuf = nil
 			}
 			return
@@ -233,19 +238,28 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 			r.outputTokens = chunk.Usage.CompletionTokens
 		}
 	}
-	if r.recordPayloads {
+	if r.recordPayloads && r.completionBuf.Len() < maxRecordedCompletionBytes {
+		var toAppend string
 		if chunk.Response != "" {
-			r.completionBuf.WriteString(chunk.Response)
-		}
-		if chunk.Message != nil && chunk.Message.Content != "" {
-			r.completionBuf.WriteString(chunk.Message.Content)
-		}
-		if len(chunk.Choices) > 0 {
+			toAppend = chunk.Response
+		} else if chunk.Message != nil && chunk.Message.Content != "" {
+			toAppend = chunk.Message.Content
+		} else if len(chunk.Choices) > 0 {
 			if chunk.Choices[0].Delta.Content != "" {
-				r.completionBuf.WriteString(chunk.Choices[0].Delta.Content)
+				toAppend = chunk.Choices[0].Delta.Content
+			} else if chunk.Choices[0].Message.Content != "" {
+				toAppend = chunk.Choices[0].Message.Content
 			}
-			if chunk.Choices[0].Message.Content != "" {
-				r.completionBuf.WriteString(chunk.Choices[0].Message.Content)
+		}
+		if toAppend != "" {
+			if r.completionBuf.Len()+len(toAppend) > maxRecordedCompletionBytes {
+				remain := maxRecordedCompletionBytes - r.completionBuf.Len()
+				if remain > 0 {
+					r.completionBuf.WriteString(toAppend[:remain])
+				}
+				r.completionBuf.WriteString("... [TRUNCATED]")
+			} else {
+				r.completionBuf.WriteString(toAppend)
 			}
 		}
 	}

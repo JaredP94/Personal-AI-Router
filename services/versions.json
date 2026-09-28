@@ -3,7 +3,7 @@
   "product": "0.93.10",
   "installer": "0.93.10",
   "components": {
-    "ollama-proxy": "0.27.2",
+    "ollama-proxy": "0.28.0",
     "lmstudio-proxy": "0.17.2",
     "nvpair-node-info": "0.13.5",
     "nvpair-node-scanner": "0.20.4",
