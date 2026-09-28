@@ -64,10 +64,25 @@ type Settings struct {
 	// label is purely UI sugar and a getter call on first paint is
 	// enough.
 	ClusterFriendlyName string `json:"cluster_friendly_name"`
+
+	// TelemetryEnabled controls whether proxies emit OpenTelemetry spans.
+	TelemetryEnabled bool `json:"telemetry_enabled"`
+
+	// TelemetryEndpoint is the OTLP gRPC endpoint address (e.g. "localhost:4317").
+	TelemetryEndpoint string `json:"telemetry_endpoint"`
+
+	// TelemetryRecordPayloads controls whether prompt and completion text
+	// is attached to spans for local evaluations.
+	TelemetryRecordPayloads bool `json:"telemetry_record_payloads"`
 }
 
 func defaultSettings() Settings {
-	return Settings{ForcePorts: true}
+	return Settings{
+		ForcePorts:              true,
+		TelemetryEnabled:        true,
+		TelemetryEndpoint:       "localhost:4317",
+		TelemetryRecordPayloads: false,
+	}
 }
 
 // ReadyParams is the payload of the "ready" notification we emit on
@@ -214,7 +229,10 @@ func (m *Manager) load() error {
 		"force_ports", s.ForcePorts,
 		"cluster_auto_sync", s.ClusterAutoSync,
 		"has_cluster_id", s.ClusterID != "",
-		"has_cluster_friendly_name", s.ClusterFriendlyName != "")
+		"has_cluster_friendly_name", s.ClusterFriendlyName != "",
+		"telemetry_enabled", s.TelemetryEnabled,
+		"telemetry_endpoint", s.TelemetryEndpoint,
+		"telemetry_record_payloads", s.TelemetryRecordPayloads)
 	return nil
 }
 
@@ -455,6 +473,84 @@ func (m *Manager) handleMessage(msg *Message) {
 		if err := m.emitClusterAutoSync(); err != nil {
 			slog.Warn("failed to emit cluster-auto-sync notification after set", "err", err)
 		}
+
+	case "settings/get-telemetry-enabled":
+		m.mu.RLock()
+		v := m.settings.TelemetryEnabled
+		m.mu.RUnlock()
+		m.codec.Respond(msg.ID, map[string]bool{"value": v})
+
+	case "settings/set-telemetry-enabled":
+		var p boolValueParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
+			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <bool>}`)
+			return
+		}
+		m.mu.RLock()
+		newSettings := m.settings
+		m.mu.RUnlock()
+		newSettings.TelemetryEnabled = *p.Value
+		if err := m.saveSettings(newSettings); err != nil {
+			slog.Error("failed to persist telemetry-enabled", "err", err)
+			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.settings = newSettings
+		m.mu.Unlock()
+		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
+
+	case "settings/get-telemetry-endpoint":
+		m.mu.RLock()
+		v := m.settings.TelemetryEndpoint
+		m.mu.RUnlock()
+		m.codec.Respond(msg.ID, map[string]string{"value": v})
+
+	case "settings/set-telemetry-endpoint":
+		var p stringValueParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
+			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <string>}`)
+			return
+		}
+		m.mu.RLock()
+		newSettings := m.settings
+		m.mu.RUnlock()
+		newSettings.TelemetryEndpoint = *p.Value
+		if err := m.saveSettings(newSettings); err != nil {
+			slog.Error("failed to persist telemetry-endpoint", "err", err)
+			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.settings = newSettings
+		m.mu.Unlock()
+		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
+
+	case "settings/get-telemetry-record-payloads":
+		m.mu.RLock()
+		v := m.settings.TelemetryRecordPayloads
+		m.mu.RUnlock()
+		m.codec.Respond(msg.ID, map[string]bool{"value": v})
+
+	case "settings/set-telemetry-record-payloads":
+		var p boolValueParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
+			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <bool>}`)
+			return
+		}
+		m.mu.RLock()
+		newSettings := m.settings
+		m.mu.RUnlock()
+		newSettings.TelemetryRecordPayloads = *p.Value
+		if err := m.saveSettings(newSettings); err != nil {
+			slog.Error("failed to persist telemetry-record-payloads", "err", err)
+			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.settings = newSettings
+		m.mu.Unlock()
+		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
 
 	case "shutdown":
 		if err := m.codec.Respond(msg.ID, nil); err != nil {

@@ -384,6 +384,15 @@ func TestNoPushSettersDoNotEmit(t *testing.T) {
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-friendly-name", map[string]string{"value": "anything"})
 	assertNoNotification(t, rw)
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 3, "settings/set-telemetry-enabled", map[string]bool{"value": false})
+	assertNoNotification(t, rw)
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-telemetry-endpoint", map[string]string{"value": "custom:4317"})
+	assertNoNotification(t, rw)
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 5, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
+	assertNoNotification(t, rw)
 }
 
 // TestRunEmitsOnlyReadyOnStartup pins the "no startup blast" contract
@@ -475,6 +484,278 @@ func TestForcePortsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTelemetrySettingsDefaults verifies that fresh instances and partial files
+// load the expected product defaults: TelemetryEnabled=true,
+// TelemetryEndpoint="localhost:4317", TelemetryRecordPayloads=false.
+func TestTelemetrySettingsDefaults(t *testing.T) {
+	m, rw, _ := newTestManager(t)
+
+	gotEnabled := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-telemetry-enabled", nil)
+	if gotEnabled["value"] != true {
+		t.Fatalf("default telemetry-enabled = %v, want true", gotEnabled["value"])
+	}
+
+	gotEndpoint := callAndDecode[map[string]string](t, m, rw, 2, "settings/get-telemetry-endpoint", nil)
+	if gotEndpoint["value"] != "localhost:4317" {
+		t.Fatalf("default telemetry-endpoint = %q, want %q", gotEndpoint["value"], "localhost:4317")
+	}
+
+	gotPayloads := callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-telemetry-record-payloads", nil)
+	if gotPayloads["value"] != false {
+		t.Fatalf("default telemetry-record-payloads = %v, want false", gotPayloads["value"])
+	}
+
+	// Verify partial settings file (omitting telemetry keys) takes product defaults.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"force_ports": false}`), 0o600); err != nil {
+		t.Fatalf("write partial settings: %v", err)
+	}
+	rw2 := newCaptureRW()
+	m2, err := NewManager(NewCodec(rw2), path)
+	if err != nil {
+		t.Fatalf("NewManager with partial file: %v", err)
+	}
+
+	gotEnabled = callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-telemetry-enabled", nil)
+	if gotEnabled["value"] != true {
+		t.Fatalf("partial settings: telemetry-enabled = %v, want true", gotEnabled["value"])
+	}
+	gotEndpoint = callAndDecode[map[string]string](t, m2, rw2, 5, "settings/get-telemetry-endpoint", nil)
+	if gotEndpoint["value"] != "localhost:4317" {
+		t.Fatalf("partial settings: telemetry-endpoint = %q, want %q", gotEndpoint["value"], "localhost:4317")
+	}
+	gotPayloads = callAndDecode[map[string]bool](t, m2, rw2, 6, "settings/get-telemetry-record-payloads", nil)
+	if gotPayloads["value"] != false {
+		t.Fatalf("partial settings: telemetry-record-payloads = %v, want false", gotPayloads["value"])
+	}
+}
+
+// TestTelemetrySettingsRoundTrip verifies get and set round-trips for
+// telemetry-enabled, telemetry-endpoint, and telemetry-record-payloads.
+func TestTelemetrySettingsRoundTrip(t *testing.T) {
+	m, rw, path := newTestManager(t)
+
+	// --- TelemetryEnabled ---
+	gotEnabled := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-telemetry-enabled", nil)
+	if gotEnabled["value"] != true {
+		t.Fatalf("default telemetry-enabled = %v, want true", gotEnabled["value"])
+	}
+	ok := callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-telemetry-enabled", map[string]bool{"value": false})
+	if !ok["ok"] {
+		t.Fatalf("set telemetry-enabled false result = %+v", ok)
+	}
+	gotEnabled = callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-telemetry-enabled", nil)
+	if gotEnabled["value"] != false {
+		t.Fatalf("after set false, telemetry-enabled = %v, want false", gotEnabled["value"])
+	}
+	ok = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-telemetry-enabled", map[string]bool{"value": true})
+	if !ok["ok"] {
+		t.Fatalf("set telemetry-enabled true result = %+v", ok)
+	}
+	gotEnabled = callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-telemetry-enabled", nil)
+	if gotEnabled["value"] != true {
+		t.Fatalf("after set true, telemetry-enabled = %v, want true", gotEnabled["value"])
+	}
+
+	// --- TelemetryEndpoint ---
+	gotEndpoint := callAndDecode[map[string]string](t, m, rw, 6, "settings/get-telemetry-endpoint", nil)
+	if gotEndpoint["value"] != "localhost:4317" {
+		t.Fatalf("default telemetry-endpoint = %q, want localhost:4317", gotEndpoint["value"])
+	}
+	ok = callAndDecode[map[string]bool](t, m, rw, 7, "settings/set-telemetry-endpoint", map[string]string{"value": "collector.internal:4317"})
+	if !ok["ok"] {
+		t.Fatalf("set telemetry-endpoint result = %+v", ok)
+	}
+	gotEndpoint = callAndDecode[map[string]string](t, m, rw, 8, "settings/get-telemetry-endpoint", nil)
+	if gotEndpoint["value"] != "collector.internal:4317" {
+		t.Fatalf("after set, telemetry-endpoint = %q, want collector.internal:4317", gotEndpoint["value"])
+	}
+	ok = callAndDecode[map[string]bool](t, m, rw, 9, "settings/set-telemetry-endpoint", map[string]string{"value": ""})
+	if !ok["ok"] {
+		t.Fatalf("set telemetry-endpoint empty result = %+v", ok)
+	}
+	gotEndpoint = callAndDecode[map[string]string](t, m, rw, 10, "settings/get-telemetry-endpoint", nil)
+	if gotEndpoint["value"] != "" {
+		t.Fatalf("after set empty, telemetry-endpoint = %q, want empty", gotEndpoint["value"])
+	}
+
+	// --- TelemetryRecordPayloads ---
+	gotPayloads := callAndDecode[map[string]bool](t, m, rw, 11, "settings/get-telemetry-record-payloads", nil)
+	if gotPayloads["value"] != false {
+		t.Fatalf("default telemetry-record-payloads = %v, want false", gotPayloads["value"])
+	}
+	ok = callAndDecode[map[string]bool](t, m, rw, 12, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
+	if !ok["ok"] {
+		t.Fatalf("set telemetry-record-payloads true result = %+v", ok)
+	}
+	gotPayloads = callAndDecode[map[string]bool](t, m, rw, 13, "settings/get-telemetry-record-payloads", nil)
+	if gotPayloads["value"] != true {
+		t.Fatalf("after set true, telemetry-record-payloads = %v, want true", gotPayloads["value"])
+	}
+	ok = callAndDecode[map[string]bool](t, m, rw, 14, "settings/set-telemetry-record-payloads", map[string]bool{"value": false})
+	if !ok["ok"] {
+		t.Fatalf("set telemetry-record-payloads false result = %+v", ok)
+	}
+	gotPayloads = callAndDecode[map[string]bool](t, m, rw, 15, "settings/get-telemetry-record-payloads", nil)
+	if gotPayloads["value"] != false {
+		t.Fatalf("after set false, telemetry-record-payloads = %v, want false", gotPayloads["value"])
+	}
+
+	// Verify persistence across reload
+	rw2 := newCaptureRW()
+	m2, err := NewManager(NewCodec(rw2), path)
+	if err != nil {
+		t.Fatalf("reload manager: %v", err)
+	}
+	gotEnabled = callAndDecode[map[string]bool](t, m2, rw2, 16, "settings/get-telemetry-enabled", nil)
+	if gotEnabled["value"] != true {
+		t.Fatalf("reloaded telemetry-enabled = %v, want true", gotEnabled["value"])
+	}
+	gotEndpoint = callAndDecode[map[string]string](t, m2, rw2, 17, "settings/get-telemetry-endpoint", nil)
+	if gotEndpoint["value"] != "" {
+		t.Fatalf("reloaded telemetry-endpoint = %q, want empty", gotEndpoint["value"])
+	}
+	gotPayloads = callAndDecode[map[string]bool](t, m2, rw2, 18, "settings/get-telemetry-record-payloads", nil)
+	if gotPayloads["value"] != false {
+		t.Fatalf("reloaded telemetry-record-payloads = %v, want false", gotPayloads["value"])
+	}
+}
+
+// TestTelemetrySettingsPersistenceRoundTrip verifies that non-default telemetry
+// values are persisted to disk and survive across fresh Manager instances.
+func TestTelemetrySettingsPersistenceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	rw1 := newCaptureRW()
+	m1, err := NewManager(NewCodec(rw1), path)
+	if err != nil {
+		t.Fatalf("NewManager (first): %v", err)
+	}
+
+	_ = callAndDecode[map[string]bool](t, m1, rw1, 1, "settings/set-telemetry-enabled", map[string]bool{"value": false})
+	_ = callAndDecode[map[string]bool](t, m1, rw1, 2, "settings/set-telemetry-endpoint", map[string]string{"value": "192.168.1.50:4317"})
+	_ = callAndDecode[map[string]bool](t, m1, rw1, 3, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
+
+	// Inspect the raw file on disk.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var onDisk Settings
+	if err := json.Unmarshal(data, &onDisk); err != nil {
+		t.Fatalf("unmarshal settings.json: %v\nraw: %s", err, data)
+	}
+	if onDisk.TelemetryEnabled != false {
+		t.Errorf("on-disk TelemetryEnabled = %v, want false", onDisk.TelemetryEnabled)
+	}
+	if onDisk.TelemetryEndpoint != "192.168.1.50:4317" {
+		t.Errorf("on-disk TelemetryEndpoint = %q, want 192.168.1.50:4317", onDisk.TelemetryEndpoint)
+	}
+	if onDisk.TelemetryRecordPayloads != true {
+		t.Errorf("on-disk TelemetryRecordPayloads = %v, want true", onDisk.TelemetryRecordPayloads)
+	}
+
+	// Second instance reloads the file.
+	rw2 := newCaptureRW()
+	m2, err := NewManager(NewCodec(rw2), path)
+	if err != nil {
+		t.Fatalf("NewManager (second): %v", err)
+	}
+
+	enabled := callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-telemetry-enabled", nil)
+	if enabled["value"] != false {
+		t.Fatalf("reloaded telemetry-enabled = %v, want false", enabled["value"])
+	}
+	endpoint := callAndDecode[map[string]string](t, m2, rw2, 5, "settings/get-telemetry-endpoint", nil)
+	if endpoint["value"] != "192.168.1.50:4317" {
+		t.Fatalf("reloaded telemetry-endpoint = %q, want 192.168.1.50:4317", endpoint["value"])
+	}
+	payloads := callAndDecode[map[string]bool](t, m2, rw2, 6, "settings/get-telemetry-record-payloads", nil)
+	if payloads["value"] != true {
+		t.Fatalf("reloaded telemetry-record-payloads = %v, want true", payloads["value"])
+	}
+}
+
+// TestTelemetryValidationRejectsWrongTypeAndMissingValue verifies that invalid
+// params produce -32602 JSON-RPC errors.
+func TestTelemetryValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
+	m, rw, _ := newTestManager(t)
+
+	// telemetry-enabled: wrong type (string)
+	m.handleMessage(requestMessageRaw(1, "settings/set-telemetry-enabled",
+		json.RawMessage(`{"value":"false"}`)))
+	resp := readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("wrong-type telemetry-enabled error = %+v", resp.Error)
+	}
+
+	// telemetry-enabled: missing value
+	m.handleMessage(requestMessageRaw(2, "settings/set-telemetry-enabled",
+		json.RawMessage(`{}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("missing-value telemetry-enabled error = %+v", resp.Error)
+	}
+
+	// telemetry-enabled: null value
+	m.handleMessage(requestMessageRaw(3, "settings/set-telemetry-enabled",
+		json.RawMessage(`{"value":null}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("null telemetry-enabled error = %+v", resp.Error)
+	}
+
+	// telemetry-endpoint: wrong type (number)
+	m.handleMessage(requestMessageRaw(4, "settings/set-telemetry-endpoint",
+		json.RawMessage(`{"value":4317}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("wrong-type telemetry-endpoint error = %+v", resp.Error)
+	}
+
+	// telemetry-endpoint: missing value
+	m.handleMessage(requestMessageRaw(5, "settings/set-telemetry-endpoint",
+		json.RawMessage(`{}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("missing-value telemetry-endpoint error = %+v", resp.Error)
+	}
+
+	// telemetry-endpoint: null value
+	m.handleMessage(requestMessageRaw(6, "settings/set-telemetry-endpoint",
+		json.RawMessage(`{"value":null}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("null telemetry-endpoint error = %+v", resp.Error)
+	}
+
+	// telemetry-record-payloads: wrong type (string)
+	m.handleMessage(requestMessageRaw(7, "settings/set-telemetry-record-payloads",
+		json.RawMessage(`{"value":"true"}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("wrong-type telemetry-record-payloads error = %+v", resp.Error)
+	}
+
+	// telemetry-record-payloads: missing value
+	m.handleMessage(requestMessageRaw(8, "settings/set-telemetry-record-payloads",
+		json.RawMessage(`{}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("missing-value telemetry-record-payloads error = %+v", resp.Error)
+	}
+
+	// telemetry-record-payloads: null value
+	m.handleMessage(requestMessageRaw(9, "settings/set-telemetry-record-payloads",
+		json.RawMessage(`{"value":null}`)))
+	resp = readCaptureFrame(t, rw)
+	if resp.Error == nil || resp.Error.Code != -32602 {
+		t.Fatalf("null telemetry-record-payloads error = %+v", resp.Error)
+	}
+}
+
 // TestSaveFailureRejectsValueAndDoesNotPersist locks down the
 // copy-then-save-then-commit contract of the setters: when save()
 // fails, the attempted value must NOT be observable in-memory (a
@@ -557,6 +838,9 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 2, "settings/set-cluster-id", map[string]string{"value": "cluster-abc"})
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 3, "settings/set-cluster-friendly-name", map[string]string{"value": "Lab 3 desks"})
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 4, "settings/set-force-ports", map[string]bool{"value": true})
+	_ = callAndDecode[map[string]bool](t, m1, rw1, 5, "settings/set-telemetry-enabled", map[string]bool{"value": false})
+	_ = callAndDecode[map[string]bool](t, m1, rw1, 6, "settings/set-telemetry-endpoint", map[string]string{"value": "remote-collector:4317"})
+	_ = callAndDecode[map[string]bool](t, m1, rw1, 7, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
 
 	// A second Manager pointed at the same file must see everything
 	// the first one wrote — proves load() correctly hydrates settings.
@@ -581,6 +865,18 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 	ports := callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-force-ports", nil)
 	if ports["value"] != true {
 		t.Fatalf("force-ports lost: %v", ports["value"])
+	}
+	te := callAndDecode[map[string]bool](t, m2, rw2, 5, "settings/get-telemetry-enabled", nil)
+	if te["value"] != false {
+		t.Fatalf("telemetry-enabled lost: %v", te["value"])
+	}
+	tep := callAndDecode[map[string]string](t, m2, rw2, 6, "settings/get-telemetry-endpoint", nil)
+	if tep["value"] != "remote-collector:4317" {
+		t.Fatalf("telemetry-endpoint lost: %q", tep["value"])
+	}
+	trp := callAndDecode[map[string]bool](t, m2, rw2, 7, "settings/get-telemetry-record-payloads", nil)
+	if trp["value"] != true {
+		t.Fatalf("telemetry-record-payloads lost: %v", trp["value"])
 	}
 }
 
@@ -677,6 +973,18 @@ func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 	fp := callAndDecode[map[string]bool](t, m, rw, 2, "settings/get-force-ports", nil)
 	if fp["value"] != true {
 		t.Errorf("expected default force-ports to be true, got %v", fp["value"])
+	}
+	te := callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-telemetry-enabled", nil)
+	if te["value"] != true {
+		t.Errorf("expected default telemetry-enabled to be true, got %v", te["value"])
+	}
+	tep := callAndDecode[map[string]string](t, m, rw, 4, "settings/get-telemetry-endpoint", nil)
+	if tep["value"] != "localhost:4317" {
+		t.Errorf("expected default telemetry-endpoint to be localhost:4317, got %q", tep["value"])
+	}
+	trp := callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-telemetry-record-payloads", nil)
+	if trp["value"] != false {
+		t.Errorf("expected default telemetry-record-payloads to be false, got %v", trp["value"])
 	}
 
 	// The corrupt file got renamed aside with a .corrupt-<ts>
