@@ -141,8 +141,11 @@ These are not style preferences. Reviews and tooling catch them.
 - **No legacy fallbacks.** One canonical path. Delete what you replace rather
   than leaving a compatibility branch.
 - **Keep prompts, messages, response bodies, PINs, and key material out of
-  logs.** Never log inference content. Log operational metadata such as engine,
-  model, job ID, and node ID instead.
+  system logs.** Never log inference content in system log sinks (`slog`, `applog`,
+  stderr, file logs). Spans may optionally capture prompt and completion payloads
+  directly to the local OpenTelemetry collector ONLY when explicitly enabled by
+  the user for local AI metrics and evaluation. Pairing PINs, auth keys, and
+  credentials remain strictly forbidden in all sinks at all times.
 
 The pairing PIN is the one exception that needs explaining. The cluster manager
 returns it in results and notifications that travel the broker's stdout, so it
