@@ -166,6 +166,8 @@ type Broker struct {
 	telemetryComposePath string
 	dockerRunner         dockerRunner
 	telemetryMu          sync.Mutex
+	telemetryStarting    atomic.Bool
+	telemetryCancelStart context.CancelFunc
 	dialTimeout          func(network, address string, timeout time.Duration) (net.Conn, error)
 	mesh                 *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy

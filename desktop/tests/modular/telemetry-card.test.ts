@@ -71,6 +71,20 @@ describe('ObservabilityCard helpers and state management', () => {
             expect(badge.color).toBe('yellow')
         })
 
+        it('returns Starting… (yellow) when container is starting (e.g. pulling image)', () => {
+            const status: TelemetryStatus = {
+                enabled: true,
+                endpoint: 'localhost:4317',
+                uiUrl: 'http://localhost:6006',
+                recordPayloads: false,
+                containerState: 'starting',
+                collectorReachable: false
+            }
+            const badge = getObservabilityBadge(status)
+            expect(badge.label).toBe('Starting…')
+            expect(badge.color).toBe('yellow')
+        })
+
         it('returns Stopped (gray) when container is stopped', () => {
             const status: TelemetryStatus = {
                 enabled: true,
@@ -127,6 +141,18 @@ describe('ObservabilityCard helpers and state management', () => {
                 uiUrl: 'http://localhost:6006',
                 recordPayloads: false,
                 containerState: 'running',
+                collectorReachable: false
+            }
+            expect(isPhoenixRunning(status)).toBe(true)
+        })
+
+        it('returns true when containerState is starting', () => {
+            const status: TelemetryStatus = {
+                enabled: true,
+                endpoint: 'localhost:4317',
+                uiUrl: 'http://localhost:6006',
+                recordPayloads: false,
+                containerState: 'starting',
                 collectorReachable: false
             }
             expect(isPhoenixRunning(status)).toBe(true)

@@ -19,8 +19,32 @@ import (
 	"strings"
 	"time"
 
+	"nvpair-shared/appdir"
 	"nvpair-shared/noderec"
 )
+
+const defaultTelemetryComposeYAML = `# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: nvpair-phoenix
+    restart: unless-stopped
+    ports:
+      - "6006:6006" # Phoenix UI and OTLP HTTP
+      - "4317:4317" # OTLP gRPC collector
+    environment:
+      - PHOENIX_PORT=6006
+      - PHOENIX_GRPC_PORT=4317
+      - PHOENIX_SQL_DATABASE_URL=sqlite:////data/phoenix.db
+    volumes:
+      - nvpair-phoenix-data:/data
+
+volumes:
+  nvpair-phoenix-data:
+    driver: local
+`
 
 // TelemetryStatusResult reports the runtime state of the local Arize Phoenix collector
 // and current telemetry configuration.
@@ -161,6 +185,18 @@ func resolveComposeFilePath(customPath string) (string, error) {
 		}
 	}
 
+	if appDirPath, err := appdir.Path("docker-compose.telemetry.yml"); err == nil {
+		if _, err := os.Stat(appDirPath); err == nil {
+			return filepath.Abs(appDirPath)
+		}
+		if err := os.MkdirAll(filepath.Dir(appDirPath), 0o700); err == nil {
+			if err := os.WriteFile(appDirPath, []byte(defaultTelemetryComposeYAML), 0o644); err == nil {
+				slog.Info("provisioned default telemetry compose file into appdir", "path", appDirPath)
+				return filepath.Abs(appDirPath)
+			}
+		}
+	}
+
 	return "", fmt.Errorf("docker-compose.telemetry.yml not found")
 }
 
@@ -268,6 +304,10 @@ func (b *Broker) getTelemetryStatus(ctx context.Context) TelemetryStatusResult {
 		containerState = state
 	}
 
+	if b.telemetryStarting.Load() && containerState != "running" {
+		containerState = "starting"
+	}
+
 	reachable := b.probeCollector(endpoint, 500*time.Millisecond)
 
 	return TelemetryStatusResult{
@@ -289,54 +329,128 @@ func (b *Broker) handleTelemetryGetStatus(msg *Message) {
 
 func (b *Broker) handleTelemetryStart(msg *Message) {
 	b.telemetryMu.Lock()
-	defer b.telemetryMu.Unlock()
+
+	// If already in starting state, return the in-progress status immediately
+	if b.telemetryStarting.Load() {
+		b.telemetryMu.Unlock()
+		status := b.getTelemetryStatus(context.Background())
+		if err := b.codec.Respond(msg.ID, status); err != nil {
+			log.Printf("failed to respond to telemetry/start: %v", err)
+		}
+		return
+	}
 
 	composePath, err := resolveComposeFilePath(b.telemetryComposePath)
 	if err != nil {
+		b.telemetryMu.Unlock()
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("cannot resolve compose file: %v", err)); err != nil {
 			log.Printf("failed to respond to telemetry/start error: %v", err)
 		}
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Cancel any previously active startup context
+	if b.telemetryCancelStart != nil {
+		b.telemetryCancelStart()
+	}
+	startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	b.telemetryCancelStart = startCancel
+	b.telemetryStarting.Store(true)
 
 	runner := b.getDockerRunner()
-	if err := runner.composeUp(ctx, composePath); err != nil {
-		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("docker compose up failed: %v", err)); err != nil {
-			log.Printf("failed to respond to telemetry/start error: %v", err)
+	b.telemetryMu.Unlock()
+
+	upDone := make(chan error, 1)
+	go func() {
+		upDone <- runner.composeUp(startCtx, composePath)
+	}()
+
+	// Wait up to 1500ms for quick local/cached start or instant test mocks
+	select {
+	case err := <-upDone:
+		b.telemetryStarting.Store(false)
+
+		if err != nil {
+			if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("docker compose up failed: %v", err)); err != nil {
+				log.Printf("failed to respond to telemetry/start error: %v", err)
+			}
+			return
+		}
+
+		endpoint := b.getTelemetryEndpointSetting()
+		pollDeadline := time.Now().Add(2 * time.Second)
+		var reachable bool
+		for time.Now().Before(pollDeadline) {
+			if b.probeCollector(endpoint, 250*time.Millisecond) {
+				reachable = true
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+
+		if reachable {
+			slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
+			b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
+		}
+
+		finalStatus := b.getTelemetryStatus(context.Background())
+		if err := b.codec.Respond(msg.ID, finalStatus); err != nil {
+			log.Printf("failed to respond to telemetry/start: %v", err)
 		}
 		return
-	}
 
-	endpoint := b.getTelemetryEndpointSetting()
-	pollDeadline := time.Now().Add(10 * time.Second)
-	var reachable bool
-	for time.Now().Before(pollDeadline) {
-		if b.probeCollector(endpoint, 250*time.Millisecond) {
-			reachable = true
-			break
+	case <-time.After(1500 * time.Millisecond):
+		// Asynchronous / slow path: docker is pulling the image or initializing slowly.
+		// Hand off to background worker so the JSON-RPC call returns "starting" immediately.
+		slog.Info("docker compose up taking time (likely pulling container image); backgrounding startup monitor", "composePath", composePath)
+
+		go func() {
+			err := <-upDone
+			b.telemetryStarting.Store(false)
+
+			if err != nil {
+				if startCtx.Err() == nil {
+					slog.Error("background docker compose up failed", "err", err)
+				}
+				return
+			}
+
+			slog.Info("docker compose up completed, polling collector reachability", "composePath", composePath)
+			endpoint := b.getTelemetryEndpointSetting()
+			pollDeadline := time.Now().Add(45 * time.Second)
+			var reachable bool
+			for time.Now().Before(pollDeadline) && startCtx.Err() == nil {
+				if b.probeCollector(endpoint, 500*time.Millisecond) {
+					reachable = true
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			if reachable {
+				slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
+				b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
+			} else {
+				slog.Warn("telemetry collector container started but collector port not responding within deadline", "composePath", composePath, "endpoint", endpoint)
+			}
+		}()
+
+		startingStatus := b.getTelemetryStatus(context.Background())
+		startingStatus.ContainerState = "starting"
+		if err := b.codec.Respond(msg.ID, startingStatus); err != nil {
+			log.Printf("failed to respond to telemetry/start: %v", err)
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if reachable {
-		slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
-		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
-	} else {
-		slog.Warn("telemetry collector container started but collector port not responding within deadline", "composePath", composePath, "endpoint", endpoint)
-	}
-
-	status := b.getTelemetryStatus(context.Background())
-	if err := b.codec.Respond(msg.ID, status); err != nil {
-		log.Printf("failed to respond to telemetry/start: %v", err)
 	}
 }
 
 func (b *Broker) handleTelemetryStop(msg *Message) {
 	b.telemetryMu.Lock()
-	defer b.telemetryMu.Unlock()
+	if b.telemetryCancelStart != nil {
+		b.telemetryCancelStart()
+		b.telemetryCancelStart = nil
+	}
+	b.telemetryStarting.Store(false)
+	b.telemetryMu.Unlock()
 
 	composePath, err := resolveComposeFilePath(b.telemetryComposePath)
 	if err != nil {
@@ -364,3 +478,4 @@ func (b *Broker) handleTelemetryStop(msg *Message) {
 		log.Printf("failed to respond to telemetry/stop: %v", err)
 	}
 }
+

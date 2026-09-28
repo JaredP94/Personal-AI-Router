@@ -75,11 +75,41 @@ export async function prepareLocalEnginesForShutdown(
 }
 
 export function getCliBinDir(): string {
-    if (app.isPackaged) {
+    if (typeof app !== 'undefined' && app.isPackaged) {
         return path.join(process.resourcesPath, 'cli-bin')
     }
 
-    return path.join(app.getAppPath(), 'cli-bin')
+    const appPath =
+        typeof app !== 'undefined' && typeof app.getAppPath === 'function'
+            ? app.getAppPath()
+            : process.cwd()
+    return path.join(appPath, 'cli-bin')
+}
+
+export function resolveTelemetryComposePath(): string {
+    const isPackaged = typeof app !== 'undefined' && Boolean(app.isPackaged)
+    const appPath =
+        typeof app !== 'undefined' && typeof app.getAppPath === 'function'
+            ? app.getAppPath()
+            : process.cwd()
+    const resourcesPath =
+        typeof process !== 'undefined' && typeof process.resourcesPath === 'string'
+            ? process.resourcesPath
+            : ''
+
+    const candidates = [
+        isPackaged && resourcesPath
+            ? path.join(resourcesPath, 'docker-compose.telemetry.yml')
+            : path.join(appPath, '..', 'docker-compose.telemetry.yml'),
+        path.join(appPath, 'docker-compose.telemetry.yml'),
+        path.join(getCliBinDir(), '..', '..', 'docker-compose.telemetry.yml'),
+        path.join(getCliBinDir(), '..', 'docker-compose.telemetry.yml'),
+        path.join(getCliBinDir(), 'docker-compose.telemetry.yml')
+    ]
+    for (const candidate of candidates) {
+        if (candidate && fs.existsSync(candidate)) return candidate
+    }
+    return ''
 }
 
 function getModularBinaryPath(baseName: string): string {
@@ -852,6 +882,10 @@ class ModularSupervisor {
         // streams, and fans its schedule:priority out to the proxies via
         // node/set-priority (all broker-internal).
         passPath('--scheduler-path', 'job-scheduler')
+        const telemetryComposePath = resolveTelemetryComposePath()
+        if (telemetryComposePath) {
+            args.push('--telemetry-compose-path', telemetryComposePath)
+        }
         return [...args, ...this.logLevelArgs()]
     }
 

@@ -31,6 +31,7 @@ export default function ObservabilityCard() {
 
     useEffect(() => {
         let unmounted = false
+        const interval = status?.containerState === 'starting' ? 1500 : 4000
 
         const poll = async () => {
             if (unmounted || !window.pairApi?.telemetry) return
@@ -47,13 +48,13 @@ export default function ObservabilityCard() {
         void poll()
         const intervalId = setInterval(() => {
             void poll()
-        }, 4000)
+        }, interval)
 
         return () => {
             unmounted = true
             clearInterval(intervalId)
         }
-    }, [])
+    }, [status?.containerState])
 
     const handleStart = useCallback(async () => {
         if (!window.pairApi?.telemetry) return
@@ -167,6 +168,7 @@ export default function ObservabilityCard() {
                                         kind="secondary"
                                         size="small"
                                         onClick={handleOpenDashboard}
+                                        disabled={!status?.collectorReachable}
                                     >
                                         <Flex align="center" gap="1">
                                             <span>Open Dashboard</span>

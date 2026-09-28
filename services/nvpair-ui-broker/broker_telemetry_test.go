@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -342,4 +343,132 @@ func TestResolveComposeFilePath(t *testing.T) {
 		t.Fatalf("expected error for non-existent path")
 	}
 }
+
+func TestResolveComposeFilePath_FallbackProvisioning(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Chdir(tempHome)
+	t.Setenv("HOME", tempHome)
+	t.Setenv("LOCALAPPDATA", tempHome)
+	t.Setenv("XDG_CONFIG_HOME", tempHome)
+	t.Setenv("NVPAIR_TELEMETRY_COMPOSE_PATH", "")
+
+	// When customPath is empty, and candidates next to exe/cwd do not exist,
+	// resolveComposeFilePath should provision and return the default compose file in appdir.
+	resolved, err := resolveComposeFilePath("")
+	if err != nil {
+		t.Fatalf("expected fallback provisioning to succeed, got: %v", err)
+	}
+
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatalf("failed to read provisioned compose file: %v", err)
+	}
+	if !strings.Contains(string(data), "arizephoenix/phoenix:latest") {
+		t.Errorf("expected provisioned compose file to contain arizephoenix/phoenix:latest, got: %s", string(data))
+	}
+}
+
+type slowDockerRunner struct {
+	composeUpDelay time.Duration
+	state          string
+}
+
+func (s *slowDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
+	return s.state, nil
+}
+
+func (s *slowDockerRunner) composeUp(ctx context.Context, composeFile string) error {
+	select {
+	case <-time.After(s.composeUpDelay):
+		s.state = "running"
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *slowDockerRunner) composeStop(ctx context.Context, composeFile string) error {
+	s.state = "stopped"
+	return nil
+}
+
+func TestTelemetryStart_SlowPullBackgrounding(t *testing.T) {
+	brokerConn, clientConn := net.Pipe()
+	defer brokerConn.Close()
+	defer clientConn.Close()
+
+	tempDir := t.TempDir()
+	fakeCompose := filepath.Join(tempDir, "docker-compose.telemetry.yml")
+	if err := os.WriteFile(fakeCompose, []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// composeUp takes 2.2 seconds, which exceeds the 1.5s quick wait
+	slowRunner := &slowDockerRunner{
+		composeUpDelay: 2200 * time.Millisecond,
+		state:          "not_found",
+	}
+
+	b := &Broker{
+		codec:                NewCodec(brokerConn),
+		dockerRunner:         slowRunner,
+		telemetryComposePath: fakeCompose,
+		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+			if slowRunner.state == "running" {
+				c1, c2 := net.Pipe()
+				_ = c2.Close()
+				return c1, nil
+			}
+			return nil, net.ErrClosed
+		},
+	}
+
+	start := time.Now()
+	id1 := json.RawMessage(`1`)
+	go b.handleMessage(&Message{
+		JSONRPC: "2.0",
+		ID:      &id1,
+		Method:  "telemetry/start",
+	})
+
+	resp1, err := NewCodec(clientConn).Read()
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if resp1.Error != nil {
+		t.Fatalf("unexpected error on telemetry/start: %v", resp1.Error)
+	}
+
+	// Should respond in ~1.5s rather than blocking for 2.2s+
+	if elapsed > 2000*time.Millisecond {
+		t.Errorf("expected response within 2s, took %v", elapsed)
+	}
+
+	var status TelemetryStatusResult
+	if err := json.Unmarshal(resp1.Result, &status); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	if status.ContainerState != "starting" {
+		t.Errorf("expected ContainerState='starting', got %q", status.ContainerState)
+	}
+
+	// Subsequent get-status during pull should also report 'starting'
+	pollStatus := b.getTelemetryStatus(context.Background())
+	if pollStatus.ContainerState != "starting" {
+		t.Errorf("expected polled ContainerState='starting' while pull ongoing, got %q", pollStatus.ContainerState)
+	}
+
+	// Wait for background composeUp to finish
+	time.Sleep(1000 * time.Millisecond)
+
+	finalStatus := b.getTelemetryStatus(context.Background())
+	if finalStatus.ContainerState != "running" {
+		t.Errorf("expected final ContainerState='running', got %q", finalStatus.ContainerState)
+	}
+}
+
+
 

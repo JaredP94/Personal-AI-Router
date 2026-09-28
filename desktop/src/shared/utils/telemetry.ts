@@ -20,17 +20,21 @@ export function getObservabilityBadge(status: TelemetryStatus | null): Observabi
     if (status?.collectorReachable) {
         return { label: 'Active ●', color: 'green' }
     }
-    if (status?.containerState === 'running') {
+    if (status?.containerState === 'running' || status?.containerState === 'starting') {
         return { label: 'Starting…', color: 'yellow' }
     }
     return { label: 'Stopped', color: 'gray' }
 }
 
 /**
- * True if Phoenix collector is reachable or container is running.
+ * True if Phoenix collector is reachable or container is running / starting.
  */
 export function isPhoenixRunning(status: TelemetryStatus | null): boolean {
-    return Boolean(status?.collectorReachable || status?.containerState === 'running')
+    return Boolean(
+        status?.collectorReachable ||
+        status?.containerState === 'running' ||
+        status?.containerState === 'starting'
+    )
 }
 
 /**

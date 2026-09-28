@@ -299,6 +299,16 @@ const config: Configuration = {
             to: 'scripts/install-mac.sh'
         },
         {
+            // Arize Phoenix docker compose file for telemetry
+            from: '../docker-compose.telemetry.yml',
+            to: 'docker-compose.telemetry.yml'
+        },
+        {
+            // Arize Phoenix helper script
+            from: '../scripts/telemetry-phoenix.sh',
+            to: 'scripts/telemetry-phoenix.sh'
+        },
+        {
             // Repo-root wipe scripts (append-only inventory). Packaged builds call
             // these from Electron after shutdown — same entrypoints developers run
             // from the monorepo without Node.
