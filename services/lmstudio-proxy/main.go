@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/telemetry"
 )
 
 func main() {
@@ -70,9 +72,22 @@ func main() {
 		log.Printf("restored persisted proxy port %d", persisted)
 	}
 
+	telCfg := defaultTelemetryConfig()
+	tel, err := telemetry.Init(ctx, telCfg)
+	if err != nil {
+		slog.Warn("failed to initialize telemetry", "err", err)
+	}
+
 	codec := NewCodec(transport)
 	disc := NewDiscovery()
-	proxy := NewProxy(codec, disc, effectivePort)
+	proxy := NewProxy(codec, disc, effectivePort, tel)
+	if proxy.telemetry != nil {
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer shutdownCancel()
+			_ = proxy.telemetry.Shutdown(shutdownCtx)
+		}()
+	}
 	// Open a live view of this node's cluster mTLS trust fabric. While unclustered
 	// the proxy serves only the loopback plaintext personality; once this node is
 	// a member the same listener also serves the pin-gated LAN mTLS ingress, and

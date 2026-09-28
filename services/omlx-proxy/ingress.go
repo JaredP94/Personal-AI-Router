@@ -12,7 +12,10 @@ import (
 	"net/url"
 	"strconv"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"nvpair-shared/cors"
+	"nvpair-shared/telemetry"
 )
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
@@ -109,6 +112,17 @@ func (p *Proxy) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 			"no local inference backend is available on this node")
 		return
 	}
+	ctx := telemetry.ExtractHTTPContext(r)
+	ctx, span := p.tracer().Start(ctx, "pair.cluster.ingress", trace.WithSpanKind(trace.SpanKindServer))
+	span.SetAttributes(
+		attribute.String("peer.uuid", peer),
+		attribute.String("http.request.method", r.Method),
+		attribute.String("http.route", r.URL.Path),
+		attribute.String("server.address", target.Host),
+	)
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	slog.Debug("cluster ingress forwarding to local backend",
 		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host)
 	p.reverseProxyToLocal(w, r, target)
@@ -130,6 +144,7 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 			if key := readOMLXAPIKey(); key != "" {
 				req.Header.Set("Authorization", "Bearer "+key)
 			}
+			telemetry.InjectHTTPContext(req.Context(), req)
 		},
 		Transport:  p.plainHTTPTransport(),
 		BufferPool: p.bufPool,
