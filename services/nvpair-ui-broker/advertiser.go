@@ -23,6 +23,8 @@ const (
 	defaultOllamaPort   = 11434
 	defaultLMStudioPort = 1234
 	defaultOMLXPort     = 1235
+	defaultOTelPort     = 4317
+	defaultOTelProbeEndpoint = "127.0.0.1:4317"
 
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
@@ -367,8 +369,8 @@ func (b *Broker) runAutoAdvertiseTelemetry(ctx context.Context) {
 }
 
 func (b *Broker) reconcileAdvertiseTelemetry() {
-	if b.probeCollector("127.0.0.1:4317", 500*time.Millisecond) {
-		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
+	if b.probeCollector(defaultOTelProbeEndpoint, 500*time.Millisecond) {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: defaultOTelPort})
 	} else {
 		b.unregisterService(noderec.ServiceOTel)
 	}
