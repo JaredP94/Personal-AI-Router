@@ -534,6 +534,31 @@ want to observe.
 When a status is not specific enough, the services' own reporting is behind
 **Open log file** on **Settings → Service**.
 
+## Observability & Evaluations with Arize Phoenix
+
+PAIR includes built-in OpenTelemetry (OTel) distributed tracing and Arize
+Phoenix observability to monitor inference latency, Time to First Token (TTFT),
+token throughput, and cluster scheduling decisions.
+
+Arize Phoenix runs as a **single Docker container per cluster** on one designated
+node. Peer cluster nodes require zero container setup:
+
+1. **Designate a host machine** and ensure Docker Desktop or Docker Engine is
+   running.
+2. In PAIR Desktop, go to **Settings → Service** and scroll to
+   **Observability & Evaluations (Arize Phoenix)**.
+3. Select **Start Phoenix**. PAIR will launch the container in the background
+   and verify collector connectivity.
+4. Select **Open Dashboard ↗** to open the Phoenix web interface at
+   `http://localhost:6006`.
+5. *(Optional)* Toggle **Capture Prompt & Completion Text** if you want to run
+   AI evaluations (hallucination detection, toxicity, QA accuracy) in Phoenix.
+   Auth tokens, credentials, and API keys are always permanently redacted.
+
+Any peer nodes paired into the cluster automatically discover the central
+collector over mDNS (`otel=4317`) and stream OTLP spans across the LAN.
+Requests routed across nodes automatically link into unified distributed traces.
+
 ## Keeping PAIR Up to Date
 
 An installed PAIR looks for a newer release shortly after it starts, and every
