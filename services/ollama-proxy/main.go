@@ -17,6 +17,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/telemetry"
 )
 
 type aliasAddressFlags []string
@@ -81,9 +82,18 @@ func main() {
 		log.Printf("restored persisted proxy port %d", persisted)
 	}
 
+	telCfg := defaultTelemetryConfig()
+	tel, err := telemetry.Init(ctx, telCfg)
+	if err != nil {
+		slog.Warn("failed to initialize telemetry", "err", err)
+	}
+
 	codec := NewCodec(transport)
 	disc := NewDiscovery()
-	proxy := NewProxy(codec, disc, effectivePort)
+	proxy := NewProxy(codec, disc, effectivePort, tel)
+	if proxy.telemetry != nil {
+		defer proxy.telemetry.Shutdown(ctx)
+	}
 	for _, aliasAddress := range aliasAddresses {
 		if err := proxy.setLoopbackAlias(aliasAddress); err != nil {
 			log.Fatalf("invalid alias address: %v", err)

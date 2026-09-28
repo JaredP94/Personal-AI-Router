@@ -68,6 +68,18 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	}, nil
 }
 
+// NewTestProvider creates a Provider backed by the given TracerProvider.
+// This is intended for unit tests using in-memory exporters.
+func NewTestProvider(tp *sdktrace.TracerProvider, cfg Config) *Provider {
+	otel.SetTracerProvider(tp)
+	return &Provider{
+		cfg:      cfg,
+		tp:       tp,
+		tracer:   tp.Tracer(cfg.ServiceName),
+		shutdown: tp.Shutdown,
+	}
+}
+
 func (p *Provider) Tracer() trace.Tracer {
 	if p == nil || p.tracer == nil {
 		return otel.GetTracerProvider().Tracer("nvpair")
