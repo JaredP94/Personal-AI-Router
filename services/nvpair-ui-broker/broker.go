@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,8 @@ type Broker struct {
 	clusterDir           string
 	telemetryComposePath string
 	dockerRunner         dockerRunner
+	telemetryMu          sync.Mutex
+	dialTimeout          func(network, address string, timeout time.Duration) (net.Conn, error)
 	mesh                 *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
@@ -3030,13 +3033,13 @@ func (b *Broker) handleMessage(msg *Message) {
 		b.handleErrorsReport(msg)
 
 	case "telemetry/get-status":
-		b.handleTelemetryGetStatus(msg)
+		go b.handleTelemetryGetStatus(msg)
 
 	case "telemetry/start":
-		b.handleTelemetryStart(msg)
+		go b.handleTelemetryStart(msg)
 
 	case "telemetry/stop":
-		b.handleTelemetryStop(msg)
+		go b.handleTelemetryStop(msg)
 
 	case "shutdown":
 		if err := b.codec.Respond(msg.ID, nil); err != nil {
