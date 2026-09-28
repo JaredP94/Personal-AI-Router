@@ -13,13 +13,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 #
 #   # Install a specific version:
-#   ./scripts/install-mac.sh --version 0.4.0
+#   ./scripts/install-mac.sh --version 0.4.1
 #
 #   # Launch after install:
 #   ./scripts/install-mac.sh --launch
 #
 #   # Install from a local DMG file (offline / dev testing):
-#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.4.0-arm64.dmg
+#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.4.1-arm64.dmg
 
 set -euo pipefail
 
@@ -37,7 +37,7 @@ Usage:
   $(basename "$0") [options]
 
 Options:
-  -v, --version <version>  Install a specific version (e.g. 0.4.0 or v0.4.0). Defaults to latest.
+  -v, --version <version>  Install a specific version (e.g. 0.4.1 or v0.4.1). Defaults to latest.
       --repo <owner/repo>  GitHub repository to download from (default: $PAIR_REPO).
       --dmg <path>         Install from a local .dmg file instead of downloading.
       --launch             Launch Personal AI Router after installation.

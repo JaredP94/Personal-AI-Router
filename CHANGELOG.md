@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-28
+
+### Fixed
+- **Packaged App Telemetry Compose Resolution**: Added `docker-compose.telemetry.yml` and `scripts/telemetry-phoenix.sh` to packaged application resources (`extraResources`) and passed `--telemetry-compose-path` to the supervisor broker.
+- **Automatic Fallback Compose Provisioning**: Enabled `nvpair-ui-broker` to automatically self-provision the default Phoenix Docker Compose YAML into the user configuration directory if missing.
+- **Asynchronous Docker Pulls & Condition Polling**: Handed off long Docker Compose operations (e.g. initial image pulls) to a background worker in `nvpair-ui-broker` with an extended 10-minute timeout and transitional `"starting"` container state, preventing JSON-RPC timeout errors.
+- **Collector Endpoint Condition Polling**: Implemented active condition-based TCP polling of the OpenTelemetry collector port (`:4317`) before registering the service.
+- **Observability UI Responsiveness**: Accelerated UI polling to 1.5s during container startup, added a "Starting…" status badge, and safely disabled dashboard links until the collector port responds.
+
 ## [0.4.0] - 2026-09-28
 
 ### Added
