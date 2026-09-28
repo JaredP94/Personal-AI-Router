@@ -43,7 +43,7 @@ func TestEngineModels(t *testing.T) {
 func TestParseTXT(t *testing.T) {
 	txt := []string{
 		"v=1", "uuid=host-abc", "cluster-uuid=clu-xyz", "ip=192.168.1.10",
-		"ni=14318", "ol=11434", "er=14319", "wl=14320", "cl=14321", "em=14322",
+		"ni=14318", "ol=11434", "er=14319", "wl=14320", "cl=14321", "em=14322", "otel=4317",
 		"unknown=ignored", "bad=notaport",
 	}
 	r := ParseTXT(txt)
@@ -61,6 +61,9 @@ func TestParseTXT(t *testing.T) {
 	}
 	if p, ok := r.Port(ServiceEngineManager); !ok || p != 14322 {
 		t.Errorf("em port = %d,%v want 14322,true", p, ok)
+	}
+	if p, ok := r.Port(ServiceOTel); !ok || p != 4317 {
+		t.Errorf("otel port = %d,%v want 4317,true", p, ok)
 	}
 	if _, ok := r.Port(ServiceLMStudio); ok {
 		t.Error("lm should be absent")

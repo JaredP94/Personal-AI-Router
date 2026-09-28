@@ -124,3 +124,29 @@ func TestRegistryTXTIsValidRecord(t *testing.T) {
 		t.Errorf("er port lost in round-trip: %d,%v", p, ok)
 	}
 }
+
+func TestRegistryRegisterOTel(t *testing.T) {
+	r := newRegistry("host-otel", "", []string{"192.168.1.50"})
+	if !r.register(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317}) {
+		t.Fatal("registering otel should report a change")
+	}
+
+	rec := r.record()
+	if p, ok := rec.Port(noderec.ServiceOTel); !ok || p != 4317 {
+		t.Fatalf("otel port = %d, ok = %v, want 4317, true", p, ok)
+	}
+
+	txt := r.txt()
+	got := noderec.ParseTXT(txt)
+	if p, ok := got.Port(noderec.ServiceOTel); !ok || p != 4317 {
+		t.Fatalf("otel port in parsed txt = %d, ok = %v, want 4317, true", p, ok)
+	}
+
+	if !r.unregister(noderec.ServiceOTel) {
+		t.Fatal("unregistering otel should report a change")
+	}
+	if _, ok := r.record().Port(noderec.ServiceOTel); ok {
+		t.Fatal("otel should be gone after unregister")
+	}
+}
+

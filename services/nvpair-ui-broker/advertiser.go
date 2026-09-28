@@ -346,3 +346,31 @@ func checkOMLXHealth(client *http.Client, port int) bool {
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
+
+// runAutoAdvertiseTelemetry periodically checks whether the local Arize Phoenix
+// collector (:4317) is responding, and reconciles this node's otel service
+// registration with the discovery daemon accordingly.
+func (b *Broker) runAutoAdvertiseTelemetry(ctx context.Context) {
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseTelemetry()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseTelemetry()
+		}
+	}
+}
+
+func (b *Broker) reconcileAdvertiseTelemetry() {
+	if b.probeCollector("127.0.0.1:4317", 500*time.Millisecond) {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
+	} else {
+		b.unregisterService(noderec.ServiceOTel)
+	}
+}
+
