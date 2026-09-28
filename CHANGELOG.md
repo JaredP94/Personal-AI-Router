@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+### Added
+- **Arize Phoenix Observability Integration**: Built-in OpenTelemetry-compatible observability powered by Arize Phoenix running in a single Docker container (`http://localhost:6006`, OTLP gRPC `:4317`) on a designated cluster node.
+- **W3C Distributed Tracing**: Added W3C `traceparent` context injection and extraction across all inference proxies (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`) for linked, end-to-end distributed tracing across multi-node cluster dispatches.
+- **Proxy Metrics Instrumentation**: Root inference spans (`pair.proxy.inference`), router candidate scheduling spans (`pair.router.schedule`), dispatch client spans (`pair.engine.dispatch`), and cluster ingress spans (`pair.cluster.ingress`) with streaming Time to First Token (TTFT) and prompt/completion token metrics.
+- **Zero-Config Cluster Discovery**: Added `otel=4317` mDNS TXT record advertisement in `nvpair-node-scanner` with automatic background reconcile in `nvpair-ui-broker`. Peer cluster nodes stream telemetry across the LAN with zero container requirements on peer nodes.
+- **Desktop UI Controls (`ObservabilityCard`)**: Added an Observability & Evaluations card in PAIR Desktop Service Settings with interactive Start / Stop Phoenix action buttons, real-time connection status badges, Docker offline warning banner, and one-click dashboard access.
+- **Dual-Mode Payload Control & AI Evaluations**: Default operational mode records strictly performance metadata; optional opt-in mode captures prompts and completions for Arize Phoenix evaluations (hallucination detection, toxicity, QA accuracy) with permanent credential redaction (`Authorization`, `Cookie`, `X-Pair-Pin`, `X-API-Key`, etc.).
+
 ## [0.3.10] - 2026-09-27
 
 ### Fixed
