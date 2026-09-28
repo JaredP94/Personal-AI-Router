@@ -161,8 +161,10 @@ type Broker struct {
 	settingsPath      string
 	clusterMgrPath    string
 	schedulerPath     string
-	clusterDir        string
-	mesh              *clustertrust.Mesh
+	clusterDir           string
+	telemetryComposePath string
+	dockerRunner         dockerRunner
+	mesh                 *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -351,6 +353,8 @@ type workerPaths struct {
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
 	clusterDir string
+	// telemetryComposePath is the explicit path to docker-compose.telemetry.yml.
+	telemetryComposePath string
 }
 
 // NewBroker constructs a per-session broker. paths.scanner is required —
@@ -372,25 +376,26 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	return &Broker{
-		codec:              codec,
-		startedAt:          time.Now(),
-		nodeID:             nodeID,
-		scannerPath:        paths.scanner,
-		nodeInfoPath:       paths.nodeInfo,
-		proxyPath:          paths.proxy,
-		lmstudioProxyPath:  paths.lmstudioProxy,
-		omlxProxyPath:      paths.omlxProxy,
-		workloadMgrPath:    paths.workloadMgr,
-		errorsPath:         paths.errors,
-		engineMgrPath:      paths.engineMgr,
-		manualNodesPath:    paths.manualNodes,
-		settingsPath:       paths.settings,
-		clusterMgrPath:     paths.clusterMgr,
-		schedulerPath:      paths.scheduler,
-		clusterDir:         paths.clusterDir,
-		mesh:               clustertrust.Open(paths.clusterDir),
-		store:              newDiscoveryStore(),
-		telemetry:          newTelemetryCache(),
+		codec:                codec,
+		startedAt:            time.Now(),
+		nodeID:               nodeID,
+		scannerPath:          paths.scanner,
+		nodeInfoPath:         paths.nodeInfo,
+		proxyPath:            paths.proxy,
+		lmstudioProxyPath:    paths.lmstudioProxy,
+		omlxProxyPath:        paths.omlxProxy,
+		workloadMgrPath:      paths.workloadMgr,
+		errorsPath:           paths.errors,
+		engineMgrPath:        paths.engineMgr,
+		manualNodesPath:      paths.manualNodes,
+		settingsPath:         paths.settings,
+		clusterMgrPath:       paths.clusterMgr,
+		schedulerPath:        paths.scheduler,
+		clusterDir:           paths.clusterDir,
+		telemetryComposePath: paths.telemetryComposePath,
+		mesh:                 clustertrust.Open(paths.clusterDir),
+		store:                newDiscoveryStore(),
+		telemetry:            newTelemetryCache(),
 		relayDir:           relay.NewDirectory(),
 		regCache:           relay.NewRegistrationCache(),
 		manualNodeKeys:     make(map[string]string),
@@ -3023,6 +3028,15 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case methodErrorsReport:
 		b.handleErrorsReport(msg)
+
+	case "telemetry/get-status":
+		b.handleTelemetryGetStatus(msg)
+
+	case "telemetry/start":
+		b.handleTelemetryStart(msg)
+
+	case "telemetry/stop":
+		b.handleTelemetryStop(msg)
 
 	case "shutdown":
 		if err := b.codec.Respond(msg.ID, nil); err != nil {

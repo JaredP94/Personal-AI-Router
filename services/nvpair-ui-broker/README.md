@@ -471,7 +471,19 @@ Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim an
 
 #### `settings/<method>` (generic relay)
 
-Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`. Error `-32000 "node-settings not available"` when no settings worker is supervised.
+Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`, `settings/get-telemetry-enabled`, `settings/set-telemetry-enabled`, `settings/get-telemetry-endpoint`, `settings/set-telemetry-endpoint`, `settings/get-telemetry-record-payloads`, `settings/set-telemetry-record-payloads`. Error `-32000 "node-settings not available"` when no settings worker is supervised.
+
+#### `telemetry/get-status`
+
+Returns `{ "enabled": bool, "endpoint": string, "uiUrl": string, "recordPayloads": bool, "containerState": string, "collectorReachable": bool }`. Queries current telemetry settings, probes the Docker container state of `nvpair-phoenix`, and tests TCP connectivity to the OTLP gRPC endpoint.
+
+#### `telemetry/start`
+
+Launches the Arize Phoenix Docker container via `docker compose -f docker-compose.telemetry.yml up -d`, polls the OTLP collector port up to 10 seconds until accepting connections, and returns the updated `TelemetryStatusResult`.
+
+#### `telemetry/stop`
+
+Stops the Arize Phoenix Docker container via `docker compose -f docker-compose.telemetry.yml stop` and returns the updated `TelemetryStatusResult`.
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 
