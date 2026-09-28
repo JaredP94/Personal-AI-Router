@@ -15,10 +15,20 @@ import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
+import type { TelemetryStatus } from '@/shared/types/telemetry'
 
 // ---------------------------------------------------------------------------
 // Sub-API interfaces
 // ---------------------------------------------------------------------------
+
+export interface ITelemetryApi {
+    getStatus(): Promise<TelemetryStatus>
+    start(): Promise<TelemetryStatus>
+    stop(): Promise<TelemetryStatus>
+    setEnabled(value: boolean): Promise<{ ok: boolean }>
+    setEndpoint(value: string): Promise<{ ok: boolean }>
+    setRecordPayloads(value: boolean): Promise<{ ok: boolean }>
+}
 
 export interface IConnectionApi {
     /** Service requests a full state refresh (e.g. after cluster membership changes). */
@@ -125,6 +135,7 @@ export interface IPairApi {
     workloads: IWorkloadsApi
     errors: IErrorsApi
     metrics: IMetricsApi
+    telemetry: ITelemetryApi
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +199,14 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             getRouting: () => transport.invoke('metrics:get-routing'),
             onRoutingUpdate: cb => transport.subscribePush('metrics:routing-update', cb),
             onUpdate: cb => transport.subscribePush('metrics:update', cb)
+        },
+        telemetry: {
+            getStatus: () => transport.invoke('telemetry:get-status'),
+            start: () => transport.invoke('telemetry:start'),
+            stop: () => transport.invoke('telemetry:stop'),
+            setEnabled: value => transport.invoke('telemetry:set-enabled', { value }),
+            setEndpoint: value => transport.invoke('telemetry:set-endpoint', { value }),
+            setRecordPayloads: value => transport.invoke('telemetry:set-record-payloads', { value })
         }
     }
 }

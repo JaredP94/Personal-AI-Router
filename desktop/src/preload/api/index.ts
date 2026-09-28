@@ -9,11 +9,13 @@ import { ipcRenderer } from 'electron'
 import { PlatformDisplayName } from '@/shared/types/platform'
 import { platformDisplayName, currentPlatform } from '@/shared/utils/platform'
 import { inferenceDemoApi, type IInferenceDemoApi } from '@/preload/api/inference-demo.api'
+import { telemetryApi, type ITelemetryApi } from '@/preload/api/telemetry.api'
 
 export type { IWindowActionApi } from '@/preload/api/window.api'
 export type { IServiceApi } from '@/preload/api/service.api'
 export type { IUpdateApi } from '@/preload/api/update.api'
 export type { IInferenceDemoApi } from '@/preload/api/inference-demo.api'
+export type { ITelemetryApi } from '@/preload/api/telemetry.api'
 
 /**
  * Electron-native API exposed via contextBridge.
@@ -32,6 +34,8 @@ export interface IWindowApi {
     update: IUpdateApi
     /** Node-local Inference Demo: synthetic load sent through PAIR's proxies. */
     inferenceDemo: IInferenceDemoApi
+    /** Arize Phoenix container lifecycle and OpenTelemetry collector status. */
+    telemetry: ITelemetryApi
     /** Whether first-run onboarding still needs to be completed or explicitly dismissed. */
     isFirstRun(): Promise<boolean>
     /** Persist that first-run onboarding completed or was explicitly dismissed. */
@@ -54,6 +58,7 @@ export const windowApi: IWindowApi = {
     service: serviceApi,
     update: updateApi,
     inferenceDemo: inferenceDemoApi,
+    telemetry: telemetryApi,
     isFirstRun: () => invokeAndUnwrap<boolean>(ipcRenderer.invoke('settings:is-first-run')),
     completeFirstRun: () =>
         invokeAndUnwrap<void>(ipcRenderer.invoke('settings:complete-first-run')),

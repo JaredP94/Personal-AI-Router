@@ -6,6 +6,7 @@ import type { ModularLogLevel } from '@/shared/constants/modular-runtime'
 import type { ServiceBridgeInvokeRequest } from './service-bridge'
 import type { UpdateStatus } from '@/shared/types/update'
 import type { DemoState } from '@/shared/types/inference-demo'
+import type { TelemetryStatus } from '@/shared/types/telemetry'
 
 /**
  * IPC contract types for Electron-native operations only.
@@ -126,6 +127,14 @@ export interface IpcChannelMap {
     'update:check': { request: void; response: void }
     'update:download': { request: void; response: void }
     'update:install': { request: void; response: void }
+
+    // -- Telemetry (Arize Phoenix container lifecycle & status) --
+    'telemetry:get-status': { request: void; response: TelemetryStatus }
+    'telemetry:start': { request: void; response: TelemetryStatus }
+    'telemetry:stop': { request: void; response: TelemetryStatus }
+    'telemetry:set-enabled': { request: { value: boolean }; response: { ok: boolean } }
+    'telemetry:set-endpoint': { request: { value: string }; response: { ok: boolean } }
+    'telemetry:set-record-payloads': { request: { value: boolean }; response: { ok: boolean } }
 
     // -- Service bridge (renderer pairApi transport, logical channel contract over IPC) --
     'service-bridge:invoke': {
