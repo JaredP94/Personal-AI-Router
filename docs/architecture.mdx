@@ -537,6 +537,8 @@ A default installation listens on these ports:
 | `14321` | Pairing and cluster membership |
 | `14322` | Model list served to cluster peers |
 | `14323` | Cluster-scoped remote engine control |
+| `4317` | OpenTelemetry OTLP gRPC collector (Arize Phoenix) |
+| `6006` | Arize Phoenix web UI dashboard |
 
 The `143xx` listeners are the peer surfaces from
 [Node-to-Node Communication](#node-to-node-communication). Their numbers are
@@ -660,6 +662,55 @@ Some networks block or filter multicast, so discovery is not the only path in.
 fixed interval, and a manual node that answers is folded into the same directory
 as a discovered one. It is initially keyed by the address you typed, and re-keyed
 to the peer's real UUID as soon as that node reports it.
+
+## Observability and Distributed Tracing
+
+PAIR includes built-in OpenTelemetry (OTel) distributed tracing and Arize Phoenix
+observability. Every proxy (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`)
+instruments inference requests, scheduler routing decisions, and engine dispatch
+operations.
+
+### Distributed Tracing Topology
+
+In a multi-node cluster, distributed traces correlate cross-node hops seamlessly:
+
+```mermaid
+flowchart LR
+    Client["Client / Agent"] -->|"HTTP /api/chat"| ProxyA["Proxy (Node A)"]
+    ProxyA -->|"W3C traceparent"| IngressB["Ingress (Node B)"]
+    IngressB -->|"Local forward"| EngineB["Engine (Node B)"]
+    ProxyA -.->|"OTLP gRPC :4317"| Phoenix["Arize Phoenix (Docker)"]
+    IngressB -.->|"OTLP gRPC :4317"| Phoenix
+```
+
+- **Single-Container Deployment:** Arize Phoenix runs as a single Docker
+  container (`http://localhost:6006`, OTLP gRPC `:4317`) hosted on one designated
+  cluster node.
+- **W3C TraceContext Propagation:** When Node A dispatches an inference request to
+  Node B, it injects standard W3C `traceparent` HTTP headers into the outgoing
+  request. Node B's cluster ingress extracts the trace context, linking both hops
+  into a unified distributed trace.
+- **Zero-Config Discovery:** When local Phoenix is started, `nvpair-node-scanner`
+  automatically advertises `otel=4317` in mDNS TXT records so peer nodes in the
+  cluster auto-route telemetry without manual configuration.
+- **Fail-Open Resilience:** Telemetry emission uses non-blocking batch export. If
+  Phoenix is offline or unreachable, spans drop in memory with zero impact on
+  inference latency or routing availability.
+
+### Dual-Mode Payload Control & Privacy
+
+PAIR strictly defends user privacy while accommodating local evaluation workflows:
+
+- **Operational Mode (`recordPayloads = false`, default):** Spans capture strictly
+  operational metadata (model, latency, Time to First Token, token throughput,
+  queue depth, cache affinity, error status). Prompts and generated text are
+  never recorded.
+- **Evaluation Mode (`recordPayloads = true`, opt-in):** Prompts and generated
+  model completions are attached to local spans to enable Arize Phoenix evaluation
+  features (hallucination detection, QA accuracy, drift analysis).
+- **Permanent Redaction:** Sensitive authentication headers (`Authorization`,
+  `Cookie`, `Set-Cookie`, `X-Pair-Pin`, `X-API-Key`, `Proxy-Authorization`) are
+  permanently replaced with `[REDACTED]` across all modes and sinks.
 
 ## Trust Boundaries
 

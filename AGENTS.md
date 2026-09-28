@@ -114,9 +114,12 @@ On Windows, run the underlying npm and `go test` commands directly.
   contracts.
 - **No legacy fallbacks.** One canonical path. Delete what you replace instead of
   leaving a compatibility branch behind.
-- **Never log prompts, messages, response bodies, pairing PINs, or key
-  material.** Log operational metadata such as engine, model, job ID, and node ID
-  instead.
+- **Never log prompts, messages, response bodies, pairing PINs, or key material**
+  in standard system log sinks (`slog`, `applog`, stderr, file logs). Telemetry
+  spans may optionally capture prompt and completion payloads directly to the
+  local OpenTelemetry collector ONLY when explicitly enabled by the user for
+  local AI metrics and evaluation. Pairing PINs, auth keys, and credentials
+  remain strictly forbidden in all sinks at all times.
 - **Every file carries a two-line SPDX header.** Check the tree with
   `node scripts/spdx-headers.mjs`, and insert missing headers with `--fix`.
 - **When changing a JSON-RPC method or payload,** update the producing Go
