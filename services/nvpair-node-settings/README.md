@@ -67,19 +67,25 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 
 ```json
 {
-  "force_ports":            true,
-  "cluster_auto_sync":      false,
-  "cluster_id":             "",
-  "cluster_friendly_name":  ""
+  "force_ports":               true,
+  "cluster_auto_sync":         false,
+  "cluster_id":                "",
+  "cluster_friendly_name":     "",
+  "telemetry_enabled":         true,
+  "telemetry_endpoint":        "localhost:4317",
+  "telemetry_record_payloads": false
 }
 ```
 
-The four stored fields:
+The stored fields:
 
 - `force_ports` (bool) — when true, NVPAIR attempts to reserve the Ollama compatibility port for its proxy. Running or unidentified owners are left untouched and reported as blocked; this setting does not authorize a generic process kill. An explicitly saved `false` is preserved as an opt-out.
 - `cluster_auto_sync` (bool) — when true, this node accepts automatic syncs of cluster-managed state from peers.
 - `cluster_id` (string) — opaque, stable identifier for the cluster this node belongs to. Empty means "not in a cluster". The wire format is byte-for-byte (no normalization, no trimming) so a future migration of the id format doesn't have to coordinate with the datastore.
 - `cluster_friendly_name` (string) — human-presentable label for the cluster (e.g. "Lab 3 desks"). Display only — anything operational keys off `cluster_id`.
+- `telemetry_enabled` (bool) — when true, proxies emit OpenTelemetry traces to the configured collector. Defaults to true.
+- `telemetry_endpoint` (string) — OTLP gRPC endpoint address (e.g. "localhost:4317"). Defaults to "localhost:4317".
+- `telemetry_record_payloads` (bool) — when true, prompt and completion payloads are attached to spans for local evaluations in Arize Phoenix. Defaults to false.
 
 ## JSON-RPC Notifications (manager → caller)
 
@@ -145,6 +151,18 @@ as a simple ack so React-init code can rely on a single round-trip.
 // cluster-friendly-name (string)
 {"jsonrpc":"2.0","id":8,"method":"settings/get-cluster-friendly-name"}                                  // -> {"value": ""}
 {"jsonrpc":"2.0","id":9,"method":"settings/set-cluster-friendly-name","params":{"value":"Lab 3 desks"}} // -> {"ok": true}
+
+// telemetry-enabled (bool)
+{"jsonrpc":"2.0","id":10,"method":"settings/get-telemetry-enabled"}                                    // -> {"value": true}
+{"jsonrpc":"2.0","id":11,"method":"settings/set-telemetry-enabled","params":{"value": false}}          // -> {"ok": true}
+
+// telemetry-endpoint (string)
+{"jsonrpc":"2.0","id":12,"method":"settings/get-telemetry-endpoint"}                                   // -> {"value": "localhost:4317"}
+{"jsonrpc":"2.0","id":13,"method":"settings/set-telemetry-endpoint","params":{"value": "192.168.1.50:4317"}} // -> {"ok": true}
+
+// telemetry-record-payloads (bool)
+{"jsonrpc":"2.0","id":14,"method":"settings/get-telemetry-record-payloads"}                           // -> {"value": false}
+{"jsonrpc":"2.0","id":15,"method":"settings/set-telemetry-record-payloads","params":{"value": true}}  // -> {"ok": true}
 ```
 
 `settings/get-cluster-id` returns the raw stored `cluster_id`
