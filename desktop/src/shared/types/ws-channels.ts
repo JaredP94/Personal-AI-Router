@@ -42,6 +42,7 @@ import type {
     ClusterNode,
     Invite
 } from '@/shared/types/cluster'
+import type { TelemetryStatus } from '@/shared/types/telemetry'
 
 // -----------------------------------------------------------------------------
 // Invoke channels — (request, response) pairs
@@ -103,6 +104,14 @@ export interface WsInvokeChannelMap {
 
     // Workloads
     'workloads:get-initial': { request: void; response: Record<string, Workload> }
+
+    // Telemetry (Arize Phoenix & OpenTelemetry)
+    'telemetry:get-status': { request: void; response: TelemetryStatus }
+    'telemetry:start': { request: void; response: TelemetryStatus }
+    'telemetry:stop': { request: void; response: TelemetryStatus }
+    'telemetry:set-enabled': { request: { value: boolean }; response: { ok: boolean } }
+    'telemetry:set-endpoint': { request: { value: string }; response: { ok: boolean } }
+    'telemetry:set-record-payloads': { request: { value: boolean }; response: { ok: boolean } }
 }
 
 export type WsInvokeChannel = keyof WsInvokeChannelMap

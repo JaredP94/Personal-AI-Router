@@ -200,10 +200,16 @@
 | `settings/get-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/get-cluster-id` | request (we call) | ✅ yes |
 | `settings/get-force-ports` | request (we call) | ⚠️ not called |
+| `settings/get-telemetry-enabled` | request (we call) | ✅ yes |
+| `settings/get-telemetry-endpoint` | request (we call) | ✅ yes |
+| `settings/get-telemetry-record-payloads` | request (we call) | ✅ yes |
 | `settings/set-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
+| `settings/set-telemetry-enabled` | request (we call) | ✅ yes |
+| `settings/set-telemetry-endpoint` | request (we call) | ✅ yes |
+| `settings/set-telemetry-record-payloads` | request (we call) | ✅ yes |
 
 ## nvpair-tui
 
@@ -255,6 +261,9 @@
 | `proxy:subscribe` | request (we call) | ✅ yes |
 | `proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
+| `telemetry/get-status` | request (we call) | ✅ yes |
+| `telemetry/start` | request (we call) | ✅ yes |
+| `telemetry/stop` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:subscribe` | request (we call) | ✅ yes |

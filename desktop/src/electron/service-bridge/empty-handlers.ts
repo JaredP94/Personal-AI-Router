@@ -6,6 +6,7 @@ import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
+import type { TelemetryStatus } from '@/shared/types/telemetry'
 import {
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
@@ -956,6 +957,107 @@ async function handleNodeRemoveMember(
     }
 }
 
+function parseTelemetryStatus(raw: JsonValue | undefined): TelemetryStatus {
+    const obj = objectValue(raw)
+    return {
+        enabled: booleanValue(obj?.enabled),
+        endpoint: stringValue(obj?.endpoint) || 'localhost:4317',
+        uiUrl: stringValue(obj?.uiUrl) || 'http://localhost:6006',
+        recordPayloads: booleanValue(obj?.recordPayloads),
+        containerState: stringValue(obj?.containerState) || 'stopped',
+        collectorReachable: booleanValue(obj?.collectorReachable)
+    }
+}
+
+export async function handleTelemetryGetStatus(): Promise<TelemetryStatus> {
+    try {
+        const raw = await getModularSupervisor().callProcess('broker', 'telemetry/get-status')
+        return parseTelemetryStatus(raw)
+    } catch {
+        // Fallback reading directly from node settings if broker call fails
+        const supervisor = getModularSupervisor()
+        const [enRes, epRes, rpRes] = await Promise.all([
+            supervisor
+                .callProcess('broker', 'settings/get-telemetry-enabled')
+                .catch(() => undefined),
+            supervisor
+                .callProcess('broker', 'settings/get-telemetry-endpoint')
+                .catch(() => undefined),
+            supervisor
+                .callProcess('broker', 'settings/get-telemetry-record-payloads')
+                .catch(() => undefined)
+        ])
+        return {
+            enabled: booleanValue(objectValue(enRes)?.value),
+            endpoint: stringValue(objectValue(epRes)?.value) || 'localhost:4317',
+            uiUrl: 'http://localhost:6006',
+            recordPayloads: booleanValue(objectValue(rpRes)?.value),
+            containerState: 'stopped',
+            collectorReachable: false
+        }
+    }
+}
+
+export async function handleTelemetryStart(): Promise<TelemetryStatus> {
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'telemetry/start',
+        undefined,
+        15_000
+    )
+    return parseTelemetryStatus(raw)
+}
+
+export async function handleTelemetryStop(): Promise<TelemetryStatus> {
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'telemetry/stop',
+        undefined,
+        15_000
+    )
+    return parseTelemetryStatus(raw)
+}
+
+export async function handleTelemetrySetEnabled(payload?: {
+    value: boolean
+}): Promise<{ ok: boolean }> {
+    const val = payload ? payload.value : false
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'settings/set-telemetry-enabled',
+        {
+            value: val
+        }
+    )
+    return { ok: booleanValue(objectValue(raw)?.ok) }
+}
+
+export async function handleTelemetrySetEndpoint(payload?: {
+    value: string
+}): Promise<{ ok: boolean }> {
+    const val = payload ? payload.value : 'localhost:4317'
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'settings/set-telemetry-endpoint',
+        {
+            value: val
+        }
+    )
+    return { ok: booleanValue(objectValue(raw)?.ok) }
+}
+
+export async function handleTelemetrySetRecordPayloads(payload?: {
+    value: boolean
+}): Promise<{ ok: boolean }> {
+    const val = payload ? payload.value : false
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'settings/set-telemetry-record-payloads',
+        { value: val }
+    )
+    return { ok: booleanValue(objectValue(raw)?.ok) }
+}
+
 const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'app:get-initial': async () => ({
         connected: getModularSupervisor().ready,
@@ -983,7 +1085,14 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'errors:get-initial': () => handleErrorsGetInitial(),
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),
 
-    'workloads:get-initial': () => handleWorkloadsGetInitial()
+    'workloads:get-initial': () => handleWorkloadsGetInitial(),
+
+    'telemetry:get-status': () => handleTelemetryGetStatus(),
+    'telemetry:start': () => handleTelemetryStart(),
+    'telemetry:stop': () => handleTelemetryStop(),
+    'telemetry:set-enabled': payload => handleTelemetrySetEnabled(payload),
+    'telemetry:set-endpoint': payload => handleTelemetrySetEndpoint(payload),
+    'telemetry:set-record-payloads': payload => handleTelemetrySetRecordPayloads(payload)
 }
 
 export function handleServiceBridgeInvoke<C extends WsInvokeChannel>(
