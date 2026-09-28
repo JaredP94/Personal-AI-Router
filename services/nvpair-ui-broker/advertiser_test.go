@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
 
@@ -146,3 +147,43 @@ func TestOllamaFacadeIsPendingBackend(t *testing.T) {
 		t.Fatal("recovery must keep probes blocked until the proxy vacates 11434")
 	}
 }
+
+func TestReconcileAdvertiseTelemetry(t *testing.T) {
+	b := &Broker{
+		regCache: relay.NewRegistrationCache(),
+	}
+
+	// 1. Probe succeeds -> registers ServiceOTel with port 4317
+	b.dialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		_ = c2.Close()
+		return c1, nil
+	}
+	b.reconcileAdvertiseTelemetry()
+
+	snapshot := b.regCache.Snapshot()
+	found := false
+	for _, p := range snapshot {
+		if p.Service == noderec.ServiceOTel && p.Port == defaultOTelPort {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected ServiceOTel port %d in regCache, got %v", defaultOTelPort, snapshot)
+	}
+
+	// 2. Probe fails -> unregisters ServiceOTel
+	b.dialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return nil, net.ErrClosed
+	}
+	b.reconcileAdvertiseTelemetry()
+
+	snapshotAfter := b.regCache.Snapshot()
+	for _, p := range snapshotAfter {
+		if p.Service == noderec.ServiceOTel {
+			t.Fatalf("expected ServiceOTel to be unregistered, still present: %v", snapshotAfter)
+		}
+	}
+}
+
