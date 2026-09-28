@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,8 +30,6 @@ type TelemetryStatusResult struct {
 	ContainerState     string `json:"containerState"`
 	CollectorReachable bool   `json:"collectorReachable"`
 }
-
-var dialTimeout = net.DialTimeout
 
 type dockerRunner interface {
 	inspect(ctx context.Context, containerName string) (string, error)
@@ -141,6 +140,7 @@ func resolveComposeFilePath(customPath string) (string, error) {
 		"docker-compose.telemetry.yml",
 		"../docker-compose.telemetry.yml",
 		"../../docker-compose.telemetry.yml",
+		"../../../docker-compose.telemetry.yml",
 	}
 
 	if exe, err := os.Executable(); err == nil {
@@ -149,6 +149,7 @@ func resolveComposeFilePath(customPath string) (string, error) {
 			filepath.Join(exeDir, "docker-compose.telemetry.yml"),
 			filepath.Join(exeDir, "..", "docker-compose.telemetry.yml"),
 			filepath.Join(exeDir, "..", "..", "docker-compose.telemetry.yml"),
+			filepath.Join(exeDir, "..", "..", "..", "docker-compose.telemetry.yml"),
 		)
 	}
 
@@ -165,21 +166,42 @@ func deriveUIURL(endpoint string) string {
 	if endpoint == "" {
 		return "http://localhost:6006"
 	}
-	host, _, err := net.SplitHostPort(endpoint)
+	clean := endpoint
+	clean = strings.TrimPrefix(clean, "http://")
+	clean = strings.TrimPrefix(clean, "https://")
+
+	host, _, err := net.SplitHostPort(clean)
 	if err != nil {
-		host = endpoint
+		if lastColon := strings.LastIndex(clean, ":"); lastColon != -1 && strings.Count(clean, ":") > 1 {
+			candidateHost := clean[:lastColon]
+			candidatePort := clean[lastColon+1:]
+			if _, pErr := strconv.Atoi(candidatePort); pErr == nil {
+				host = candidateHost
+			} else {
+				host = clean
+			}
+		} else {
+			host = clean
+		}
 	}
 	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
 		return "http://localhost:6006"
 	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
 	return fmt.Sprintf("http://%s:6006", host)
 }
 
-func probeCollectorReachable(endpoint string, timeout time.Duration) bool {
+func (b *Broker) probeCollector(endpoint string, timeout time.Duration) bool {
 	if endpoint == "" {
 		return false
 	}
-	conn, err := dialTimeout("tcp", endpoint, timeout)
+	dial := net.DialTimeout
+	if b.dialTimeout != nil {
+		dial = b.dialTimeout
+	}
+	conn, err := dial("tcp", endpoint, timeout)
 	if err != nil {
 		return false
 	}
@@ -238,11 +260,13 @@ func (b *Broker) getTelemetryStatus(ctx context.Context) TelemetryStatusResult {
 
 	containerState := "docker_unavailable"
 	runner := b.getDockerRunner()
-	if state, err := runner.inspect(ctx, "nvpair-phoenix"); err == nil {
+	iCtx, iCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer iCancel()
+	if state, err := runner.inspect(iCtx, "nvpair-phoenix"); err == nil {
 		containerState = state
 	}
 
-	reachable := probeCollectorReachable(endpoint, 500*time.Millisecond)
+	reachable := b.probeCollector(endpoint, 500*time.Millisecond)
 
 	return TelemetryStatusResult{
 		Enabled:            enabled,
@@ -262,6 +286,9 @@ func (b *Broker) handleTelemetryGetStatus(msg *Message) {
 }
 
 func (b *Broker) handleTelemetryStart(msg *Message) {
+	b.telemetryMu.Lock()
+	defer b.telemetryMu.Unlock()
+
 	composePath, err := resolveComposeFilePath(b.telemetryComposePath)
 	if err != nil {
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("cannot resolve compose file: %v", err)); err != nil {
@@ -283,14 +310,21 @@ func (b *Broker) handleTelemetryStart(msg *Message) {
 
 	endpoint := b.getTelemetryEndpointSetting()
 	pollDeadline := time.Now().Add(10 * time.Second)
+	var reachable bool
 	for time.Now().Before(pollDeadline) {
-		if probeCollectorReachable(endpoint, 250*time.Millisecond) {
+		if b.probeCollector(endpoint, 250*time.Millisecond) {
+			reachable = true
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	slog.Info("telemetry collector container started", "composePath", composePath, "endpoint", endpoint)
+	if reachable {
+		slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
+	} else {
+		slog.Warn("telemetry collector container started but collector port not responding within deadline", "composePath", composePath, "endpoint", endpoint)
+	}
+
 	status := b.getTelemetryStatus(context.Background())
 	if err := b.codec.Respond(msg.ID, status); err != nil {
 		log.Printf("failed to respond to telemetry/start: %v", err)
@@ -298,6 +332,9 @@ func (b *Broker) handleTelemetryStart(msg *Message) {
 }
 
 func (b *Broker) handleTelemetryStop(msg *Message) {
+	b.telemetryMu.Lock()
+	defer b.telemetryMu.Unlock()
+
 	composePath, err := resolveComposeFilePath(b.telemetryComposePath)
 	if err != nil {
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("cannot resolve compose file: %v", err)); err != nil {

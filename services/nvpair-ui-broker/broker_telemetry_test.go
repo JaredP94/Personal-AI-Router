@@ -67,16 +67,13 @@ func TestTelemetryGetStatus(t *testing.T) {
 	b := &Broker{
 		codec:        NewCodec(brokerConn),
 		dockerRunner: mockDocker,
+		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+			c1, c2 := net.Pipe()
+			_ = c2.Close()
+			return c1, nil
+		},
 	}
 	b.setSettings(settingsWorker)
-
-	oldDial := dialTimeout
-	dialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		c1, c2 := net.Pipe()
-		_ = c2.Close()
-		return c1, nil
-	}
-	defer func() { dialTimeout = oldDial }()
 
 	id := json.RawMessage(`1`)
 	go b.handleMessage(&Message{
@@ -131,15 +128,12 @@ func TestTelemetryStartAndStop(t *testing.T) {
 		codec:                NewCodec(brokerConn),
 		dockerRunner:         mockDocker,
 		telemetryComposePath: fakeCompose,
+		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+			c1, c2 := net.Pipe()
+			_ = c2.Close()
+			return c1, nil
+		},
 	}
-
-	oldDial := dialTimeout
-	dialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		c1, c2 := net.Pipe()
-		_ = c2.Close()
-		return c1, nil
-	}
-	defer func() { dialTimeout = oldDial }()
 
 	// Test telemetry/start
 	id1 := json.RawMessage(`1`)
@@ -190,6 +184,9 @@ func TestDeriveUIURL(t *testing.T) {
 		{"127.0.0.1:4317", "http://localhost:6006"},
 		{"192.168.1.50:4317", "http://192.168.1.50:6006"},
 		{"[::1]:4317", "http://localhost:6006"},
+		{"2001:db8::1:4317", "http://[2001:db8::1]:6006"},
+		{"[2001:db8::1]:4317", "http://[2001:db8::1]:6006"},
+		{"http://192.168.1.50:4317", "http://192.168.1.50:6006"},
 		{"", "http://localhost:6006"},
 	}
 
@@ -210,13 +207,10 @@ func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 	b := &Broker{
 		codec:        NewCodec(brokerConn),
 		dockerRunner: mockDocker,
+		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+			return nil, net.ErrClosed
+		},
 	}
-
-	oldDial := dialTimeout
-	dialTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return nil, net.ErrClosed
-	}
-	defer func() { dialTimeout = oldDial }()
 
 	id := json.RawMessage(`10`)
 	go b.handleMessage(&Message{
