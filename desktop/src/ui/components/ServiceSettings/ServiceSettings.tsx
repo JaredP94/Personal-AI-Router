@@ -26,6 +26,7 @@ import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import ApplicationUpdatesCard from './UpdatesSettings'
 import VersionsCard from './VersionsCard'
 import RoutingDiagnostics from './RoutingDiagnostics'
+import ObservabilityCard from './ObservabilityCard'
 import WipeAppDataCard from './WipeAppDataCard'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { useInferenceDemoStore } from '@/ui/stores/inference-demo.store'
@@ -383,6 +384,7 @@ export default function ServiceSettings() {
             </Flex>
 
             <RoutingDiagnostics />
+            <ObservabilityCard />
             <VersionsCard />
         </Stack>
     )
