@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02
+
+### Added
+- **Phoenix Docker Image Update Checks**: Added in-app and background image freshness checks against Docker Hub Registry API (`arizephoenix/phoenix:latest`) comparing container and remote image digests via `telemetry/check-update`.
+- **In-App Phoenix Container Updates**: Enabled triggering Phoenix Docker image pulls and non-blocking container rebuild/restart directly from PAIR UI via `telemetry/update`.
+- **Observability UI Enhancements**: Added Phoenix image version badges (`v20.19.0`), an update alert banner with version target and dismiss support, a manual "Check for Updates" button, and an "Update Phoenix" action button to `ObservabilityCard` in Service Settings.
+- **Dynamic Compose Project Detection**: Enhanced `scripts/telemetry-phoenix.sh` with `update` and `pull` subcommands and automatic `-p "$EXISTING_PROJECT"` detection, eliminating naming and container recreation collisions across packaged and dev environments.
+
 ## [0.4.1] - 2026-09-28
 
 ### Fixed
