@@ -261,9 +261,11 @@
 | `proxy:subscribe` | request (we call) | ✅ yes |
 | `proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
+| `telemetry/check-update` | request (we call) | ✅ yes |
 | `telemetry/get-status` | request (we call) | ✅ yes |
 | `telemetry/start` | request (we call) | ✅ yes |
 | `telemetry/stop` | request (we call) | ✅ yes |
+| `telemetry/update` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:subscribe` | request (we call) | ✅ yes |

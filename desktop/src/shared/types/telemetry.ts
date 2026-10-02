@@ -8,4 +8,7 @@ export interface TelemetryStatus {
     recordPayloads: boolean
     containerState: string
     collectorReachable: boolean
+    currentVersion?: string
+    updateAvailable?: boolean
+    latestVersion?: string
 }

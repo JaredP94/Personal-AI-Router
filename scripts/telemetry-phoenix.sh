@@ -5,17 +5,29 @@
 set -euo pipefail
 COMPOSE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/docker-compose.telemetry.yml"
 
+PROJECT_ARGS=()
+EXISTING_PROJECT="$(docker inspect nvpair-phoenix --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)"
+if [ -n "$EXISTING_PROJECT" ]; then
+  PROJECT_ARGS=(-p "$EXISTING_PROJECT")
+fi
+
 case "${1:-status}" in
   up|start)
-    docker compose -f "$COMPOSE_FILE" up -d
+    docker compose "${PROJECT_ARGS[@]}" -f "$COMPOSE_FILE" up -d
     echo "Arize Phoenix started on http://localhost:6006 (OTLP gRPC: 4317)"
     ;;
   down|stop)
-    docker compose -f "$COMPOSE_FILE" stop
+    docker compose "${PROJECT_ARGS[@]}" -f "$COMPOSE_FILE" stop
     echo "Arize Phoenix stopped"
     ;;
+  update|pull)
+    echo "Pulling latest Arize Phoenix image..."
+    docker compose "${PROJECT_ARGS[@]}" -f "$COMPOSE_FILE" pull
+    docker compose "${PROJECT_ARGS[@]}" -f "$COMPOSE_FILE" up -d
+    echo "Arize Phoenix updated and started on http://localhost:6006 (OTLP gRPC: 4317)"
+    ;;
   status)
-    docker compose -f "$COMPOSE_FILE" ps
+    docker compose "${PROJECT_ARGS[@]}" -f "$COMPOSE_FILE" ps
     ;;
   open)
     if command -v open >/dev/null; then
@@ -27,7 +39,8 @@ case "${1:-status}" in
     fi
     ;;
   *)
-    echo "Usage: $0 {up|down|status|open}"
+    echo "Usage: $0 {up|down|update|status|open}"
     exit 1
     ;;
 esac
+

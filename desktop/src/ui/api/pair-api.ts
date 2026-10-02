@@ -25,6 +25,8 @@ export interface ITelemetryApi {
     getStatus(): Promise<TelemetryStatus>
     start(): Promise<TelemetryStatus>
     stop(): Promise<TelemetryStatus>
+    checkUpdate(): Promise<TelemetryStatus>
+    update(): Promise<TelemetryStatus>
     setEnabled(value: boolean): Promise<{ ok: boolean }>
     setEndpoint(value: string): Promise<{ ok: boolean }>
     setRecordPayloads(value: boolean): Promise<{ ok: boolean }>
@@ -204,6 +206,8 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             getStatus: () => transport.invoke('telemetry:get-status'),
             start: () => transport.invoke('telemetry:start'),
             stop: () => transport.invoke('telemetry:stop'),
+            checkUpdate: () => transport.invoke('telemetry:check-update'),
+            update: () => transport.invoke('telemetry:update'),
             setEnabled: value => transport.invoke('telemetry:set-enabled', { value }),
             setEndpoint: value => transport.invoke('telemetry:set-endpoint', { value }),
             setRecordPayloads: value => transport.invoke('telemetry:set-record-payloads', { value })

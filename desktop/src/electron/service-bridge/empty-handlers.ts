@@ -965,7 +965,10 @@ function parseTelemetryStatus(raw: JsonValue | undefined): TelemetryStatus {
         uiUrl: stringValue(obj?.uiUrl) || 'http://localhost:6006',
         recordPayloads: booleanValue(obj?.recordPayloads),
         containerState: stringValue(obj?.containerState) || 'stopped',
-        collectorReachable: booleanValue(obj?.collectorReachable)
+        collectorReachable: booleanValue(obj?.collectorReachable),
+        currentVersion: stringValue(obj?.currentVersion) || undefined,
+        updateAvailable: booleanValue(obj?.updateAvailable),
+        latestVersion: stringValue(obj?.latestVersion) || undefined
     }
 }
 
@@ -1012,6 +1015,26 @@ export async function handleTelemetryStop(): Promise<TelemetryStatus> {
     const raw = await getModularSupervisor().callProcess(
         'broker',
         'telemetry/stop',
+        undefined,
+        15_000
+    )
+    return parseTelemetryStatus(raw)
+}
+
+export async function handleTelemetryCheckUpdate(): Promise<TelemetryStatus> {
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'telemetry/check-update',
+        undefined,
+        15_000
+    )
+    return parseTelemetryStatus(raw)
+}
+
+export async function handleTelemetryUpdate(): Promise<TelemetryStatus> {
+    const raw = await getModularSupervisor().callProcess(
+        'broker',
+        'telemetry/update',
         undefined,
         15_000
     )
@@ -1090,6 +1113,8 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'telemetry:get-status': () => handleTelemetryGetStatus(),
     'telemetry:start': () => handleTelemetryStart(),
     'telemetry:stop': () => handleTelemetryStop(),
+    'telemetry:check-update': () => handleTelemetryCheckUpdate(),
+    'telemetry:update': () => handleTelemetryUpdate(),
     'telemetry:set-enabled': payload => handleTelemetrySetEnabled(payload),
     'telemetry:set-endpoint': payload => handleTelemetrySetEndpoint(payload),
     'telemetry:set-record-payloads': payload => handleTelemetrySetRecordPayloads(payload)

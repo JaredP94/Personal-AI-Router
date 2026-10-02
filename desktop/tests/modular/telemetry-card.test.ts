@@ -85,6 +85,20 @@ describe('ObservabilityCard helpers and state management', () => {
             expect(badge.color).toBe('yellow')
         })
 
+        it('returns Updating… (yellow) when container is updating', () => {
+            const status: TelemetryStatus = {
+                enabled: true,
+                endpoint: 'localhost:4317',
+                uiUrl: 'http://localhost:6006',
+                recordPayloads: false,
+                containerState: 'updating',
+                collectorReachable: false
+            }
+            const badge = getObservabilityBadge(status)
+            expect(badge.label).toBe('Updating…')
+            expect(badge.color).toBe('yellow')
+        })
+
         it('returns Stopped (gray) when container is stopped', () => {
             const status: TelemetryStatus = {
                 enabled: true,
@@ -153,6 +167,18 @@ describe('ObservabilityCard helpers and state management', () => {
                 uiUrl: 'http://localhost:6006',
                 recordPayloads: false,
                 containerState: 'starting',
+                collectorReachable: false
+            }
+            expect(isPhoenixRunning(status)).toBe(true)
+        })
+
+        it('returns true when containerState is updating', () => {
+            const status: TelemetryStatus = {
+                enabled: true,
+                endpoint: 'localhost:4317',
+                uiUrl: 'http://localhost:6006',
+                recordPayloads: false,
+                containerState: 'updating',
                 collectorReachable: false
             }
             expect(isPhoenixRunning(status)).toBe(true)
@@ -490,8 +516,61 @@ describe('ObservabilityCard helpers and state management', () => {
                 uiUrl: 'http://localhost:6006',
                 recordPayloads: true,
                 containerState: 'running',
-                collectorReachable: true
+                collectorReachable: true,
+                currentVersion: undefined,
+                updateAvailable: false,
+                latestVersion: undefined
             })
+        })
+
+        it('handles telemetry:check-update via supervisor broker call', async () => {
+            mocks.supervisor.callProcess.mockResolvedValueOnce({
+                enabled: true,
+                endpoint: 'localhost:4317',
+                uiUrl: 'http://localhost:6006',
+                recordPayloads: false,
+                containerState: 'running',
+                collectorReachable: true,
+                currentVersion: 'v20.16.0',
+                updateAvailable: true,
+                latestVersion: 'v20.19.0'
+            })
+
+            const status = await handleServiceBridgeInvoke('telemetry:check-update', undefined)
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'telemetry/check-update',
+                undefined,
+                15000
+            )
+            expect(status.updateAvailable).toBe(true)
+            expect(status.currentVersion).toBe('v20.16.0')
+            expect(status.latestVersion).toBe('v20.19.0')
+        })
+
+        it('handles telemetry:update via supervisor broker call', async () => {
+            mocks.supervisor.callProcess.mockResolvedValueOnce({
+                enabled: true,
+                endpoint: 'localhost:4317',
+                uiUrl: 'http://localhost:6006',
+                recordPayloads: false,
+                containerState: 'running',
+                collectorReachable: true,
+                currentVersion: 'v20.19.0',
+                updateAvailable: false,
+                latestVersion: 'v20.19.0'
+            })
+
+            const status = await handleServiceBridgeInvoke('telemetry:update', undefined)
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'telemetry/update',
+                undefined,
+                15000
+            )
+            expect(status.containerState).toBe('running')
+            expect(status.currentVersion).toBe('v20.19.0')
+            expect(status.updateAvailable).toBe(false)
         })
 
         it('handles telemetry:start via supervisor broker call', async () => {

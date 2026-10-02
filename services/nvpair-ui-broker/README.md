@@ -475,7 +475,15 @@ Any `settings/*` request is forwarded to `nvpair-node-settings` and its response
 
 #### `telemetry/get-status`
 
-Returns `{ "enabled": bool, "endpoint": string, "uiUrl": string, "recordPayloads": bool, "containerState": string, "collectorReachable": bool }`. Queries current telemetry settings, probes the Docker container state of `nvpair-phoenix`, and tests TCP connectivity to the OTLP gRPC endpoint.
+Returns `{ "enabled": bool, "endpoint": string, "uiUrl": string, "recordPayloads": bool, "containerState": string, "collectorReachable": bool, "currentVersion"?: string, "updateAvailable": bool, "latestVersion"?: string }`. Queries current telemetry settings, probes the Docker container state of `nvpair-phoenix`, checks image update status, and tests TCP connectivity to the OTLP gRPC endpoint.
+
+#### `telemetry/check-update`
+
+Queries Docker Hub and local image cache for newer Arize Phoenix images, updates cached version availability, and returns the updated `TelemetryStatusResult`.
+
+#### `telemetry/update`
+
+Pulls the latest Arize Phoenix Docker image via `docker compose pull`, recreates the container via `docker compose up -d`, verifies collector reachability, and returns the updated `TelemetryStatusResult`.
 
 #### `telemetry/start`
 
