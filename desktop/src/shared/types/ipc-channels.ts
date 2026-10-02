@@ -132,6 +132,8 @@ export interface IpcChannelMap {
     'telemetry:get-status': { request: void; response: TelemetryStatus }
     'telemetry:start': { request: void; response: TelemetryStatus }
     'telemetry:stop': { request: void; response: TelemetryStatus }
+    'telemetry:check-update': { request: void; response: TelemetryStatus }
+    'telemetry:update': { request: void; response: TelemetryStatus }
     'telemetry:set-enabled': { request: { value: boolean }; response: { ok: boolean } }
     'telemetry:set-endpoint': { request: { value: string }; response: { ok: boolean } }
     'telemetry:set-record-payloads': { request: { value: boolean }; response: { ok: boolean } }

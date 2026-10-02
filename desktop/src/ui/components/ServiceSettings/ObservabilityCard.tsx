@@ -17,7 +17,8 @@ import { OpenInNew } from '@/ui/components/icons'
 export default function ObservabilityCard() {
     const [status, setStatus] = useState<TelemetryStatus | null>(null)
     const [error, setError] = useState<string | null>(null)
-    const [loading, setLoading] = useState<'start' | 'stop' | null>(null)
+    const [loading, setLoading] = useState<'start' | 'stop' | 'update' | 'check' | null>(null)
+    const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null)
 
     const fetchStatus = useCallback(async () => {
         if (!window.pairApi?.telemetry) return
@@ -31,7 +32,10 @@ export default function ObservabilityCard() {
 
     useEffect(() => {
         let unmounted = false
-        const interval = status?.containerState === 'starting' ? 1500 : 4000
+        const interval =
+            status?.containerState === 'starting' || status?.containerState === 'updating'
+                ? 1500
+                : 4000
 
         const poll = async () => {
             if (unmounted || !window.pairApi?.telemetry) return
@@ -84,6 +88,34 @@ export default function ObservabilityCard() {
         }
     }, [])
 
+    const handleCheckUpdate = useCallback(async () => {
+        if (!window.pairApi?.telemetry) return
+        setLoading('check')
+        setError(null)
+        try {
+            const nextStatus = await window.pairApi.telemetry.checkUpdate()
+            setStatus(nextStatus)
+        } catch (err) {
+            setError(getErrorString(err))
+        } finally {
+            setLoading(null)
+        }
+    }, [])
+
+    const handleUpdate = useCallback(async () => {
+        if (!window.pairApi?.telemetry) return
+        setLoading('update')
+        setError(null)
+        try {
+            const nextStatus = await window.pairApi.telemetry.update()
+            setStatus(nextStatus)
+        } catch (err) {
+            setError(getErrorString(err))
+        } finally {
+            setLoading(null)
+        }
+    }, [])
+
     const handleOpenDashboard = useCallback(() => {
         const url = getPhoenixDashboardUrl(status)
         if (window.windowApi?.window?.openExternal) {
@@ -123,7 +155,13 @@ export default function ObservabilityCard() {
 
     const isRunning = isPhoenixRunning(status)
     const dockerUnavailable = isDockerUnavailable(status)
+    const isUpdating = status?.containerState === 'updating' || loading === 'update'
     const { label: statusLabel, color: statusColor } = getObservabilityBadge(status)
+
+    const showUpdateBanner =
+        Boolean(status?.updateAvailable) &&
+        !dockerUnavailable &&
+        dismissedUpdate !== (status?.latestVersion ?? 'latest')
 
     return (
         <div className="settings-card settings-card-stacked pair-paper p-4">
@@ -132,6 +170,13 @@ export default function ObservabilityCard() {
                     <InlineErrorBanner
                         severity="warning"
                         message="Docker is not running or unavailable. Please ensure Docker Desktop is started to run Arize Phoenix."
+                    />
+                )}
+                {showUpdateBanner && (
+                    <InlineErrorBanner
+                        severity="info"
+                        message={`A newer Arize Phoenix image (${status?.latestVersion ?? 'latest'}) is available. Update now to pull and recreate the container with the latest image.`}
+                        onClose={() => setDismissedUpdate(status?.latestVersion ?? 'latest')}
                     />
                 )}
                 {error && (
@@ -151,16 +196,33 @@ export default function ObservabilityCard() {
                             <Badge color={statusColor} kind="solid">
                                 {statusLabel}
                             </Badge>
+                            {status?.currentVersion && (
+                                <Badge color="gray" kind="outline">
+                                    {status.currentVersion}
+                                </Badge>
+                            )}
                         </Flex>
 
                         <Flex gap="2" wrap="wrap">
+                            {status?.updateAvailable && !dockerUnavailable && (
+                                <Button
+                                    kind="primary"
+                                    size="small"
+                                    onClick={handleUpdate}
+                                    disabled={isUpdating}
+                                >
+                                    {isUpdating
+                                        ? 'Updating…'
+                                        : `Update Phoenix (${status.latestVersion ?? 'latest'})`}
+                                </Button>
+                            )}
                             {isRunning ? (
                                 <>
                                     <Button
                                         kind="secondary"
                                         size="small"
                                         onClick={handleStop}
-                                        disabled={loading === 'stop'}
+                                        disabled={loading === 'stop' || isUpdating}
                                     >
                                         {loading === 'stop' ? 'Stopping…' : 'Stop Phoenix'}
                                     </Button>
@@ -168,7 +230,7 @@ export default function ObservabilityCard() {
                                         kind="secondary"
                                         size="small"
                                         onClick={handleOpenDashboard}
-                                        disabled={!status?.collectorReachable}
+                                        disabled={!status?.collectorReachable || isUpdating}
                                     >
                                         <Flex align="center" gap="1">
                                             <span>Open Dashboard</span>
@@ -181,9 +243,21 @@ export default function ObservabilityCard() {
                                     kind="secondary"
                                     size="small"
                                     onClick={handleStart}
-                                    disabled={loading === 'start' || dockerUnavailable}
+                                    disabled={
+                                        loading === 'start' || dockerUnavailable || isUpdating
+                                    }
                                 >
                                     {loading === 'start' ? 'Starting…' : 'Start Phoenix'}
+                                </Button>
+                            )}
+                            {!dockerUnavailable && (
+                                <Button
+                                    kind="tertiary"
+                                    size="small"
+                                    onClick={handleCheckUpdate}
+                                    disabled={loading === 'check' || isUpdating}
+                                >
+                                    {loading === 'check' ? 'Checking…' : 'Check for Updates'}
                                 </Button>
                             )}
                         </Flex>

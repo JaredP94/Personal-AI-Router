@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,15 +17,37 @@ import (
 )
 
 type mockDockerRunner struct {
-	state       string
-	inspectErr  error
-	upCalled    bool
-	stopCalled  bool
-	composeFile string
+	state          string
+	inspectErr     error
+	upCalled       bool
+	stopCalled     bool
+	pullCalled     bool
+	composeFile    string
+	version        string
+	imageID        string
+	latestVer      string
+	latestImageID  string
+	latestDigest   string
 }
 
 func (m *mockDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
 	return m.state, m.inspectErr
+}
+
+func (m *mockDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
+	return dockerContainerDetails{
+		State:   m.state,
+		ImageID: m.imageID,
+		Version: m.version,
+	}, m.inspectErr
+}
+
+func (m *mockDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
+	return dockerImageDetails{
+		ImageID: m.latestImageID,
+		Version: m.latestVer,
+		Digest:  m.latestDigest,
+	}, nil
 }
 
 func (m *mockDockerRunner) composeUp(ctx context.Context, composeFile string) error {
@@ -34,6 +58,12 @@ func (m *mockDockerRunner) composeUp(ctx context.Context, composeFile string) er
 
 func (m *mockDockerRunner) composeStop(ctx context.Context, composeFile string) error {
 	m.stopCalled = true
+	m.composeFile = composeFile
+	return nil
+}
+
+func (m *mockDockerRunner) composePull(ctx context.Context, composeFile string) error {
+	m.pullCalled = true
 	m.composeFile = composeFile
 	return nil
 }
@@ -244,10 +274,19 @@ func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 type errorDockerRunner struct {
 	upErr   error
 	stopErr error
+	pullErr error
 }
 
 func (e *errorDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
 	return "stopped", nil
+}
+
+func (e *errorDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
+	return dockerContainerDetails{State: "stopped"}, nil
+}
+
+func (e *errorDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
+	return dockerImageDetails{}, nil
 }
 
 func (e *errorDockerRunner) composeUp(ctx context.Context, composeFile string) error {
@@ -256,6 +295,10 @@ func (e *errorDockerRunner) composeUp(ctx context.Context, composeFile string) e
 
 func (e *errorDockerRunner) composeStop(ctx context.Context, composeFile string) error {
 	return e.stopErr
+}
+
+func (e *errorDockerRunner) composePull(ctx context.Context, composeFile string) error {
+	return e.pullErr
 }
 
 func TestTelemetryStartAndStopErrors(t *testing.T) {
@@ -377,6 +420,14 @@ func (s *slowDockerRunner) inspect(ctx context.Context, containerName string) (s
 	return s.state, nil
 }
 
+func (s *slowDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
+	return dockerContainerDetails{State: s.state}, nil
+}
+
+func (s *slowDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
+	return dockerImageDetails{}, nil
+}
+
 func (s *slowDockerRunner) composeUp(ctx context.Context, composeFile string) error {
 	select {
 	case <-time.After(s.composeUpDelay):
@@ -389,6 +440,10 @@ func (s *slowDockerRunner) composeUp(ctx context.Context, composeFile string) er
 
 func (s *slowDockerRunner) composeStop(ctx context.Context, composeFile string) error {
 	s.state = "stopped"
+	return nil
+}
+
+func (s *slowDockerRunner) composePull(ctx context.Context, composeFile string) error {
 	return nil
 }
 
@@ -469,6 +524,123 @@ func TestTelemetryStart_SlowPullBackgrounding(t *testing.T) {
 		t.Errorf("expected final ContainerState='running', got %q", finalStatus.ContainerState)
 	}
 }
+
+func TestTelemetryCheckUpdate(t *testing.T) {
+	brokerConn, clientConn := net.Pipe()
+	defer brokerConn.Close()
+	defer clientConn.Close()
+
+	mockDocker := &mockDockerRunner{
+		state:         "running",
+		imageID:       "sha256:oldimage123",
+		version:       "arize-phoenix-v20.16.0",
+		latestImageID: "sha256:newimage456",
+		latestVer:     "arize-phoenix-v20.19.0",
+	}
+
+	b := &Broker{
+		codec:        NewCodec(brokerConn),
+		dockerRunner: mockDocker,
+		telemetryHTTPClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				body := `{"name":"latest","digest":"sha256:newimage456","tag_last_pushed":"2026-10-01T23:05:00Z"}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			}),
+		},
+		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+			c1, c2 := net.Pipe()
+			_ = c2.Close()
+			return c1, nil
+		},
+	}
+
+	id := json.RawMessage(`1`)
+	go b.handleMessage(&Message{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Method:  "telemetry/check-update",
+	})
+
+	resp, err := NewCodec(clientConn).Read()
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected error on telemetry/check-update: %v", resp.Error)
+	}
+
+	var status TelemetryStatusResult
+	if err := json.Unmarshal(resp.Result, &status); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	if !status.UpdateAvailable {
+		t.Errorf("expected UpdateAvailable=true, got false")
+	}
+	if status.CurrentVersion != "v20.16.0" {
+		t.Errorf("expected CurrentVersion=v20.16.0, got %q", status.CurrentVersion)
+	}
+	if status.LatestVersion != "v20.19.0" {
+		t.Errorf("expected LatestVersion=v20.19.0, got %q", status.LatestVersion)
+	}
+}
+
+func TestTelemetryUpdate(t *testing.T) {
+	brokerConn, clientConn := net.Pipe()
+	defer brokerConn.Close()
+	defer clientConn.Close()
+
+	tempDir := t.TempDir()
+	fakeCompose := filepath.Join(tempDir, "docker-compose.telemetry.yml")
+	if err := os.WriteFile(fakeCompose, []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockDocker := &mockDockerRunner{state: "running"}
+	b := &Broker{
+		codec:                NewCodec(brokerConn),
+		dockerRunner:         mockDocker,
+		telemetryComposePath: fakeCompose,
+		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+			c1, c2 := net.Pipe()
+			_ = c2.Close()
+			return c1, nil
+		},
+	}
+
+	id := json.RawMessage(`2`)
+	go b.handleMessage(&Message{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Method:  "telemetry/update",
+	})
+
+	resp, err := NewCodec(clientConn).Read()
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected error on telemetry/update: %v", resp.Error)
+	}
+
+	if !mockDocker.pullCalled {
+		t.Errorf("expected composePull to be called")
+	}
+	if !mockDocker.upCalled {
+		t.Errorf("expected composeUp to be called")
+	}
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 
 
 

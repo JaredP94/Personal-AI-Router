@@ -17,6 +17,9 @@ interface ObservabilityBadge {
  * - Stopped (gray) otherwise
  */
 export function getObservabilityBadge(status: TelemetryStatus | null): ObservabilityBadge {
+    if (status?.containerState === 'updating') {
+        return { label: 'Updating…', color: 'yellow' }
+    }
     if (status?.collectorReachable) {
         return { label: 'Active ●', color: 'green' }
     }
@@ -27,13 +30,14 @@ export function getObservabilityBadge(status: TelemetryStatus | null): Observabi
 }
 
 /**
- * True if Phoenix collector is reachable or container is running / starting.
+ * True if Phoenix collector is reachable or container is running / starting / updating.
  */
 export function isPhoenixRunning(status: TelemetryStatus | null): boolean {
     return Boolean(
         status?.collectorReachable ||
         status?.containerState === 'running' ||
-        status?.containerState === 'starting'
+        status?.containerState === 'starting' ||
+        status?.containerState === 'updating'
     )
 }
 
@@ -41,7 +45,10 @@ export function isPhoenixRunning(status: TelemetryStatus | null): boolean {
  * True if Docker is reported as unavailable by the service.
  */
 export function isDockerUnavailable(status: TelemetryStatus | null): boolean {
-    return status?.containerState === 'docker-unavailable'
+    return (
+        status?.containerState === 'docker-unavailable' ||
+        status?.containerState === 'docker_unavailable'
+    )
 }
 
 /**

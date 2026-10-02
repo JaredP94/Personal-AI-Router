@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,6 +169,13 @@ type Broker struct {
 	telemetryMu          sync.Mutex
 	telemetryStarting    atomic.Bool
 	telemetryCancelStart context.CancelFunc
+	telemetryUpdateMu     sync.Mutex
+	telemetryLastCheck    time.Time
+	telemetryUpdateAvail  bool
+	telemetryLatestVer    string
+	telemetryUpdating     atomic.Bool
+	telemetryCancelUpdate context.CancelFunc
+	telemetryHTTPClient   *http.Client
 	dialTimeout          func(network, address string, timeout time.Duration) (net.Conn, error)
 	mesh                 *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy
@@ -3037,6 +3045,12 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "telemetry/get-status":
 		go b.handleTelemetryGetStatus(msg)
+
+	case "telemetry/check-update":
+		go b.handleTelemetryCheckUpdate(msg)
+
+	case "telemetry/update":
+		go b.handleTelemetryUpdate(msg)
 
 	case "telemetry/start":
 		go b.handleTelemetryStart(msg)
