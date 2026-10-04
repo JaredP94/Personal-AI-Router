@@ -47,6 +47,8 @@ func (e *ProtocolMismatchError) Error() string { return "protocol mismatch: " + 
 // stamp assigns this connection's next seq and the process epoch to a
 // notification frame. Callers never do this themselves: Notify stamps every
 // notification it writes, so no call site has to know the envelope exists.
+// stamp is called with wmu held so that the seq it assigns is the seq that
+// reaches the wire next; seq is atomic purely for the race detector.
 func (c *Codec) stamp(msg *Message) {
 	epoch := Epoch()
 	seq := c.seq.Add(1)

@@ -140,6 +140,23 @@ func (c *Codec) Read() (*Message, error) {
 func (c *Codec) write(msg *Message) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	return c.writeLocked(msg)
+}
+
+// writeNotification stamps a notification frame and writes it as ONE critical
+// section. Stamping before taking wmu would let two concurrent Notify calls
+// invert: A takes seq 1, B takes seq 2, B wins wmu and puts seq 2 on the wire
+// first. The wire must read in seq order because §2.7 gap detection treats an
+// inversion as a dropped frame and forces a spurious resync.
+func (c *Codec) writeNotification(msg *Message) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	c.stamp(msg)
+	return c.writeLocked(msg)
+}
+
+// writeLocked marshals and writes one frame. The caller must hold wmu.
+func (c *Codec) writeLocked(msg *Message) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -172,8 +189,7 @@ func (c *Codec) Notify(method string, params any) error {
 		Method:  method,
 		Params:  raw,
 	}
-	c.stamp(msg)
-	return c.write(msg)
+	return c.writeNotification(msg)
 }
 
 // Respond sends a successful response carrying result for the given request id.

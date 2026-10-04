@@ -5,6 +5,7 @@ package tests
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -55,6 +56,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	}()
 
 	out := startBrokerStream(stdout)
+	toWorker := newBrokerStdin(stdin)
 
 	// First frame: the subprocess emits "ready" right after startup.
 	waitForMethodOrTimeout(t, out, "ready", 5*time.Second)
@@ -76,7 +78,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 		Timestamp: 1000,
 		NodeID:    localNode,
 	}
-	writeRequest(t, stdin, 1, "errors:report", first)
+	toWorker.request(t, 1, "errors:report", first)
 	resp1 := waitForResponseOrTimeout(t, out, 5*time.Second)
 	if string(*resp1.ID) != "1" {
 		t.Fatalf("expected response id=1, got %s", string(*resp1.ID))
@@ -88,14 +90,14 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 
 	// 2. errors:report (NOTIFICATION form) with an OLDER timestamp.
 	//    Must be dropped — no errors:update push.
-	writeNotification(t, stdin, "errors:report", errors.ServiceError{
+	toWorker.notification(t, "errors:report", errors.ServiceError{
 		ID: upstreamID, Message: "stale", Timestamp: 500, NodeID: localNode,
 	})
 	assertNoUpdate(t, out, 250*time.Millisecond)
 
 	// 3. errors:report (NOTIFICATION form) with a NEWER timestamp.
 	//    Replaces the prior entry; update fires.
-	writeNotification(t, stdin, "errors:report", errors.ServiceError{
+	toWorker.notification(t, "errors:report", errors.ServiceError{
 		ID: upstreamID, Message: "second emit", Timestamp: 2000, NodeID: localNode,
 	})
 	got3 := waitForUpdate(t, out, 5*time.Second)
@@ -104,7 +106,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	}
 
 	// 4. errors:get-initial round-trip. Returns the current full list.
-	writeRequest(t, stdin, 2, "errors:get-initial", nil)
+	toWorker.request(t, 2, "errors:get-initial", nil)
 	resp4 := waitForResponseOrTimeout(t, out, 5*time.Second)
 	if string(*resp4.ID) != "2" {
 		t.Fatalf("expected response id=2, got %s", string(*resp4.ID))
@@ -121,7 +123,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	//    ClearedBy is the broker-stamped field — nvpair-errors stores
 	//    nothing from it (the field exists for cross-node clear
 	//    propagation) but accepts and processes the clear.
-	writeRequest(t, stdin, 3, "errors:clear", errors.ClearParams{
+	toWorker.request(t, 3, "errors:clear", errors.ClearParams{
 		ID: upstreamID, ClearedBy: localNode,
 	})
 	resp5 := waitForResponseOrTimeout(t, out, 5*time.Second)
@@ -136,7 +138,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	// 6. Re-emit the same id with a NEWER timestamp than the cleared
 	//    one. Ack-until-reemit: the user's clear is in-memory only,
 	//    so a fresh producer emit resurrects the entry.
-	writeNotification(t, stdin, "errors:report", errors.ServiceError{
+	toWorker.notification(t, "errors:report", errors.ServiceError{
 		ID: upstreamID, Message: "resurrected", Timestamp: 3000, NodeID: localNode,
 	})
 	got6 := waitForUpdate(t, out, 5*time.Second)
@@ -149,7 +151,7 @@ func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
 	//    concern too, but exercising it through real IPC catches any
 	//    framing bug that drops or reorders frames.
 	const probeID = "manual-nodes:probe-failed:peer-Z"
-	writeNotification(t, stdin, "errors:report", errors.ServiceError{
+	toWorker.notification(t, "errors:report", errors.ServiceError{
 		ID: probeID, Message: "manual node down", Timestamp: 4000, NodeID: localNode,
 	})
 	got7 := waitForUpdate(t, out, 5*time.Second)
@@ -189,39 +191,76 @@ func startBrokerStream(r io.Reader) <-chan jsonrpc.Message {
 	return ch
 }
 
+// writeMu serialises every frame this package writes to a subprocess pipe.
+// The codec has its own internal lock, but that lock and this one do not
+// exclude each other, so codec writes take writeMu too — otherwise a codec
+// write and a raw write could interleave and splice two half frames onto one
+// pipe.
 var writeMu sync.Mutex
 
-func writeRequest(t *testing.T, w io.Writer, id int, method string, params any) {
+// brokerStdin is this test's handle on the subprocess's stdin.
+//
+// It holds exactly ONE jsonrpc.Codec for the life of the connection, so the
+// notification seq counter runs 1, 2, 3 … across the whole test. Building a
+// Codec per frame would restart seq at 1 every time — trading an unstamped
+// frame for a duplicate seq.
+type brokerStdin struct {
+	codec *jsonrpc.Codec
+	w     io.Writer
+}
+
+func newBrokerStdin(w io.Writer) *brokerStdin {
+	return &brokerStdin{
+		// NewCodec takes an io.ReadWriter but only writes here. The read half
+		// is an always-empty reader, mirroring the idiom in
+		// shared/jsonrpc/jsonrpc_test.go. The shim is local to the tests module
+		// rather than new exported API in shared/jsonrpc, which does not need
+		// a write-only constructor.
+		codec: jsonrpc.NewCodec(writeOnlyRW{Reader: bytes.NewReader(nil), Writer: w}),
+		w:     w,
+	}
+}
+
+// request writes a hand-marshalled request frame. The codec exposes no request
+// constructor, and validate permits an unstamped request, so requests keep the
+// explicit frame construction.
+func (b *brokerStdin) request(t *testing.T, id int, method string, params any) {
 	t.Helper()
 	idData := json.RawMessage(strconv.Itoa(id))
-	writeFrame(t, w, jsonrpc.Message{
+	data, err := json.Marshal(jsonrpc.Message{
 		JSONRPC: "2.0",
 		ID:      &idData,
 		Method:  method,
 		Params:  mustMarshal(t, params),
 	})
-}
-
-func writeNotification(t *testing.T, w io.Writer, method string, params any) {
-	t.Helper()
-	writeFrame(t, w, jsonrpc.Message{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  mustMarshal(t, params),
-	})
-}
-
-func writeFrame(t *testing.T, w io.Writer, msg jsonrpc.Message) {
-	t.Helper()
-	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal frame: %v", err)
 	}
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	if _, err := w.Write(append(data, '\n')); err != nil {
+	if _, err := b.w.Write(append(data, '\n')); err != nil {
 		t.Fatalf("write frame: %v", err)
 	}
+}
+
+// notification goes out through the codec, which stamps the frame with this
+// connection's epoch and seq. An unstamped notification is a terminal
+// *ProtocolMismatchError on the worker side, so the frame must be built by the
+// codec and not by hand.
+func (b *brokerStdin) notification(t *testing.T, method string, params any) {
+	t.Helper()
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	if err := b.codec.Notify(method, params); err != nil {
+		t.Fatalf("notify %s: %v", method, err)
+	}
+}
+
+// writeOnlyRW adapts a write-only stream (a subprocess stdin pipe) to the
+// io.ReadWriter that jsonrpc.NewCodec requires. Only the writer is used.
+type writeOnlyRW struct {
+	io.Reader
+	io.Writer
 }
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
