@@ -25,3 +25,6 @@ __pycache__/
 
 # macOS metadata
 .DS_Store
+
+# Git worktrees (superpowers:using-git-worktrees)
+.worktrees/
