@@ -9,6 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 
 | Spec | Subject | Depends on |
 |---|---|---|
+| **A0** | Routing metrics: move counters from Electron into the proxies (correctness fix, wire-compatible, ships first) | — |
 | **A (this)** | Wire protocol: envelope, epoch, resync, heartbeat | — |
 | B | Telemetry push: retire the 2 s per-node HTTP poll, edge-triggered engine status | A |
 | C | Native macOS app (SwiftUI) | A, B |
@@ -185,10 +186,21 @@ channel counter gaps (§2.7), and on connect — never on a timer.
 ### 2.6 Heartbeat
 
 The broker sends `heartbeat` on every live client connection every
-`HEARTBEAT_INTERVAL` (**15 s**, tuned so three missed intervals still trip well
-inside a user-perceptible lag). It carries `epoch` and `seq` like any
+`HEARTBEAT_INTERVAL` (**15 s**). It carries `epoch` and `seq` like any
 notification and, per §2.1, the full node-set snapshot for its filter. The
 client **never** sends anything on a timer.
+
+**Decided: 15 s, timeout at 3× interval (45 s to declare a connection dead).**
+Rationale: after §2.1 the heartbeat is not load-bearing for correctness —
+snapshots self-heal, so the heartbeat's only jobs are detecting a stalled
+producer and keeping stateful middleboxes warm across the LAN. Transport death
+is independently detectable from the failed `Read()`/`Done()` on the connection,
+so the interval governs *cosmetic* staleness, not data loss, and 45 s is well
+inside the range where the UI's existing disconnected-node affordance is the
+honest display. A 5 s interval triples periodic wakeups on an always-on
+tray-resident app to buy back nothing; 30 s makes a genuinely hung broker look
+alive for over a minute. Both values are named constants in
+`services/shared/jsonrpc` so tuning is a one-line change, not a hunt.
 
 This is the asymmetry that pays for the battery goal: the server talks, the
 client listens, and the client's only periodic work is a `DispatchSourceTimer`
@@ -258,22 +270,43 @@ pushes already carry full sets (table in §2.1.1). The conversion work for
 protocol v2 is therefore **stamping, not restructuring** — which is the single
 largest cost reduction in this spec.
 
-### 6.2 `metrics:*` has no Go producer
+### 6.2 `metrics:*` has no Go producer — **RESOLVED by spec A0**
 
-`metrics:get-routing` resolves in `desktop/src/electron/service-bridge/empty-handlers.ts:1090`
-to `getModularBridgeState().getRoutingMetrics()`, and `metrics:routing-update`
-is emitted at `modular-state.ts:2338`. Grepping `services/` for either channel
-returns **nothing**: there is no Go implementation.
+Historical finding (kept for provenance): `metrics:get-routing` resolved in
+`desktop/src/electron/service-bridge/empty-handlers.ts:1090` to
+`getModularBridgeState().getRoutingMetrics()`, and `metrics:routing-update` was
+emitted at `modular-state.ts:2338`. Grepping `services/` returned nothing: there
+was no Go implementation. The counters were accumulated in the Electron main
+process, one increment per `proxy/request` notification where
+`params.cache_affinity === true` — routing telemetry in the desktop tree, which
+AGENTS.md forbids.
 
-The counters are accumulated in the Electron main process, one increment per
-`proxy/request` notification where `params.cache_affinity === true`
-(`modular-state.ts:2323-2338`). The Go proxies already emit the required fact —
-`cache_affinity` on every `POST /v1/chat/completions` — but nothing counts it in Go.
+**Shipped as spec A0 (ships ahead of this spec, per §7.4):**
 
-This is a programme blocker, not a v2 detail: it is routing telemetry computed in
-the desktop tree, which AGENTS.md forbids ("does **not** reimplement routing… in
-the desktop tree"). A native Swift client would otherwise have to re-implement
-the accumulation, or ship a dashboard with no routing metrics.
+- `services/shared/routingmetrics` — the one filter (`Counts`) and the one
+  accumulator (`Counters.Routed` / `Snapshot`), used by all three proxies so they
+  cannot report different numbers.
+- Each proxy stamps cumulative `requests` / `cache_affinity_hits` on
+  `proxy/request` at its completion emit site only.
+- The broker mirrors those totals off the event and reports them on
+  `proxy:get-status` / `lmstudio-proxy:get-status` / `omlx-proxy:get-status`,
+  still answered locally with no round-trip.
+- Bridge and `nvpair-tui` **replace** totals from the event; both copies of the
+  hand-rolled filter are deleted. `metrics:get-routing` keeps its existing
+  contract, so the renderer is unchanged.
+
+**Incidental bug fixed en route:** the old consumer filter counted unrouted
+traffic. The 502 rejection emit sites (`ollama-proxy/proxy.go` ~1299,
+`lmstudio-proxy/proxy.go` ~1088, `omlx-proxy/proxy.go` ~1097) post to inference
+paths with `cache_affinity` omitted, which satisfied the old
+`method === 'POST' && cache_affinity != null && path ∈ inference` guard. Failed
+requests therefore inflated the dashboard's request counts and depressed its
+affinity rate. Counting at the completion site excludes them structurally.
+
+**Second bug caught by test, not review:** consumers that read absent totals as
+`0` wiped real counts on every unrouted event. Both consumers now treat an absent
+total as "preserve" and adopt only an explicit number — a genuine proxy restart
+still reports `0` and resets correctly.
 
 ### 6.3 Still unclassified
 
@@ -289,13 +322,14 @@ spec B.
    second persisted counter and survives broker restart honestly; a counter is
    cheaper to compute but lies after a restart. Spec assumes content hash.
 3. **Gap policy granularity** — resolved: there is none, see §2.4.
-4. **Where does routing-metrics aggregation live?** Given §6.2, the correct move
-   is for the proxies to maintain `requests` / `cacheAffinityHits` per engine in
-   Go and expose `metrics:get-routing` + `metrics:routing-update` as a real
-   snapshot channel. That is a **new workstream**. It belongs in spec B (it is
-   telemetry, and it is what makes the native dashboard possible), but it can
-   also ship standalone today as a correctness fix for the existing app. Your call
-   on sequencing.
+4. **Where does routing-metrics aggregation live?** **RESOLVED — ship first.**
+   Split out as **spec A0** (§6.2): proxies maintain `requests` /
+   `cacheAffinityHits` per engine in Go and expose `metrics:get-routing` +
+   `metrics:routing-update` as a real snapshot channel; the desktop-side
+   accumulation is deleted. Sequenced ahead of spec A because it is a live
+   AGENTS.md violation, is wire-compatible with both v1 and v2 (it adds a
+   producer to channels that already exist in the desktop contract, and changes
+   no envelope), and unblocks spec C's dashboard.
 
 ## 8. Blocked on
 
