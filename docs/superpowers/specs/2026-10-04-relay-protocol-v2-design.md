@@ -60,6 +60,21 @@ are LAN clusters of a handful of nodes, and `Directory.Apply` already
 byte-compares projected state (`directoryNodeEqual`) so only real changes fan
 out.
 
+### 2.1.1 The rule applies downstream only
+
+The audit (§6) shows the wire is already split into two halves with *different*
+semantics, and both are correct:
+
+| Half | Method family | Semantics | Evidence |
+|---|---|---|---|
+| **worker → broker** (upward) | `discovery:node-discovered`, `node/updated`, `node/removed`, `workloads:upsert/remove`, `errors:report/clear` | `DELTA` — one entity per frame | `nvpair-node-scanner/daemon.go:648`, `nvpair-workload-manager/manager.go:198` |
+| **broker → client** (downward) | `discovery:nodes`, `errors:update` | `SNAPSHOT` — full set | `noderec.go:376` *"the broker relay -> subscriber push: the subscriber's full…"*; `broker/clustermanager.go:144`, `broker/proxy.go:186`, `nvpair-errors/manager.go:391` |
+
+The broker is the delta→snapshot fold (`Directory.ApplySource`). **v2 does not
+change the upstream half.** Deltas in, fold, snapshots out is the right shape
+and is already built. §2.1 is an invariant on the client-facing surface only —
+which is what deletes the four timers, since all four live on that surface.
+
 ### 2.2 Envelope
 
 Two new top-level members on **notification frames only**. JSON-RPC 2.0
@@ -159,6 +174,7 @@ the existing snapshot getter **only** for channels that differ:
 | errors | `errors:get-initial` |
 | workloads | `workloads:get-initial` |
 | routing metrics | `metrics:get-routing` |
+| routing metrics | `metrics:get-routing` — **no Go producer, see §6.2** |
 | telemetry | `telemetry:get-status` |
 | **node hardware telemetry** | **NONE — added by spec B** |
 | **proxy request counters** | **NONE — added by spec B** |
@@ -197,7 +213,7 @@ feeding spec B (§5).
 | `nvpair-ui-broker/relay/relay.go` | stamp on fan-out; expose `revision` per channel |
 | `nvpair-ui-broker/broker.go` | mint `epoch`; `broker:resync`; heartbeat ticker; refuse `ready` without `protocol: 2` |
 | `nvpair-ui-broker/supervisor.go` | stamp worker→broker notifications |
-| All 11 workers | `ReadyParams.protocol`; convert `DELTA` channels to snapshots per audit |
+| All 11 workers | `ReadyParams.protocol` only. **No payload changes** — the upstream half stays `DELTA` (§2.1.1) |
 | `desktop/src/electron/service-bridge/*` | delete 4 timers; add epoch tracking + resync (**transitional** — spec C replaces this layer) |
 | `desktop/scripts/verify-service-contracts.ts` | understand `broker:resync` + `heartbeat` or `service-contracts:check` fails |
 | `services/versions.json` | **breaking**: bump all 13 components + `installer` + `product` |
@@ -230,19 +246,58 @@ feeding spec B (§5).
 - The native app itself → **spec C**. `launchd`, Sparkle → **spec D**.
 - Windows/Linux build paths (retired by programme decision, not by this spec).
 
-## 6. Open questions
+## 6. Audit findings (2026-10-04)
+
+Inline audit of the ~160 `.Notify(` call sites after the subagent was lost to an
+OAuth token expiry.
+
+### 6.1 Snapshot channels already conform
+
+`discovery:nodes`, `errors:update`, and the `proxy:*` / `workloads:*` relay
+pushes already carry full sets (table in §2.1.1). The conversion work for
+protocol v2 is therefore **stamping, not restructuring** — which is the single
+largest cost reduction in this spec.
+
+### 6.2 `metrics:*` has no Go producer
+
+`metrics:get-routing` resolves in `desktop/src/electron/service-bridge/empty-handlers.ts:1090`
+to `getModularBridgeState().getRoutingMetrics()`, and `metrics:routing-update`
+is emitted at `modular-state.ts:2338`. Grepping `services/` for either channel
+returns **nothing**: there is no Go implementation.
+
+The counters are accumulated in the Electron main process, one increment per
+`proxy/request` notification where `params.cache_affinity === true`
+(`modular-state.ts:2323-2338`). The Go proxies already emit the required fact —
+`cache_affinity` on every `POST /v1/chat/completions` — but nothing counts it in Go.
+
+This is a programme blocker, not a v2 detail: it is routing telemetry computed in
+the desktop tree, which AGENTS.md forbids ("does **not** reimplement routing… in
+the desktop tree"). A native Swift client would otherwise have to re-implement
+the accumulation, or ship a dashboard with no routing metrics.
+
+### 6.3 Still unclassified
+
+`engines:state-changed` / `engines:progress*` producers were not located by
+these greps (§4 tests must not rely on their classification). Resolve during
+spec B.
+
+## 7. Open questions
 
 1. **`HEARTBEAT_INTERVAL` 15 s** — acceptable, or does a tray badge need tighter
    liveness?
 2. **`revision` as content hash vs monotonic counter.** Content hash avoids a
    second persisted counter and survives broker restart honestly; a counter is
    cheaper to compute but lies after a restart. Spec assumes content hash.
-3. **Which event channels need counter snapshots.** `proxy/request` and
-   `schedule:priority` are known; the audit decides the rest (§7).
+3. **Gap policy granularity** — resolved: there is none, see §2.4.
+4. **Where does routing-metrics aggregation live?** Given §6.2, the correct move
+   is for the proxies to maintain `requests` / `cacheAffinityHits` per engine in
+   Go and expose `metrics:get-routing` + `metrics:routing-update` as a real
+   snapshot channel. That is a **new workstream**. It belongs in spec B (it is
+   telemetry, and it is what makes the native dashboard possible), but it can
+   also ship standalone today as a correctness fix for the existing app. Your call
+   on sequencing.
 
-## 7. Blocked on
+## 8. Blocked on
 
-Notification payload classification (`SNAPSHOT` / `DELTA` / `EVENT`) across the
-~160 `.Notify(` call sites, and confirmation of which snapshot getters are
-missing. Running as a parallel audit; §2.7 and §2.5 table are filled in from
-its output before spec B is written.
+Notification payload classification is now **complete** (§6), except
+`engines:*` (§6.3). Spec B must resolve §6.2 and §6.3.
