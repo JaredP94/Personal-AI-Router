@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Menu Bar Job Activity**: The tray icon now reports live job activity instead of a static mark. The pentagon is drawn as a monochrome template with transparent cutouts (the full-colour app icon flattened to a solid white square in macOS template mode), its interior carries the count of queued, initializing, and running jobs as a numeral, and a `!` marks a failed job for 30 seconds. The hover tooltip spells out the counts. Windows and Linux render the alert in red; macOS relies on the glyph shape, since template images take the menu bar's colour.
+
 ## [0.5.0] - 2026-10-02
 
 ### Added

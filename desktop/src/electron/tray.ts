@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { app, BrowserWindow, Menu, nativeImage, screen, Tray } from 'electron'
-import { join } from 'path'
-import { createTrayWindow, getTrayWindow, createOverviewWindow } from '@/electron/window'
+import { getTrayWindow, createTrayWindow, createOverviewWindow } from '@/electron/window'
+import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { wakeNodeInfoPoller } from '@/electron/service-bridge/node-info-poller'
+import { startTrayBadge, type TrayBadgeSink } from '@/electron/tray-badge'
+import { renderTrayBadgeMap, type TrayBadgeMap } from '@/shared/utils/tray-badge-map'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
@@ -33,13 +35,25 @@ class TrayManager {
     private blurHidingDisabled = false
     private displayChangeListener: (() => void) | undefined
     private visibilityInterval: ReturnType<typeof setInterval> | undefined
+    private stopBadge: (() => void) | null = null
+    private lastBadgeMap: TrayBadgeMap | null = null
 
-    private getPlatformIcon(): Electron.NativeImage {
-        const iconsDir = join(__dirname, '../../resources/icons')
-
+    /**
+     * The icon, drawn rather than loaded.
+     *
+     * `resources/icons/logo.png` is the full-colour app icon: a filled pentagon whose
+     * node glyph is dark paint, not transparency. Set as a macOS template image it
+     * flattens to a solid block, which is the white square this replaces. The badge
+     * map carries real holes, so template mode has something to draw.
+     */
+    private toNativeImage(map: TrayBadgeMap): Electron.NativeImage {
+        const bitmap = Buffer.from(map.pixels.buffer, map.pixels.byteOffset, map.pixels.byteLength)
+        const image = nativeImage.createFromBitmap(bitmap, {
+            width: map.width,
+            height: map.height,
+            scaleFactor: map.scaleFactor
+        })
         if (currentPlatform() === 'darwin') {
-            let image = nativeImage.createFromPath(join(iconsDir, 'logo.png'))
-            image = image.resize({ width: 16, height: 16, quality: 'best' })
             try {
                 image.setTemplateImage(true)
             } catch {
@@ -48,12 +62,45 @@ class TrayManager {
             return image
         }
 
-        if (currentPlatform() === 'win32') {
-            return nativeImage.createFromPath(join(iconsDir, 'logo.ico'))
-        }
+        // `scaleFactor` is honoured on macOS only, so the 2× bitmap would otherwise
+        // arrive 32 pixels wide on a 22-pixel panel and a 16-pixel small-icon slot.
+        const size = currentPlatform() === 'win32' ? 16 : 22
+        return image.resize({ width: size, height: size, quality: 'best' })
+    }
 
-        const image = nativeImage.createFromPath(join(iconsDir, 'logo.png'))
-        return image.resize({ width: 22, height: 22, quality: 'best' })
+    /**
+     * Red for an alert only where the icon is rendered verbatim. macOS paints a
+     * template image in the menu bar's own colour, so there the `!` shape is the
+     * whole message.
+     */
+    private alertInk(): { r: number; g: number; b: number } | undefined {
+        return currentPlatform() === 'darwin' ? undefined : { r: 255, g: 64, b: 64 }
+    }
+
+    private applyBadgeMap(map: TrayBadgeMap): void {
+        this.lastBadgeMap = map
+        if (!this.tray) return
+        try {
+            this.tray.setImage(this.toNativeImage(map))
+        } catch (error) {
+            log.error({
+                sublevel: 'lifecycle',
+                message: `Failed to set tray icon: ${String(error)}`
+            })
+        }
+    }
+
+    private badgeSink(): TrayBadgeSink {
+        return {
+            setIcon: map => this.applyBadgeMap(map),
+            setToolTip: text => {
+                try {
+                    this.tray?.setToolTip(text)
+                } catch {
+                    /* tray gone mid-repaint */
+                }
+            }
+        }
     }
 
     async init(): Promise<void> {
@@ -67,8 +114,9 @@ class TrayManager {
         }
 
         try {
-            const icon = this.getPlatformIcon()
-            this.tray = new Tray(icon)
+            const idle = renderTrayBadgeMap({ activeCount: 0, alert: false })
+            this.tray = new Tray(this.toNativeImage(idle))
+            this.lastBadgeMap = idle
             this.tray.setToolTip(APP_DISPLAY_NAME)
 
             this.setupContextMenu()
@@ -78,6 +126,18 @@ class TrayManager {
 
             const win = createTrayWindow()
             this.setupTrayWindowEvents(win)
+
+            // A recreated Tray is a new native object, so only the first init
+            // subscribes; a recreation re-applies what the badge already decided.
+            if (this.stopBadge === null) {
+                this.stopBadge = startTrayBadge(
+                    this.badgeSink(),
+                    Object.values(getModularBridgeState().getWorkloads()),
+                    { alertInk: this.alertInk() }
+                )
+            } else {
+                this.applyBadgeMap(this.lastBadgeMap ?? idle)
+            }
 
             this.isVisible = true
             this.retryCount = 0
@@ -350,6 +410,8 @@ class TrayManager {
 
     destroy(): void {
         log.info({ sublevel: 'lifecycle', message: 'Destroying tray' })
+        this.stopBadge?.()
+        this.stopBadge = null
         if (this.visibilityInterval) clearInterval(this.visibilityInterval)
         if (this.displayChangeListener) {
             try {
