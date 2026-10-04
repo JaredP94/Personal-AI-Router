@@ -13,6 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+
+	"nvpair-shared/applog"
+	"nvpair-shared/noderec"
 )
 
 // maxNodeInfoLine caps one stdout frame from node-info. Its frames are a handful
@@ -34,8 +37,15 @@ const maxNodeInfoLine = 64 * 1024
 type nodeInfoProcess struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
+	// codec stamps every control frame written to the child's stdin, so
+	// node-info sees a protocol v2 envelope on the notification it receives.
+	// One Codec per child, so its seq is this connection's run.
+	codec *Codec
 	// stdinMu serializes log-level forwarding writes against the Close()
-	// in Stop() (this handle stays notify-only, not on jsonrpc.Peer).
+	// in Stop() (this handle stays notify-only, not on jsonrpc.Peer). It sits
+	// outside codec's own write lock, which keeps the stamp and the write
+	// together; the outer lock is what keeps a write from racing Stop()'s
+	// close of the same pipe.
 	stdinMu sync.Mutex
 	done    chan struct{}
 }
@@ -45,7 +55,9 @@ type nodeInfoProcess struct {
 // via the shared applog stdin handler; a notification rather than an id-bearing
 // request, so no response comes back on the stdout the drain below reads.
 func (n *nodeInfoProcess) SetLogLevel(level string) error {
-	return writeSetLevelFrame(&n.stdinMu, n.stdin, level)
+	n.stdinMu.Lock()
+	defer n.stdinMu.Unlock()
+	return n.codec.Notify(applog.SetLevelMethod, applog.SetLevelParams{Level: level})
 }
 
 // SetClusterIdentity tells node-info the cluster principal this node currently
@@ -55,7 +67,9 @@ func (n *nodeInfoProcess) SetLogLevel(level string) error {
 // an empty principal — a departure — is exactly the value peers need in order to
 // stop treating this node as unavailable for pairing.
 func (n *nodeInfoProcess) SetClusterIdentity(clusterUUID string) error {
-	return writeClusterIdentityFrame(&n.stdinMu, n.stdin, clusterUUID)
+	n.stdinMu.Lock()
+	defer n.stdinMu.Unlock()
+	return n.codec.Notify(noderec.MethodSetClusterIdentity, noderec.ClusterIdentityParams{ClusterUUID: clusterUUID})
 }
 
 // Done implements supervisedHandle: the returned channel closes once the
@@ -93,6 +107,7 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 	np := &nodeInfoProcess{
 		cmd:   cmd,
 		stdin: stdin,
+		codec: NewCodec(writeOnlyReadWriter{stdin}),
 		done:  make(chan struct{}),
 	}
 

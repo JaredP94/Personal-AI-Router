@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"sync"
 
+	"nvpair-shared/applog"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
@@ -30,6 +31,10 @@ import (
 type workloadManagerProcess struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
+	// codec stamps every frame the broker writes down the manager's stdin, so
+	// the manager's shared jsonrpc reader sees a protocol v2 envelope on each
+	// notification. One Codec per child, so its seq is this connection's run.
+	codec *Codec
 	// stdinMu serializes Forward / log-level writes against the Close() in
 	// Stop(); see nodeInfoProcess.stdinMu.
 	stdinMu sync.Mutex
@@ -55,7 +60,9 @@ type workloadManagerProcess struct {
 // it via the shared applog stdin handler; it writes no response because we
 // send a notification, not an id-bearing request.
 func (m *workloadManagerProcess) SetLogLevel(level string) error {
-	return writeSetLevelFrame(&m.stdinMu, m.stdin, level)
+	m.stdinMu.Lock()
+	defer m.stdinMu.Unlock()
+	return m.codec.Notify(applog.SetLevelMethod, applog.SetLevelParams{Level: level})
 }
 
 // Done implements supervisedHandle: the returned channel closes once the
@@ -64,18 +71,15 @@ func (m *workloadManagerProcess) Done() <-chan struct{} { return m.done }
 
 // Forward writes a JSON-RPC notification to the manager's stdin. The broker
 // uses it to hand local-origin workload lifecycle / removal frames to the
-// manager for cluster broadcast. Writes are serialized against Stop()'s
-// stdin close.
+// manager for cluster broadcast. The canonical codec stamps the frame with this
+// connection's epoch and next seq as it writes it, so the manager's reader sees
+// a v2 envelope and concurrent senders cannot put the frames on the wire out of
+// seq order. Writes are serialized against Stop()'s stdin close by stdinMu,
+// which wraps — rather than races — the codec's own write lock.
 func (m *workloadManagerProcess) Forward(method string, params json.RawMessage) error {
-	data, err := json.Marshal(&Message{JSONRPC: "2.0", Method: method, Params: params})
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
 	m.stdinMu.Lock()
 	defer m.stdinMu.Unlock()
-	_, err = m.stdin.Write(data)
-	return err
+	return m.codec.Notify(method, params)
 }
 
 // startWorkloadManager spawns nvpair-workload-manager with the broker's
@@ -108,6 +112,7 @@ func startWorkloadManager(binaryPath, logLevel string, relayDir *relay.Directory
 	wm := &workloadManagerProcess{
 		cmd:      cmd,
 		stdin:    stdin,
+		codec:    NewCodec(writeOnlyReadWriter{stdin}),
 		done:     make(chan struct{}),
 		onNotify: onNotify,
 		relayDir: relayDir,

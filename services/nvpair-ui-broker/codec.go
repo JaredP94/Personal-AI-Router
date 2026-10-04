@@ -37,3 +37,15 @@ type readWriter struct {
 	io.Reader
 	io.Writer
 }
+
+// writeOnlyReadWriter adapts a write-only child stream — a stdin pipe — into the
+// io.ReadWriter the shared Codec expects. These handles only push control frames
+// down a child's stdin and never read it: the child's stdout is drained by the
+// handle's own reader, so handing the same reader to a second Codec would leave
+// two scanners racing for the same bytes. Read therefore refuses immediately
+// rather than blocking.
+type writeOnlyReadWriter struct {
+	io.Writer
+}
+
+func (writeOnlyReadWriter) Read([]byte) (int, error) { return 0, io.EOF }

@@ -691,55 +691,9 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 	}
 }
 
-// writeSetLevelFrame marshals a newline-delimited log/set-level
-// notification and writes it to a child's stdin under mu. The level is
-// assumed already validated by the caller (applog.HandleSetLevelParams in
-// the broker's own handler), so the child can apply it without echoing a
-// result. Shared by both child handles (scanner and node-info).
-func writeSetLevelFrame(mu *sync.Mutex, w io.Writer, level string) error {
-	frame := struct {
-		JSONRPC string                `json:"jsonrpc"`
-		Method  string                `json:"method"`
-		Params  applog.SetLevelParams `json:"params"`
-	}{
-		JSONRPC: "2.0",
-		Method:  applog.SetLevelMethod,
-		Params:  applog.SetLevelParams{Level: level},
-	}
-	data, err := json.Marshal(frame)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	mu.Lock()
-	defer mu.Unlock()
-	_, err = w.Write(data)
-	return err
-}
-
-// writeClusterIdentityFrame marshals a newline-delimited
-// nodeinfo:set-cluster-identity notification and writes it to a child's stdin
-// under mu. An empty principal is a real value ("this node is in no cluster"),
-// so it is sent like any other.
-func writeClusterIdentityFrame(mu *sync.Mutex, w io.Writer, clusterUUID string) error {
-	frame := struct {
-		JSONRPC string                        `json:"jsonrpc"`
-		Method  string                        `json:"method"`
-		Params  noderec.ClusterIdentityParams `json:"params"`
-	}{
-		JSONRPC: "2.0",
-		Method:  noderec.MethodSetClusterIdentity,
-		Params:  noderec.ClusterIdentityParams{ClusterUUID: clusterUUID},
-	}
-	data, err := json.Marshal(frame)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	mu.Lock()
-	defer mu.Unlock()
-	_, err = w.Write(data)
-	return err
-}
+// writeSetLevelFrame and writeClusterIdentityFrame used to live here as inline
+// frame literals with no epoch/seq. Both pushes are notifications on the stdio
+// envelope, so they now go through the per-child jsonrpc Codec each handle owns
+// — see nodeInfoProcess.SetLogLevel / SetClusterIdentity and
+// workloadManagerProcess.SetLogLevel. The scanner was already on Codec.Notify
+// via its Peer.

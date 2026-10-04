@@ -6,12 +6,22 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 )
+
+// newNodeInfoHandle builds a node-info handle whose stdin is buf, with no child
+// process behind it. Enough for the control-frame pushes, which only touch the
+// write side.
+func newNodeInfoHandle(buf io.Writer) *nodeInfoProcess {
+	return &nodeInfoProcess{codec: NewCodec(writeOnlyReadWriter{buf})}
+}
 
 // TestWriteClusterIdentityFrame pins the wire form of the push node-info decodes.
 // node-info reads its stdin as newline-delimited JSON-RPC, so a missing newline or
@@ -29,8 +39,7 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			var mu sync.Mutex
-			if err := writeClusterIdentityFrame(&mu, &buf, tc.clusterUUID); err != nil {
+			if err := newNodeInfoHandle(&buf).SetClusterIdentity(tc.clusterUUID); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 
@@ -70,6 +79,145 @@ func TestWriteClusterIdentityFrame(t *testing.T) {
 			if !strings.Contains(line, `"clusterUuid"`) {
 				t.Errorf("frame omitted clusterUuid: %s", line)
 			}
+			// Protocol v2: the notification carries the envelope, because
+			// node-info's applog stdin reader — and any v2 reader behind it —
+			// rejects one without.
+			assertStamped(t, line)
 		})
 	}
+}
+
+// TestChildStdinFramesAreStamped covers both control pushes to node-info and
+// both to the workload-manager. All four are notifications on the stdio envelope,
+// so an unstamped one is a frame the child's v2 reader will not accept.
+func TestChildStdinFramesAreStamped(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send func(io.Writer) error
+	}{
+		{"node-info set-cluster-identity", func(w io.Writer) error {
+			return newNodeInfoHandle(w).SetClusterIdentity("c1")
+		}},
+		{"node-info log/set-level", func(w io.Writer) error {
+			return newNodeInfoHandle(w).SetLogLevel("debug")
+		}},
+		{"workload-manager log/set-level", func(w io.Writer) error {
+			m := &workloadManagerProcess{codec: NewCodec(writeOnlyReadWriter{w})}
+			return m.SetLogLevel("debug")
+		}},
+		{"workload-manager forward", func(w io.Writer) error {
+			m := &workloadManagerProcess{codec: NewCodec(writeOnlyReadWriter{w})}
+			return m.Forward(noderec.NotifyNodes, json.RawMessage(`{"nodes":[]}`))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := tc.send(&buf); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			assertStamped(t, buf.String())
+		})
+	}
+}
+
+// TestWorkloadManagerForwardWritesInSeqOrder pins the wire-order contract for the
+// broker's busiest child push: a workload event reaches Forward from the
+// client's read loop, from rehydration, and from the discovery snapshot, so
+// concurrent senders are normal. The seq the manager reads must equal the frame's
+// position on the wire — §2.7 gap detection reads an inversion as a dropped frame
+// and answers with a spurious resync.
+func TestWorkloadManagerForwardWritesInSeqOrder(t *testing.T) {
+	const (
+		senders     = 8
+		perSender   = 16
+		totalFrames = senders * perSender
+	)
+
+	var sink lockedBuffer
+	m := &workloadManagerProcess{codec: NewCodec(writeOnlyReadWriter{&sink})}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for s := range senders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release every sender at once to maximise overlap
+			for range perSender {
+				params := json.RawMessage(`{"sender":` + strconv.Itoa(s) + `}`)
+				if err := m.Forward(noderec.NotifyNodes, params); err != nil {
+					t.Errorf("forward: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	reader := NewCodec(readWriter{Reader: bytes.NewReader(sink.Bytes()), Writer: io.Discard})
+	for want := uint64(1); want <= totalFrames; want++ {
+		msg, err := reader.Read()
+		if err != nil {
+			t.Fatalf("reading the frame stamped seq %d: %v", want, err)
+		}
+		if msg.Seq == nil || *msg.Seq != want {
+			t.Fatalf("wire order != seq order: the frame at wire position %d carries seq %v", want, msg.Seq)
+		}
+		if msg.Epoch == nil || *msg.Epoch != jsonrpc.Epoch() {
+			t.Fatalf("frame with seq %d carries the wrong epoch", want)
+		}
+	}
+	if _, err := reader.Read(); err != io.EOF {
+		t.Fatalf("expected exactly %d frames then EOF, got err %v", totalFrames, err)
+	}
+}
+
+// assertStamped fails unless the single frame in line carries an epoch and a seq,
+// and carries nothing that would make jsonrpc.validate() reject it as something
+// other than a notification.
+func assertStamped(t *testing.T, line string) {
+	t.Helper()
+	var frame struct {
+		Epoch *string `json:"epoch"`
+		Seq   *uint64 `json:"seq"`
+		ID    *uint64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(line), &frame); err != nil {
+		t.Fatalf("decode frame %q: %v", line, err)
+	}
+	if frame.Epoch == nil || *frame.Epoch != jsonrpc.Epoch() {
+		t.Errorf("epoch = %v, want %s", frame.Epoch, jsonrpc.Epoch())
+	}
+	if frame.Seq == nil || *frame.Seq == 0 {
+		t.Errorf("seq = %v, want a number from 1", frame.Seq)
+	}
+	if frame.ID != nil {
+		t.Errorf("frame carries an id (%v); a stamped request or response is rejected by validate()", frame.ID)
+	}
+	// And the canonical reader must accept it, which is the whole point.
+	reader := NewCodec(readWriter{Reader: strings.NewReader(line), Writer: io.Discard})
+	if _, err := reader.Read(); err != nil {
+		t.Errorf("canonical reader rejected the frame: %v", err)
+	}
+}
+
+// lockedBuffer is safe to hand to a codec several goroutines write through. The
+// codec serializes its own writes, but the test does not assume that and the
+// buffer is cheap to make safe.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
