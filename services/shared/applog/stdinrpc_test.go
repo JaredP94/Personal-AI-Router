@@ -6,11 +6,143 @@ package applog
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
+
+	"nvpair-shared/jsonrpc"
 )
+
+// TestNotifyStampsProtocolV2Envelope pins the stamp on the frames this emitter
+// puts on the wire. The broker drains node-info's stdout and applies the same
+// protocol v2 rule as the shared codec, so an unstamped notification is a frame
+// no v2 reader will accept — and nothing in this package would notice, because
+// StdinRPC only reads, never writes, through the stamped path.
+func TestNotifyStampsProtocolV2Envelope(t *testing.T) {
+	var buf bytes.Buffer
+	n := NewNotifier(&buf)
+	if err := n.Notify("nodeinfo:observed-addresses", map[string][]string{"addresses": {"10.0.0.5"}}); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	// A nil params must still be omitted, exactly as before the stamp: the
+	// method, not the payload, is what these reports are for.
+	if err := n.Notify("ready", nil); err != nil {
+		t.Fatalf("notify with nil params: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("emitted %d frames, want 2", len(lines))
+	}
+	for i, wantSeq := range []uint64{1, 2} {
+		var frame struct {
+			Epoch *string `json:"epoch"`
+			Seq   *uint64 `json:"seq"`
+		}
+		if err := json.Unmarshal([]byte(lines[i]), &frame); err != nil {
+			t.Fatalf("frame %d: %v", i, err)
+		}
+		if frame.Seq == nil || *frame.Seq != wantSeq {
+			t.Errorf("frame %d seq = %v, want %d", i, frame.Seq, wantSeq)
+		}
+		if frame.Epoch == nil || *frame.Epoch != jsonrpc.Epoch() {
+			t.Errorf("frame %d epoch = %v, want %s", i, frame.Epoch, jsonrpc.Epoch())
+		}
+	}
+	if strings.Contains(lines[1], `"params"`) {
+		t.Errorf("nil params must stay off the wire: %s", lines[1])
+	}
+
+	// The point of the stamp: the canonical reader accepts every frame.
+	reader := jsonrpc.NewCodec(readerWriter{Reader: strings.NewReader(buf.String()), Writer: io.Discard})
+	for i := range 2 {
+		msg, err := reader.Read()
+		if err != nil {
+			t.Fatalf("canonical reader rejected frame %d: %v", i, err)
+		}
+		if !msg.IsNotification() {
+			t.Errorf("frame %d is not a notification: %+v", i, msg)
+		}
+	}
+}
+
+// TestNotifyWritesInSeqOrderUnderConcurrency pins the wire-order contract for the
+// hand-rolled stamp: the seq a peer reads must equal its frame's position on the
+// wire, with no gaps and no repeats. Assigning seq outside mu would let two
+// concurrent Notify calls invert — A takes 1, B takes 2, B wins the lock — which
+// §2.7 gap detection reads as a dropped frame and answers with a spurious resync.
+func TestNotifyWritesInSeqOrderUnderConcurrency(t *testing.T) {
+	const (
+		notifiers   = 16
+		perWriter   = 8
+		totalFrames = notifiers * perWriter
+	)
+	var buf lockedBuffer
+	n := NewNotifier(&buf)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for w := range notifiers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release every writer at once to maximise overlap
+			for i := range perWriter {
+				if err := n.Notify("nodeinfo:observed-addresses", map[string]int{"w": w, "i": i}); err != nil {
+					t.Errorf("notify: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	reader := jsonrpc.NewCodec(readerWriter{Reader: bytes.NewReader(buf.Bytes()), Writer: io.Discard})
+	for want := uint64(1); want <= totalFrames; want++ {
+		msg, err := reader.Read()
+		if err != nil {
+			t.Fatalf("reading the frame stamped seq %d: %v", want, err)
+		}
+		if msg.Seq == nil || *msg.Seq != want {
+			t.Fatalf("wire order != seq order: the frame at wire position %d carries seq %v", want, msg.Seq)
+		}
+		if msg.Epoch == nil || *msg.Epoch != jsonrpc.Epoch() {
+			t.Fatalf("frame with seq %d carries the wrong epoch", want)
+		}
+	}
+	if _, err := reader.Read(); err != io.EOF {
+		t.Fatalf("expected exactly %d frames then EOF, got err %v", totalFrames, err)
+	}
+}
+
+// readerWriter adapts a reader and a writer into the io.ReadWriter NewCodec wants.
+type readerWriter struct {
+	io.Reader
+	io.Writer
+}
+
+// lockedBuffer is safe to hand to a Notifier that several goroutines notify
+// through. The Notifier serializes its own writes, but the test does not assume
+// that and the buffer is cheap to make safe.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
 
 // TestNotifyEmitsOneNewlineTerminatedNotification pins the wire form. A parent
 // reads this stream as newline-delimited JSON-RPC, so a missing newline or a

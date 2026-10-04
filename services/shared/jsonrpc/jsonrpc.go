@@ -39,11 +39,20 @@ type Message struct {
 	Seq   *uint64 `json:"seq,omitempty"`
 }
 
-// RPCError is the JSON-RPC 2.0 error object.
+// RPCError is the JSON-RPC 2.0 error object. It is both the wire shape and a
+// Go error, so a caller that gets one back from a failed Call can return it
+// directly without re-wrapping code and message.
 type RPCError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func (e *RPCError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message)
 }
 
 // DecodeError marks a recoverable per-frame decode failure: the scanner
@@ -190,6 +199,19 @@ func (c *Codec) Notify(method string, params any) error {
 		Params:  raw,
 	}
 	return c.writeNotification(msg)
+}
+
+// Request sends an id-bearing request. Unlike Notify it carries no envelope
+// stamp: validate() rejects epoch/seq on anything that is not a notification, so
+// stamping a request would make the frame unreadable to a v2 peer. Peer.Call is
+// the higher-level form of this for callers that also want the response.
+func (c *Codec) Request(id *json.RawMessage, method string, params json.RawMessage) error {
+	return c.write(&Message{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  method,
+		Params:  params,
+	})
 }
 
 // Respond sends a successful response carrying result for the given request id.

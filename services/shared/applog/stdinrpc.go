@@ -11,6 +11,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
+
+	"nvpair-shared/jsonrpc"
 )
 
 // StdinMessage is a minimal subset of a JSON-RPC message usable by
@@ -91,6 +94,10 @@ func handleStdinLine(line []byte, writer io.Writer, onMessage func(StdinMessage)
 type Notifier struct {
 	mu sync.Mutex
 	w  io.Writer
+
+	// seq is this Notifier's notification counter, starting at 1. A process
+	// gets one Notifier per stdout stream, so it is already per-connection.
+	seq atomic.Uint64
 }
 
 // NewNotifier returns a Notifier writing to w, or nil when w is nil so a
@@ -113,23 +120,52 @@ func (n *Notifier) Write(p []byte) (int, error) {
 	return n.w.Write(p)
 }
 
-// Notify emits one JSON-RPC notification. A nil Notifier drops it, which is what
-// a subprocess started without a stdout reader wants.
+// Notify emits one JSON-RPC notification, stamped with this process's epoch and
+// this connection's next seq. A nil Notifier drops it, which is what a
+// subprocess started without a stdout reader wants.
+//
+// The stamp is protocol v2's version discriminator: jsonrpc.validate() rejects
+// any notification that arrives without it, so a Notifier that skipped the stamp
+// would make every frame it wrote unreadable to a v2 parent. It cannot simply
+// delegate to jsonrpc.Codec.Notify — that would introduce a second write lock
+// beside mu, and mu is what keeps notifications from interleaving with the
+// responses StdinRPC writes through Write. So the stamp is assigned here, inside
+// the same critical section as the write. Stamping before taking mu is exactly
+// the bug jsonrpc.Codec.writeNotification documents: goroutine A takes seq 1, B
+// takes seq 2, B wins the lock and puts seq 2 on the wire first, and §2.7 gap
+// detection reads the inversion as a dropped frame and forces a spurious resync.
 func (n *Notifier) Notify(method string, params any) error {
 	if n == nil {
 		return nil
 	}
-	payload := struct {
-		JSONRPC string `json:"jsonrpc"`
-		Method  string `json:"method"`
-		Params  any    `json:"params,omitempty"`
-	}{"2.0", method, params}
-	data, err := json.Marshal(payload)
+	// Marshal before taking seq: a params that cannot be marshaled must not
+	// consume a number, or the next frame's seq would show a gap the peer
+	// resyncs for.
+	var raw json.RawMessage
+	if params != nil {
+		b, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		raw = b
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	epoch := jsonrpc.Epoch()
+	seq := n.seq.Add(1)
+	data, err := json.Marshal(&jsonrpc.Message{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  raw,
+		Epoch:   &epoch,
+		Seq:     &seq,
+	})
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	_, err = n.Write(data)
+	_, err = n.w.Write(data)
 	return err
 }
 

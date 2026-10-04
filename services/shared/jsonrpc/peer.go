@@ -147,7 +147,7 @@ func (p *Peer) register() (chan *Message, int64, error) {
 
 func (p *Peer) writeRequest(id int64, method string, params json.RawMessage) error {
 	idRaw := json.RawMessage(strconv.FormatInt(id, 10))
-	return p.codec.write(&Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: params})
+	return p.codec.Request(&idRaw, method, params)
 }
 
 func (p *Peer) clearPending(id int64) {
