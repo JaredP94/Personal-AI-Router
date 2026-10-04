@@ -24,18 +24,24 @@ renderer receives them on a `service-bridge:push` bus.
 
 Four polling loops nonetheless still run *on top* of that push system:
 
-| Loop | Location | Cadence | Stated reason |
-|---|---|---|---|
-| Node-info HTTP poll | `desktop/src/electron/service-bridge/node-info-poller.ts` | 2 000 ms visible / 30 000 ms idle, **one connect per remote node per tick** | hardware telemetry; "the single sanctioned HTTP exception" |
-| Remote engine status | `modular-supervisor.ts:1050` | 20 000 ms | "poll clustered peers' authoritative engine status" |
-| Pending-invite sweep | `modular-supervisor.ts:971` | **1 500 ms** | its own comment: cluster-manager already pushes `invite-canceled` / `invite-expired`; "this poll is the backstop that drops a resolved … invite **when a push is missed** (e.g. across a broker restart)" |
-| Tray visibility retry | `desktop/src/electron/tray.ts:359` | 5 000 ms | retry until the status item exists |
+| Loop | Location | Cadence | Stated reason | Owner |
+|---|---|---|---|---|
+| Node-info HTTP poll | `desktop/src/electron/service-bridge/node-info-poller.ts` | 2 000 ms visible / 30 000 ms idle, **one connect per remote node per tick** | hardware telemetry; "the single sanctioned HTTP exception" | **spec B** |
+| Remote engine status | `modular-supervisor.ts:1050` | 20 000 ms | "poll clustered peers' authoritative engine status" | **spec B** (needs an edge-triggered push first) |
+| Pending-invite sweep | `modular-supervisor.ts:971` | **1 500 ms** | its own comment: cluster-manager already pushes `invite-canceled` / `invite-expired`; "this poll is the backstop that drops a resolved … invite **when a push is missed** (e.g. across a broker restart)" | **this spec** |
+| Tray visibility retry | `desktop/src/electron/tray.ts:359` | 5 000 ms | **not a missed-push problem** — see correction | retained |
 
-Every one of these is compensation for the same defect: **a missed push is
+Three of these are compensation for the same defect: **a missed push is
 undetectable.** `Codec.Notify` is fire-and-forget with no sequencing, so a
 client that drops a frame — or reconnects to a restarted broker — cannot tell
-"nothing happened" from "something happened and I did not hear it." The four
-timers are four hand-rolled answers to one missing primitive.
+"nothing happened" from "something happened and I did not hear it."
+
+**Correction (found at planning).** Three, not four. The tray timer is a
+*watchdog*, not a missed-push backstop: `setupVisibilityCheck` recreates the
+status item after macOS has silently dropped it, and `NSStatusItem` offers no
+notification for being removed — there is nothing to observe, so no protocol
+primitive can replace it. The earlier claim that it could become "a one-shot
+observer / KVO" was wrong. v2 deletes three timers and explicitly retains one.
 
 ## 2. Design
 
@@ -76,6 +82,11 @@ change the upstream half.** Deltas in, fold, snapshots out is the right shape
 and is already built. §2.1 is an invariant on the client-facing surface only —
 which is what deletes the four timers, since all four live on that surface.
 
+**Envelope vs payload.** §2.1.1 constrains `params` semantics, not the envelope.
+`epoch`/`seq` are stamped on *every* notification in both directions (§2.2),
+including the worker→broker deltas — stamping is mechanical and changes no
+payload. What must not change upstream is the delta *shape* of `params`.
+
 ### 2.2 Envelope
 
 Two new top-level members on **notification frames only**. JSON-RPC 2.0
@@ -111,6 +122,21 @@ type Message struct {
 either; the broker stamps both on egress. Workers send notifications *upward*
 to the broker, which re-derives and re-stamps for each downstream connection.
 
+**Mechanism (decided at planning).** All 13 binaries construct their codec
+through `jsonrpc.NewCodec` / `NewCodecMaxFrame` (18 sites, verified), and the
+broker holds one `Codec` per client connection — `Broker` is documented "a new
+Broker is constructed for every client connection" (`broker.go:150`). So:
+
+- `epoch` is a **package-level** value in `shared/jsonrpc`, minted once by
+  `sync.Once` per process.
+- `seq` is a **per-`Codec`** `atomic.Uint64` — which, given the above, is
+  already exactly per-connection.
+- `Codec.Notify` stamps both.
+
+This means **zero changes at the ~35 broker and ~160 worker `.Notify(` call
+sites**: stamping is inherited by construction. A client only ever sees the
+broker's epoch, because the broker re-stamps everything it forwards downstream.
+
 ### 2.3 Version enforcement (clean cut)
 
 `encoding/json` ignores unknown members, so a v1 client silently parses a
@@ -125,6 +151,20 @@ protocol v2 frame. Enforcement therefore lives on the **receive** path, in
   terminal — it means the peer misunderstands the envelope.
 - The first frame from any peer must be `ready`, and `ready` must carry
   `"protocol": 2` in its params. `ReadyParams` gains that field.
+
+  **Superseded during planning: there is no `ready` gate, and `ReadyParams` does
+  not gain `protocol`.** The stamp itself is the discriminator, and it applies to
+  *every* notification — a v1 peer is caught on its first unstamped notification,
+  which is the same moment `ready` would have caught it. Gating on `ready` adds
+  a new failure mode (a notification racing ahead of `ready` at startup, and a
+  new "is this the first frame?" state machine on every connection) to buy back
+  nothing. §2.3 reduces to one rule:
+
+  > Every notification carries `epoch` and `seq`. Every reader treats their
+  > absence as a terminal protocol mismatch.
+
+  This makes v2 purely envelope stamping plus validation, with no handshake
+  reordering anywhere.
 
 This yields deterministic bidirectional failure with no negotiation branch:
 a v1 broker never sends `epoch`, so a v2 worker refuses it; a v1 client never
@@ -160,12 +200,18 @@ therefore does not branch on `seq` at all for state purposes.
 New broker method, replacing the four timers:
 
 ```
-broker:resync  →  { epoch: string, protocol: 2, channels: { <name>: <revision> } }
+broker:resync  →  { epoch: string, protocol: 2 }
 ```
 
-`channels[name].revision` is a content hash of that channel's current snapshot.
-The client compares each against the hash of the state it holds and re-invokes
-the existing snapshot getter **only** for channels that differ:
+**Simplified during planning: `channels: { name: revision }` and its content-hash
+`revision` are dropped (§7.2 resolved).** After §2.1, resync fires *only* on an
+epoch change, and §2.3's `ready` gate is gone — so the client's cache is empty or
+wholly suspect at every resync point. A per-channel content hash can therefore
+never skip anything it would not have had to re-fetch anyway: it is machinery
+whose discriminating case cannot occur. The client re-invokes every snapshot getter
+it consumes. That is a handful of local IPC round-trips, once, at connect.
+
+Snapshot getters, all existing:
 
 | Channel | Snapshot getter (exists today) |
 |---|---|
@@ -174,8 +220,7 @@ the existing snapshot getter **only** for channels that differ:
 | cluster | `cluster:get-initial` |
 | errors | `errors:get-initial` |
 | workloads | `workloads:get-initial` |
-| routing metrics | `metrics:get-routing` |
-| routing metrics | `metrics:get-routing` — **no Go producer, see §6.2** |
+| routing metrics | `metrics:get-routing` — produced by the proxies since spec A0 |
 | telemetry | `telemetry:get-status` |
 | **node hardware telemetry** | **NONE — added by spec B** |
 | **proxy request counters** | **NONE — added by spec B** |
@@ -208,26 +253,27 @@ that does nothing but compare two integers.
 
 ### 2.7 Event channels
 
-`proxy/request`, `proxy/request-started`, `schedule:priority`, and `ready` are
-intrinsically instantaneous — there is no state to snapshot. They still carry
-`epoch`/`seq`. A gap on an event channel means **events were lost**, and they
-cannot be recovered; so each event channel that feeds a *derived* value
-(request counts, tokens/sec) declares a **counter snapshot** the client can
-re-read. Which counters need to exist is enumerated by the notification audit
-feeding spec B (§5).
+`proxy/request` and `schedule:priority` are intrinsically instantaneous. They
+still carry `epoch`/`seq`. A gap on an event channel means **events were lost**,
+and they cannot be recovered.
+
+**Amended by spec A0:** `proxy/request` is no longer purely instantaneous. It now
+carries cumulative `requests` / `cache_affinity_hits` (§6.2), so a gap on it is
+*self-healing* — the next event restates the authoritative totals — and no counter
+snapshot getter is needed for it. `ready` is a handshake, not a channel, and is
+excluded from this rule.
 
 ## 3. Changes by component
 
 | File / module | Change |
 |---|---|
-| `shared/jsonrpc/jsonrpc.go` | `Epoch`/`Seq` on `Message`; stamp on egress; terminal validation on `Read()` |
-| `shared/jsonrpc/peer.go` | per-connection `seq` counter on the parent-side write path |
-| `nvpair-ui-broker/relay/relay.go` | stamp on fan-out; expose `revision` per channel |
-| `nvpair-ui-broker/broker.go` | mint `epoch`; `broker:resync`; heartbeat ticker; refuse `ready` without `protocol: 2` |
-| `nvpair-ui-broker/supervisor.go` | stamp worker→broker notifications |
-| All 11 workers | `ReadyParams.protocol` only. **No payload changes** — the upstream half stays `DELTA` (§2.1.1) |
-| `desktop/src/electron/service-bridge/*` | delete 4 timers; add epoch tracking + resync (**transitional** — spec C replaces this layer) |
-| `desktop/scripts/verify-service-contracts.ts` | understand `broker:resync` + `heartbeat` or `service-contracts:check` fails |
+| `shared/jsonrpc/jsonrpc.go` | `Epoch`/`Seq` on `Message`; process-global `epoch`; per-`Codec` `seq`; stamp in `Notify`; terminal validation in `Read` |
+| `shared/jsonrpc` heartbeat consts | `HeartbeatInterval` = 15 s, `HeartbeatTimeout` = 3× |
+| `nvpair-ui-broker/broker.go` | `broker:resync`; heartbeat ticker per client connection |
+| All 13 binaries | **No call-site changes** — stamping is inherited via `NewCodec` (§2.2) |
+| `nvpair-tui/rpc/client.go` | track `epoch`/`lastSeq`; resync on epoch change |
+| `desktop/src/electron/service-bridge/*` | track `epoch`; delete the 4 timers (**transitional** — spec C replaces this layer) |
+| `desktop/scripts/verify-service-contracts.ts` | allowlist `broker:resync` + `heartbeat` or `service-contracts:check` fails |
 | `services/versions.json` | **breaking**: bump all 13 components + `installer` + `product` |
 | `docs/services-api.md` | regenerate via `npm run service-contracts:write` (never by hand) |
 
@@ -247,15 +293,15 @@ feeding spec B (§5).
 - **Regression guards for the four deleted timers** — a pending invite that is
   resolved with its push suppressed must still clear — via the next snapshot
   push or an epoch resync — without a 1 500 ms sweep.
-- Cadence assertion: no `time.Ticker` remains in the notification path except
-  `heartbeat`.
+- Cadence assertion: no `time.Ticker` remains in the broker notification path
+  except `heartbeat`; no desktop bridge `setInterval` remains except the
+  retained tray watchdog and the two timers owned by spec B.
 
 ## 5. Explicitly out of scope
 
 - Replay buffers, durable sequence numbers, per-channel epochs, message
   retention — all unnecessary under §2.1, and all rejected deliberately.
-- Telemetry collection moving into Go, GPU hysteresis, poll cadence → **spec B**.
-- The native app itself → **spec C**. `launchd`, Sparkle → **spec D**.
+- Telemetry collection moving into Go, GPU hysteresis, poll cadence → **spec B**.- The native app itself → **spec C**. `launchd`, Sparkle → **spec D**.
 - Windows/Linux build paths (retired by programme decision, not by this spec).
 
 ## 6. Audit findings (2026-10-04)
@@ -311,16 +357,17 @@ still reports `0` and resets correctly.
 ### 6.3 Still unclassified
 
 `engines:state-changed` / `engines:progress*` producers were not located by
-these greps (§4 tests must not rely on their classification). Resolve during
-spec B.
+these greps. Resolve during spec B. **v2 does not depend on this classification:**
+§2.3 stamps and validates every notification uniformly, so an unclassified channel
+still gets a correct envelope. This is now the only open item in §8.
 
 ## 7. Open questions
 
 1. **`HEARTBEAT_INTERVAL` 15 s** — acceptable, or does a tray badge need tighter
    liveness?
-2. **`revision` as content hash vs monotonic counter.** Content hash avoids a
-   second persisted counter and survives broker restart honestly; a counter is
-   cheaper to compute but lies after a restart. Spec assumes content hash.
+2. **`revision` as content hash vs monotonic counter.** **RESOLVED — neither.**
+   Dropped entirely: resync only fires where the cache is already empty or wholly
+   suspect, so per-channel revision cannot skip anything. See §2.5.
 3. **Gap policy granularity** — resolved: there is none, see §2.4.
 4. **Where does routing-metrics aggregation live?** **RESOLVED — ship first.**
    Split out as **spec A0** (§6.2): proxies maintain `requests` /
