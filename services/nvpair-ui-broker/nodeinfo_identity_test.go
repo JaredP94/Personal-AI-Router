@@ -120,6 +120,74 @@ func TestChildStdinFramesAreStamped(t *testing.T) {
 	}
 }
 
+// TestNodeInfoControlFramesWriteInSeqOrder is the concurrent half of the node-info
+// pushes. Two control paths share this handle — the broker's log-level broadcast
+// and the membership watcher that pushes a new cluster principal — so they race in
+// practice. The seq node-info reads must equal the frame's position on the wire:
+// §2.7 gap detection reads an inversion as a dropped frame and answers with a
+// spurious resync, and the two senders also share one pipe, so an interleaved
+// frame would be undecodable on top of that.
+//
+// Run under -race: the point of routing both pushes through the handle's codec is
+// that the stamp and the write share one critical section, and only the race
+// detector can show a second lock creeping back in around it.
+func TestNodeInfoControlFramesWriteInSeqOrder(t *testing.T) {
+	const (
+		senders     = 8
+		perSender   = 16
+		totalFrames = senders * perSender
+	)
+
+	var sink lockedBuffer
+	n := newNodeInfoHandle(&sink)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for s := range senders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release every sender at once to maximise overlap
+			for i := range perSender {
+				// Half the senders take each path, so the two are interleaved
+				// rather than running in sequence.
+				var err error
+				if (s+i)%2 == 0 {
+					err = n.SetClusterIdentity("principal-" + strconv.Itoa(s) + "-" + strconv.Itoa(i))
+				} else {
+					err = n.SetLogLevel("debug")
+				}
+				if err != nil {
+					t.Errorf("send from sender %d: %v", s, err)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	reader := NewCodec(readWriter{Reader: bytes.NewReader(sink.Bytes()), Writer: io.Discard})
+	for want := uint64(1); want <= totalFrames; want++ {
+		msg, err := reader.Read()
+		if err != nil {
+			t.Fatalf("reading the frame stamped seq %d: %v", want, err)
+		}
+		if msg.Seq == nil || *msg.Seq != want {
+			t.Fatalf("wire order != seq order: the frame at wire position %d carries seq %v", want, msg.Seq)
+		}
+		if msg.Epoch == nil || *msg.Epoch != jsonrpc.Epoch() {
+			t.Fatalf("frame with seq %d carries the wrong epoch", want)
+		}
+		if !msg.IsNotification() {
+			t.Fatalf("frame with seq %d is not a notification: %+v", want, msg)
+		}
+	}
+	if _, err := reader.Read(); err != io.EOF {
+		t.Fatalf("expected exactly %d frames then EOF, got err %v", totalFrames, err)
+	}
+}
+
 // TestWorkloadManagerForwardWritesInSeqOrder pins the wire-order contract for the
 // broker's busiest child push: a workload event reaches Forward from the
 // client's read loop, from rehydration, and from the discovery snapshot, so

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import { randomUUID } from 'crypto'
 import readline from 'readline'
 import { EventEmitter } from 'events'
 import getErrorString from '@/shared/utils/get-error-string'
@@ -31,6 +32,14 @@ interface JsonRpcMessage {
     params?: JsonValue
     result?: JsonValue
     error?: JsonRpcError
+    /**
+     * Protocol v2 envelope. Present on every notification, absent on requests
+     * and responses: their presence IS the version discriminator, and a v2
+     * reader rejects a notification without them as a terminal protocol
+     * mismatch. So only {@link JsonRpcSubprocess.notify} ever sets them.
+     */
+    epoch?: string
+    seq?: number
 }
 
 export interface JsonRpcNotification {
@@ -75,6 +84,21 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
     private pending = new Map<number, PendingCall>()
     private nextId = 0
     private writeTail: Promise<void> = Promise.resolve()
+
+    /**
+     * Protocol v2 epoch stamped on every notification this subprocess sends,
+     * and this subprocess's notification counter. seq is per-subprocess (one
+     * JsonRpcSubprocess per child, restarted with the child), so a reconnect
+     * starts a fresh run — the same per-connection contract the Go codec keeps.
+     *
+     * Nothing publishes the broker's epoch yet, so this is a UUID minted here at
+     * construction. `validate()` checks presence, not equality, so it unblocks
+     * the envelope without the handshake and breaks nothing. Task 4 owns epoch
+     * reconciliation: once the broker publishes its epoch (runtime:ready), that
+     * published value replaces this local mint.
+     */
+    private readonly epoch = randomUUID()
+    private notificationSeq = 0
 
     constructor(name: string, binaryPath: string) {
         super()
@@ -178,7 +202,23 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
     }
 
     notify(method: string, params?: JsonValue): Promise<void> {
-        return this.write({ jsonrpc: '2.0', method, params })
+        // Stamped here rather than in write(), because only a notification
+        // carries the envelope: a request or response with epoch/seq on it is
+        // rejected by the same v2 rule that requires them on a notification.
+        //
+        // The counter is bumped in the same synchronous block that enqueues the
+        // write, so seq order and wire order cannot diverge: write() appends to
+        // writeTail without awaiting, and nothing runs between the increment and
+        // that append. Assigning the seq somewhere earlier (or awaiting in
+        // between) would let two notifications invert on the wire, which gap
+        // detection reads as a dropped frame.
+        return this.write({
+            jsonrpc: '2.0',
+            method,
+            params,
+            epoch: this.epoch,
+            seq: ++this.notificationSeq
+        })
     }
 
     /** Reply to a child-initiated request (see {@link JsonRpcInboundRequest}). */
