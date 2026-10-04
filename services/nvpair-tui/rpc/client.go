@@ -42,7 +42,7 @@ type Client struct {
 // Call Run to start the read loop before issuing requests.
 func NewClient(r io.Reader, w io.Writer) *Client {
 	return &Client{
-		codec:         NewCodec(r, w),
+		codec:         NewCodec(readWriter{Reader: r, Writer: w}),
 		pending:       make(map[int64]chan *Message),
 		notifications: make(chan *Message, notifyBuffer),
 		done:          make(chan struct{}),
@@ -70,6 +70,11 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			// A single malformed line should not kill the session; the
 			// broker may emit a frame we don't model. Skip and continue.
+			// This includes a protocol v2 envelope mismatch, which the
+			// canonical codec reports unwrapped and terminal for a peer
+			// that would never make sense of the stream; the loop's
+			// treatment of a read error is unchanged, so substage 2B
+			// decides what to do with that verdict.
 			continue
 		}
 		switch {
@@ -151,31 +156,25 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*Message,
 	}
 }
 
+// writeRequest sends an id-bearing request. It carries no envelope stamp:
+// jsonrpc.validate() rejects epoch/seq on anything that is not a notification,
+// so stamping a request would make the frame unreadable to a v2 peer.
 func (c *Client) writeRequest(id int64, method string, params any) error {
 	raw, err := marshalParams(params)
 	if err != nil {
 		return err
 	}
 	rawID := json.RawMessage(strconv.FormatInt(id, 10))
-	return c.codec.Write(&Message{
-		JSONRPC: "2.0",
-		ID:      &rawID,
-		Method:  method,
-		Params:  raw,
-	})
+	return c.codec.Request(&rawID, method, raw)
 }
 
-// Notify sends a fire-and-forget notification (no id, no response).
+// Notify sends a fire-and-forget notification (no id, no response). The
+// canonical codec stamps it with this connection's epoch and next seq inside
+// its own write lock, so the wire reads in seq order even when several
+// goroutines notify at once — a gap or an inversion there would look like a
+// dropped frame to the broker's §2.7 gap detection and force a resync.
 func (c *Client) Notify(method string, params any) error {
-	raw, err := marshalParams(params)
-	if err != nil {
-		return err
-	}
-	return c.codec.Write(&Message{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  raw,
-	})
+	return c.codec.Notify(method, params)
 }
 
 func marshalParams(params any) (json.RawMessage, error) {

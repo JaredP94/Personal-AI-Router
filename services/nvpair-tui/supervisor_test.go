@@ -29,8 +29,13 @@ func TestMain(m *testing.M) {
 // runFakeBroker emits an app:ready handshake, then echoes a result for a
 // shutdown request (and exits on it or on stdin EOF), mimicking the real
 // broker's stdio contract closely enough to exercise the supervisor.
+//
+// The handshake carries epoch/seq because the supervisor reads it with the
+// canonical jsonrpc codec, whose validate() rejects an unstamped notification.
+// The real broker satisfies this from Codec.Notify (broker.go's app:ready
+// push); this double has no codec, so the stamp is literal.
 func runFakeBroker() {
-	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"}}`)
+	fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","method":"app:ready","params":{"version":"fake"},"epoch":"fake-broker","seq":1}`)
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 		var m struct {

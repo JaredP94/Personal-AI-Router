@@ -1,111 +1,47 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package rpc implements the client half of the newline-delimited
-// JSON-RPC 2.0 protocol every NVPAIR subprocess speaks. The TUI uses it to
-// drive nvpair-ui-broker: one JSON object per line, requests carry a numeric
+// Package rpc is the client half of the newline-delimited JSON-RPC 2.0
+// protocol every NVPAIR subprocess speaks. The TUI uses it to drive
+// nvpair-ui-broker: one JSON object per line, requests carry a numeric
 // id and expect a matching response, notifications carry a method but no
 // id and are pushed without a reply.
 //
-// The wire shapes here intentionally mirror nvpair-ui-broker/jsonrpc.go so
-// the two can't drift; the only difference is the role (this side is the
-// caller that originates requests and consumes the broker's pushes).
+// The framing, the wire types and the protocol v2 envelope are NOT
+// defined here: they live in nvpair-shared/jsonrpc, the same codec the
+// broker writes with, so the two sides cannot drift. What remains in
+// this package is the part that is genuinely TUI-side — outbound id
+// allocation, response correlation, and the notification fan-out the UI
+// reads. In particular Client.Notify goes through jsonrpc.Codec.Notify,
+// which stamps every notification with the epoch and seq a v2 reader
+// requires; there is no second notification emitter on this wire.
 package rpc
 
 import (
-	"bufio"
-	"encoding/json"
-	"fmt"
 	"io"
-	"sync"
+
+	"nvpair-shared/jsonrpc"
 )
 
-// maxFrame bounds a single JSON-RPC line. The broker uses a 1 MiB read
-// buffer; we match it so a large discovery/errors snapshot from the
-// broker is never truncated mid-frame.
-const maxFrame = 1024 * 1024
+type (
+	// Message and RPCError are the shared wire types, aliased so the UI keeps
+	// naming the very frame the broker sends. Message now carries the
+	// protocol v2 envelope fields (Epoch, Seq), present on notifications
+	// and absent on requests and responses.
+	Message  = jsonrpc.Message
+	RPCError = jsonrpc.RPCError
+	Codec    = jsonrpc.Codec
+)
 
-// Message is a single JSON-RPC 2.0 frame. A frame is a request when it
-// has both an id and a method, a notification when it has a method but no
-// id, and a response when it has an id but no method (carrying Result or
-// Error).
-type Message struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      *json.RawMessage `json:"id,omitempty"`
-	Method  string           `json:"method,omitempty"`
-	Params  json.RawMessage  `json:"params,omitempty"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *RPCError        `json:"error,omitempty"`
-}
+// NewCodec wraps a reader/writer pair (the broker's stdout/stdin) in the
+// canonical framing codec.
+func NewCodec(rw io.ReadWriter) *Codec { return jsonrpc.NewCodec(rw) }
 
-// RPCError is the error object of a JSON-RPC response. The broker uses
-// -32000 for "worker not available" relays and -32601 for unknown
-// methods; callers should surface Message to the user verbatim.
-type RPCError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data,omitempty"`
-}
-
-func (e *RPCError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message)
-}
-
-// IsResponse reports whether the frame carries a response to a request we
-// sent (has an id, no method).
-func (m *Message) IsResponse() bool { return m.ID != nil && m.Method == "" }
-
-// IsNotification reports whether the frame is a server push (has a
-// method, no id).
-func (m *Message) IsNotification() bool { return m.ID == nil && m.Method != "" }
-
-// Codec frames JSON-RPC messages over a byte stream. Reads are
-// line-oriented; writes are serialised by a mutex so concurrent senders
-// can't interleave bytes mid-frame.
-type Codec struct {
-	scanner *bufio.Scanner
-	writer  io.Writer
-	wmu     sync.Mutex
-}
-
-// NewCodec wraps a reader/writer pair (the broker's stdout/stdin) in a
-// framing codec.
-func NewCodec(r io.Reader, w io.Writer) *Codec {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, maxFrame), maxFrame)
-	return &Codec{scanner: scanner, writer: w}
-}
-
-// Read returns the next frame, or io.EOF when the stream closes.
-func (c *Codec) Read() (*Message, error) {
-	if !c.scanner.Scan() {
-		if err := c.scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read error: %w", err)
-		}
-		return nil, io.EOF
-	}
-	var msg Message
-	if err := json.Unmarshal(c.scanner.Bytes(), &msg); err != nil {
-		return nil, fmt.Errorf("invalid JSON-RPC message: %w", err)
-	}
-	if msg.JSONRPC != "2.0" {
-		return nil, fmt.Errorf("unsupported JSON-RPC version: %q", msg.JSONRPC)
-	}
-	return &msg, nil
-}
-
-// Write marshals and emits a single frame terminated by a newline.
-func (c *Codec) Write(msg *Message) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	_, err = c.writer.Write(data)
-	return err
+// readWriter adapts the broker's separate stdout (read) and stdin (write) into
+// the io.ReadWriter NewCodec expects. The framing is 1 MiB, matching the
+// broker's read buffer, so a large discovery/errors snapshot is never truncated
+// mid-frame.
+type readWriter struct {
+	io.Reader
+	io.Writer
 }
