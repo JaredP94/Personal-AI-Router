@@ -141,34 +141,39 @@ type SubscriptionResult struct {
 type ProxyStatusResult struct {
 	Ready bool `json:"ready"`
 	Port  int  `json:"port"`
+	// Cumulative routing totals for this engine's local proxy, computed by the
+	// proxy (nvpair-shared/routingmetrics) and mirrored here. They back
+	// metrics:get-routing, so no client accumulates routing counters again.
+	Requests          uint64 `json:"requests"`
+	CacheAffinityHits uint64 `json:"cache_affinity_hits"`
 }
 
 // Broker holds per-session state. A new Broker is constructed for every
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	codec             *Codec
-	cancel            context.CancelFunc
-	startedAt         time.Time
-	nodeID            string
-	scannerPath       string
-	nodeInfoPath      string
-	proxyPath         string
-	lmstudioProxyPath string
-	omlxProxyPath     string
-	workloadMgrPath   string
-	errorsPath        string
-	engineMgrPath     string
-	manualNodesPath   string
-	settingsPath      string
-	clusterMgrPath    string
-	schedulerPath     string
-	clusterDir           string
-	telemetryComposePath string
-	dockerRunner         dockerRunner
-	telemetryMu          sync.Mutex
-	telemetryStarting    atomic.Bool
-	telemetryCancelStart context.CancelFunc
+	codec                 *Codec
+	cancel                context.CancelFunc
+	startedAt             time.Time
+	nodeID                string
+	scannerPath           string
+	nodeInfoPath          string
+	proxyPath             string
+	lmstudioProxyPath     string
+	omlxProxyPath         string
+	workloadMgrPath       string
+	errorsPath            string
+	engineMgrPath         string
+	manualNodesPath       string
+	settingsPath          string
+	clusterMgrPath        string
+	schedulerPath         string
+	clusterDir            string
+	telemetryComposePath  string
+	dockerRunner          dockerRunner
+	telemetryMu           sync.Mutex
+	telemetryStarting     atomic.Bool
+	telemetryCancelStart  context.CancelFunc
 	telemetryUpdateMu     sync.Mutex
 	telemetryLastCheck    time.Time
 	telemetryUpdateAvail  bool
@@ -176,8 +181,8 @@ type Broker struct {
 	telemetryUpdating     atomic.Bool
 	telemetryCancelUpdate context.CancelFunc
 	telemetryHTTPClient   *http.Client
-	dialTimeout          func(network, address string, timeout time.Duration) (net.Conn, error)
-	mesh                 *clustertrust.Mesh
+	dialTimeout           func(network, address string, timeout time.Duration) (net.Conn, error)
+	mesh                  *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -409,13 +414,13 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		mesh:                 clustertrust.Open(paths.clusterDir),
 		store:                newDiscoveryStore(),
 		telemetry:            newTelemetryCache(),
-		relayDir:           relay.NewDirectory(),
-		regCache:           relay.NewRegistrationCache(),
-		manualNodeKeys:     make(map[string]string),
-		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
-		workloads:          workloadstore.New(),
-		ollamaPortReady:    make(chan struct{}),
-		lmstudioPortReady:  make(chan struct{}),
+		relayDir:             relay.NewDirectory(),
+		regCache:             relay.NewRegistrationCache(),
+		manualNodeKeys:       make(map[string]string),
+		manualNodeStatuses:   make(map[string]manualNodeStatusEntry),
+		workloads:            workloadstore.New(),
+		ollamaPortReady:      make(chan struct{}),
+		lmstudioPortReady:    make(chan struct{}),
 	}
 }
 
@@ -2854,6 +2859,7 @@ func (b *Broker) handleMessage(msg *Message) {
 			ready, port := p.Status()
 			result.Ready = ready
 			result.Port = port
+			result.Requests, result.CacheAffinityHits = p.routingStatus()
 		}
 		if err := b.codec.Respond(msg.ID, result); err != nil {
 			log.Printf("failed to respond to proxy:get-status: %v", err)
@@ -2906,6 +2912,7 @@ func (b *Broker) handleMessage(msg *Message) {
 			ready, port := p.Status()
 			result.Ready = ready
 			result.Port = port
+			result.Requests, result.CacheAffinityHits = p.routingStatus()
 		}
 		if err := b.codec.Respond(msg.ID, result); err != nil {
 			log.Printf("failed to respond to lmstudio-proxy:get-status: %v", err)
@@ -2946,6 +2953,7 @@ func (b *Broker) handleMessage(msg *Message) {
 			ready, port := p.Status()
 			result.Ready = ready
 			result.Port = port
+			result.Requests, result.CacheAffinityHits = p.routingStatus()
 		}
 		if err := b.codec.Respond(msg.ID, result); err != nil {
 			log.Printf("failed to respond to omlx-proxy:get-status: %v", err)

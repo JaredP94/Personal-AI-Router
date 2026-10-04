@@ -226,22 +226,27 @@ func (v *proxiesView) handleNotification(msg *rpc.Message) tea.Cmd {
 		return nil
 	}
 	if strings.HasSuffix(msg.Method, ":proxy/request") {
+		// The proxy owns the routing filter and its totals (nvpair-shared/
+		// routingmetrics) and stamps them on every event. The view reads them; it
+		// no longer re-implements the filter, which is what let this copy, the
+		// desktop bridge's, and the proxy's drift apart — and counted unrouted
+		// 502s as routed traffic.
 		var r struct {
-			Method        string `json:"method"`
-			Path          string `json:"path"`
-			CacheAffinity *bool  `json:"cache_affinity"`
+			Requests          *uint64 `json:"requests"`
+			CacheAffinityHits *uint64 `json:"cache_affinity_hits"`
 		}
-		if decodeParams(msg.Params, &r) != nil || r.Method != "POST" || r.CacheAffinity == nil {
+		if decodeParams(msg.Params, &r) != nil {
 			return nil
 		}
-		switch r.Path {
-		case "/v1/chat/completions", "/v1/completions", "/api/chat", "/api/generate":
-			e := v.engines[idx]
-			e.requests++
-			if *r.CacheAffinity {
-				e.cacheAffinityHits++
-			}
+		// Absent totals (an unrouted event) preserve what is displayed. Reading an
+		// absent field as 0 would wipe real counts on every 502. A genuine proxy
+		// restart still reports 0 explicitly, so it resets correctly.
+		if r.Requests == nil || r.CacheAffinityHits == nil {
+			return nil
 		}
+		e := v.engines[idx]
+		e.requests = *r.Requests
+		e.cacheAffinityHits = *r.CacheAffinityHits
 		return nil
 	}
 	if strings.HasSuffix(msg.Method, ":ready") {

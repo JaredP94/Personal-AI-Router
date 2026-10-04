@@ -905,15 +905,29 @@ function sameModelsByEngine(
     return true
 }
 
+/** Routing counters as reported by a proxy, cached verbatim by the bridge. */
+interface RoutingTotals {
+    requests: number
+    cacheAffinityHits: number
+}
+
 class ModularBridgeState {
-    private routingMetrics: RoutingMetrics[] = PROXY_ENGINES.map(engineType => ({
-        engineType,
-        requests: 0,
-        cacheAffinityHits: 0
-    }))
+    /**
+     * Routing totals cached from what the proxies reported. The proxy computes
+     * them (nvpair-shared/routingmetrics); this cache exists only so
+     * `metrics:get-routing` answers without a round-trip. Nothing here counts.
+     */
+    private routingTotals = new Map<ProxyEngine, RoutingTotals>()
+
+    setRoutingTotals(engine: ProxyEngine, requests: number, cacheAffinityHits: number): void {
+        this.routingTotals.set(engine, { requests, cacheAffinityHits })
+    }
 
     getRoutingMetrics(): RoutingMetrics[] {
-        return this.routingMetrics.map(row => ({ ...row }))
+        return PROXY_ENGINES.map(engineType => ({
+            engineType,
+            ...(this.routingTotals.get(engineType) ?? { requests: 0, cacheAffinityHits: 0 })
+        }))
     }
 
     private nodes = new Map<string, ModularNode>()
@@ -2322,20 +2336,25 @@ class ModularBridgeState {
 
     private handleProxyNotification(notification: JsonRpcNotification, engine: ProxyEngine): void {
         if (notification.method === 'proxy/request') {
+            // The proxy owns the routing filter and its totals; the bridge caches
+            // what it reports and replaces them wholesale. The filter and the
+            // per-request increments that used to live here are gone — they put
+            // routing logic in the desktop tree and counted unrouted 502s.
             const params = objectValue(notification.params)
-            const path = stringValue(params?.path)
-            if (params?.method !== 'POST' || typeof params.cache_affinity !== 'boolean') return
+            // Absent totals (an unrouted event) preserve what is already cached:
+            // reading an absent field as 0 would wipe real counts on every 502.
+            // A genuine proxy restart still reports 0 explicitly, so it resets.
             if (
-                !['/v1/chat/completions', '/v1/completions', '/api/chat', '/api/generate'].includes(
-                    path
+                typeof params?.requests === 'number' &&
+                typeof params?.cache_affinity_hits === 'number'
+            ) {
+                this.setRoutingTotals(
+                    engine,
+                    numberValue(params?.requests),
+                    numberValue(params?.cache_affinity_hits)
                 )
-            )
-                return
-            const row = this.routingMetrics.find(metric => metric.engineType === engine)
-            if (!row) return
-            row.requests += 1
-            if (params.cache_affinity) row.cacheAffinityHits += 1
-            emitBridgePush('metrics:routing-update', this.getRoutingMetrics())
+                emitBridgePush('metrics:routing-update', this.getRoutingMetrics())
+            }
             return
         }
         if (notification.method === 'ready') {

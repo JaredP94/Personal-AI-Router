@@ -1134,6 +1134,16 @@ class ModularSupervisor {
                 })
                 this.emitStateRefreshIfHydrated()
             }
+            // Hydrate routing totals on (re)connect, so a client that subscribes
+            // after a broker restart converges on the proxy's real counts without
+            // waiting for its next routed request.
+            if (obj) {
+                getModularBridgeState().setRoutingTotals(
+                    engine,
+                    numberValue(obj.requests),
+                    numberValue(obj.cache_affinity_hits)
+                )
+            }
         } catch (err) {
             log.verbose({
                 sublevel: 'broker',

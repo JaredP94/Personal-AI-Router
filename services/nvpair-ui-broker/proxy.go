@@ -44,6 +44,14 @@ type proxyProcess struct {
 	port        int
 	readyParams json.RawMessage
 
+	// Routing totals mirrored from the proxy's proxy/request events, so
+	// proxy:get-status stays answerable locally (no round-trip). The proxy owns
+	// the arithmetic — see nvpair-shared/routingmetrics — and these are only the
+	// last values it reported. Cleared when the proxy restarts, because a new
+	// proxy process starts its own totals at zero.
+	routingRequests uint64
+	routingHits     uint64
+
 	// onNotify, if non-nil, is invoked for every notification the proxy emits
 	// (including "ready") so the broker can forward its event stream.
 	onNotify func(method string, params json.RawMessage)
@@ -63,6 +71,13 @@ type proxyProcess struct {
 type proxyReadyParams struct {
 	Version string `json:"version"`
 	Port    int    `json:"port"`
+}
+
+// proxyRoutingEventParams reads only the routing totals off a proxy/request
+// event. The proxy computed them; the broker mirrors and relays.
+type proxyRoutingEventParams struct {
+	Requests          uint64 `json:"requests"`
+	CacheAffinityHits uint64 `json:"cache_affinity_hits"`
 }
 
 // SetLogLevel forwards an already-validated log level as a log/set-level
@@ -89,6 +104,15 @@ func (p *proxyProcess) ReadyParams() json.RawMessage {
 	p.readyMu.Lock()
 	defer p.readyMu.Unlock()
 	return p.readyParams
+}
+
+// routingStatus returns the cumulative routing totals from the proxy's most
+// recent proxy/request event. Zero before the first routed request, which is the
+// honest "no traffic yet" answer.
+func (p *proxyProcess) routingStatus() (requests, cacheAffinityHits uint64) {
+	p.readyMu.Lock()
+	defer p.readyMu.Unlock()
+	return p.routingRequests, p.routingHits
 }
 
 // startProxy spawns ollama-proxy with the broker's current log level, hides the
@@ -160,6 +184,18 @@ func (p *proxyProcess) handleNotify(method string, params json.RawMessage) {
 		p.readyParams = append(json.RawMessage(nil), params...)
 		p.readyMu.Unlock()
 		slog.Info("proxy reported ready", "version", rp.Version, "port", rp.Port)
+	}
+	if method == "proxy/request" {
+		var ev proxyRoutingEventParams
+		if err := json.Unmarshal(params, &ev); err != nil {
+			slog.Debug("proxy emitted invalid proxy/request routing totals", "err", err)
+		} else {
+			p.readyMu.Lock()
+			p.routingRequests = ev.Requests
+			p.routingHits = ev.CacheAffinityHits
+			p.readyMu.Unlock()
+		}
+		// Fall through: the event is still forwarded to clients verbatim.
 	}
 	// The proxy subscribes upward for its routing targets: wire it to
 	// the relay directory and push events down, rather than forwarding this as a

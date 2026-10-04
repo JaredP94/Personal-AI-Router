@@ -41,6 +41,7 @@ import (
 	"nvpair-shared/noderec"
 	"nvpair-shared/prefixhash"
 	"nvpair-shared/reach"
+	"nvpair-shared/routingmetrics"
 	"nvpair-shared/schedulerwire"
 	"nvpair-shared/splitlisten"
 	"nvpair-shared/telemetry"
@@ -134,6 +135,13 @@ type RequestEvent struct {
 	Duration      int64  `json:"duration_ms"`
 	TTFB          int64  `json:"ttfb_ms,omitempty"`
 	Error         string `json:"error,omitempty"`
+
+	// Cumulative routing totals for this proxy process, carried so consumers
+	// replace their displayed totals instead of accumulating their own copy of
+	// the routing filter. Reset on restart with the process, exactly as the
+	// per-consumer counters they replace did.
+	Requests          uint64 `json:"requests"`
+	CacheAffinityHits uint64 `json:"cache_affinity_hits"`
 }
 
 // Workload lifecycle method names (workload-manager spec 7). The proxy is
@@ -402,6 +410,10 @@ type Proxy struct {
 	// pair.
 	nextRequestID atomic.Uint64
 
+	// Routing metrics totals, accumulated in nvpair-shared/routingmetrics rather
+	// than by each consumer. See routing_metrics.go.
+	routing routingmetrics.Counters
+
 	// runID is a per-process nonce minted at startup and stamped on every
 	// workload this proxy emits. It makes a workload's identity
 	// (originatedFrom, engine, runId, id) globally unique even though
@@ -410,7 +422,7 @@ type Proxy struct {
 	// after a restart, would collide in the broker's store.
 	runID string
 
-	bufPool *bufpool.Pool
+	bufPool   *bufpool.Pool
 	telemetry *telemetry.Provider
 }
 
@@ -1619,17 +1631,21 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		"err", proxyErr,
 	)
 
+	// Count before emitting so the event carries the total that includes itself.
+	reqs, hits := p.recordRoutingMetric(r.Method, r.URL.Path, cacheAffinity)
 	p.codec.Notify("proxy/request", RequestEvent{
-		ID:            reqID,
-		NodeID:        servedNodeID,
-		CacheAffinity: cacheAffinity,
-		Method:        r.Method,
-		Path:          r.URL.Path,
-		Target:        servedTarget,
-		Status:        finalStatus,
-		Duration:      time.Since(start).Milliseconds(),
-		TTFB:          ttfbMs,
-		Error:         proxyErr,
+		ID:                reqID,
+		NodeID:            servedNodeID,
+		CacheAffinity:     cacheAffinity,
+		Method:            r.Method,
+		Path:              r.URL.Path,
+		Target:            servedTarget,
+		Status:            finalStatus,
+		Duration:          time.Since(start).Milliseconds(),
+		TTFB:              ttfbMs,
+		Error:             proxyErr,
+		Requests:          reqs,
+		CacheAffinityHits: hits,
 	})
 
 	// Terminal workload transition pairs with the workload:started emitted at
