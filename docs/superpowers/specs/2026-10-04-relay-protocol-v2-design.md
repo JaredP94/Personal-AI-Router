@@ -1,0 +1,248 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Relay Protocol v2 — push-primary with epoch-scoped resync
+
+**Spec A of 4.** Native macOS re-implementation programme:
+
+| Spec | Subject | Depends on |
+|---|---|---|
+| **A (this)** | Wire protocol: envelope, epoch, resync, heartbeat | — |
+| B | Telemetry push: retire the 2 s per-node HTTP poll, edge-triggered engine status | A |
+| C | Native macOS app (SwiftUI) | A, B |
+| D | Lifecycle: `launchd` supervision, Sparkle, Electron retirement | A |
+
+## 1. Problem
+
+The transport already pushes. `nvpair-ui-broker` fans out 69 consumed JSON-RPC
+notifications across four subscription channels (`discovery:subscribe`,
+`engine:subscribe`, `workloads:subscribe`, `proxy:subscribe`), and the desktop
+renderer receives them on a `service-bridge:push` bus.
+
+Four polling loops nonetheless still run *on top* of that push system:
+
+| Loop | Location | Cadence | Stated reason |
+|---|---|---|---|
+| Node-info HTTP poll | `desktop/src/electron/service-bridge/node-info-poller.ts` | 2 000 ms visible / 30 000 ms idle, **one connect per remote node per tick** | hardware telemetry; "the single sanctioned HTTP exception" |
+| Remote engine status | `modular-supervisor.ts:1050` | 20 000 ms | "poll clustered peers' authoritative engine status" |
+| Pending-invite sweep | `modular-supervisor.ts:971` | **1 500 ms** | its own comment: cluster-manager already pushes `invite-canceled` / `invite-expired`; "this poll is the backstop that drops a resolved … invite **when a push is missed** (e.g. across a broker restart)" |
+| Tray visibility retry | `desktop/src/electron/tray.ts:359` | 5 000 ms | retry until the status item exists |
+
+Every one of these is compensation for the same defect: **a missed push is
+undetectable.** `Codec.Notify` is fire-and-forget with no sequencing, so a
+client that drops a frame — or reconnects to a restarted broker — cannot tell
+"nothing happened" from "something happened and I did not hear it." The four
+timers are four hand-rolled answers to one missing primitive.
+
+## 2. Design
+
+### 2.1 The load-bearing decision: snapshot-per-push
+
+`relay.Directory` already states the invariant, for one channel only:
+
+> `Subscriber` … "Consumers replace their set from it rather than applying
+> deltas, so a dropped or reordered push can't leave them drifted — every push
+> is the authoritative current list." (`relay/relay.go:88`)
+
+Protocol v2 makes that **the** rule, broker-wide.
+
+This is the decision that keeps v2 small. If pushes carry full state, then a
+missed push is *self-healing* — the next push corrects it — and v2 needs no
+replay buffer, no durable sequence numbers, and no per-channel catch-up logic.
+Sequence numbers then serve one narrow purpose: telling the client **how long
+since it last heard anything useful**, so a silently stalled channel can be
+prodded, and so transport death is distinguishable from quietness.
+
+The cost is payload size on wide channels. It is accepted deliberately: these
+are LAN clusters of a handful of nodes, and `Directory.Apply` already
+byte-compares projected state (`directoryNodeEqual`) so only real changes fan
+out.
+
+### 2.2 Envelope
+
+Two new top-level members on **notification frames only**. JSON-RPC 2.0
+permits additional members; `Message` in `services/shared/jsonrpc/jsonrpc.go`
+gains:
+
+```go
+type Message struct {
+    JSONRPC string           `json:"jsonrpc"`
+    ID      *json.RawMessage `json:"id,omitempty"`
+    Method  string           `json:"method,omitempty"`
+    Params  json.RawMessage  `json:"params,omitempty"`
+    Result  json.RawMessage  `json:"result,omitempty"`
+    Error   *RPCError        `json:"error,omitempty"`
+
+    // Protocol v2: present on every notification, absent on requests and
+    // responses. Their presence IS the version discriminator.
+    Epoch *string `json:"epoch,omitempty"` // UUID v4, minted once per broker process
+    Seq   *uint64 `json:"seq,omitempty"`  // monotonic per connection, starts at 1
+}
+```
+
+- **`epoch`** — one UUID per broker process lifetime. Minted at broker start,
+  never reused, never persisted. A new epoch means "every cached fact you hold
+  about this broker is suspect."
+- **`seq`** — a per-**connection** counter, not global and not durable. The
+  broker assigns it when writing to a given client connection, starting at 1
+  for that connection. Because a reconnect implies a fresh connection, and a
+  fresh connection implies a fresh `seq` run, **reconnect automatically means
+  resync** with no bookkeeping at all.
+
+`epoch` and `seq` are stamped by the codec, not by callers. No worker computes
+either; the broker stamps both on egress. Workers send notifications *upward*
+to the broker, which re-derives and re-stamps for each downstream connection.
+
+### 2.3 Version enforcement (clean cut)
+
+`encoding/json` ignores unknown members, so a v1 client silently parses a
+protocol v2 frame. Enforcement therefore lives on the **receive** path, in
+`Codec.Read()`:
+
+- A frame with `Method != ""` and no `ID` (a notification) **must** carry both
+  `epoch` and `seq`. Absent either → `*DecodeError`, and the read loop treats
+  it as **terminal**: close the connection, log `protocol mismatch: notification
+  without epoch/seq`.
+- A frame carrying `epoch`/`seq` on a *response* or *request* is likewise
+  terminal — it means the peer misunderstands the envelope.
+- The first frame from any peer must be `ready`, and `ready` must carry
+  `"protocol": 2` in its params. `ReadyParams` gains that field.
+
+This yields deterministic bidirectional failure with no negotiation branch:
+a v1 broker never sends `epoch`, so a v2 worker refuses it; a v1 client never
+sends `protocol: 2` in `ready`, so the broker refuses it. Per AGENTS.md — one
+canonical path, no compatibility branch.
+
+### 2.4 Client behaviour
+
+Per connection the client holds `{ epoch, lastSeq }`.
+
+| Observation | Action |
+|---|---|
+| `seq > lastSeq` | **Apply. Update `lastSeq`.** This is the only path that changes state, and it covers both contiguous delivery and gaps. |
+| `epoch != held epoch` | Broker restarted. **Resync all.** Discard cached facts. |
+| Heartbeat silence > `HEARTBEAT_TIMEOUT` | Connection presumed dead; reconnect → new connection → new `seq` run → resync all. |
+
+**There is no gap-recovery path, and that is the point.** A gap means
+notifications were dropped, but under §2.1 the frame that reveals the gap
+*is itself a full snapshot*, applied at send time under the sender's lock — so
+state is correct the moment it is applied and a gap cannot cause drift. v2
+therefore does not branch on `seq` at all for state purposes.
+
+`seq` survives for exactly two duties:
+
+1. **Event-channel counters** (§2.7) — a gap there *is* lost data, because an
+   event has no snapshot to fold into. Those channels resync their counters.
+2. **Silence detection** — a channel that stays quiet while its neighbours skip
+   ahead is a stalled producer, which is a bug worth logging even though state
+   stays correct. `seq` is the only thing that makes that visible.
+
+### 2.5 Resync
+
+New broker method, replacing the four timers:
+
+```
+broker:resync  →  { epoch: string, protocol: 2, channels: { <name>: <revision> } }
+```
+
+`channels[name].revision` is a content hash of that channel's current snapshot.
+The client compares each against the hash of the state it holds and re-invokes
+the existing snapshot getter **only** for channels that differ:
+
+| Channel | Snapshot getter (exists today) |
+|---|---|
+| discovery / nodes | `discovery:get-nodes`, `nodes:get-initial` |
+| engines | `engines:get-initial` |
+| cluster | `cluster:get-initial` |
+| errors | `errors:get-initial` |
+| workloads | `workloads:get-initial` |
+| routing metrics | `metrics:get-routing` |
+| telemetry | `telemetry:get-status` |
+| **node hardware telemetry** | **NONE — added by spec B** |
+| **proxy request counters** | **NONE — added by spec B** |
+
+`broker:resync` is the only new method. It is called on epoch change, on event
+channel counter gaps (§2.7), and on connect — never on a timer.
+
+### 2.6 Heartbeat
+
+The broker sends `heartbeat` on every live client connection every
+`HEARTBEAT_INTERVAL` (**15 s**, tuned so three missed intervals still trip well
+inside a user-perceptible lag). It carries `epoch` and `seq` like any
+notification and, per §2.1, the full node-set snapshot for its filter. The
+client **never** sends anything on a timer.
+
+This is the asymmetry that pays for the battery goal: the server talks, the
+client listens, and the client's only periodic work is a `DispatchSourceTimer`
+that does nothing but compare two integers.
+
+### 2.7 Event channels
+
+`proxy/request`, `proxy/request-started`, `schedule:priority`, and `ready` are
+intrinsically instantaneous — there is no state to snapshot. They still carry
+`epoch`/`seq`. A gap on an event channel means **events were lost**, and they
+cannot be recovered; so each event channel that feeds a *derived* value
+(request counts, tokens/sec) declares a **counter snapshot** the client can
+re-read. Which counters need to exist is enumerated by the notification audit
+feeding spec B (§5).
+
+## 3. Changes by component
+
+| File / module | Change |
+|---|---|
+| `shared/jsonrpc/jsonrpc.go` | `Epoch`/`Seq` on `Message`; stamp on egress; terminal validation on `Read()` |
+| `shared/jsonrpc/peer.go` | per-connection `seq` counter on the parent-side write path |
+| `nvpair-ui-broker/relay/relay.go` | stamp on fan-out; expose `revision` per channel |
+| `nvpair-ui-broker/broker.go` | mint `epoch`; `broker:resync`; heartbeat ticker; refuse `ready` without `protocol: 2` |
+| `nvpair-ui-broker/supervisor.go` | stamp worker→broker notifications |
+| All 11 workers | `ReadyParams.protocol`; convert `DELTA` channels to snapshots per audit |
+| `desktop/src/electron/service-bridge/*` | delete 4 timers; add epoch tracking + resync (**transitional** — spec C replaces this layer) |
+| `desktop/scripts/verify-service-contracts.ts` | understand `broker:resync` + `heartbeat` or `service-contracts:check` fails |
+| `services/versions.json` | **breaking**: bump all 13 components + `installer` + `product` |
+| `docs/services-api.md` | regenerate via `npm run service-contracts:write` (never by hand) |
+
+## 4. Testing
+
+- **Codec** — notification without `epoch`/`seq` → terminal `DecodeError`;
+  `epoch`/`seq` on a response → terminal; monotonic stamping under concurrent
+  writes.
+- **Relay** — two subscribers on one connection get contiguous `seq`; a
+  reconnect yields `seq` restarting at 1 and a fresh `epoch` only if the broker
+  restarted.
+- **Broker** — kill and restart the broker: client observes a new `epoch`,
+  calls `broker:resync`, and converges with **no timer running**. Assert
+  `broker:resync` call count is 0 while the connection is healthy.
+- **Cross-process** (`services/tests`, real binaries) — v1 worker against v2
+  broker must be refused at `ready`, deterministically, not silently.
+- **Regression guards for the four deleted timers** — a pending invite that is
+  resolved with its push suppressed must still clear — via the next snapshot
+  push or an epoch resync — without a 1 500 ms sweep.
+- Cadence assertion: no `time.Ticker` remains in the notification path except
+  `heartbeat`.
+
+## 5. Explicitly out of scope
+
+- Replay buffers, durable sequence numbers, per-channel epochs, message
+  retention — all unnecessary under §2.1, and all rejected deliberately.
+- Telemetry collection moving into Go, GPU hysteresis, poll cadence → **spec B**.
+- The native app itself → **spec C**. `launchd`, Sparkle → **spec D**.
+- Windows/Linux build paths (retired by programme decision, not by this spec).
+
+## 6. Open questions
+
+1. **`HEARTBEAT_INTERVAL` 15 s** — acceptable, or does a tray badge need tighter
+   liveness?
+2. **`revision` as content hash vs monotonic counter.** Content hash avoids a
+   second persisted counter and survives broker restart honestly; a counter is
+   cheaper to compute but lies after a restart. Spec assumes content hash.
+3. **Which event channels need counter snapshots.** `proxy/request` and
+   `schedule:priority` are known; the audit decides the rest (§7).
+
+## 7. Blocked on
+
+Notification payload classification (`SNAPSHOT` / `DELTA` / `EVENT`) across the
+~160 `.Notify(` call sites, and confirmation of which snapshot getters are
+missing. Running as a parallel audit; §2.7 and §2.5 table are filled in from
+its output before spec B is written.
