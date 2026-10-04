@@ -225,6 +225,9 @@
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
 
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `method (var)  (client.go)`
+
 ## nvpair-ui-broker
 
 | Method | Direction | In bridge? |
@@ -280,6 +283,7 @@
 - `omlx-proxy:*  (omlxproxy.go)`
 - `method (var)  (proxy.go)`
 - `method (var)  (rpcworker.go, 2 sites)`
+- `method (var)  (workloadmanager.go)`
 
 ## nvpair-workload-manager
 
