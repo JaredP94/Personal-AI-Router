@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 // Message is a single JSON-RPC 2.0 frame. A frame is a request (id+method), a
@@ -31,6 +32,11 @@ type Message struct {
 	Params  json.RawMessage  `json:"params,omitempty"`
 	Result  json.RawMessage  `json:"result,omitempty"`
 	Error   *RPCError        `json:"error,omitempty"`
+
+	// Protocol v2: present on every notification, absent on requests and
+	// responses. Their presence IS the version discriminator (§2.2).
+	Epoch *string `json:"epoch,omitempty"`
+	Seq   *uint64 `json:"seq,omitempty"`
 }
 
 // RPCError is the JSON-RPC 2.0 error object.
@@ -72,6 +78,10 @@ type Codec struct {
 	scanner *bufio.Scanner
 	writer  io.Writer
 	wmu     sync.Mutex
+
+	// seq is this connection's notification counter, starting at 1. The broker
+	// builds one Codec per client connection, so it is already per-connection.
+	seq atomic.Uint64
 }
 
 // NewCodec wraps rw with a Codec. Reads accept frames up to 1 MiB.
@@ -101,7 +111,9 @@ func NewCodecMaxFrame(rw io.ReadWriter, maxFrame int) *Codec {
 
 // Read returns the next frame, or io.EOF when the stream closes. A malformed
 // frame (bad JSON or wrong version) is returned as a recoverable *DecodeError;
-// a terminal scanner/transport error is returned as a plain error.
+// a protocol v2 envelope violation is returned as a *ProtocolMismatchError,
+// which is terminal; a terminal scanner/transport error is returned as a plain
+// error.
 func (c *Codec) Read() (*Message, error) {
 	if !c.scanner.Scan() {
 		if err := c.scanner.Err(); err != nil {
@@ -115,6 +127,12 @@ func (c *Codec) Read() (*Message, error) {
 	}
 	if msg.JSONRPC != "2.0" {
 		return nil, &DecodeError{fmt.Errorf("unsupported JSON-RPC version: %q", msg.JSONRPC)}
+	}
+	// Returned unwrapped: a mismatch means the peer does not speak protocol v2,
+	// and *DecodeError is documented as recoverable, so wrapping it here would
+	// let the read loop continue on a connection it can never make sense of.
+	if err := validate(&msg); err != nil {
+		return nil, err
 	}
 	return &msg, nil
 }
@@ -149,11 +167,13 @@ func (c *Codec) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return c.write(&Message{
+	msg := &Message{
 		JSONRPC: "2.0",
 		Method:  method,
 		Params:  raw,
-	})
+	}
+	c.stamp(msg)
+	return c.write(msg)
 }
 
 // Respond sends a successful response carrying result for the given request id.
