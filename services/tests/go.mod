@@ -11,6 +11,7 @@ replace nvpair-shared => ../shared
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/miekg/dns v1.1.55 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
