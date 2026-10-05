@@ -19,6 +19,17 @@ import (
 // block on the UI between frames.
 const notifyBuffer = 256
 
+// BrokerEpochMethod is the notification by which the broker announces its
+// protocol epoch (relay protocol v2 §2.2) without the client having to send
+// broker:resync first. Every notification already carries the epoch in its
+// envelope, but the broker emits this one on the first heartbeat tick after a
+// connection starts, so a client sees the epoch within one interval even when
+// nothing else is happening on the wire.
+//
+// It is a notification on purpose: validate() in shared/jsonrpc rejects an
+// epoch or seq stamped onto a request or response.
+const BrokerEpochMethod = "broker:epoch"
+
 // Client multiplexes requests and server pushes over a single Codec. It
 // assigns monotonic numeric ids to outbound requests, matches each
 // response back to its waiting caller, and fans notifications out on a
@@ -32,6 +43,13 @@ type Client struct {
 	pending   map[int64]chan *Message
 
 	notifications chan *Message
+
+	// epochMu guards the two fields below. They are read on the read loop and
+	// written by whoever registers a callback or calls setEpoch, so they are
+	// not confined to one goroutine.
+	epochMu       sync.Mutex
+	currentEpoch  string
+	onEpochChange func(epoch string)
 
 	closeOnce sync.Once
 	closeErr  error
@@ -81,6 +99,10 @@ func (c *Client) Run(ctx context.Context) error {
 		case msg.IsResponse():
 			c.deliverResponse(msg)
 		case msg.IsNotification():
+			// Ahead of the fan-out: a frame that announces a new epoch is
+			// still delivered to the notification channel, so a UI watching
+			// the stream does not have to know this callback exists.
+			c.observeEpoch(msg)
 			select {
 			case c.notifications <- msg:
 			case <-ctx.Done():
@@ -89,6 +111,68 @@ func (c *Client) Run(ctx context.Context) error {
 				return c.closeErr
 			}
 		}
+	}
+}
+
+// OnEpochChange registers cb to be run whenever the broker's protocol epoch
+// changes under this connection — a signal that the peer restarted and every
+// fact this UI cached from it is suspect. Registering replaces any previous
+// callback; passing nil clears it.
+//
+// There is no polling and no ticker behind this: the read loop already sees
+// every frame, and the epoch rides on all of them, so the change is noticed on
+// the frame that carries it rather than on a timer that has to guess when to
+// look.
+func (c *Client) OnEpochChange(cb func(epoch string)) {
+	c.epochMu.Lock()
+	defer c.epochMu.Unlock()
+	c.onEpochChange = cb
+}
+
+// epoch returns the last protocol epoch seen on this connection, or "" before
+// any notification has arrived.
+func (c *Client) epoch() string {
+	c.epochMu.Lock()
+	defer c.epochMu.Unlock()
+	return c.currentEpoch
+}
+
+// setEpoch records epoch as current and reports whether it CHANGED. An empty
+// epoch is ignored: it is indistinguishable from "not known yet", and letting
+// it overwrite a real epoch would make the next real frame look like a change.
+func (c *Client) setEpoch(epoch string) bool {
+	c.epochMu.Lock()
+	defer c.epochMu.Unlock()
+	if epoch == "" || epoch == c.currentEpoch {
+		return false
+	}
+	c.currentEpoch = epoch
+	return true
+}
+
+// observeEpoch applies a notification's envelope epoch and fires the change
+// callback when it differs from the one held.
+//
+// Only the epoch is consulted. The frame's seq is deliberately NOT part of the
+// decision: per spec §2.4 a seq gap is repaired by the next full snapshot, so a
+// gap must not be escalated into an epoch change, and an out-of-order (lower)
+// seq still carries the truth about which broker we are talking to. Gating on
+// seq would mean a single dropped frame suppressed a genuine restart signal.
+func (c *Client) observeEpoch(msg *Message) {
+	if msg.Epoch == nil {
+		return
+	}
+	epoch := *msg.Epoch
+	if !c.setEpoch(epoch) {
+		return
+	}
+	// Read the callback under the lock but call it outside, so a callback that
+	// reads epoch() back cannot deadlock.
+	c.epochMu.Lock()
+	cb := c.onEpochChange
+	c.epochMu.Unlock()
+	if cb != nil {
+		cb(epoch)
 	}
 }
 
