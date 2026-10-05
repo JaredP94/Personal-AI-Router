@@ -33,7 +33,6 @@ import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-jso
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
-    MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
     isModularLogLevel,
     type ModularLogLevel
@@ -434,13 +433,6 @@ class ModularSupervisor {
     // ready notifications during startup must not trigger a renderer store refresh
     // while remote peer facts are still unknown.
     private brokerHydrationDone = false
-    // Light interval that reconciles main's authoritative pending-invite set by
-    // polling each invite's `cluster:invite-status` (pruning terminal or evicted
-    // ones). The cluster-manager now pushes receiver-side teardown directly
-    // (`cluster:invite-canceled` on cancel, `cluster:invite-expired` on TTL — both
-    // handled in handleClusterManagerNotification), so this sweep is the backstop
-    // that clears a lingering invite if a push is missed (e.g. across a restart).
-    private pendingInviteSweepTimer: ReturnType<typeof setInterval> | null = null
 
     get ready(): boolean {
         return this.isReady && this.brokerReady
@@ -589,10 +581,6 @@ class ModularSupervisor {
         if (this.remoteStatusTimer) {
             clearInterval(this.remoteStatusTimer)
             this.remoteStatusTimer = null
-        }
-        if (this.pendingInviteSweepTimer) {
-            clearInterval(this.pendingInviteSweepTimer)
-            this.pendingInviteSweepTimer = null
         }
         for (const timer of this.discoveryModelRetryTimers.values()) clearTimeout(timer)
         this.discoveryModelRetryTimers.clear()
@@ -948,58 +936,12 @@ class ModularSupervisor {
         // again so clustered peers converge before the renderer refresh fires.
         await this.refreshAllRemoteEngineStatus()
         this.brokerHydrationDone = true
-        this.startPendingInviteSweep()
     }
 
     /** Renderer store refresh — suppressed during the initial broker hydration pass. */
     private emitStateRefreshIfHydrated(): void {
         if (!this.brokerHydrationDone) return
         emitBridgePush('state:request-refresh', undefined)
-    }
-
-    /**
-     * Begin reconciling main's authoritative pending-invite set. Idempotent: a
-     * re-ready (broker restart) clears any prior timer first. The cluster-manager
-     * pushes receiver-side teardown directly (`cluster:invite-canceled` on cancel,
-     * `cluster:invite-expired` on TTL — both handled in
-     * handleClusterManagerNotification), so this poll is the backstop that drops a
-     * resolved / evicted / expired invite when a push is missed (e.g. across a
-     * broker restart).
-     */
-    private startPendingInviteSweep(): void {
-        if (this.pendingInviteSweepTimer) clearInterval(this.pendingInviteSweepTimer)
-        this.pendingInviteSweepTimer = setInterval(() => {
-            void this.sweepPendingInvites()
-        }, MODULAR_INVITE_STATUS_POLL_INTERVAL_MS)
-    }
-
-    /**
-     * One reconciliation pass over the pending-invite set: poll each invite's
-     * backend status and prune the ones that resolved (`paired` / `declined` /
-     * `expired` / `failed`) or whose session was evicted (unknown inviteId,
-     * `-32001`). A transient poll failure is ignored — the next sweep retries.
-     */
-    private async sweepPendingInvites(): Promise<void> {
-        if (!this.brokerReady) return
-        const state = getModularBridgeState()
-        for (const invite of state.getPendingInvites()) {
-            try {
-                const status = parseInvite(
-                    await this.callProcess('broker', 'cluster:invite-status', {
-                        inviteId: invite.inviteId
-                    })
-                )
-                if (status.state !== 'pending') state.prunePendingInvite(invite.inviteId)
-            } catch (err) {
-                // `-32001` (unknown inviteId) means the cluster-manager evicted the
-                // session (terminal or process restart): the invite can never be
-                // answered, so drop it. Other errors are transient — leave it for
-                // the next sweep.
-                if (err instanceof JsonRpcResponseError && err.message.startsWith('-32001')) {
-                    state.prunePendingInvite(invite.inviteId)
-                }
-            }
-        }
     }
 
     /**
