@@ -154,9 +154,13 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	codec                 *Codec
-	cancel                context.CancelFunc
-	startedAt             time.Time
+	codec     *Codec
+	cancel    context.CancelFunc
+	startedAt time.Time
+	// heartbeatInterval is the period runHeartbeat ticks at. Injected so tests
+	// can drive the stream without waiting out jsonrpc.HeartbeatInterval;
+	// NewBroker defaults it, and heartbeatEvery() falls back again if unset.
+	heartbeatInterval     time.Duration
 	nodeID                string
 	scannerPath           string
 	nodeInfoPath          string
@@ -398,6 +402,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	return &Broker{
 		codec:                codec,
 		startedAt:            time.Now(),
+		heartbeatInterval:    jsonrpc.HeartbeatInterval,
 		nodeID:               nodeID,
 		scannerPath:          paths.scanner,
 		nodeInfoPath:         paths.nodeInfo,
@@ -1701,6 +1706,13 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
 
+	// One heartbeat stream per client connection. The client relies on it as
+	// liveness (§2.1): a silent channel is presumed dead after
+	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
+	// seq run and requires a broker:resync. Tied to the Serve ctx so it stops
+	// with the connection.
+	go b.runHeartbeat(ctx)
+
 	// The scanner is the broker's core worker. Its supervisor's first
 	// spawn is synchronous so a hard startup failure stays fatal — the
 	// broker has no job without discovery. Once up, the supervisor watches
@@ -2824,6 +2836,11 @@ func (b *Broker) handleMessage(msg *Message) {
 	case "version":
 		if err := b.codec.Respond(msg.ID, VersionResult{Version: Version}); err != nil {
 			log.Printf("failed to respond to version: %v", err)
+		}
+
+	case "broker:resync":
+		if err := b.handleResync(msg.ID); err != nil {
+			log.Printf("failed to respond to broker:resync: %v", err)
 		}
 
 	case "discovery:get-nodes":
