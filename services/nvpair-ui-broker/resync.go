@@ -47,17 +47,41 @@ func (b *Broker) handleResync(id *json.RawMessage) error {
 	return nil
 }
 
+// brokerEpochMethod announces this broker's protocol epoch to a client that
+// never asked for it. The envelope already carries the epoch on every
+// notification, but a client has no way to discover a value that only ever
+// appears inside a frame it must already be reading to have any stream at all,
+// so this pushes it as a first-class notification.
+//
+// The payload is the same ResyncResult broker:resync replies with — one shape,
+// two delivery mechanisms — so a client parses the epoch identically whichever
+// it gets. It rides on a NOTIFICATION, which is the only frame kind validate()
+// accepts an envelope on; stamping it onto the resync REPLY would make every
+// conforming client drop that reply as a terminal *ProtocolMismatchError.
+const brokerEpochMethod = "broker:epoch"
+
 // runHeartbeat emits one "heartbeat" notification per interval until ctx is
-// cancelled, then returns.
+// cancelled, then returns. It also announces the broker epoch on the first tick
+// after start, and again only if the epoch ever differs from the last one
+// announced.
 //
 // There is exactly one ticker per Broker, and a Broker is one client
-// connection, so a client sees one heartbeat stream with one seq run. The frame
-// carries no params: after spec §2.1 the client's only need is liveness plus
-// the envelope, and the envelope is stamped by Codec.Notify, not by hand here.
+// connection, so a client sees one heartbeat stream with one seq run. The
+// heartbeat frame carries no params: after spec §2.1 the client's only need is
+// liveness plus the envelope, and the envelope is stamped by Codec.Notify, not
+// by hand here. The epoch rides alongside it on its own frame so that neither
+// notification has to grow a params field it does not use.
 func (b *Broker) runHeartbeat(ctx context.Context) {
 	interval := b.heartbeatEvery()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// The epoch last announced on this connection. Empty until the first tick,
+	// so the first tick always counts as a change: a client that connects after
+	// startup learns the epoch within one interval rather than having to ask
+	// for it. jsonrpc.Epoch() is stable for the life of the process, so over a
+	// single connection this fires exactly once; the re-emit covers the case
+	// where a Broker is rebuilt for a fresh connection.
+	announced := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -68,6 +92,22 @@ func (b *Broker) runHeartbeat(ctx context.Context) {
 			// frame and assigning seq here would race the broker's other
 			// notifications and could invert them (§2.7 gap detection reads an
 			// inversion as a dropped frame).
+			//
+			// The epoch goes out BEFORE the heartbeat so a client that reads
+			// the stream in order has the epoch in hand before liveness.
+			if epoch := jsonrpc.Epoch(); epoch != announced {
+				if err := b.codec.Notify(brokerEpochMethod, ResyncResult{
+					Epoch:    epoch,
+					Protocol: jsonrpc.ProtocolVersion,
+				}); err != nil {
+					log.Printf("failed to emit %s: %v", brokerEpochMethod, err)
+					// Same contract as the heartbeat below: the read loop owns
+					// teardown, so stop emitting rather than spin on a dead
+					// writer.
+					return
+				}
+				announced = epoch
+			}
 			if err := b.codec.Notify("heartbeat", map[string]any{}); err != nil {
 				log.Printf("failed to emit heartbeat: %v", err)
 				// A write failure means the transport is gone. The read loop

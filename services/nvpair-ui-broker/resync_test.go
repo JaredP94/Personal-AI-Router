@@ -122,41 +122,54 @@ func TestHeartbeatEmitsStampedNotificationsUntilContextCancel(t *testing.T) {
 		b.runHeartbeat(ctx)
 	}()
 
-	var lastSeq float64
-	for i := 0; i < 3; i++ {
+	var lastSeq uint64
+	heartbeats := 0
+	for heartbeats < 3 {
 		keys, values := readResyncFrame(t, sc, conn, 2*time.Second)
-		if values["method"] != "heartbeat" {
-			t.Fatalf("frame %d method = %v, want heartbeat", i, values["method"])
+		method, _ := values["method"].(string)
+
+		// Every frame on this stream is stamped and shares ONE seq run, so the
+		// strictly-increasing check spans broker:epoch as well as heartbeat:
+		// the epoch frame is written on the same path and must not consume a
+		// separate run or land out of order.
+		rawSeq, ok := keys["seq"]
+		if !ok {
+			t.Fatalf("%s carries no seq; keys present: %v", method, keyNames(keys))
 		}
+		var seq uint64
+		if err := json.Unmarshal(rawSeq, &seq); err != nil {
+			t.Fatalf("decode %s seq: %v", method, err)
+		}
+		if seq <= lastSeq {
+			t.Fatalf("%s seq = %v, want strictly greater than %v", method, seq, lastSeq)
+		}
+		lastSeq = seq
+
+		if method != "heartbeat" {
+			// The only other frame allowed here is the one-time epoch
+			// announcement; its own behaviour is pinned by the tests below, so
+			// this loop only cares about the heartbeat it is collecting.
+			continue
+		}
+		heartbeats++
+
 		// A notification frame is the only frame validate() accepts a stamp on.
 		epoch, ok := keys["epoch"]
 		if !ok {
-			t.Fatalf("heartbeat %d carries no epoch; keys present: %v", i, keyNames(keys))
+			t.Fatalf("heartbeat %d carries no epoch; keys present: %v", heartbeats, keyNames(keys))
 		}
 		var epochVal string
 		if err := json.Unmarshal(epoch, &epochVal); err != nil {
 			t.Fatalf("decode heartbeat epoch: %v", err)
 		}
 		if epochVal == "" {
-			t.Fatalf("heartbeat %d carries an empty epoch", i)
+			t.Fatalf("heartbeat %d carries an empty epoch", heartbeats)
 		}
 		if epochVal != jsonrpc.Epoch() {
-			t.Fatalf("heartbeat %d epoch = %q, want the broker process epoch %q", i, epochVal, jsonrpc.Epoch())
+			t.Fatalf("heartbeat %d epoch = %q, want the broker process epoch %q", heartbeats, epochVal, jsonrpc.Epoch())
 		}
-		rawSeq, ok := keys["seq"]
-		if !ok {
-			t.Fatalf("heartbeat %d carries no seq; keys present: %v", i, keyNames(keys))
-		}
-		var seq float64
-		if err := json.Unmarshal(rawSeq, &seq); err != nil {
-			t.Fatalf("decode heartbeat seq: %v", err)
-		}
-		if seq <= lastSeq {
-			t.Fatalf("heartbeat %d seq = %v, want strictly greater than %v", i, seq, lastSeq)
-		}
-		lastSeq = seq
 		if _, hasID := keys["id"]; hasID {
-			t.Fatalf("heartbeat %d is not a notification: it carries an id", i)
+			t.Fatalf("heartbeat %d is not a notification: it carries an id", heartbeats)
 		}
 	}
 
@@ -178,6 +191,155 @@ func TestHeartbeatEmitsStampedNotificationsUntilContextCancel(t *testing.T) {
 		// Silence past the deadline is the expected result; io.EOF and the
 		// deadline timeout both mean "nothing more arrived".
 		t.Fatalf("unexpected read error after ctx cancel: %v", err)
+	}
+}
+
+// TestBrokerEpochIsAnnouncedAsStampedNotification pins the frame that makes the
+// epoch observable to a client that never sent broker:resync. It is proven off
+// the wire through a channel of decoded frames, not by grepping a log, and
+// through the same shared codec a client reads with, so "the codec would have
+// rejected this" cannot pass unnoticed.
+func TestBrokerEpochIsAnnouncedAsStampedNotification(t *testing.T) {
+	_, brokerSide, conn := newResyncPipe(t)
+	b := &Broker{codec: NewCodec(brokerSide), heartbeatInterval: 5 * time.Millisecond}
+
+	frames := make(chan *jsonrpc.Message, 64)
+	go func() {
+		// A client-side Codec over the same pipe: exactly what nvpair-tui and
+		// the desktop bridge do with the broker's stdout.
+		codec := NewCodec(conn)
+		for {
+			msg, err := codec.Read()
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- msg
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.runHeartbeat(ctx)
+	}()
+
+	// Wait for the announcement rather than sleeping a fixed interval, so the
+	// test is not racing the ticker.
+	var epochMsg *jsonrpc.Message
+	deadline := time.After(5 * time.Second)
+	for epochMsg == nil {
+		select {
+		case msg, ok := <-frames:
+			if !ok {
+				cancel()
+				<-done
+				t.Fatal("client connection closed before broker:epoch arrived")
+			}
+			if msg.Method == brokerEpochMethod {
+				epochMsg = msg
+			}
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatal("broker:epoch was never announced on the client stream")
+		}
+	}
+	cancel()
+	<-done
+
+	// It reached a codec.Read() at all, so validate() already accepted it.
+	// Being a notification is what makes that possible, and it must stay one.
+	if !epochMsg.IsNotification() {
+		t.Fatalf("broker:epoch arrived as %q, want a notification", frameKind(epochMsg))
+	}
+	if epochMsg.ID != nil {
+		t.Fatal("broker:epoch carries an id; a notification must not answer a request")
+	}
+	if epochMsg.Epoch == nil || epochMsg.Seq == nil {
+		t.Fatalf("broker:epoch is unstamped (epoch=%v seq=%v); a notification must carry both", epochMsg.Epoch, epochMsg.Seq)
+	}
+	if *epochMsg.Epoch != jsonrpc.Epoch() {
+		t.Fatalf("broker:epoch envelope epoch = %q, want the broker process epoch %q", *epochMsg.Epoch, jsonrpc.Epoch())
+	}
+
+	var result ResyncResult
+	if err := json.Unmarshal(epochMsg.Params, &result); err != nil {
+		t.Fatalf("decode broker:epoch params: %v", err)
+	}
+	if result.Epoch == "" {
+		t.Fatal("broker:epoch params carry an empty epoch")
+	}
+	if result.Epoch != jsonrpc.Epoch() {
+		t.Fatalf("broker:epoch params epoch = %q, want the broker process epoch %q", result.Epoch, jsonrpc.Epoch())
+	}
+	if result.Protocol != 2 {
+		t.Fatalf("broker:epoch params protocol = %d, want 2", result.Protocol)
+	}
+}
+
+// TestBrokerEpochIsAnnouncedOncePerEpochNotPerTick is the other half of the
+// contract: the announcement is an edge, not a level. jsonrpc.Epoch() is stable
+// for the life of the process, so many ticks must produce exactly ONE
+// broker:epoch frame — otherwise the client callback this exists to drive would
+// fire on every heartbeat.
+func TestBrokerEpochIsAnnouncedOncePerEpochNotPerTick(t *testing.T) {
+	sc, brokerSide, conn := newResyncPipe(t)
+	b := &Broker{codec: NewCodec(brokerSide), heartbeatInterval: 5 * time.Millisecond}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.runHeartbeat(ctx)
+	}()
+
+	// Collect raw frames so the count is read off the wire.
+	const wantHeartbeats = 6
+	epochFrames, heartbeatFrames := 0, 0
+	deadline := time.After(5 * time.Second)
+	for heartbeatFrames < wantHeartbeats {
+		_, values := readResyncFrame(t, sc, conn, 5*time.Second)
+		switch values["method"] {
+		case brokerEpochMethod:
+			epochFrames++
+		case "heartbeat":
+			heartbeatFrames++
+		default:
+			t.Fatalf("unexpected frame method %v on the heartbeat stream", values["method"])
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("only %d heartbeats arrived within the deadline", heartbeatFrames)
+		default:
+		}
+	}
+	cancel()
+	<-done
+
+	if heartbeatFrames != wantHeartbeats {
+		t.Fatalf("collected %d heartbeats, want %d", heartbeatFrames, wantHeartbeats)
+	}
+	if epochFrames != 1 {
+		t.Fatalf("broker:epoch was emitted %d times across %d ticks, want exactly 1", epochFrames, heartbeatFrames)
+	}
+}
+
+// frameKind names a frame's JSON-RPC role for failure messages, without echoing
+// its contents.
+func frameKind(msg *jsonrpc.Message) string {
+	switch {
+	case msg.IsResponse():
+		return "response"
+	case msg.IsRequest():
+		return "request"
+	case msg.IsNotification():
+		return "notification"
+	default:
+		return "unknown"
 	}
 }
 
@@ -210,6 +372,11 @@ func TestStampedResponseIsRejectedAndStampedNotificationIsAccepted(t *testing.T)
 		{
 			name:       "stamped notification is accepted",
 			frame:      `{"jsonrpc":"2.0","method":"heartbeat","params":{},"epoch":"e","seq":1}`,
+			wantReject: false,
+		},
+		{
+			name:       "stamped broker:epoch notification is accepted",
+			frame:      `{"jsonrpc":"2.0","method":"broker:epoch","params":{"epoch":"e","protocol":2},"epoch":"e","seq":1}`,
 			wantReject: false,
 		},
 		{
