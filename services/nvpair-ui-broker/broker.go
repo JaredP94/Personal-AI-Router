@@ -1712,6 +1712,20 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
 
+	// One heartbeat stream per client connection. The client relies on it as
+	// liveness (§2.1): a silent channel is presumed dead after
+	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
+	// seq run and requires a broker:resync. Start it before the synchronous first
+	// scanner spawn so startup is never silent; the joined stop is bounded so a
+	// stdio write blocked by an undrained parent cannot park Serve past shutdown.
+	stopHeartbeat := b.startHeartbeat(ctx, cancel)
+	heartbeatStopped := false
+	defer func() {
+		if !heartbeatStopped {
+			stopHeartbeat()
+		}
+	}()
+
 	// The scanner is the broker's core worker. Its supervisor's first
 	// spawn is synchronous so a hard startup failure stays fatal — the
 	// broker has no job without discovery. Once up, the supervisor watches
@@ -1913,14 +1927,6 @@ func (b *Broker) Serve(ctx context.Context) error {
 		return fmt.Errorf("send app:ready: %w", err)
 	}
 
-	// One heartbeat stream per client connection. The client relies on it as
-	// liveness (§2.1): a silent channel is presumed dead after
-	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
-	// seq run and requires a broker:resync. Tied to the Serve ctx so it stops
-	// with the connection, and joined during shutdown so it cannot keep the
-	// codec write mutex after the broker returns.
-	stopHeartbeat := b.startHeartbeat(ctx, cancel)
-
 	// Attach the change hook only AFTER app:ready is on the wire so a
 	// scanner event arriving during startup can't race ahead of
 	// app:ready and produce a discovery:nodes-changed before the
@@ -1935,6 +1941,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	err := b.readLoop(ctx)
 	cancel()
 	stopHeartbeat()
+	heartbeatStopped = true
 	b.shutdownInferenceStack()
 	return err
 }

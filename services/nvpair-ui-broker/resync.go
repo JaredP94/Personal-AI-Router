@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -60,6 +61,15 @@ func (b *Broker) handleResync(id *json.RawMessage) error {
 // conforming client drop that reply as a terminal *ProtocolMismatchError.
 const brokerEpochMethod = "broker:epoch"
 
+const (
+	// heartbeatShutdownJoinTimeout bounds the broker's own heartbeat writer join
+	// when shutdown finds a client write blocked below the codec. It is kept to
+	// one minWorkerGrace (250ms), far inside the broker's 10s teardownBudget that
+	// the parent-side supervisor grace must cover, so stdio shutdown cannot spend
+	// the process's kill grace on a pipe Close cannot unblock.
+	heartbeatShutdownJoinTimeout = minWorkerGrace
+)
+
 // runHeartbeat emits one "heartbeat" notification per interval until ctx is
 // cancelled, then returns. It also announces the broker epoch on the first tick
 // after start, and again only if the epoch ever differs from the last one
@@ -80,7 +90,11 @@ func (b *Broker) startHeartbeat(ctx context.Context, cancel context.CancelFunc) 
 	return func() {
 		cancel()
 		b.closeClientTransport()
-		<-done
+		select {
+		case <-done:
+		case <-time.After(heartbeatShutdownJoinTimeout):
+			log.Printf("abandoning heartbeat shutdown join after %s because client transport could not be unblocked", heartbeatShutdownJoinTimeout)
+		}
 	}
 }
 
@@ -93,7 +107,7 @@ func (b *Broker) closeClientTransport() {
 	}
 }
 
-func (b *Broker) notifyWithShutdown(ctx context.Context, method string, params interface{}) error {
+func (b *Broker) notifyWithShutdown(ctx context.Context, method string, params any) error {
 	done := make(chan error, 1)
 	go func() { done <- b.codec.Notify(method, params) }()
 	select {
@@ -101,7 +115,12 @@ func (b *Broker) notifyWithShutdown(ctx context.Context, method string, params i
 		return err
 	case <-ctx.Done():
 		b.closeClientTransport()
-		return <-done
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(heartbeatShutdownJoinTimeout):
+			return fmt.Errorf("abandoned %s write after %s because client transport could not be unblocked", method, heartbeatShutdownJoinTimeout)
+		}
 	}
 }
 
@@ -142,7 +161,7 @@ func (b *Broker) runHeartbeat(ctx context.Context) {
 				}
 				announced = epoch
 			}
-			if err := b.notifyWithShutdown(ctx, "heartbeat", map[string]interface{}{}); err != nil {
+			if err := b.notifyWithShutdown(ctx, "heartbeat", map[string]any{}); err != nil {
 				log.Printf("failed to emit heartbeat: %v", err)
 				// A write failure means the transport is gone. The read loop
 				// owns connection teardown, so leave that to it and stop

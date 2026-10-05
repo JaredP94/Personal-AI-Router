@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"os"
 	"runtime"
@@ -155,6 +156,119 @@ func (w *blockingReadWriter) Close() error {
 		close(w.unblock)
 	}
 	return nil
+}
+
+type noopCloseBlockingReadWriter struct {
+	writeStarted chan struct{}
+	once         sync.Once
+}
+
+func newNoopCloseBlockingReadWriter() *noopCloseBlockingReadWriter {
+	return &noopCloseBlockingReadWriter{writeStarted: make(chan struct{})}
+}
+
+func (w *noopCloseBlockingReadWriter) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (w *noopCloseBlockingReadWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.writeStarted) })
+	select {}
+}
+
+func (w *noopCloseBlockingReadWriter) Close() error {
+	return nil
+}
+
+// TestHeartbeatStopBoundsNoopTransportClose covers stdio-shaped shutdown: Close
+// is a no-op, so a write blocked below the codec cannot be unblocked. stop must
+// abandon the join rather than park Serve forever, and it must log that single
+// abandonment without including any payload.
+func TestHeartbeatStopBoundsNoopTransportClose(t *testing.T) {
+	writer := newNoopCloseBlockingReadWriter()
+	b := &Broker{
+		codec:             NewCodec(writer),
+		heartbeatInterval: 5 * time.Millisecond,
+		closeTransport:    writer.Close,
+	}
+
+	var logs lockedBuffer
+	oldOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(oldOutput) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopHeartbeat := b.startHeartbeat(ctx, cancel)
+
+	select {
+	case <-writer.writeStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("heartbeat never entered the blocking writer")
+	}
+
+	stopped := make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(stopped)
+		stopHeartbeat()
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stopHeartbeat did not return after bounded wait on a no-op close transport")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("stopHeartbeat returned after %v, want within the bounded wait", elapsed)
+	}
+	got := string(logs.Bytes())
+	if !strings.Contains(got, "heartbeat") || !strings.Contains(got, "250ms") {
+		t.Fatalf("heartbeat shutdown warning = %q, want method and timeout", got)
+	}
+}
+
+// TestHeartbeatStopJoinsWhenTransportCloseUnblocks proves the clean shutdown
+// path still waits for the heartbeat goroutine to leave the codec write once the
+// transport close unblocks it.
+func TestHeartbeatStopJoinsWhenTransportCloseUnblocks(t *testing.T) {
+	writer := newBlockingReadWriter()
+	b := &Broker{
+		codec:             NewCodec(writer),
+		heartbeatInterval: 5 * time.Millisecond,
+		closeTransport:    writer.Close,
+	}
+
+	var logs lockedBuffer
+	oldOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(oldOutput) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopHeartbeat := b.startHeartbeat(ctx, cancel)
+
+	select {
+	case <-writer.writeStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("heartbeat never entered the blocking writer")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stopHeartbeat()
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stopHeartbeat did not join after transport close unblocked the writer")
+	}
+	got := string(logs.Bytes())
+	if strings.Contains(got, "abandon") {
+		t.Fatalf("clean heartbeat stop logged abandonment: %q", got)
+	}
 }
 
 // TestHeartbeatCancelClosesBlockedWriteAndReturns proves cancellation while the
