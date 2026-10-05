@@ -264,20 +264,21 @@ func main() {
 
 	codec := NewCodec(transport)
 	paths := workerPaths{
-		scanner:       resolvedScanner,
-		nodeInfo:      resolvedNodeInfo,
-		proxy:         resolvedProxy,
-		lmstudioProxy: resolvedLMStudioProxy,
-		omlxProxy:     resolvedOMLXProxy,
-		workloadMgr:   resolvedWorkloadMgr,
-		errors:        resolvedErrors,
-		engineMgr:     resolvedEngineMgr,
-		manualNodes:   resolvedManualNodes,
-		settings:      resolvedSettings,
+		scanner:              resolvedScanner,
+		nodeInfo:             resolvedNodeInfo,
+		proxy:                resolvedProxy,
+		lmstudioProxy:        resolvedLMStudioProxy,
+		omlxProxy:            resolvedOMLXProxy,
+		workloadMgr:          resolvedWorkloadMgr,
+		errors:               resolvedErrors,
+		engineMgr:            resolvedEngineMgr,
+		manualNodes:          resolvedManualNodes,
+		settings:             resolvedSettings,
 		clusterMgr:           resolvedClusterMgr,
 		scheduler:            resolvedScheduler,
 		clusterDir:           clusterDir,
 		telemetryComposePath: *telemetryComposePath,
+		closeTransport:       transport.Close,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)

@@ -154,9 +154,10 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	codec     *Codec
-	cancel    context.CancelFunc
-	startedAt time.Time
+	codec          *Codec
+	closeTransport func() error
+	cancel         context.CancelFunc
+	startedAt      time.Time
 	// heartbeatInterval is the period runHeartbeat ticks at. Injected so tests
 	// can drive the stream without waiting out jsonrpc.HeartbeatInterval;
 	// NewBroker defaults it, and heartbeatEvery() falls back again if unset.
@@ -379,6 +380,10 @@ type workerPaths struct {
 	clusterDir string
 	// telemetryComposePath is the explicit path to docker-compose.telemetry.yml.
 	telemetryComposePath string
+	// closeTransport closes the client connection that backs codec. Serve uses it
+	// during shutdown to unblock a heartbeat write that is stuck in the codec's
+	// writer while the client is no longer reading.
+	closeTransport func() error
 }
 
 // NewBroker constructs a per-session broker. paths.scanner is required —
@@ -401,6 +406,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	return &Broker{
 		codec:                codec,
+		closeTransport:       paths.closeTransport,
 		startedAt:            time.Now(),
 		heartbeatInterval:    jsonrpc.HeartbeatInterval,
 		nodeID:               nodeID,
@@ -1706,13 +1712,6 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
 
-	// One heartbeat stream per client connection. The client relies on it as
-	// liveness (§2.1): a silent channel is presumed dead after
-	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
-	// seq run and requires a broker:resync. Tied to the Serve ctx so it stops
-	// with the connection.
-	go b.runHeartbeat(ctx)
-
 	// The scanner is the broker's core worker. Its supervisor's first
 	// spawn is synchronous so a hard startup failure stays fatal — the
 	// broker has no job without discovery. Once up, the supervisor watches
@@ -1914,6 +1913,14 @@ func (b *Broker) Serve(ctx context.Context) error {
 		return fmt.Errorf("send app:ready: %w", err)
 	}
 
+	// One heartbeat stream per client connection. The client relies on it as
+	// liveness (§2.1): a silent channel is presumed dead after
+	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
+	// seq run and requires a broker:resync. Tied to the Serve ctx so it stops
+	// with the connection, and joined during shutdown so it cannot keep the
+	// codec write mutex after the broker returns.
+	stopHeartbeat := b.startHeartbeat(ctx, cancel)
+
 	// Attach the change hook only AFTER app:ready is on the wire so a
 	// scanner event arriving during startup can't race ahead of
 	// app:ready and produce a discovery:nodes-changed before the
@@ -1927,6 +1934,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 
 	err := b.readLoop(ctx)
 	cancel()
+	stopHeartbeat()
 	b.shutdownInferenceStack()
 	return err
 }

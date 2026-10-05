@@ -71,6 +71,40 @@ const brokerEpochMethod = "broker:epoch"
 // liveness plus the envelope, and the envelope is stamped by Codec.Notify, not
 // by hand here. The epoch rides alongside it on its own frame so that neither
 // notification has to grow a params field it does not use.
+func (b *Broker) startHeartbeat(ctx context.Context, cancel context.CancelFunc) func() {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.runHeartbeat(ctx)
+	}()
+	return func() {
+		cancel()
+		b.closeClientTransport()
+		<-done
+	}
+}
+
+func (b *Broker) closeClientTransport() {
+	if b.closeTransport == nil {
+		return
+	}
+	if err := b.closeTransport(); err != nil {
+		log.Printf("failed to close client transport during heartbeat shutdown: %v", err)
+	}
+}
+
+func (b *Broker) notifyWithShutdown(ctx context.Context, method string, params interface{}) error {
+	done := make(chan error, 1)
+	go func() { done <- b.codec.Notify(method, params) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		b.closeClientTransport()
+		return <-done
+	}
+}
+
 func (b *Broker) runHeartbeat(ctx context.Context) {
 	interval := b.heartbeatEvery()
 	ticker := time.NewTicker(interval)
@@ -96,7 +130,7 @@ func (b *Broker) runHeartbeat(ctx context.Context) {
 			// The epoch goes out BEFORE the heartbeat so a client that reads
 			// the stream in order has the epoch in hand before liveness.
 			if epoch := jsonrpc.Epoch(); epoch != announced {
-				if err := b.codec.Notify(brokerEpochMethod, ResyncResult{
+				if err := b.notifyWithShutdown(ctx, brokerEpochMethod, ResyncResult{
 					Epoch:    epoch,
 					Protocol: jsonrpc.ProtocolVersion,
 				}); err != nil {
@@ -108,7 +142,7 @@ func (b *Broker) runHeartbeat(ctx context.Context) {
 				}
 				announced = epoch
 			}
-			if err := b.codec.Notify("heartbeat", map[string]any{}); err != nil {
+			if err := b.notifyWithShutdown(ctx, "heartbeat", map[string]interface{}{}); err != nil {
 				log.Printf("failed to emit heartbeat: %v", err)
 				// A write failure means the transport is gone. The read loop
 				// owns connection teardown, so leave that to it and stop

@@ -11,7 +11,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +33,71 @@ func newResyncPipe(t *testing.T) (*bufio.Scanner, net.Conn, net.Conn) {
 		_ = clientSide.Close()
 	})
 	return bufio.NewScanner(clientSide), brokerSide, clientSide
+}
+
+func newFakeScannerPath(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("serve wiring test uses a POSIX shell helper")
+	}
+	path := t.TempDir() + "/fake-scanner.sh"
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncat >/dev/null\n"), 0o700); err != nil {
+		t.Fatalf("write fake scanner: %v", err)
+	}
+	return path
+}
+
+func newServeHarness(t *testing.T, heartbeatInterval time.Duration) (*Codec, net.Conn, context.CancelFunc, <-chan error) {
+	t.Helper()
+	brokerSide, clientSide := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	b := NewBroker(NewCodec(brokerSide), workerPaths{scanner: newFakeScannerPath(t)})
+	b.heartbeatInterval = heartbeatInterval
+	b.closeTransport = brokerSide.Close
+	done := make(chan error, 1)
+	go func() {
+		done <- b.Serve(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = brokerSide.Close()
+		_ = clientSide.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Serve did not return during cleanup")
+		}
+	})
+	return NewCodec(clientSide), clientSide, cancel, done
+}
+
+func readServeMessage(t *testing.T, codec *Codec, conn net.Conn, timeout time.Duration) *Message {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	msg, err := codec.Read()
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear read deadline: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("read serve frame: %v", err)
+	}
+	return msg
+}
+
+func readUntilMethod(t *testing.T, codec *Codec, conn net.Conn, method string) *Message {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		msg := readServeMessage(t, codec, conn, time.Until(deadline))
+		if msg.Method == method {
+			return msg
+		}
+	}
+	t.Fatalf("method %s did not arrive", method)
+	return nil
 }
 
 // readResyncFrame reads one wire frame as raw JSON object keys plus decoded
@@ -54,6 +123,130 @@ func readResyncFrame(t *testing.T, sc *bufio.Scanner, conn net.Conn, timeout tim
 		t.Fatalf("decode frame values: %v", err)
 	}
 	return rawKeys, decoded
+}
+
+type blockingReadWriter struct {
+	writeStarted chan struct{}
+	unblock      chan struct{}
+	once         sync.Once
+}
+
+func newBlockingReadWriter() *blockingReadWriter {
+	return &blockingReadWriter{
+		writeStarted: make(chan struct{}),
+		unblock:      make(chan struct{}),
+	}
+}
+
+func (w *blockingReadWriter) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (w *blockingReadWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.writeStarted) })
+	<-w.unblock
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockingReadWriter) Close() error {
+	select {
+	case <-w.unblock:
+	default:
+		close(w.unblock)
+	}
+	return nil
+}
+
+// TestHeartbeatCancelClosesBlockedWriteAndReturns proves cancellation while the
+// heartbeat goroutine is already inside a blocked codec write does not leave it
+// holding the codec write mutex forever.
+func TestHeartbeatCancelClosesBlockedWriteAndReturns(t *testing.T) {
+	writer := newBlockingReadWriter()
+	b := &Broker{
+		codec:             NewCodec(writer),
+		heartbeatInterval: 5 * time.Millisecond,
+		closeTransport:    writer.Close,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.runHeartbeat(ctx)
+	}()
+
+	select {
+	case <-writer.writeStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("heartbeat never entered the blocking writer")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runHeartbeat did not return after cancellation closed a blocked write")
+	}
+}
+
+func TestServeDispatchesBrokerResyncRequest(t *testing.T) {
+	codec, conn, cancel, done := newServeHarness(t, jsonrpc.HeartbeatInterval)
+	readUntilMethod(t, codec, conn, "app:ready")
+
+	id := json.RawMessage(`101`)
+	if err := codec.Request(&id, "broker:resync", nil); err != nil {
+		t.Fatalf("send broker:resync request: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		msg := readServeMessage(t, codec, conn, time.Until(deadline))
+		if !msg.IsResponse() || msg.ID == nil || strings.TrimSpace(string(*msg.ID)) != "101" {
+			continue
+		}
+		var result ResyncResult
+		if err := json.Unmarshal(msg.Result, &result); err != nil {
+			t.Fatalf("decode broker:resync result: %v", err)
+		}
+		if result.Epoch != jsonrpc.Epoch() {
+			t.Fatalf("resync result epoch = %q, want %q", result.Epoch, jsonrpc.Epoch())
+		}
+		if result.Protocol != jsonrpc.ProtocolVersion {
+			t.Fatalf("resync result protocol = %d, want %d", result.Protocol, jsonrpc.ProtocolVersion)
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Serve returned error: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Serve did not return after cancel")
+		}
+		return
+	}
+	t.Fatal("broker:resync response did not arrive through Serve")
+}
+
+func TestServeStartsHeartbeatStream(t *testing.T) {
+	codec, conn, cancel, done := newServeHarness(t, 5*time.Millisecond)
+	msg := readUntilMethod(t, codec, conn, "heartbeat")
+	if !msg.IsNotification() {
+		t.Fatalf("heartbeat arrived as %s, want notification", frameKind(msg))
+	}
+	if msg.Epoch == nil || msg.Seq == nil {
+		t.Fatalf("heartbeat is unstamped (epoch=%v seq=%v)", msg.Epoch, msg.Seq)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after cancel")
+	}
 }
 
 // TestResyncResponseCarriesBrokerEpochWithoutEnvelopeStamp pins the one rule
@@ -340,6 +533,32 @@ func frameKind(msg *jsonrpc.Message) string {
 		return "notification"
 	default:
 		return "unknown"
+	}
+}
+
+// TestCodecAcceptsLowerAndNonconsecutiveNotificationSeq pins that seq gaps or
+// decreases are not protocol mismatches at the transport layer. Consumers
+// reconcile from snapshots; the codec only validates that notifications carry
+// an envelope.
+func TestCodecAcceptsLowerAndNonconsecutiveNotificationSeq(t *testing.T) {
+	epoch := jsonrpc.Epoch()
+	frames := `{"jsonrpc":"2.0","method":"alpha","params":{},"epoch":` + strconv.Quote(epoch) + `,"seq":5}` + "\n" +
+		`{"jsonrpc":"2.0","method":"beta","params":{},"epoch":` + strconv.Quote(epoch) + `,"seq":3}` + "\n" +
+		`{"jsonrpc":"2.0","method":"gamma","params":{},"epoch":` + strconv.Quote(epoch) + `,"seq":10}` + "\n"
+	codec := NewCodec(readWriter{Reader: strings.NewReader(frames), Writer: io.Discard})
+
+	for _, want := range []string{"alpha", "beta", "gamma"} {
+		msg, err := codec.Read()
+		if err != nil {
+			var pm *jsonrpc.ProtocolMismatchError
+			if errors.As(err, &pm) {
+				t.Fatalf("%s was treated as a protocol mismatch: %v", want, err)
+			}
+			t.Fatalf("read %s: %v", want, err)
+		}
+		if msg.Method != want {
+			t.Fatalf("method = %q, want %q", msg.Method, want)
+		}
 	}
 }
 
