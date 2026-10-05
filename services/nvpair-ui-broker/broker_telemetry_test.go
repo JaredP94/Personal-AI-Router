@@ -12,29 +12,59 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type mockDockerRunner struct {
-	state          string
-	inspectErr     error
-	upCalled       bool
-	stopCalled     bool
-	pullCalled     bool
-	composeFile    string
-	version        string
-	imageID        string
-	latestVer      string
-	latestImageID  string
-	latestDigest   string
+	mu            sync.Mutex
+	state         string
+	inspectErr    error
+	upCalled      bool
+	stopCalled    bool
+	pullCalled    bool
+	composeFile   string
+	version       string
+	imageID       string
+	latestVer     string
+	latestImageID string
+	latestDigest  string
+}
+
+func (m *mockDockerRunner) setState(state string) {
+	m.mu.Lock()
+	m.state = state
+	m.mu.Unlock()
+}
+
+func (m *mockDockerRunner) composeUpCalled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.upCalled
+}
+
+func (m *mockDockerRunner) composeStopCalled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stopCalled
+}
+
+func (m *mockDockerRunner) composePullCalled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pullCalled
 }
 
 func (m *mockDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.state, m.inspectErr
 }
 
 func (m *mockDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return dockerContainerDetails{
 		State:   m.state,
 		ImageID: m.imageID,
@@ -43,6 +73,8 @@ func (m *mockDockerRunner) inspectDetails(ctx context.Context, containerName str
 }
 
 func (m *mockDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return dockerImageDetails{
 		ImageID: m.latestImageID,
 		Version: m.latestVer,
@@ -51,18 +83,24 @@ func (m *mockDockerRunner) inspectImage(ctx context.Context, imageName string) (
 }
 
 func (m *mockDockerRunner) composeUp(ctx context.Context, composeFile string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.upCalled = true
 	m.composeFile = composeFile
 	return nil
 }
 
 func (m *mockDockerRunner) composeStop(ctx context.Context, composeFile string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.stopCalled = true
 	m.composeFile = composeFile
 	return nil
 }
 
 func (m *mockDockerRunner) composePull(ctx context.Context, composeFile string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.pullCalled = true
 	m.composeFile = composeFile
 	return nil
@@ -181,12 +219,12 @@ func TestTelemetryStartAndStop(t *testing.T) {
 	if resp1.Error != nil {
 		t.Fatalf("unexpected error on telemetry/start: %v", resp1.Error)
 	}
-	if !mockDocker.upCalled {
+	if !mockDocker.composeUpCalled() {
 		t.Errorf("expected composeUp to be called")
 	}
 
 	// Test telemetry/stop
-	mockDocker.state = "stopped"
+	mockDocker.setState("stopped")
 	id2 := json.RawMessage(`2`)
 	go b.handleMessage(&Message{
 		JSONRPC: "2.0",
@@ -201,7 +239,7 @@ func TestTelemetryStartAndStop(t *testing.T) {
 	if resp2.Error != nil {
 		t.Fatalf("unexpected error on telemetry/stop: %v", resp2.Error)
 	}
-	if !mockDocker.stopCalled {
+	if !mockDocker.composeStopCalled() {
 		t.Errorf("expected composeStop to be called")
 	}
 }
@@ -412,16 +450,23 @@ func TestResolveComposeFilePath_FallbackProvisioning(t *testing.T) {
 }
 
 type slowDockerRunner struct {
+	mu             sync.Mutex
 	composeUpDelay time.Duration
 	state          string
 }
 
+func (s *slowDockerRunner) stateSnapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
 func (s *slowDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
-	return s.state, nil
+	return s.stateSnapshot(), nil
 }
 
 func (s *slowDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
-	return dockerContainerDetails{State: s.state}, nil
+	return dockerContainerDetails{State: s.stateSnapshot()}, nil
 }
 
 func (s *slowDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
@@ -431,7 +476,9 @@ func (s *slowDockerRunner) inspectImage(ctx context.Context, imageName string) (
 func (s *slowDockerRunner) composeUp(ctx context.Context, composeFile string) error {
 	select {
 	case <-time.After(s.composeUpDelay):
+		s.mu.Lock()
 		s.state = "running"
+		s.mu.Unlock()
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -439,7 +486,9 @@ func (s *slowDockerRunner) composeUp(ctx context.Context, composeFile string) er
 }
 
 func (s *slowDockerRunner) composeStop(ctx context.Context, composeFile string) error {
+	s.mu.Lock()
 	s.state = "stopped"
+	s.mu.Unlock()
 	return nil
 }
 
@@ -469,7 +518,7 @@ func TestTelemetryStart_SlowPullBackgrounding(t *testing.T) {
 		dockerRunner:         slowRunner,
 		telemetryComposePath: fakeCompose,
 		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
-			if slowRunner.state == "running" {
+			if slowRunner.stateSnapshot() == "running" {
 				c1, c2 := net.Pipe()
 				_ = c2.Close()
 				return c1, nil
@@ -627,10 +676,10 @@ func TestTelemetryUpdate(t *testing.T) {
 		t.Fatalf("unexpected error on telemetry/update: %v", resp.Error)
 	}
 
-	if !mockDocker.pullCalled {
+	if !mockDocker.composePullCalled() {
 		t.Errorf("expected composePull to be called")
 	}
-	if !mockDocker.upCalled {
+	if !mockDocker.composeUpCalled() {
 		t.Errorf("expected composeUp to be called")
 	}
 }
@@ -640,7 +689,3 @@ type roundTripFunc func(req *http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
-
-
-
-
