@@ -120,6 +120,27 @@ func writeRawFrame(t *testing.T, w io.Writer, frame string) {
 	}
 }
 
+const rawNotificationTestEpoch = "00000000-0000-4000-8000-000000000003"
+
+func writeStampedRawNotification(t *testing.T, w io.Writer, nextSeq *int, frame string) {
+	t.Helper()
+	var msg map[string]any
+	if err := json.Unmarshal([]byte(frame), &msg); err != nil {
+		t.Fatalf("parse notification frame: %v", err)
+	}
+	if _, ok := msg["id"]; ok {
+		t.Fatalf("refusing to stamp request frame: %s", frame)
+	}
+	msg["epoch"] = rawNotificationTestEpoch
+	msg["seq"] = *nextSeq
+	*nextSeq = *nextSeq + 1
+	stamped, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal notification frame: %v", err)
+	}
+	writeRawFrame(t, w, string(stamped))
+}
+
 // TestWorkloadManagerInboundRelay drives the inbound path: a peer-origin
 // workload event POSTed to the supervised manager's inter-node endpoint
 // must surface on the broker's workloads:* client stream as a

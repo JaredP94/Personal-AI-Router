@@ -42,15 +42,18 @@ import (
 // Ollama; the mTLS identities and pins are the real ones the cluster-manager
 // mints and exchanges during pairing, so the crypto path is genuine.
 
+const secureInferenceNotifyEpoch = "00000000-0000-4000-8000-000000000002"
+
 // proxyProc is a running ollama-proxy subprocess driven over stdio.
 type proxyProc struct {
-	t      *testing.T
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	msgs   <-chan jsonrpc.Message
-	buf    []jsonrpc.Message
-	nextID int
-	port   int // the listen port the proxy reported via its ready notification
+	t         *testing.T
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	msgs      <-chan jsonrpc.Message
+	buf       []jsonrpc.Message
+	nextID    int
+	notifySeq int
+	port      int // the listen port the proxy reported via its ready notification
 }
 
 // startProxyProc launches ollama-proxy with the given cluster dir on a fresh
@@ -80,7 +83,7 @@ func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start proxy: %v", err)
 	}
-	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1}
+	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1, notifySeq: 1}
 
 	ready := p.pump(func(m jsonrpc.Message) bool { return m.Method == "ready" }, 15*time.Second)
 	var rp struct {
@@ -152,7 +155,8 @@ func (p *proxyProc) call(method string, params any) jsonrpc.Message {
 
 func (p *proxyProc) notify(method string, params any) {
 	p.t.Helper()
-	req := map[string]any{"jsonrpc": "2.0", "method": method}
+	req := map[string]any{"jsonrpc": "2.0", "method": method, "epoch": secureInferenceNotifyEpoch, "seq": p.notifySeq}
+	p.notifySeq++
 	if params != nil {
 		req["params"] = params
 	}

@@ -32,6 +32,27 @@ import (
 	"nvpair-shared/schedulerwire"
 )
 
+const schedulerInteropTestEpoch = "00000000-0000-4000-8000-000000000001"
+
+func writeStampedSchedulerNotification(t *testing.T, w io.Writer, nextSeq *int, frame string) {
+	t.Helper()
+	var msg map[string]any
+	if err := json.Unmarshal([]byte(frame), &msg); err != nil {
+		t.Fatalf("parse notification frame: %v", err)
+	}
+	if _, ok := msg["id"]; ok {
+		t.Fatalf("refusing to stamp request frame: %s", frame)
+	}
+	msg["epoch"] = schedulerInteropTestEpoch
+	msg["seq"] = *nextSeq
+	*nextSeq = *nextSeq + 1
+	stamped, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal notification frame: %v", err)
+	}
+	writeRawFrame(t, w, string(stamped))
+}
+
 // startSchedulerProc starts the scheduler binary and returns its stdin, a
 // reader over its stdout JSON-RPC frames, and a cleanup.
 func startSchedulerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
@@ -133,18 +154,19 @@ func TestSchedulerRanksNodeWideWithoutWaitingForTimer(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "ready", 10*time.Second)
+	nextSeq := 1
 
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"id":"a","hostUuid":"a"},{"id":"b","hostUuid":"b"},{"id":"c","hostUuid":"c"}]}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"id":"a","hostUuid":"a"},{"id":"b","hostUuid":"b"},{"id":"c","hostUuid":"c"}]}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"a", "b", "c"})
 
 	// A=3 (two Ollama, one LM Studio), B=1 (LM Studio), C=0.
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl1","engine":"ollama","runId":"o","state":"running","originatedFrom":"x","scheduledOn":"a"}}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl1","engine":"ollama","runId":"o","state":"running","originatedFrom":"x","scheduledOn":"a"}}}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"b", "c", "a"})
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl2","engine":"lmstudio","runId":"l","state":"queued","originatedFrom":"x","scheduledOn":"a"}}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl2","engine":"lmstudio","runId":"l","state":"queued","originatedFrom":"x","scheduledOn":"a"}}}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"b", "c", "a"})
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl3","engine":"ollama","runId":"o","state":"queued","originatedFrom":"x","scheduledOn":"a"}}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl3","engine":"ollama","runId":"o","state":"queued","originatedFrom":"x","scheduledOn":"a"}}}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"b", "c", "a"})
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl4","engine":"lmstudio","runId":"l","state":"running","originatedFrom":"x","scheduledOn":"b"}}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"wl4","engine":"lmstudio","runId":"l","state":"running","originatedFrom":"x","scheduledOn":"b"}}}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"c", "b", "a"})
 }
 
@@ -153,10 +175,11 @@ func TestSchedulerRanksFreshUnknownAndStaleTelemetry(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "ready", 10*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":0,"telemetryValid":true,"msSince":0}}`)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"c","gpuUtilizationPercent":100,"telemetryValid":true,"msSince":10001}}`)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"d","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":0}}`)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"},{"hostUuid":"c"},{"hostUuid":"d"}]}`)
+	nextSeq := 1
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":0,"telemetryValid":true,"msSince":0}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"c","gpuUtilizationPercent":100,"telemetryValid":true,"msSince":10001}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"d","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":0}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"},{"hostUuid":"c"},{"hostUuid":"d"}]}`)
 
 	initial := waitForPriorityPair(t, msgs, 5*time.Second)
 	assertPriorityPair(t, initial, []string{"a", "b", "c", "d"}, map[string]int{
@@ -168,7 +191,7 @@ func TestSchedulerRanksFreshUnknownAndStaleTelemetry(t *testing.T) {
 
 	// A fresh sample promotes c from stale/unknown pressure 1 to pressure 2.
 	// Its order is unchanged, but the complete rank snapshot must still emit.
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"c","gpuUtilizationPercent":75,"telemetryValid":true,"msSince":0}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"c","gpuUtilizationPercent":75,"telemetryValid":true,"msSince":0}}`)
 	fresh := waitForPriorityPair(t, msgs, 5*time.Second)
 	assertPriorityPair(t, fresh, []string{"a", "b", "c", "d"}, map[string]int{
 		"a": 0,
@@ -179,7 +202,7 @@ func TestSchedulerRanksFreshUnknownAndStaleTelemetry(t *testing.T) {
 
 	// Invalidating d immediately returns it to neutral pressure and moves it
 	// ahead of c without waiting for the one-hour reconciliation timer.
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"d","gpuUtilizationPercent":90,"telemetryValid":false,"msSince":0}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"d","gpuUtilizationPercent":90,"telemetryValid":false,"msSince":0}}`)
 	invalid := waitForPriorityPair(t, msgs, 5*time.Second)
 	assertPriorityPair(t, invalid, []string{"a", "b", "d", "c"}, map[string]int{
 		"a": 0,
@@ -193,9 +216,10 @@ func TestSchedulerRestartBaselineUsesTelemetryReplay(t *testing.T) {
 	stdin, msgs, stopFirst := startSchedulerProc(t, "--interval", "1h")
 	t.Cleanup(stopFirst)
 	waitForMethod(t, msgs, "ready", 10*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"}]}`)
+	nextSeq := 1
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"}]}`)
 	waitForSchedulePair(t, msgs, 5*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":0}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":0}}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"b", "a"})
 	stopFirst()
 
@@ -204,8 +228,9 @@ func TestSchedulerRestartBaselineUsesTelemetryReplay(t *testing.T) {
 	stdin, msgs, stopSecond := startSchedulerProc(t, "--interval", "1h")
 	t.Cleanup(stopSecond)
 	waitForMethod(t, msgs, "ready", 10*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":250}}`)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"}]}`)
+	nextSeq = 1
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":250}}`)
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"}]}`)
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), []string{"b", "a"})
 }
 
@@ -243,7 +268,8 @@ func TestSchedulerSyntheticMixedEngineBurst(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	waitForMethod(t, msgs, "ready", 10*time.Second)
-	writeRawFrame(t, stdin, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"},{"hostUuid":"c"}]}`)
+	nextSeq := 1
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"},{"hostUuid":"c"}]}`)
 	initial := []string{"a", "b", "c"}
 	assertSchedulePair(t, waitForSchedulePair(t, msgs, 5*time.Second), initial)
 
@@ -257,7 +283,7 @@ func TestSchedulerSyntheticMixedEngineBurst(t *testing.T) {
 		}
 		depths[target]++
 		want := rankSyntheticDepths(depths)
-		writeRawFrame(t, stdin, fmt.Sprintf(
+		writeStampedSchedulerNotification(t, stdin, &nextSeq, fmt.Sprintf(
 			`{"jsonrpc":"2.0","method":"workloads:upsert","params":{"workloadInfo":{"id":"burst-%d","engine":"%s","runId":"burst","state":"running","originatedFrom":"local","scheduledOn":"%s"}}}`,
 			i, engine, target,
 		))

@@ -132,7 +132,8 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
 		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
 		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
-	writeRawFrame(t, aStdin, snapshot)
+	nextSeq := 1
+	writeStampedRawNotification(t, aStdin, &nextSeq, snapshot)
 
 	// Fire the remote read and await the response.
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
@@ -178,7 +179,8 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
 		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
 		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
-	writeRawFrame(t, aStdin, snapshot)
+	nextSeq := 1
+	writeStampedRawNotification(t, aStdin, &nextSeq, snapshot)
 	writeRawFrame(t, aStdin, `{"jsonrpc":"2.0","id":1,"method":"engine:remote-get-installed","params":{"node":"nodeB"}}`)
 
 	resp := waitForResponse(t, aMsgs, 15*time.Second)

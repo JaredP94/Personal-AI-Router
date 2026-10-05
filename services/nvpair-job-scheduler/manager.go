@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/schedulerwire"
 )
 
@@ -96,6 +98,11 @@ func (m *Manager) readLoop(ctx context.Context) error {
 		msg, err := m.codec.Read()
 		if err != nil {
 			if err == io.EOF || ctx.Err() != nil {
+				return nil
+			}
+			var pm *jsonrpc.ProtocolMismatchError
+			if errors.As(err, &pm) {
+				log.Printf("JSON-RPC protocol mismatch: %v", err)
 				return nil
 			}
 			log.Printf("JSON-RPC read error: %v", err)

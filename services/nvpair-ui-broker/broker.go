@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 	"nvpair-shared/schedulerwire"
@@ -2274,6 +2276,11 @@ func (b *Broker) readLoop(ctx context.Context) error {
 		case r := <-reads:
 			if r.err != nil {
 				if r.err == io.EOF || ctx.Err() != nil {
+					return nil
+				}
+				var pm *jsonrpc.ProtocolMismatchError
+				if stderrors.As(r.err, &pm) {
+					slog.Error("JSON-RPC protocol mismatch", "err", r.err)
 					return nil
 				}
 				slog.Warn("JSON-RPC read error", "err", r.err)

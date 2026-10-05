@@ -311,10 +311,9 @@ func TestBrokerAcceptsClientErrorsReport(t *testing.T) {
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	const id = "client:leg-b-notif"
-	report := fmt.Sprintf(`{"jsonrpc":"2.0","method":"errors:report","params":{"id":%q,"message":"client-synthesized","severity":"error"}}`, id) + "\n"
-	if _, err := stdin.Write([]byte(report)); err != nil {
-		t.Fatalf("write errors:report notification: %v", err)
-	}
+	report := fmt.Sprintf(`{"jsonrpc":"2.0","method":"errors:report","params":{"id":%q,"message":"client-synthesized","severity":"error"}}`, id)
+	nextSeq := 1
+	writeStampedRawNotification(t, stdin, &nextSeq, report)
 
 	// The broker forwards it into nvpair-errors, which stores it and pushes an
 	// errors:update the broker relays back unconditionally.

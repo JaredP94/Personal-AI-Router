@@ -145,7 +145,7 @@ func (m *workloadManagerProcess) readMessages(stdout io.Reader) {
 	for scanner.Scan() {
 		var msg Message
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			slog.Warn("workload-manager emitted invalid JSON", "err", err, "raw", scanner.Text())
+			slog.Warn("workload-manager emitted invalid JSON", "err", err)
 			continue
 		}
 		if msg.JSONRPC != "2.0" || msg.Method == "" {

@@ -4,9 +4,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -673,5 +675,30 @@ func TestNewManager_Floor(t *testing.T) {
 	m := NewManager(NewCodec(nopRW{}), 10*time.Millisecond)
 	if m.interval != intervalFloor {
 		t.Fatalf("interval = %v, want floor %v", m.interval, intervalFloor)
+	}
+}
+
+func TestReadLoopReturnsOnProtocolMismatch(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	m := NewManager(NewCodec(server), time.Hour)
+	done := make(chan error, 1)
+	go func() {
+		done <- m.readLoop(context.Background())
+	}()
+
+	if _, err := client.Write([]byte(`{"jsonrpc":"2.0","method":"ready"}` + "\n")); err != nil {
+		t.Fatalf("write unstamped notification: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("readLoop returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("readLoop did not return after protocol mismatch")
 	}
 }

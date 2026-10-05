@@ -259,3 +259,28 @@ func TestLMStudioProxyRestartInvalidatesPendingGeneration(t *testing.T) {
 		t.Fatal("replacement generation did not open gate after the restart")
 	}
 }
+
+func TestReadLoopReturnsOnProtocolMismatch(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	b := &Broker{codec: NewCodec(server)}
+	done := make(chan error, 1)
+	go func() {
+		done <- b.readLoop(context.Background())
+	}()
+
+	if _, err := client.Write([]byte(`{"jsonrpc":"2.0","method":"ready"}` + "\n")); err != nil {
+		t.Fatalf("write unstamped notification: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("readLoop returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("readLoop did not return after protocol mismatch")
+	}
+}
