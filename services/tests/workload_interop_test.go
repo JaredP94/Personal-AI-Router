@@ -129,7 +129,7 @@ func writeStampedRawNotification(t *testing.T, w io.Writer, nextSeq *int, frame 
 		t.Fatalf("parse notification frame: %v", err)
 	}
 	if _, ok := msg["id"]; ok {
-		t.Fatalf("refusing to stamp request frame: %s", frame)
+		t.Fatalf("refusing to stamp request frame: it carries an id")
 	}
 	msg["epoch"] = rawNotificationTestEpoch
 	msg["seq"] = *nextSeq
