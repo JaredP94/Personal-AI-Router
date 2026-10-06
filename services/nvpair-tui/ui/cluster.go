@@ -119,6 +119,13 @@ func (v *clusterView) identityCmd() tea.Cmd {
 	})
 }
 
+// epochSnapshotCmds re-reads the cluster roster after a protocol epoch change.
+// nodes:get-initial is a query relay to the cluster manager that seeds the
+// member table the push stream then keeps current. This view's own identityCmd
+// reads the same method as the Overview's nodeIDCmd, so it stays out of the
+// burst and every whitelisted read is issued at most once per epoch change.
+func (v *clusterView) epochSnapshotCmds() []tea.Cmd { return []tea.Cmd{v.nodesCmd()} }
+
 func (v *clusterView) nodesCmd() tea.Cmd {
 	return call(v.client, "nodes:get-initial", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {

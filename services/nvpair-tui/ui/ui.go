@@ -12,15 +12,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run builds the tabbed program over a connected broker client and the
-// broker's stderr stream, and blocks until the user quits. The caller is
-// responsible for shutting the broker down afterwards.
-func Run(client *rpc.Client, stderr io.Reader) error {
+// Run builds the tabbed program over a connected broker client, the broker's
+// stderr stream, and the protocol epochs the supervisor published for this
+// connection, and blocks until the user quits. The caller is responsible for
+// shutting the broker down afterwards.
+//
+// epochChanges is the consumer side of rpc.Client.OnEpochChange: an epoch
+// arriving on it makes the model re-fetch its read-only snapshots, because the
+// broker behind this connection has been replaced.
+func Run(client *rpc.Client, stderr io.Reader, epochChanges <-chan string) error {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
 
 	p := tea.NewProgram(
-		New(client, logCh, defaultViews(client)),
+		New(client, logCh, epochChanges, defaultViews(client)),
 		tea.WithAltScreen(),
 	)
 	_, err := p.Run()

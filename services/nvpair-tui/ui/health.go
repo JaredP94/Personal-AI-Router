@@ -112,6 +112,14 @@ func (v *healthView) nodeIDCmd() tea.Cmd {
 	})
 }
 
+// epochSnapshotCmds re-reads this host's principal after a protocol epoch
+// change. cluster:get-node-id is a query relay to the cluster manager, and this
+// is the one view that re-reads it per burst: the Overview's crash table
+// filters on this UUID and has no push notification that would refresh it, so a
+// broker restart would otherwise hide every local crash. The Cluster tab serves
+// the same value from the cluster:identity-changed push.
+func (v *healthView) epochSnapshotCmds() []tea.Cmd { return []tea.Cmd{v.nodeIDCmd()} }
+
 func (v *healthView) pingCmd() tea.Cmd {
 	return call(v.client, "ping", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {

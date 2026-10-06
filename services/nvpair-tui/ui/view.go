@@ -39,3 +39,16 @@ type View interface {
 type inputCapturer interface {
 	CapturingInput() bool
 }
+
+// epochSnapshotRefresher is an optional interface a View implements when its
+// tab is seeded from a read-only snapshot RPC whose result it caches. When the
+// broker's protocol epoch changes — the peer restarted, so every fact this UI
+// cached from it is suspect — the root model re-runs exactly these commands.
+//
+// Implementing this method is the whitelist for that burst: it may return only
+// reads. A subscribe would duplicate server-side state that is already open and
+// a mutation would take a real action on a user's machine because a protocol
+// banner moved.
+type epochSnapshotRefresher interface {
+	epochSnapshotCmds() []tea.Cmd
+}

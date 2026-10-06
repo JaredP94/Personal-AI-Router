@@ -84,6 +84,12 @@ func (v *enginesView) Init() tea.Cmd {
 	)
 }
 
+// epochSnapshotCmds re-reads the installed-engine roster after a protocol epoch
+// change. engine:get-installed is a query relay to the engine manager; the
+// engine:subscribe that Init opened stays open across the restart, so it is
+// deliberately not re-issued here.
+func (v *enginesView) epochSnapshotCmds() []tea.Cmd { return []tea.Cmd{v.loadCmd()} }
+
 func (v *enginesView) loadCmd() tea.Cmd {
 	return call(v.client, "engine:get-installed", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {

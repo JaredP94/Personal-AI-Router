@@ -32,6 +32,16 @@ type LogLineMsg struct{ Line string }
 // LogClosedMsg is emitted once the broker's stderr stream ends.
 type LogClosedMsg struct{}
 
+// EpochChangeMsg carries one change in the broker's protocol epoch into the
+// update loop. The root model answers it with a single read-only snapshot
+// re-fetch burst, because a new epoch means a different broker process is
+// answering and everything cached from the old one is suspect.
+//
+// It is delivered once per distinct epoch, not once per frame: the rpc client
+// compares each envelope epoch against the one it holds and reports only
+// changes, and a seq gap under an unchanged epoch never produces one.
+type EpochChangeMsg struct{ Epoch string }
+
 // waitForLog blocks on the next captured stderr line, re-arming itself
 // after each one. A closed channel yields LogClosedMsg.
 func waitForLog(lines <-chan string) tea.Cmd {
@@ -54,6 +64,24 @@ func waitForNotification(client *rpc.Client) tea.Cmd {
 			return DisconnectedMsg{}
 		}
 		return NotificationMsg{Msg: msg}
+	}
+}
+
+// waitForEpochChange blocks on the next protocol epoch the supervisor's epoch
+// consumer published, and delivers it as an EpochChangeMsg. Like
+// waitForNotification it re-arms from the model's Update, so exactly one
+// listener is ever parked on the channel.
+//
+// The supervisor owns that channel for the life of the broker child and never
+// closes it; should it ever close, this yields a nil message, which Bubble Tea
+// drops, so the loop ends quietly instead of spinning on a closed channel.
+func waitForEpochChange(changes <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		epoch, ok := <-changes
+		if !ok {
+			return nil
+		}
+		return EpochChangeMsg{Epoch: epoch}
 	}
 }
 

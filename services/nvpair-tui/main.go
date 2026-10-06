@@ -70,7 +70,11 @@ func main() {
 	// The broker's stderr (its logs plus every worker's, prefixed) is fed
 	// into the UI's Logs view rather than the terminal, so it never
 	// collides with the full-screen TUI on stdout.
-	if err := ui.Run(sup.Client, sup.Stderr); err != nil {
+	//
+	// sup.EpochChanges() is the same stream: when the broker is replaced and
+	// announces a new protocol epoch, the UI re-reads the read-only snapshots it
+	// cached from the old process instead of showing them as if they were fresh.
+	if err := ui.Run(sup.Client, sup.Stderr, sup.EpochChanges()); err != nil {
 		slog.Error("ui error", "err", err)
 	}
 

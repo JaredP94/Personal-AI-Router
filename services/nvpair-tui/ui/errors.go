@@ -54,6 +54,12 @@ func newErrorsView(client *rpc.Client) *errorsView {
 func (v *errorsView) Title() string { return "Errors" }
 
 func (v *errorsView) Init() tea.Cmd {
+	return v.loadCmd()
+}
+
+// loadCmd reads the error store's snapshot. The broker answers errors:get-initial
+// from its own in-memory store, so this is a read.
+func (v *errorsView) loadCmd() tea.Cmd {
 	return call(v.client, "errors:get-initial", nil, func(msg *rpc.Message, err error) tea.Msg {
 		if err != nil {
 			return errorsLoadedMsg{err: err}
@@ -63,6 +69,12 @@ func (v *errorsView) Init() tea.Cmd {
 		return errorsLoadedMsg{errs: errs}
 	})
 }
+
+// epochSnapshotCmds re-reads the error snapshot after a protocol epoch change,
+// so the tab stops showing entries collected from a broker that no longer
+// exists. Only the read is re-issued; errors:update pushes keep the table
+// current afterwards and errors:clear is never sent from here.
+func (v *errorsView) epochSnapshotCmds() []tea.Cmd { return []tea.Cmd{v.loadCmd()} }
 
 func (v *errorsView) SetSize(w, h int) {
 	v.width, v.height = w, h

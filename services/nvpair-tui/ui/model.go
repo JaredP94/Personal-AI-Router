@@ -6,6 +6,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"nvpair-tui/rpc"
 
@@ -23,10 +24,11 @@ const chromeHeight = 3
 // header showing broker status, and a footer of contextual help. It owns
 // the broker notification loop and routes messages to the views.
 type Model struct {
-	client *rpc.Client
-	logCh  <-chan string
-	keys   globalKeyMap
-	help   help.Model
+	client       *rpc.Client
+	logCh        <-chan string
+	epochChanges <-chan string
+	keys         globalKeyMap
+	help         help.Model
 
 	views  []View
 	active int
@@ -35,26 +37,40 @@ type Model struct {
 
 	ready         bool
 	brokerVersion string
+	epoch         string
 	disconnected  bool
 	showFullHelp  bool
+
+	// epochReloading counts the snapshot fetches of the current epoch re-fetch
+	// burst that the broker has not answered yet. While it is above zero a burst
+	// is in flight and further epoch changes coalesce into it rather than
+	// stacking new bursts, so the number of in-flight re-fetches stays bounded
+	// by the whitelist however often the broker restarts.
+	//
+	// It is a pointer and an atomic because the count is retired on the
+	// goroutines Bubble Tea runs the fetch commands on, while the guard is
+	// consulted in Update, and Model itself is copied between Update calls.
+	epochReloading *atomic.Int64
 }
 
 // New builds the root model over a connected broker client, the broker's
-// captured stderr line channel, and the set of views (tabs) to present,
-// in tab order.
-func New(client *rpc.Client, logCh <-chan string, views []View) Model {
+// captured stderr line channel, the protocol epochs the supervisor published
+// for this connection, and the set of views (tabs) to present, in tab order.
+func New(client *rpc.Client, logCh <-chan string, epochChanges <-chan string, views []View) Model {
 	return Model{
-		client: client,
-		logCh:  logCh,
-		keys:   newGlobalKeyMap(),
-		help:   help.New(),
-		views:  views,
+		client:         client,
+		logCh:          logCh,
+		epochChanges:   epochChanges,
+		keys:           newGlobalKeyMap(),
+		help:           help.New(),
+		views:          views,
+		epochReloading: new(atomic.Int64),
 	}
 }
 
-// Init starts each view and arms the broker notification + log loops.
+// Init starts each view and arms the broker notification, epoch and log loops.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{waitForNotification(m.client), waitForLog(m.logCh)}
+	cmds := []tea.Cmd{waitForNotification(m.client), waitForLog(m.logCh), waitForEpochChange(m.epochChanges)}
 	for _, v := range m.views {
 		if c := v.Init(); c != nil {
 			cmds = append(cmds, c)
@@ -113,6 +129,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.disconnected = true
 		return m, nil
 
+	case EpochChangeMsg:
+		// The broker announced a new protocol epoch: a different process is
+		// answering now, so the rosters every view cached from the old one are
+		// suspect. Re-read them, once, read-only.
+		m.epoch = msg.Epoch
+		if m.epochReloading.Load() == 0 {
+			fetches := m.epochSnapshotCmds()
+			// Bubble Tea only runs the command returned here, after Update has
+			// returned, so arming the guard now cannot race with its own fetches.
+			m.epochReloading.Store(int64(len(fetches)))
+			return m, tea.Batch(append(fetches, waitForEpochChange(m.epochChanges))...)
+		}
+		// A burst is already in flight: coalesce. This epoch is recorded as the
+		// newest one seen and the running burst covers it, so no second burst
+		// stacks on top. Only the listener re-arms.
+		return m, waitForEpochChange(m.epochChanges)
+
 	case LogLineMsg:
 		cmds := m.broadcast(msg)
 		cmds = append(cmds, waitForLog(m.logCh))
@@ -152,6 +185,38 @@ func (m Model) activeView() View {
 	return m.views[m.active]
 }
 
+// epochSnapshotCmds collects the read-only re-fetch burst for one epoch change:
+// one command per whitelisted snapshot, contributed by the views that own it
+// (see epochSnapshotRefresher). Each is wrapped so retiring it can release the
+// in-flight guard, and each is contributed by the view that already decodes it
+// on first load, so there is one path from a broker response to the screen.
+func (m *Model) epochSnapshotCmds() []tea.Cmd {
+	var cmds []tea.Cmd
+	for _, v := range m.views {
+		refresher, ok := v.(epochSnapshotRefresher)
+		if !ok {
+			continue
+		}
+		for _, cmd := range refresher.epochSnapshotCmds() {
+			if cmd == nil {
+				continue
+			}
+			cmds = append(cmds, m.retireOnReturn(cmd))
+		}
+	}
+	return cmds
+}
+
+// retireOnReturn runs a burst command and decrements the in-flight guard when
+// the broker has answered it — success or failure, since a reply of any kind
+// means the snapshot was re-fetched against the current broker.
+func (m *Model) retireOnReturn(cmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		defer m.epochReloading.Add(-1)
+		return cmd()
+	}
+}
+
 func (m *Model) broadcast(msg tea.Msg) []tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.views))
 	for _, v := range m.views {
@@ -183,7 +248,7 @@ func (m Model) headerView() string {
 	case m.disconnected:
 		status = statusErrStyle.Render("broker disconnected")
 	case m.ready:
-		status = statusOKStyle.Render(fmt.Sprintf("broker ready  v%s", m.brokerVersion))
+		status = statusOKStyle.Render(fmt.Sprintf("broker ready  v%s%s", m.brokerVersion, epochSuffix(m.epoch)))
 	default:
 		status = footerStyle.Render("connecting to broker...")
 	}
@@ -217,6 +282,22 @@ func (m Model) footerView() string {
 		return m.help.FullHelpView([][]key.Binding{global, viewKeys})
 	}
 	return m.help.ShortHelpView(append(viewKeys, global...))
+}
+
+// epochSuffix renders the broker's protocol epoch for the header, or nothing
+// while no epoch is known yet. The header is where a restart that re-fetched
+// every snapshot becomes visible without opening the logs, which is the whole
+// point of tracking the epoch; the value is a random UUID and carries no prompt,
+// message or credential material.
+func epochSuffix(epoch string) string {
+	const shown = 8
+	if epoch == "" {
+		return ""
+	}
+	if len(epoch) > shown {
+		epoch = epoch[:shown]
+	}
+	return "  epoch " + epoch
 }
 
 func readyVersion(msg *rpc.Message) string {
