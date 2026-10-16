@@ -70,12 +70,6 @@ func (v *errorsView) loadCmd() tea.Cmd {
 	})
 }
 
-// epochSnapshotCmds re-reads the error snapshot after a protocol epoch change,
-// so the tab stops showing entries collected from a broker that no longer
-// exists. Only the read is re-issued; errors:update pushes keep the table
-// current afterwards and errors:clear is never sent from here.
-func (v *errorsView) epochSnapshotCmds() []tea.Cmd { return []tea.Cmd{v.loadCmd()} }
-
 func (v *errorsView) SetSize(w, h int) {
 	v.width, v.height = w, h
 	v.table.SetWidth(w)

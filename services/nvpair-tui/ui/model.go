@@ -6,7 +6,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"nvpair-tui/rpc"
 
@@ -41,39 +40,45 @@ type Model struct {
 	disconnected  bool
 	showFullHelp  bool
 
-	// epochReloading counts the snapshot fetches of the current epoch re-fetch
-	// burst that the broker has not answered yet. While it is above zero a burst
-	// is in flight and further epoch changes coalesce into it rather than
-	// stacking new bursts, so the number of in-flight re-fetches stays bounded
-	// by the whitelist however often the broker restarts.
-	//
-	// It is a pointer and an atomic because the count is retired on the
-	// goroutines Bubble Tea runs the fetch commands on, while the guard is
-	// consulted in Update, and Model itself is copied between Update calls.
-	epochReloading *atomic.Int64
+	connectionSetup    bool
+	hydratedEpoch      string
+	recoveryGeneration uint64
+	recoveryActive     bool
+	recoveryPushes     map[string]NotificationMsg
 }
 
 // New builds the root model over a connected broker client, the broker's
 // captured stderr line channel, the protocol epochs the supervisor published
 // for this connection, and the set of views (tabs) to present, in tab order.
 func New(client *rpc.Client, logCh <-chan string, epochChanges <-chan string, views []View) Model {
+	// Snapshots can arrive before the first terminal-size message. Initialize
+	// table columns before any rows are applied, then resize on WindowSizeMsg.
+	for _, v := range views {
+		v.SetSize(80, 21)
+	}
 	return Model{
-		client:         client,
-		logCh:          logCh,
-		epochChanges:   epochChanges,
-		keys:           newGlobalKeyMap(),
-		help:           help.New(),
-		views:          views,
-		epochReloading: new(atomic.Int64),
+		client:       client,
+		logCh:        logCh,
+		epochChanges: epochChanges,
+		keys:         newGlobalKeyMap(),
+		help:         help.New(),
+		views:        views,
 	}
 }
 
 // Init starts each view and arms the broker notification, epoch and log loops.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{waitForNotification(m.client), waitForLog(m.logCh), waitForEpochChange(m.epochChanges)}
+	// Subscriptions are installed once per new transport, before consuming pushes.
+	// All initial cached getters belong to the generation-owned recovery path.
+	cmds := []tea.Cmd{m.setupConnection(), waitForLog(m.logCh)}
 	for _, v := range m.views {
-		if c := v.Init(); c != nil {
-			cmds = append(cmds, c)
+		switch v := v.(type) {
+		case *healthView:
+			cmds = append(cmds, v.pingCmd(), v.tickCmd())
+		case *manualView:
+			cmds = append(cmds, v.tickCmd())
+		case *logsView:
+			cmds = append(cmds, v.Init())
 		}
 	}
 	return tea.Batch(cmds...)
@@ -116,13 +121,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case connectionSetupMsg:
+		if msg.err != nil {
+			m.disconnected = true
+			return m, nil
+		}
+		m.connectionSetup = true
+		return m, tea.Batch(waitForNotification(m.client), m.beginRecovery())
+
 	case NotificationMsg:
+		// Same-epoch traffic retries dirty hydration; no polling timer.
+		if msg.Msg.Epoch != nil {
+			m.epoch = *msg.Msg.Epoch
+		}
 		if msg.Msg.Method == "app:ready" {
 			m.ready = true
 			m.brokerVersion = readyVersion(msg.Msg)
 		}
+		if m.recoveryActive {
+			if key := recoveryPushKey(msg); key != "" {
+				m.recoveryPushes[key] = msg
+			}
+		}
 		cmds := m.broadcast(msg)
-		cmds = append(cmds, waitForNotification(m.client))
+		cmds = append(cmds, waitForNotification(m.client), m.beginRecovery())
 		return m, tea.Batch(cmds...)
 
 	case DisconnectedMsg:
@@ -130,21 +152,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case EpochChangeMsg:
-		// The broker announced a new protocol epoch: a different process is
-		// answering now, so the rosters every view cached from the old one are
-		// suspect. Re-read them, once, read-only.
 		m.epoch = msg.Epoch
-		if m.epochReloading.Load() == 0 {
-			fetches := m.epochSnapshotCmds()
-			// Bubble Tea only runs the command returned here, after Update has
-			// returned, so arming the guard now cannot race with its own fetches.
-			m.epochReloading.Store(int64(len(fetches)))
-			return m, tea.Batch(append(fetches, waitForEpochChange(m.epochChanges))...)
+		return m, m.beginRecovery()
+
+	case recoveryResultMsg:
+		if !m.recoveryActive || msg.generation != m.recoveryGeneration {
+			return m, nil
 		}
-		// A burst is already in flight: coalesce. This epoch is recorded as the
-		// newest one seen and the running burst covers it, so no second burst
-		// stacks on top. Only the listener re-arms.
-		return m, waitForEpochChange(m.epochChanges)
+		m.recoveryActive = false
+		if msg.epoch != m.epoch {
+			return m, m.beginRecovery() // exactly one latest follow-up
+		}
+		if msg.err != nil {
+			return m, nil
+		} // dirty; retry on later traffic
+		var cmds []tea.Cmd
+		for _, result := range msg.results {
+			if m.recoveryResultSuperseded(result) {
+				continue
+			}
+			cmds = append(cmds, m.broadcast(result)...)
+		}
+		// Newer facts and tombstones win over the fetched baseline.
+		for _, push := range m.recoveryPushes {
+			// Proxy pushes already issue their ordinary authoritative getter commands.
+			// Replaying them would issue duplicate queries; skip the older baseline.
+			if proxyPush(push.Msg.Method) {
+				continue
+			}
+			cmds = append(cmds, m.broadcast(push)...)
+		}
+		m.recoveryPushes = nil
+		m.hydratedEpoch = msg.epoch
+		return m, tea.Batch(cmds...)
 
 	case LogLineMsg:
 		cmds := m.broadcast(msg)
@@ -183,38 +223,6 @@ func (m Model) activeView() View {
 		return nil
 	}
 	return m.views[m.active]
-}
-
-// epochSnapshotCmds collects the read-only re-fetch burst for one epoch change:
-// one command per whitelisted snapshot, contributed by the views that own it
-// (see epochSnapshotRefresher). Each is wrapped so retiring it can release the
-// in-flight guard, and each is contributed by the view that already decodes it
-// on first load, so there is one path from a broker response to the screen.
-func (m *Model) epochSnapshotCmds() []tea.Cmd {
-	var cmds []tea.Cmd
-	for _, v := range m.views {
-		refresher, ok := v.(epochSnapshotRefresher)
-		if !ok {
-			continue
-		}
-		for _, cmd := range refresher.epochSnapshotCmds() {
-			if cmd == nil {
-				continue
-			}
-			cmds = append(cmds, m.retireOnReturn(cmd))
-		}
-	}
-	return cmds
-}
-
-// retireOnReturn runs a burst command and decrements the in-flight guard when
-// the broker has answered it — success or failure, since a reply of any kind
-// means the snapshot was re-fetched against the current broker.
-func (m *Model) retireOnReturn(cmd tea.Cmd) tea.Cmd {
-	return func() tea.Msg {
-		defer m.epochReloading.Add(-1)
-		return cmd()
-	}
 }
 
 func (m *Model) broadcast(msg tea.Msg) []tea.Cmd {

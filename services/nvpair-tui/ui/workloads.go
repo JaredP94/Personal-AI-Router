@@ -21,11 +21,8 @@ type workload struct {
 	CreatedAt      int64  `json:"createdAt"` // Unix millis
 }
 
-// workloadsView shows cluster-wide inference workloads. The table is built
-// purely from the live workloads:upsert / workloads:remove stream after
-// subscribing, so a workload already in flight when the TUI starts stays
-// invisible until its next transition. The broker does expose
-// workloads:get-initial for a baseline; this view does not yet call it.
+// workloadsView renders an authoritative baseline plus live deltas.
+// The root recovery owner replaces the baseline and reapplies concurrent pushes.
 type workloadsView struct {
 	client *rpc.Client
 	table  table.Model
@@ -70,6 +67,14 @@ func (v *workloadsView) SetSize(w, h int) {
 
 func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case workloadsSnapshotMsg:
+		v.order = nil
+		v.byKey = map[string]workload{}
+		for _, w := range msg.workloads {
+			v.upsert(w)
+		}
+		v.refreshRows()
+		return nil
 	case workloadsSubscribedMsg:
 		if msg.err != nil {
 			v.status = "workloads subscribe failed: " + msg.err.Error()

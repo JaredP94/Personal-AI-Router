@@ -98,6 +98,9 @@ func (v *nodesView) SetSize(w, h int) {
 
 func (v *nodesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case discoverySnapshotMsg:
+		v.setNodes(msg.nodes)
+		return nil
 	case discoverySubscribedMsg:
 		if msg.err != nil {
 			v.status = "discovery subscribe failed: " + msg.err.Error()
