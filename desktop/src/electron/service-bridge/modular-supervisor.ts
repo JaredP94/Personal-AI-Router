@@ -433,9 +433,27 @@ class ModularSupervisor {
     // ready notifications during startup must not trigger a renderer store refresh
     // while remote peer facts are still unknown.
     private brokerHydrationDone = false
+    // Protocol v2 epoch last observed from the broker. Empty until the first
+    // stamped broker notification arrives; a change triggers a single read-only
+    // snapshot resync burst.
+    private currentEpoch = ''
+    private resyncInFlight = false
 
     get ready(): boolean {
         return this.isReady && this.brokerReady
+    }
+
+    bridgeEpoch(): string {
+        return this.currentEpoch
+    }
+
+    noteEpoch(epoch: string): boolean {
+        if (!epoch || epoch === this.currentEpoch) return false
+        this.currentEpoch = epoch
+        if (!this.resyncInFlight) {
+            void this.resyncOnEpochChange(epoch)
+        }
+        return true
     }
 
     /** Register a handler invoked when the broker exits unexpectedly. */
@@ -501,6 +519,8 @@ class ModularSupervisor {
         this.brokerReady = false
         this.brokerHydrationDone = false
         this.readinessReported = false
+        this.currentEpoch = ''
+        this.resyncInFlight = false
 
         // Clear any workloads carried over from a previous run so stale entries
         // from before a restart/crash never linger. `onBrokerReady` then re-seeds
@@ -611,6 +631,8 @@ class ModularSupervisor {
         this.brokerHydrationDone = false
         this.isReady = false
         this.readinessReported = false
+        this.currentEpoch = ''
+        this.resyncInFlight = false
         this.rejectReadinessWaiters(
             new Error(`${APP_DISPLAY_NAME} service stopped before becoming ready`)
         )
@@ -813,6 +835,8 @@ class ModularSupervisor {
                 this.brokerHydrationDone = false
                 this.isReady = false
                 this.readinessReported = false
+                this.currentEpoch = ''
+                this.resyncInFlight = false
                 this.rejectReadinessWaiters(
                     new Error(`${APP_DISPLAY_NAME} service exited before becoming ready`)
                 )
@@ -967,8 +991,13 @@ class ModularSupervisor {
      */
     private async seedClusterPeerIds(): Promise<void> {
         try {
-            const members = parseClusterNodes(await this.callProcess('broker', 'nodes:get-initial'))
+            const result = await this.callProcess('broker', 'nodes:get-initial')
+            const members = parseClusterNodes(result)
             this.setClusterPeerIds(members)
+            getModularBridgeState().reconcilePendingInvitesWithMembers(members)
+            if (Array.isArray(objectValue(result)?.nodes)) {
+                emitBridgePush('nodes:changed', members)
+            }
             log.info({
                 sublevel: 'broker',
                 message: `cluster peer seed: ${this.clusterPeerIds.size} remote member(s)`,
@@ -1115,7 +1144,6 @@ class ModularSupervisor {
     }
 
     private async hydrateEngineManager(): Promise<void> {
-        if (!this.processes.has('broker')) return
         try {
             const result = await this.callProcess('broker', 'engine:get-installed')
             const obj = objectValue(result)
@@ -1129,6 +1157,84 @@ class ModularSupervisor {
                 sublevel: 'engine-manager',
                 message: `Unable to hydrate engine-manager state: ${getErrorString(err)}`
             })
+        }
+    }
+
+    /**
+     * Re-fetch every consumed broker snapshot when the broker's protocol epoch
+     * changes. Coalesced by `resyncInFlight` so concurrent epoch changes never
+     * stack bursts.
+     */
+    private async resyncOnEpochChange(triggerEpoch: string): Promise<void> {
+        this.resyncInFlight = true
+        try {
+            try {
+                const resync = objectValue(await this.callProcess('broker', 'broker:resync'))
+                const resyncEpoch = stringValue(resync?.epoch)
+                if (resyncEpoch && this.currentEpoch === triggerEpoch) {
+                    this.currentEpoch = resyncEpoch
+                }
+            } catch (err) {
+                log.verbose({
+                    sublevel: 'broker',
+                    message: `broker:resync skipped: ${getErrorString(err)}`
+                })
+            }
+
+            try {
+                const discoveryResult = await this.callProcess('broker', 'discovery:get-nodes')
+                const discoveryNodes = Array.isArray(discoveryResult)
+                    ? discoveryResult
+                    : objectValue(discoveryResult)?.nodes
+                if (Array.isArray(discoveryNodes)) {
+                    getModularBridgeState().handleNotification({
+                        source: 'broker',
+                        method: 'discovery:nodes-changed',
+                        params: discoveryNodes
+                    })
+                }
+            } catch (err) {
+                log.verbose({
+                    sublevel: 'broker',
+                    message: `discovery:get-nodes resync skipped: ${getErrorString(err)}`
+                })
+            }
+
+            await this.seedClusterPeerIds()
+            await this.resolveSelfId()
+            await this.hydrateEngineManager()
+
+            try {
+                const errorsResult = await this.callProcess('broker', 'errors:get-initial')
+                this.handleErrorsNotification({
+                    source: 'broker',
+                    method: 'errors:update',
+                    params: errorsResult
+                })
+            } catch (err) {
+                log.verbose({
+                    sublevel: 'broker',
+                    message: `errors:get-initial resync skipped: ${getErrorString(err)}`
+                })
+            }
+
+            await this.seedWorkloadBaseline()
+            for (const engine of PROXY_ENGINES) {
+                await this.pollProxyStatus(engine)
+            }
+
+            try {
+                await this.callProcess('broker', 'telemetry/get-status')
+            } catch (err) {
+                log.verbose({
+                    sublevel: 'broker',
+                    message: `telemetry/get-status resync skipped: ${getErrorString(err)}`
+                })
+            }
+
+            this.emitStateRefreshIfHydrated()
+        } finally {
+            this.resyncInFlight = false
         }
     }
 
@@ -1204,6 +1310,21 @@ class ModularSupervisor {
                     ? notification.params
                     : {}
         })
+
+        if (notification.source === 'broker') {
+            const candidateEpoch =
+                notification.epoch ||
+                (notification.method === 'broker:epoch'
+                    ? stringValue(objectValue(notification.params)?.epoch)
+                    : '')
+            if (candidateEpoch) {
+                this.noteEpoch(candidateEpoch)
+            }
+        }
+
+        if (notification.method === 'heartbeat' || notification.method === 'broker:epoch') {
+            return
+        }
 
         // Service-error pipeline: the broker forwards every worker's error into
         // nvpair-errors and relays the authoritative snapshot back as errors:update.
@@ -2236,4 +2357,12 @@ export function getModularSupervisor(): ModularSupervisor {
         supervisor = new ModularSupervisor()
     }
     return supervisor
+}
+
+export function bridgeEpoch(): string {
+    return getModularSupervisor().bridgeEpoch()
+}
+
+export function noteEpoch(epoch: string): boolean {
+    return getModularSupervisor().noteEpoch(epoch)
 }
