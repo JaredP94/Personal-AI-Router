@@ -56,6 +56,7 @@ describe('silence reconnect owner', () => {
         supervisor['isReady'] = false
         supervisor['brokerReady'] = false
         supervisor['onBrokerCrash'] = undefined
+        supervisor['onBrokerReconnecting'] = undefined
         vi.restoreAllMocks()
     })
     it('invalidates readiness, stops once and restarts only once until the new lifetime is ready', async () => {
@@ -63,14 +64,17 @@ describe('silence reconnect owner', () => {
         supervisor['isReady'] = true
         supervisor['brokerReady'] = true
         const crashed = vi.fn()
+        const reconnecting = vi.fn()
         supervisor.setOnBrokerCrash(crashed)
+        supervisor.setOnBrokerReconnecting(reconnecting)
         const resyncLifecycle = supervisor['resyncLifecycle']
         first.emit('unresponsive', { source: 'broker' })
         first.emit('unresponsive', { source: 'broker' })
         expect(supervisor.ready).toBe(false)
         expect(supervisor['resyncLifecycle']).toBeGreaterThan(resyncLifecycle)
         await flush()
-        expect(crashed).toHaveBeenCalledTimes(1)
+        expect(reconnecting).toHaveBeenCalledTimes(1)
+        expect(crashed).not.toHaveBeenCalled()
         expect(supervisor['stopProcesses']).toHaveBeenCalledTimes(1)
         expect(supervisor.start).toHaveBeenCalledTimes(1)
 
@@ -80,6 +84,9 @@ describe('silence reconnect owner', () => {
         await flush()
         expect(supervisor.start).toHaveBeenCalledTimes(1)
         expect(supervisor['stopProcesses']).toHaveBeenCalledTimes(2)
+        // No retry left: a genuine failure, reported as a crash.
+        expect(crashed).toHaveBeenCalledTimes(1)
+        expect(reconnecting).toHaveBeenCalledTimes(1)
 
         const third = attach()
         supervisor['isReady'] = true
@@ -88,6 +95,7 @@ describe('silence reconnect owner', () => {
         third.emit('unresponsive', { source: 'broker' })
         await flush()
         expect(supervisor.start).toHaveBeenCalledTimes(2)
+        expect(reconnecting).toHaveBeenCalledTimes(2)
     })
     it('a user stop cancels an in-flight automatic restart and shares the owned stop', async () => {
         let release = (): void => undefined

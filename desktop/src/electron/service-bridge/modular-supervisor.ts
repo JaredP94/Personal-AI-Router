@@ -415,6 +415,9 @@ class ModularSupervisor {
     // connector registers this to flip status and prompt the user — the
     // supervisor never imports the connector, keeping the dependency one-way.
     private onBrokerCrash?: (info: { code: number | null }) => void
+    // Invoked instead of onBrokerCrash when an unresponsive broker is about to be
+    // restarted automatically: the owner keeps ownership and waits for onReady.
+    private onBrokerReconnecting?: () => void
     private onReady?: () => void
     // Set when an invite lazily created the cluster (the cluster-manager refuses
     // to invite while unclustered). Tracks that the cluster exists *only* because
@@ -519,6 +522,11 @@ class ModularSupervisor {
     /** Register a handler invoked when the broker exits unexpectedly. */
     setOnBrokerCrash(cb: (info: { code: number | null }) => void): void {
         this.onBrokerCrash = cb
+    }
+
+    /** Register a handler invoked when an unresponsive broker is being restarted automatically. */
+    setOnBrokerReconnecting(cb: () => void): void {
+        this.onBrokerReconnecting = cb
     }
 
     /** Register a handler invoked whenever the broker reports app:ready. */
@@ -908,10 +916,14 @@ class ModularSupervisor {
             this.rejectReadinessWaiters(
                 new Error('Broker connection lost: inbound silence timeout')
             )
-            this.onBrokerCrash?.({ code: null })
             const retry = this.silenceRetryAvailable
             this.silenceRetryAvailable = false
             const generation = ++this.silenceRestartGeneration
+            // An attempted restart is a reconnect, not a crash: the owner stays the
+            // owner and returns to connected on the new lifetime's ready signal.
+            // With no retry left this is a genuine failure.
+            if (retry) this.onBrokerReconnecting?.()
+            else this.onBrokerCrash?.({ code: null })
             // Reuse owned graceful stop/start; a user stop invalidates the ticket.
             // No second automatic retry until a fresh lifetime becomes ready.
             this.silenceRestart = this.stop(false)
@@ -923,6 +935,10 @@ class ModularSupervisor {
                         sublevel: 'broker',
                         message: `Silence recovery failed: ${getErrorString(error)}`
                     })
+                    // The restart the owner is waiting on will not happen.
+                    if (retry && generation === this.silenceRestartGeneration) {
+                        this.onBrokerCrash?.({ code: null })
+                    }
                 })
                 .finally(() => {
                     this.silenceRestart = null

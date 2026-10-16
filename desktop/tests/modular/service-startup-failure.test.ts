@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     const supervisor = {
         setLogLevel: vi.fn((_level: string): void => {}),
         setOnBrokerCrash: vi.fn((_callback: (info: { code: number | null }) => void): void => {}),
+        setOnBrokerReconnecting: vi.fn((_callback: () => void): void => {}),
         setOnReady: vi.fn((callback: () => void): void => {
             readyCallback = callback
         }),

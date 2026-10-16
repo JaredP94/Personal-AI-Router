@@ -61,6 +61,7 @@ function ensureBrokerCrashHandler(): void {
     crashHandlerRegistered = true
     const supervisor = getModularSupervisor()
     supervisor.setOnBrokerCrash(handleBrokerCrash)
+    supervisor.setOnBrokerReconnecting(handleBrokerReconnecting)
     supervisor.setOnReady(handleSupervisorReady)
 }
 
@@ -71,6 +72,20 @@ function handleSupervisorReady(): void {
         sublevel: 'lifecycle',
         message: 'Modular service bridge initialized'
     })
+}
+
+/**
+ * The broker stopped responding and the supervisor is restarting the tree we
+ * own. This is not a crash: ownership is kept (so quit still runs the owned
+ * teardown) and the next ready signal returns the status to connected.
+ */
+function handleBrokerReconnecting(): void {
+    if (!weSpawned) return
+    log.warn({
+        sublevel: 'lifecycle',
+        message: 'Broker stopped responding; restarting it'
+    })
+    setStatus('reconnecting')
 }
 
 /**
