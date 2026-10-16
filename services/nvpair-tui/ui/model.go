@@ -166,7 +166,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			return m, nil
-		} // dirty; retry on later traffic
+		} // broker:resync failed: dirty; retry on later traffic
 		var cmds []tea.Cmd
 		for _, result := range msg.results {
 			if m.recoveryResultSuperseded(result) {
@@ -184,6 +184,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.broadcast(push)...)
 		}
 		m.recoveryPushes = nil
+		// Hydrated even if optional getters errored: their views received the
+		// error result, and healthy same-epoch traffic must not re-burst (§4).
 		m.hydratedEpoch = msg.epoch
 		return m, tea.Batch(cmds...)
 

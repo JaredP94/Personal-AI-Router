@@ -10,6 +10,7 @@ import (
 	"net"
 	svcerrors "nvpair-shared/errors"
 	"nvpair-tui/rpc"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +72,7 @@ type recoveryBroker struct {
 	entered    chan struct{}
 	release    chan struct{}
 	fail       string
+	broken     func(method string) bool // permanently failing getters
 	workloads  []workload
 }
 
@@ -120,6 +122,9 @@ func (b *recoveryBroker) serve() {
 		if fail {
 			b.fail = ""
 		}
+		if b.broken != nil && b.broken(q.Method) {
+			fail = true
+		}
 		b.mu.Unlock()
 		if gate != nil {
 			<-gate
@@ -159,6 +164,29 @@ func (b *recoveryBroker) push(t *testing.T, epoch string, seq int, method string
 	b.writes.Unlock()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+func (b *recoveryBroker) snapshotCounts() map[string]int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	counts := make(map[string]int, len(b.counts))
+	for k, v := range b.counts {
+		counts[k] = v
+	}
+	return counts
+}
+
+// settle feeds every pending message through the model until nothing new has
+// arrived for a short quiet window.
+func (l *loop) settle(t *testing.T) {
+	t.Helper()
+	for {
+		select {
+		case msg := <-l.inbox:
+			l.turn(t, msg)
+		case <-time.After(200 * time.Millisecond):
+			return
+		}
 	}
 }
 func (b *recoveryBroker) count(method string) int {
@@ -271,7 +299,7 @@ func TestRecoverySerializesLatestEpochAndRejectsStaleResults(t *testing.T) {
 func TestRecoveryFailureRetriesOnSameEpochTrafficThenStaysSilentAcrossSeqGaps(t *testing.T) {
 	b, l := newRecoverySession(t)
 	b.mu.Lock()
-	b.fail = "errors:get-initial"
+	b.fail = "broker:resync"
 	b.mu.Unlock()
 	b.push(t, "A", 1, "heartbeat", nil)
 	l.until(t, func() bool { return l.m.recoveryActive })
@@ -314,5 +342,59 @@ func TestRecoveryPreservesConcurrentSnapshotPushesAndWorkloadTombstones(t *testi
 	w := l.m.views[4].(*workloadsView)
 	if len(n.nodes) != 1 || n.nodes[0].HostUUID != "live" || len(w.byKey) != 1 || w.byKey[workloadKey("x", "live")].ID != "live" {
 		t.Fatalf("newer pushes overwritten: %v %v", n.nodes, w.byKey)
+	}
+}
+
+// An unavailable optional worker is a steady state, not a reason to re-burst:
+// every domain whose getter succeeded gets its baseline, the epoch counts as
+// hydrated, and healthy same-epoch traffic issues no further RPCs at all.
+func TestRecoveryAppliesHealthyDomainsAndStaysSilentWhenOptionalGettersFail(t *testing.T) {
+	b, l := newRecoverySession(t)
+	b.mu.Lock()
+	b.broken = func(method string) bool {
+		return method == "omlx-proxy:nodes/list" || method == "nodes/list" || method == "engine:get-installed" || strings.HasPrefix(method, "settings/")
+	}
+	b.mu.Unlock()
+	n := l.m.views[2].(*nodesView)
+	w := l.m.views[4].(*workloadsView)
+	cl := l.m.views[6].(*clusterView)
+	h := l.m.views[0].(*healthView)
+	e := l.m.views[1].(*errorsView)
+	n.setNodes([]availableNode{{HostUUID: "stale"}})
+	w.upsert(workload{ID: "stale", OriginatedFrom: "old"})
+	cl.identity.NodeUUID = "old"
+	h.localNodeUUID = "old"
+	old := []svcerrors.ServiceError{{ID: crashPrefix + "scanner", NodeID: "old"}}
+	h.rebuildCrashes(old)
+	e.setErrors(old)
+
+	b.push(t, "A", 1, "heartbeat", map[string]any{})
+	l.until(t, func() bool { return l.m.recoveryActive })
+	l.until(t, func() bool { return !l.m.recoveryActive })
+	l.settle(t)
+	if l.m.hydratedEpoch != "A" {
+		t.Errorf("epoch not hydrated after a successful resync with optional getter failures: %q", l.m.hydratedEpoch)
+	}
+	if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "A" || h.localNodeUUID != "A" || len(h.crashed) != 0 || len(e.errs) != 0 {
+		t.Errorf("healthy domains not applied: nodes %v workloads %v identity %v/%v crash %v errors %v", n.nodes, w.byKey, cl.identity, h.localNodeUUID, h.crashed, e.errs)
+	}
+	// A failed getter reaches its own view as that view's ordinary error result.
+	if eng := l.m.views[5].(*enginesView); !strings.Contains(eng.status, "load engines failed") {
+		t.Errorf("engine getter failure not delivered to its view: status %q", eng.status)
+	}
+
+	before := b.snapshotCounts()
+	for seq := 2; seq <= 11; seq++ {
+		b.push(t, "A", seq, "heartbeat", map[string]any{})
+		l.settle(t)
+	}
+	after := b.snapshotCounts()
+	if after["broker:resync"] != 1 {
+		t.Errorf("healthy same-epoch traffic re-sent broker:resync: %d total", after["broker:resync"])
+	}
+	for method, count := range after {
+		if count != before[method] {
+			t.Errorf("%s issued %d more time(s) while healthy in the same epoch", method, count-before[method])
+		}
 	}
 }

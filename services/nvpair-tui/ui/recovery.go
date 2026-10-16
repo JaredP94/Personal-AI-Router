@@ -23,7 +23,12 @@ type recoveryResultMsg struct {
 	results    []tea.Msg
 	err        error
 }
-type recoveryRead func() (tea.Msg, error)
+
+// recoveryRead fetches one domain's baseline and returns the message its views
+// consume. A failed getter yields that domain's ordinary error message (which the
+// views already treat as a no-op or a status line), or nil when the domain has
+// none; it never aborts the rest of the burst.
+type recoveryRead func() tea.Msg
 
 func (m Model) setupConnection() tea.Cmd {
 	return func() tea.Msg {
@@ -40,19 +45,22 @@ func (m Model) setupConnection() tea.Cmd {
 	}
 }
 
-func snapshotQuery[T any](client *rpc.Client, method string, convert func(T) tea.Msg) recoveryRead {
-	return func() (tea.Msg, error) {
+func snapshotQuery[T any](client *rpc.Client, method string, convert func(T) tea.Msg, failed func(error) tea.Msg) recoveryRead {
+	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 		defer cancel()
 		msg, err := client.Call(ctx, method, nil)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			var value T
+			if err = decodeParams(msg.Result, &value); err == nil {
+				return convert(value)
+			}
+			err = fmt.Errorf("decode %s snapshot: %w", method, err)
 		}
-		var value T
-		if err := decodeParams(msg.Result, &value); err != nil {
-			return nil, fmt.Errorf("decode %s snapshot: %w", method, err)
+		if failed == nil {
+			return nil
 		}
-		return convert(value), nil
+		return failed(err)
 	}
 }
 
@@ -70,30 +78,33 @@ func (m *Model) beginRecovery() tea.Cmd {
 			Nodes []availableNode `json:"nodes"`
 		}) tea.Msg {
 			return discoverySnapshotMsg{v.Nodes}
-		}),
+		}, nil),
 		snapshotQuery(client, "workloads:get-initial", func(v struct {
 			Workloads []workload `json:"workloads"`
 		}) tea.Msg {
 			return workloadsSnapshotMsg{v.Workloads}
-		}),
+		}, nil),
 		snapshotQuery(client, "engine:get-installed", func(v struct {
 			Engines []engineStatus `json:"engines"`
 		}) tea.Msg {
 			return enginesLoadedMsg{engines: v.Engines}
-		}),
+		}, func(err error) tea.Msg { return enginesLoadedMsg{err: err} }),
 		snapshotQuery(client, "nodes:get-initial", func(v struct {
 			Nodes []clusterNode `json:"nodes"`
 		}) tea.Msg {
 			return clusterNodesMsg{nodes: v.Nodes}
-		}),
-		snapshotQuery(client, "cluster:get-node-id", func(v clusterIdentity) tea.Msg { return clusterIdentityMsg{id: v} }),
+		}, func(err error) tea.Msg { return clusterNodesMsg{err: err} }),
+		snapshotQuery(client, "cluster:get-node-id", func(v clusterIdentity) tea.Msg { return clusterIdentityMsg{id: v} },
+			func(err error) tea.Msg { return clusterIdentityMsg{err: err} }),
 		snapshotQuery(client, "errors:get-initial", func(v []svcerrors.ServiceError) tea.Msg {
 			raw, _ := json.Marshal(v)
 			return NotificationMsg{&rpc.Message{Method: "errors:update", Params: raw}}
-		}),
+		}, func(err error) tea.Msg { return errorsLoadedMsg{err: err} }),
 	}
 	// Other actual cached getters consumed by tabs, once each. These commands
 	// only decode; results are retained here, never applied off the update loop.
+	// Their error results go to the owning view like any other result: an
+	// optional worker that is unavailable is a steady state, not a dirty epoch.
 	for _, view := range m.views {
 		var commands []tea.Cmd
 		switch v := view.(type) {
@@ -109,7 +120,7 @@ func (m *Model) beginRecovery() tea.Cmd {
 			}
 		}
 		for _, cmd := range commands {
-			reads = append(reads, func() (tea.Msg, error) { msg := cmd(); return msg, recoveryReadError(msg) })
+			reads = append(reads, recoveryRead(cmd))
 		}
 	}
 	return func() tea.Msg {
@@ -117,16 +128,15 @@ func (m *Model) beginRecovery() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 		_, result.err = client.Call(ctx, "broker:resync", nil)
 		cancel()
+		// Only a failed resync leaves the epoch dirty for a retry on later traffic.
+		// Each getter's outcome, success or error, is that domain's result.
 		if result.err != nil {
 			return result
 		}
 		for _, read := range reads {
-			msg, err := read()
-			if err != nil {
-				result.err = err
-				return result
+			if msg := read(); msg != nil {
+				result.results = append(result.results, msg)
 			}
-			result.results = append(result.results, msg)
 		}
 		return result
 	}
@@ -156,22 +166,6 @@ func (m Model) recoveryResultSuperseded(result tea.Msg) bool {
 		}
 	}
 	return false
-}
-
-func recoveryReadError(msg tea.Msg) error {
-	switch msg := msg.(type) {
-	case proxyStatusMsg:
-		return msg.err
-	case proxyNodesMsg:
-		return msg.err
-	case proxySelectedMsg:
-		return msg.err
-	case manualNodesMsg:
-		return msg.err
-	case settingLoadedMsg:
-		return msg.err
-	}
-	return nil
 }
 
 // Only cached facts need replay; latest per identity bounds the journal and
