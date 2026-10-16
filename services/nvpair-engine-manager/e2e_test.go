@@ -104,7 +104,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	first.stop(t)
 
 	second := startE2EManager(t, cfg, home)
-	notify(t, second.stdin, restoreEnabledMethod, nil)
+	notify(t, second.codec, restoreEnabledMethod, nil)
 	waitNotify(t, second.frames, "engine:state-changed", 20*time.Second)
 	send(t, second.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
 	if r := waitResult(t, second.frames, "1", 5*time.Second); !strings.Contains(string(r), `"running":true`) {
@@ -115,7 +115,7 @@ func TestE2EDesiredStateAcrossShutdownRPC(t *testing.T) {
 	second.stop(t)
 
 	third := startE2EManager(t, cfg, home)
-	notify(t, third.stdin, restoreEnabledMethod, nil)
+	notify(t, third.codec, restoreEnabledMethod, nil)
 	send(t, third.stdin, 1, "engine:status", map[string]any{"engine": "fake"})
 	if r := waitResult(t, third.frames, "1", 5*time.Second); !strings.Contains(string(r), `"running":false`) {
 		t.Fatalf("explicit OFF state was not preserved: %s", r)
@@ -191,11 +191,17 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 	manager.stop(t)
 }
 
+type e2eWriteStream struct {
+	io.Reader
+	io.Writer
+}
+
 type e2eManager struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	frames  chan frame
 	stopped bool
+	codec   *Codec
 }
 
 func startE2EManager(t *testing.T, cfg, home string) *e2eManager {
@@ -213,7 +219,7 @@ func startE2EManager(t *testing.T, cfg, home string) *e2eManager {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	manager := &e2eManager{cmd: cmd, stdin: stdin, frames: make(chan frame, 128)}
+	manager := &e2eManager{cmd: cmd, stdin: stdin, codec: NewCodec(e2eWriteStream{Reader: strings.NewReader(""), Writer: stdin}), frames: make(chan frame, 128)}
 	t.Cleanup(func() {
 		if !manager.stopped {
 			_ = manager.stdin.Close()
@@ -317,14 +323,9 @@ func send(t *testing.T, w io.Writer, id int, method string, params any) {
 	}
 }
 
-func notify(t *testing.T, w io.Writer, method string, params any) {
+func notify(t *testing.T, codec *Codec, method string, params any) {
 	t.Helper()
-	msg := map[string]any{"jsonrpc": "2.0", "method": method}
-	if params != nil {
-		msg["params"] = params
-	}
-	data, _ := json.Marshal(msg)
-	if _, err := w.Write(append(data, '\n')); err != nil {
+	if err := codec.Notify(method, params); err != nil {
 		t.Fatalf("notify %s: %v", method, err)
 	}
 }

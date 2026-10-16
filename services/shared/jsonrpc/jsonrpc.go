@@ -15,6 +15,7 @@ package jsonrpc
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -115,6 +116,38 @@ func NewCodecMaxFrame(rw io.ReadWriter, maxFrame int) *Codec {
 	return &Codec{
 		scanner: scanner,
 		writer:  rw,
+	}
+}
+
+// BindWriteContext bounds every write on this connection by ctx cancellation.
+// Install once, before any concurrent codec use. The codec mutex still owns wire
+// ordering and stamps. If Close cannot unblock an OS write, at most that single
+// write is abandoned: subsequent writes fail without spawning another writer.
+// Default codecs retain synchronous write semantics.
+func (c *Codec) BindWriteContext(ctx context.Context) {
+	c.writer = contextWriter{ctx: ctx, writer: c.writer}
+}
+
+type contextWriter struct {
+	ctx    context.Context
+	writer io.Writer
+}
+
+func (w contextWriter) Write(data []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+	type outcome struct {
+		n   int
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() { n, err := w.writer.Write(data); done <- outcome{n, err} }()
+	select {
+	case result := <-done:
+		return result.n, result.err
+	case <-w.ctx.Done():
+		return 0, w.ctx.Err()
 	}
 }
 

@@ -1683,6 +1683,11 @@ func (b *Broker) Serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
 	defer cancel()
+	// Installed before heartbeat, worker callbacks or startup notifications:
+	// cancellation must not depend on reaching readLoop or an unwind defer.
+	b.codec.BindWriteContext(ctx)
+	stopClose := context.AfterFunc(ctx, b.closeClientTransport)
+	defer stopClose()
 
 	// Enable durable workload history: load the prior session's terminal
 	// records so a late-subscribing client / workloads:get-initial has a
@@ -1924,6 +1929,9 @@ func (b *Broker) Serve(ctx context.Context) error {
 	}
 
 	if err := b.codec.Notify("app:ready", ReadyParams{Version: Version}); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return fmt.Errorf("send app:ready: %w", err)
 	}
 
