@@ -4,12 +4,11 @@
 package applog
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -38,32 +37,44 @@ type StdinMessage struct {
 // responses are dropped (the advertiser historically has no stdout writer
 // and the parent doesn't expect one — it only sends notifications).
 func StdinRPC(writer io.Writer, onMessage func(StdinMessage), onClose func()) {
-	var once sync.Once
-	closeOnce := func() { once.Do(onClose) }
+	serveStdinRPC(os.Stdin, writer, onMessage, onClose)
+}
 
-	r := bufio.NewReader(os.Stdin)
+type stdinReadWriter struct {
+	io.Reader
+	io.Writer
+}
+
+func serveStdinRPC(source io.ReadCloser, writer io.Writer, onMessage func(StdinMessage), onClose func()) {
+	defer source.Close()
+	if onClose != nil {
+		defer onClose()
+	}
+	codec := jsonrpc.NewCodec(stdinReadWriter{source, writer})
 	for {
-		line, err := r.ReadBytes('\n')
-		if len(line) > 0 {
-			line = []byte(strings.TrimRight(string(line), "\r\n"))
-			if len(line) > 0 {
-				handleStdinLine(line, writer, onMessage)
-			}
-		}
+		frame, err := codec.Read()
 		if err != nil {
-			slog.Debug("stdin closed, shutting down", "err", err)
-			closeOnce()
+			var de *jsonrpc.DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			if !errors.Is(err, io.EOF) {
+				slog.Warn("stdin JSON-RPC read error (terminal)", "err", err)
+			}
 			return
 		}
+		if frame.IsResponse() {
+			continue
+		}
+		msg := StdinMessage{JSONRPC: frame.JSONRPC, Method: frame.Method, Params: frame.Params}
+		if frame.ID != nil {
+			msg.ID = *frame.ID
+		}
+		handleStdinMessage(msg, writer, onMessage)
 	}
 }
 
-func handleStdinLine(line []byte, writer io.Writer, onMessage func(StdinMessage)) {
-	var msg StdinMessage
-	if err := json.Unmarshal(line, &msg); err != nil {
-		slog.Debug("ignoring non-JSON stdin line", "err", err)
-		return
-	}
+func handleStdinMessage(msg StdinMessage, writer io.Writer, onMessage func(StdinMessage)) {
 	if msg.Method == SetLevelMethod {
 		resolved, err := HandleSetLevelParams(msg.Params)
 		if len(msg.ID) > 0 && writer != nil {

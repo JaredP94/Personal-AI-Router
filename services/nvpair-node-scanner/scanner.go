@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 )
 
@@ -101,8 +103,12 @@ func (s *Scanner) readLoop(ctx context.Context) error {
 			if err == io.EOF || ctx.Err() != nil {
 				return nil
 			}
-			log.Printf("JSON-RPC read error: %v", err)
-			continue
+			var de *jsonrpc.DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			log.Printf("JSON-RPC read error (terminal): %v", err)
+			return err
 		}
 		s.handleMessage(msg)
 	}

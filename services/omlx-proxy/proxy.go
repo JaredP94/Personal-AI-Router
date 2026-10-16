@@ -36,6 +36,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/errors"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -2092,8 +2093,12 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 			if err == io.EOF || ctx.Err() != nil {
 				return nil
 			}
-			log.Printf("JSON-RPC read error: %v", err)
-			continue
+			var de *jsonrpc.DecodeError
+			if stderrors.As(err, &de) {
+				continue
+			}
+			log.Printf("JSON-RPC read error (terminal): %v", err)
+			return err
 		}
 		p.handleMessage(msg)
 	}

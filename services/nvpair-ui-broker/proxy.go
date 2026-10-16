@@ -152,7 +152,10 @@ func startProxy(name, binaryPath, logLevel string, relayDir *relay.Directory, on
 		relayDir: relayDir,
 	}
 
-	go pp.peer.Serve(nil, pp.handleNotify)
+	go func() {
+		defer stdin.Close() // read pump termination severs the owned control pipe
+		pp.peer.Serve(nil, pp.handleNotify)
+	}()
 	go func() {
 		_ = cmd.Wait()
 		pp.peer.Close()

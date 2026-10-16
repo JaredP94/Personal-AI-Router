@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -197,7 +198,11 @@ func (p *Peer) Serve(onRequest func(*Message), onNotify func(method string, para
 			if errors.As(err, &de) {
 				continue // recoverable: skip the bad frame
 			}
-			return // terminal (EOF / transport): stop and close
+			var mismatch *ProtocolMismatchError
+			if errors.As(err, &mismatch) {
+				slog.Warn("JSON-RPC protocol mismatch", "err", mismatch)
+			}
+			return // terminal: stop; transport owner closes its connection
 		}
 		switch {
 		case msg.IsResponse():

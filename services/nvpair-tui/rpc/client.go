@@ -6,8 +6,11 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"nvpair-shared/jsonrpc"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -86,14 +89,12 @@ func (c *Client) Run(ctx context.Context) error {
 			if err == io.EOF {
 				return nil
 			}
-			// A single malformed line should not kill the session; the
-			// broker may emit a frame we don't model. Skip and continue.
-			// This includes a protocol v2 envelope mismatch, which the
-			// canonical codec reports unwrapped and terminal for a peer
-			// that would never make sense of the stream; the loop's
-			// treatment of a read error is unchanged, so substage 2B
-			// decides what to do with that verdict.
-			continue
+			var de *jsonrpc.DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			slog.Warn("JSON-RPC read error (terminal)", "err", err)
+			return err
 		}
 		switch {
 		case msg.IsResponse():

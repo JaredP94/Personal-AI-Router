@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"strings"
@@ -16,8 +17,9 @@ import (
 // observedFrame is one observed-addresses notification in the wire form node-info
 // writes to its stdout.
 func observedFrame(addr string) string {
-	return `{"jsonrpc":"2.0","method":"` + noderec.NotifyObservedAddresses +
-		`","params":{"addresses":["` + addr + `"]}}`
+	var out bytes.Buffer
+	_ = NewCodec(writeOnlyReadWriter{&out}).Notify(noderec.NotifyObservedAddresses, noderec.ObservedAddressesParams{Addresses: []string{addr}})
+	return strings.TrimSuffix(out.String(), "\n")
 }
 
 type drainedFrame struct {

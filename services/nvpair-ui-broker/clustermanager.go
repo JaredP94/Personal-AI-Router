@@ -103,7 +103,10 @@ func startClusterManager(binaryPath, logLevel, configDir string, relayDir *relay
 		relayDir: relayDir,
 	}
 
-	go cp.peer.Serve(nil, cp.handleNotify)
+	go func() {
+		defer stdin.Close() // read pump termination severs the owned control pipe
+		cp.peer.Serve(nil, cp.handleNotify)
+	}()
 	go func() {
 		_ = cmd.Wait()
 		cp.peer.Close() // wake any in-flight Call; make fresh Calls fail fast

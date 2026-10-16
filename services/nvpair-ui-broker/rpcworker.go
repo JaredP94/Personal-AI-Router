@@ -114,7 +114,10 @@ func startRPCWorker(name, binaryPath string, args []string, onNotify func(method
 		onNotify: onNotify,
 	}
 
-	go w.peer.Serve(nil, w.handleNotify)
+	go func() {
+		defer stdin.Close() // read pump termination severs the owned control pipe
+		w.peer.Serve(nil, w.handleNotify)
+	}()
 	go func() {
 		_ = cmd.Wait()
 		w.peer.Close()

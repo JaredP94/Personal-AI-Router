@@ -116,7 +116,10 @@ func startErrors(binaryPath, logLevel string, relayDir *relay.Directory, onUpdat
 		relayDir: relayDir,
 	}
 
-	go ep.peer.Serve(nil, ep.handleNotify)
+	go func() {
+		defer stdin.Close() // read pump termination severs the owned control pipe
+		ep.peer.Serve(nil, ep.handleNotify)
+	}()
 	go func() {
 		_ = cmd.Wait()
 		ep.peer.Close()

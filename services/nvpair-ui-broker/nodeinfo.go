@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 )
 
@@ -114,7 +116,10 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 	// Read stdout rather than discarding it: node-info reports the local
 	// addresses peers have reached it on, and an unattended read end would also
 	// risk wedging the child on a full pipe buffer.
-	go drainNodeInfoStdout(stdout, onNotify)
+	go func() {
+		defer stdin.Close()
+		drainNodeInfoStdout(stdout, onNotify)
+	}()
 	go func() {
 		_ = cmd.Wait()
 		close(np.done)
@@ -149,7 +154,10 @@ func drainNodeInfoStdout(stdout io.Reader, onNotify func(method string, params j
 		// A trailing read error still carries whatever preceded it: a final frame
 		// written without its newline before the child exited is real output.
 		if len(line) > 0 {
-			handleNodeInfoFrame(line, onNotify)
+			if err := handleNodeInfoFrame(line, onNotify); err != nil {
+				slog.Warn("node-info JSON-RPC read error (terminal)", "err", err)
+				return
+			}
 		}
 		if err != nil {
 			logNodeInfoDrainEnd(err)
@@ -170,17 +178,19 @@ func discardToFrameEnd(reader *bufio.Reader) error {
 
 // handleNodeInfoFrame decodes one frame. json.Unmarshal copies Params out, so
 // nothing retains reader's slice past the next read.
-func handleNodeInfoFrame(line []byte, onNotify func(method string, params json.RawMessage)) {
-	var msg struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
+func handleNodeInfoFrame(line []byte, onNotify func(method string, params json.RawMessage)) error {
+	msg, err := NewCodec(readWriter{bytes.NewReader(line), io.Discard}).Read()
+	if err != nil {
+		var de *jsonrpc.DecodeError
+		if errors.As(err, &de) || errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
 	}
-	if err := json.Unmarshal(line, &msg); err != nil || msg.Method == "" {
-		return
-	}
-	if onNotify != nil {
+	if msg.IsNotification() && onNotify != nil {
 		onNotify(msg.Method, msg.Params)
 	}
+	return nil
 }
 
 // logNodeInfoDrainEnd separates the expected end of the stream — the child

@@ -499,7 +499,10 @@ func startScanner(
 		done:               make(chan struct{}),
 	}
 
-	go sp.peer.Serve(nil, sp.handleNotify)
+	go func() {
+		defer stdin.Close() // read pump termination severs the owned control pipe
+		sp.peer.Serve(nil, sp.handleNotify)
+	}()
 	go sp.drainNodeActivity()
 	go func() {
 		_ = cmd.Wait()

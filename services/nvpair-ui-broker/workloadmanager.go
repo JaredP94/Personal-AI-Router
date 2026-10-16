@@ -4,8 +4,8 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
@@ -138,17 +139,21 @@ func startWorkloadManager(binaryPath, logLevel string, relayDir *relay.Directory
 // manager's local interface is notification-only, so any id-bearing frame
 // is unexpected and dropped. It runs until stdout closes (manager exit).
 func (m *workloadManagerProcess) readMessages(stdout io.Reader) {
-	scanner := bufio.NewScanner(stdout)
-	// Workload payloads can be sizeable; match the proxy reader's generous
-	// line cap so we never drop a frame.
-	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
-	for scanner.Scan() {
-		var msg Message
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			slog.Warn("workload-manager emitted invalid JSON", "err", err)
-			continue
+	defer m.stdin.Close()
+	codec := jsonrpc.NewCodecMaxFrame(readWriter{stdout, io.Discard}, 256*1024)
+	for {
+		msg, err := codec.Read()
+		if err != nil {
+			var de *jsonrpc.DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			if !errors.Is(err, io.EOF) {
+				slog.Warn("workload-manager JSON-RPC read error (terminal)", "err", err)
+			}
+			return
 		}
-		if msg.JSONRPC != "2.0" || msg.Method == "" {
+		if !msg.IsNotification() {
 			continue
 		}
 		// The manager subscribes upward for its peer set: wire it to
@@ -162,10 +167,6 @@ func (m *workloadManagerProcess) readMessages(stdout io.Reader) {
 			m.onNotify(msg.Method, msg.Params)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		slog.Warn("workload-manager stdout reader error", "err", err)
-	}
-	slog.Info("workload-manager stdout closed")
 }
 
 // handleSubscribe wires the manager's discovery:subscribe into the relay
