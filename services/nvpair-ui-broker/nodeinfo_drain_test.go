@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -121,25 +122,46 @@ func TestNodeInfoDrainSkipsFramesThatAreNotNotifications(t *testing.T) {
 	}
 }
 
-// The drain decodes through one codec for the life of the connection. A codec
-// per line would allocate a fresh 1 MiB scanner buffer for every frame.
-func TestNodeInfoDrainReusesOneCodecPerConnection(t *testing.T) {
-	const frames = 64
+// drainAllocBytes reports the fewest bytes one drain of frames small frames
+// allocated over several attempts. TotalAlloc is process-wide, and other
+// goroutines (the runtime, the test framework) can only add to it, so the
+// minimum is the closest reading of the drain's own cost.
+func drainAllocBytes(t *testing.T, frames int) int64 {
+	t.Helper()
 	var stream strings.Builder
 	for range frames {
 		stream.WriteString(observedFrame("10.172.54.73") + "\n")
 	}
 	input := stream.String()
-	delivered := 0
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	drainNodeInfoStdout(strings.NewReader(input), func(string, json.RawMessage) { delivered++ })
-	runtime.ReadMemStats(&after)
-	if delivered != frames {
-		t.Fatalf("delivered %d frames, want %d", delivered, frames)
+	best := int64(math.MaxInt64)
+	for range 5 {
+		delivered := 0
+		reader := strings.NewReader(input)
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		drainNodeInfoStdout(reader, func(string, json.RawMessage) { delivered++ })
+		runtime.ReadMemStats(&after)
+		if delivered != frames {
+			t.Fatalf("delivered %d frames, want %d", delivered, frames)
+		}
+		best = min(best, int64(after.TotalAlloc-before.TotalAlloc))
 	}
-	if grew := after.TotalAlloc - before.TotalAlloc; grew > 4<<20 {
-		t.Fatalf("draining %d small frames allocated %d bytes; the codec is not reused", frames, grew)
+	return best
+}
+
+// The drain decodes through one codec for the life of the connection. A codec
+// per line would allocate a fresh scanner buffer for every frame (1 MiB for
+// NewCodec, 64 KiB even for NewCodecMaxFrame). Comparing a drain with twice the
+// frames isolates the per-frame cost from the fixed per-connection buffers.
+func TestNodeInfoDrainReusesOneCodecPerConnection(t *testing.T) {
+	const frames = 64
+	const perFrameBudget = 16 << 10
+	single := drainAllocBytes(t, frames)
+	double := drainAllocBytes(t, 2*frames)
+	t.Logf("drain allocated %d bytes for %d frames, %d for %d", single, frames, double, 2*frames)
+	if extra := double - single; extra > frames*perFrameBudget {
+		t.Fatalf("%d more small frames allocated %d more bytes (budget %d); the codec is not reused per connection",
+			frames, extra, frames*perFrameBudget)
 	}
 }
