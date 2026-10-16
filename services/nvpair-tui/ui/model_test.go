@@ -93,7 +93,7 @@ func newRecoverySession(t *testing.T) (*recoveryBroker, *loop) {
 		b.mu.Unlock()
 	})
 	go b.serve()
-	l := newLoop(New(c, nil, nil, defaultViews(c)))
+	l := newLoop(New(c, nil, defaultViews(c)))
 	l.exec(l.m.setupConnection())
 	l.until(t, func() bool { return l.m.connectionSetup })
 	return b, l

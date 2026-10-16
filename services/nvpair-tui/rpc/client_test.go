@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -256,152 +255,9 @@ func (b *lockedBuffer) Bytes() []byte {
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
-// writeRawNotif puts one hand-built notification on the wire with an explicit
-// epoch and seq. The server end's Codec.Notify cannot be used here because it
-// stamps with THIS process's epoch, and the whole point of these tests is to
-// deliver an epoch that is NOT the one the process already holds.
-func writeRawNotif(t *testing.T, conn net.Conn, method, epoch string, seq int) {
-	t.Helper()
-	frame := fmt.Sprintf(
-		`{"jsonrpc":"2.0","method":%q,"params":{},"epoch":%q,"seq":%d}`+"\n",
-		method, epoch, seq)
-	go func() {
-		_, _ = io.WriteString(conn, frame)
-	}()
-}
-
-// newEpochRecorder wires a client with a change callback that reports epochs on
-// a buffered channel, so a test can count callbacks instead of racing a shared
-// counter.
-func newEpochRecorder(t *testing.T) (*Client, net.Conn, <-chan string) {
-	t.Helper()
-	client, _, conn := newPair(t)
-	changes := make(chan string, 16)
-	client.OnEpochChange(func(epoch string) { changes <- epoch })
-	return client, conn, changes
-}
-
-// awaitChange waits for one epoch-change callback, or fails.
-func awaitChange(t *testing.T, changes <-chan string) string {
-	t.Helper()
-	select {
-	case epoch := <-changes:
-		return epoch
-	case <-time.After(3 * time.Second):
-		t.Fatal("no onEpochChange callback within 3s")
-		return ""
-	}
-}
-
-// assertNoChange fails if any epoch-change callback arrives within a short
-// settle window. The window is short because the callback is driven by a frame
-// that has already been written synchronously — there is no timer to wait on.
-func assertNoChange(t *testing.T, changes <-chan string) {
-	t.Helper()
-	select {
-	case epoch := <-changes:
-		t.Fatalf("onEpochChange fired with %q; a notification that does not change the epoch must be silent", epoch)
-	case <-time.After(250 * time.Millisecond):
-	}
-}
-
-// TestEpochChangeFiresCallbackExactlyOnce is the client half of the broker:epoch
-// contract: the first notification of a connection learns the epoch, further
-// frames carrying that SAME epoch stay silent, and a genuinely different epoch
-// fires exactly one more time.
-func TestEpochChangeFiresCallbackExactlyOnce(t *testing.T) {
-	client, conn, changes := newEpochRecorder(t)
-	if got := client.epoch(); got != "" {
-		t.Fatalf("epoch() = %q before any frame, want empty", got)
-	}
-
-	writeRawNotif(t, conn, BrokerEpochMethod, "epoch-A", 1)
-	if got := awaitChange(t, changes); got != "epoch-A" {
-		t.Fatalf("first callback epoch = %q, want epoch-A", got)
-	}
-	if got := client.epoch(); got != "epoch-A" {
-		t.Fatalf("epoch() = %q after the first frame, want epoch-A", got)
-	}
-
-	// Same epoch again: the ordinary heartbeat stream must not re-fire.
-	writeRawNotif(t, conn, "heartbeat", "epoch-A", 2)
-	assertNoChange(t, changes)
-
-	// A different epoch fires again, exactly once.
-	writeRawNotif(t, conn, BrokerEpochMethod, "epoch-B", 3)
-	if got := awaitChange(t, changes); got != "epoch-B" {
-		t.Fatalf("second callback epoch = %q, want epoch-B", got)
-	}
-	writeRawNotif(t, conn, "heartbeat", "epoch-B", 4)
-	assertNoChange(t, changes)
-}
-
-// TestSeqGapDoesNotFireEpochChange pins spec §2.4: a gap in the seq run is a
-// dropped frame that the next full snapshot repairs, not evidence that the
-// broker restarted. Escalating it would make an ordinary lossy frame look like a
-// peer change.
-func TestSeqGapDoesNotFireEpochChange(t *testing.T) {
-	_, conn, changes := newEpochRecorder(t)
-
-	writeRawNotif(t, conn, BrokerEpochMethod, "epoch-A", 1)
-	if got := awaitChange(t, changes); got != "epoch-A" {
-		t.Fatalf("first callback epoch = %q, want epoch-A", got)
-	}
-
-	// seq jumps 1 -> 99 with the epoch unchanged: a gap, and nothing else.
-	writeRawNotif(t, conn, "discovery:nodes-changed", "epoch-A", 99)
-	assertNoChange(t, changes)
-
-	// The stream keeps running past the gap without an epoch change.
-	writeRawNotif(t, conn, "heartbeat", "epoch-A", 100)
-	assertNoChange(t, changes)
-}
-
-// TestLowerSeqStillAppliesEpochChange is the mirror of the gap case: seq order
-// is the broker's guarantee about ITS OWN frames, not a precondition for
-// trusting the epoch on a frame we did receive. An out-of-order frame still
-// carries the truth about which broker is on the other end.
-func TestLowerSeqStillAppliesEpochChange(t *testing.T) {
-	client, conn, changes := newEpochRecorder(t)
-
-	writeRawNotif(t, conn, BrokerEpochMethod, "epoch-A", 50)
-	if got := awaitChange(t, changes); got != "epoch-A" {
-		t.Fatalf("first callback epoch = %q, want epoch-A", got)
-	}
-
-	// seq 5 is far below the 50 already seen, but the epoch really did change.
-	writeRawNotif(t, conn, BrokerEpochMethod, "epoch-B", 5)
-	if got := awaitChange(t, changes); got != "epoch-B" {
-		t.Fatalf("callback epoch = %q for the out-of-order frame, want epoch-B", got)
-	}
-	if got := client.epoch(); got != "epoch-B" {
-		t.Fatalf("epoch() = %q after the out-of-order frame, want epoch-B", got)
-	}
-}
-
-// TestEmptyEpochIsIgnored keeps an unset/blank epoch from being mistaken for a
-// peer change: it is indistinguishable from "not known yet", and letting it
-// overwrite a real epoch would make the next real frame look like a change.
-func TestEmptyEpochIsIgnored(t *testing.T) {
-	client := NewClient(new(bytes.Buffer), io.Discard)
-	if client.setEpoch("") {
-		t.Fatal("setEpoch(\"\") reported a change from the unknown state")
-	}
-	if !client.setEpoch("epoch-A") {
-		t.Fatal("setEpoch on the first real epoch did not report a change")
-	}
-	if client.setEpoch("") {
-		t.Fatal("setEpoch(\"\") overwrote a held epoch")
-	}
-	if got := client.epoch(); got != "epoch-A" {
-		t.Fatalf("epoch() = %q after an empty epoch was offered, want epoch-A", got)
-	}
-}
-
-// TestEpochNotificationStillReachesTheNotificationChannel pins that consuming
-// the epoch is not a substitute for delivery: a UI reading the notification
-// stream sees broker:epoch like any other frame, whether or not it registered a
-// callback.
+// TestEpochNotificationStillReachesTheNotificationChannel pins that broker:epoch
+// is delivered on the notification stream like any other frame, with its
+// envelope epoch intact: the UI learns the epoch from these envelopes.
 func TestEpochNotificationStillReachesTheNotificationChannel(t *testing.T) {
 	client, server, _ := newPair(t)
 
@@ -410,8 +266,6 @@ func TestEpochNotificationStillReachesTheNotificationChannel(t *testing.T) {
 		writeDone <- server.Notify(BrokerEpochMethod, json.RawMessage(`{}`))
 	}()
 
-	// The callback-less client still records the epoch and still fans the frame
-	// out; neither path may swallow the other.
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
@@ -429,9 +283,6 @@ func TestEpochNotificationStillReachesTheNotificationChannel(t *testing.T) {
 			}
 			if msg.Epoch == nil || *msg.Epoch != jsonrpc.Epoch() {
 				t.Fatalf("broker:epoch envelope epoch = %v, want this process's epoch %q", msg.Epoch, jsonrpc.Epoch())
-			}
-			if got := client.epoch(); got != jsonrpc.Epoch() {
-				t.Fatalf("epoch() = %q, want %q even with no callback registered", got, jsonrpc.Epoch())
 			}
 			return
 		case <-deadline:

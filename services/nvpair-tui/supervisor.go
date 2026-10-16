@@ -37,12 +37,6 @@ const brokerName = "nvpair-ui-broker"
 // a little headroom on top. If teardownBudget changes, this has to move with it.
 const shutdownGrace = 18 * time.Second
 
-// epochSignalDepth bounds how many announced protocol epochs wait for the UI.
-// One is enough: the UI acts on "the epoch changed" and the newest epoch is the
-// only one worth acting on, so an undrained epoch is replaced rather than
-// queued. The depth exists so publishing never has to block the reader loop.
-const epochSignalDepth = 1
-
 // Supervisor owns a single nvpair-ui-broker child process and the JSON-RPC
 // client speaking to it over stdio. The broker, in turn, spawns and
 // supervises the rest of the NVPAIR fleet, so owning the broker means owning
@@ -52,58 +46,6 @@ type Supervisor struct {
 	stdin  io.WriteCloser
 	Client *rpc.Client
 	Stderr io.ReadCloser
-
-	// epochChanges carries protocol epochs the broker announced after Spawn
-	// registered its consumer. The UI drains it to re-fetch cached snapshots
-	// whenever a different broker process takes over the connection. Receive-only
-	// so nothing outside the supervisor can feed the UI a fabricated epoch.
-	epochChanges <-chan string
-}
-
-// EpochChanges returns the protocol epochs announced on this connection, for
-// the UI to watch. See watchEpoch.
-func (s *Supervisor) EpochChanges() <-chan string { return s.epochChanges }
-
-// watchEpoch registers the epoch consumer on client and returns the channel of
-// changes delivered to it. This is the consumer that makes the broker's
-// broker:epoch announcement do something: without it the client records the
-// epoch, nobody reads it, and a broker restart leaves every cached roster in the
-// UI stale and looking fresh.
-//
-// Registration belongs on the line before Client.Run, not after it: the broker
-// stamps every notification with its epoch and announces broker:epoch on the
-// first heartbeat tick, so a frame can be in flight the moment the read loop
-// starts. Registering after the loop is running leaves a window where a restart
-// during startup is recorded in the client and never reaches the UI.
-//
-// The callback runs on the client's read loop, outside its epoch lock, so it
-// must never block: publishEpoch hands the epoch over without waiting.
-func watchEpoch(client *rpc.Client) <-chan string {
-	changes := make(chan string, epochSignalDepth)
-	client.OnEpochChange(func(epoch string) { publishEpoch(changes, epoch) })
-	return changes
-}
-
-// publishEpoch hands epoch to changes without ever blocking the caller. If the
-// UI has not drained the pending epoch, that one is dropped and this newer one
-// takes its place: the re-fetch it triggers reads current state either way, so
-// the newest epoch is the only one worth holding.
-//
-// The read loop is the sole producer, so the second send cannot find the channel
-// full again after the receive emptied it.
-func publishEpoch(changes chan string, epoch string) {
-	select {
-	case changes <- epoch:
-	default:
-		select {
-		case <-changes:
-		default:
-		}
-		select {
-		case changes <- epoch:
-		default:
-		}
-	}
 }
 
 // resolveBrokerPath honours an explicit override, otherwise looks for the
@@ -159,19 +101,13 @@ func Spawn(ctx context.Context, brokerPath string) (*Supervisor, error) {
 	}
 
 	client := rpc.NewClient(stdout, stdin)
-	// Before Run: a broker:epoch frame can arrive on the first heartbeat tick,
-	// and an unregistered callback would swallow it. See watchEpoch. With this
-	// consumer in place the UI learns a different broker process took over and
-	// re-reads the snapshots it cached from the old one.
-	epochChanges := watchEpoch(client)
-
 	go client.Run(ctx)
 
-	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr, epochChanges: epochChanges}, nil
+	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr}, nil
 }
 
 // Run constructs fresh views for this owned client lifetime.
-func (s *Supervisor) Run() error { return ui.Run(s.Client, s.Stderr, s.EpochChanges()) }
+func (s *Supervisor) Run() error { return ui.Run(s.Client, s.Stderr) }
 
 // Shutdown asks the broker to stop cleanly: send the shutdown RPC, close
 // its stdin (a second, EOF-based stop signal), then wait up to

@@ -24,11 +24,10 @@ const chromeHeight = 3
 // header showing broker status, and a footer of contextual help. It owns
 // the broker notification loop and routes messages to the views.
 type Model struct {
-	client       *rpc.Client
-	logCh        <-chan string
-	epochChanges <-chan string
-	keys         globalKeyMap
-	help         help.Model
+	client *rpc.Client
+	logCh  <-chan string
+	keys   globalKeyMap
+	help   help.Model
 
 	views  []View
 	active int
@@ -50,26 +49,25 @@ type Model struct {
 }
 
 // New builds the root model over a connected broker client, the broker's
-// captured stderr line channel, the protocol epochs the supervisor published
-// for this connection, and the set of views (tabs) to present, in tab order.
-func New(client *rpc.Client, logCh <-chan string, epochChanges <-chan string, views []View) Model {
+// captured stderr line channel, and the set of views (tabs) to present, in tab
+// order. The protocol epoch is learned from notification envelopes.
+func New(client *rpc.Client, logCh <-chan string, views []View) Model {
 	// Snapshots can arrive before the first terminal-size message. Initialize
 	// table columns before any rows are applied, then resize on WindowSizeMsg.
 	for _, v := range views {
 		v.SetSize(80, 21)
 	}
 	return Model{
-		client:       client,
-		logCh:        logCh,
-		epochChanges: epochChanges,
-		keys:         newGlobalKeyMap(),
-		help:         help.New(),
-		views:        views,
+		client: client,
+		logCh:  logCh,
+		keys:   newGlobalKeyMap(),
+		help:   help.New(),
+		views:  views,
 	}
 }
 
 // Init installs connection subscriptions and arms the notification/log loops.
-// Ordered notification envelopes, not the lossy epoch callback channel, own recovery.
+// Ordered notification envelopes own epoch recovery.
 func (m Model) Init() tea.Cmd {
 	// Subscriptions are installed once per new transport, before consuming pushes.
 	// All initial cached getters belong to the generation-owned recovery path.
@@ -157,10 +155,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, nil
-
-	case EpochChangeMsg:
-		m.epoch = msg.Epoch
-		return m, m.beginRecovery()
 
 	case recoveryResultMsg:
 		if !m.recoveryActive || msg.generation != m.recoveryGeneration {

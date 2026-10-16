@@ -17,7 +17,7 @@ func (expiredSession) Read([]byte) (int, error) { return 0, rpc.ErrHeartbeatTime
 func TestSilenceLossExitsRootWithDistinctOwnerResult(t *testing.T) {
 	c := rpc.NewClient(expiredSession{}, io.Discard)
 	_ = c.Run(context.Background())
-	m := New(c, nil, nil, defaultViews(c))
+	m := New(c, nil, defaultViews(c))
 	final, cmd := m.Update(waitForNotification(c)())
 	result, ok := final.(Model)
 	if !ok || !result.disconnected || !errors.Is(result.connectionLoss, rpc.ErrHeartbeatTimeout) {

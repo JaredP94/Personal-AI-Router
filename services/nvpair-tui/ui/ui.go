@@ -12,19 +12,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run builds the tabbed program over a connected broker client, the broker's
-// stderr stream, and the protocol epochs the supervisor published for this
-// connection, and blocks until the user quits. The caller is responsible for
+// Run builds the tabbed program over a connected broker client and the
+// broker's stderr stream, and blocks until the user quits. The caller is responsible for
 // shutting the broker down afterwards.
 //
 // Ordered notification envelopes drive epoch recovery. A silence timeout exits
 // with rpc.ErrHeartbeatTimeout, allowing main to recreate the owned session.
-func Run(client *rpc.Client, stderr io.Reader, epochChanges <-chan string) error {
+func Run(client *rpc.Client, stderr io.Reader) error {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
 
 	p := tea.NewProgram(
-		New(client, logCh, epochChanges, defaultViews(client)),
+		New(client, logCh, defaultViews(client)),
 		tea.WithAltScreen(),
 	)
 	final, err := p.Run()

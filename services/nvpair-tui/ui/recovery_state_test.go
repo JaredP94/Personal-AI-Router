@@ -50,9 +50,10 @@ func TestRecoveryConvergesAllSnapshotConsumers(t *testing.T) {
 	h := newHealthView(c)
 	h.localNodeUUID = "old"
 	e := newErrorsView(c)
-	l := newLoop(New(c, nil, nil, []View{n, w, cl, h, e}))
+	l := newLoop(New(c, nil, []View{n, w, cl, h, e}))
 	l.m.connectionSetup = true
-	l.turn(t, EpochChangeMsg{Epoch: "new"})
+	epoch := "new"
+	l.turn(t, NotificationMsg{&rpc.Message{Method: "heartbeat", Epoch: &epoch}})
 	deadline := time.After(time.Second)
 	for len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "new" || h.localNodeUUID != "new" {
 		select {
