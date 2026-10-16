@@ -5,6 +5,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -107,5 +108,41 @@ func TestClientHeartbeatsKeepLiveAndCancelStopsDeadline(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancel did not close owned reader")
+	}
+}
+
+func TestSilenceKeepsOwnedOutputDrainedUntilGracefulPeerExit(t *testing.T) {
+	output, peerOutput := io.Pipe()
+	input, clientInput := io.Pipe()
+	defer output.Close()
+	defer peerOutput.Close()
+	defer input.Close()
+	defer clientInput.Close()
+	c := NewClient(output, clientInput)
+	c.heartbeatTimeout = 20 * time.Millisecond
+	peerFinished := make(chan error, 1)
+	go func() {
+		_, _ = io.Copy(io.Discard, input) // EOF is the graceful owned shutdown signal
+		err := NewCodec(readWriter{Reader: input, Writer: peerOutput}).Notify("shutdown-complete", nil)
+		peerFinished <- err
+		peerOutput.Close()
+	}()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(context.Background()) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout did not invalidate session")
+	}
+	select {
+	case err := <-peerFinished:
+		if err != nil {
+			t.Fatalf("closed stdout before graceful peer exit (SIGPIPE risk): %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old session output not drained during owned shutdown")
+	}
+	if _, ok := <-c.Notifications(); ok {
+		t.Fatal("shutdown output reached invalidated UI")
 	}
 }

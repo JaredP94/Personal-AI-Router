@@ -96,9 +96,9 @@ func (c *Client) Run(ctx context.Context) (runErr error) {
 	ctx = c.sessionContext
 	defer c.cancel()
 	closeTransport := func() {
-		if closer, ok := c.reader.(io.Closer); ok {
-			_ = closer.Close()
-		}
+		// EOF on the owned control pipe asks the broker to gracefully stop its
+		// workers. Keep stdout drained until the owner joins it: closing that
+		// read end here could SIGPIPE the broker before worker cleanup.
 		if closer, ok := c.writer.(io.Closer); ok {
 			_ = closer.Close()
 		}
@@ -120,11 +120,16 @@ func (c *Client) Run(ctx context.Context) (runErr error) {
 		c.shutdown()
 	}()
 	deadline.reset()
+	frames := make(chan clientReadResult)
+	go c.readFrames(ctx, frames)
 	for {
-		if ctx.Err() != nil {
+		var frame clientReadResult
+		select {
+		case <-ctx.Done():
 			return ctx.Err()
+		case frame = <-frames:
 		}
-		msg, err := c.codec.Read()
+		msg, err := frame.message, frame.err
 		if err != nil {
 			if err == io.EOF {
 				return nil
@@ -151,6 +156,42 @@ func (c *Client) Run(ctx context.Context) (runErr error) {
 				return ctx.Err()
 			case <-c.done:
 				return c.closeErr
+			}
+		}
+	}
+}
+
+type clientReadResult struct {
+	message *Message
+	err     error
+}
+
+// The pump exclusively owns Codec.Read. Once the session is invalidated it
+// drains bytes without decoding/dispatch until the process owner joins the old
+// broker and closes its stdout. Run and pending callers need not wait for it.
+func (c *Client) readFrames(ctx context.Context, frames chan<- clientReadResult) {
+	for {
+		if ctx.Err() != nil {
+			_, _ = io.Copy(io.Discard, c.reader)
+			return
+		}
+		message, err := c.codec.Read()
+		select {
+		case frames <- clientReadResult{message, err}:
+		case <-ctx.Done():
+			_, _ = io.Copy(io.Discard, c.reader)
+			return
+		}
+		if err != nil {
+			var de *jsonrpc.DecodeError
+			if !errors.As(err, &de) {
+				// A mismatch is terminal for dispatch, not permission to break stdout
+				// while the broker is still unwinding its owned worker shutdown.
+				var mismatch *jsonrpc.ProtocolMismatchError
+				if errors.As(err, &mismatch) {
+					_, _ = io.Copy(io.Discard, c.reader)
+				}
+				return
 			}
 		}
 	}
@@ -313,8 +354,8 @@ func (c *Client) writeRequest(id int64, method string, params any) error {
 // Notify sends a fire-and-forget notification (no id, no response). The
 // canonical codec stamps it with this connection's epoch and next seq inside
 // its own write lock, so the wire reads in seq order even when several
-// goroutines notify at once — a gap or an inversion there would look like a
-// dropped frame to the broker's §2.7 gap detection and force a resync.
+// goroutines notify at once. Monotonicity is a sender guarantee; the receiver
+// accepts gaps and regressions without resync.
 func (c *Client) Notify(method string, params any) error {
 	return c.codec.Notify(method, params)
 }
