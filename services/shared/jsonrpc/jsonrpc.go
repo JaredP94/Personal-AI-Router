@@ -188,8 +188,8 @@ func (c *Codec) write(msg *Message) error {
 // writeNotification stamps a notification frame and writes it as ONE critical
 // section. Stamping before taking wmu would let two concurrent Notify calls
 // invert: A takes seq 1, B takes seq 2, B wins wmu and puts seq 2 on the wire
-// first. The wire must read in seq order because §2.7 gap detection treats an
-// inversion as a dropped frame and forces a spurious resync.
+// first, violating the sender's monotonic wire guarantee. Receivers accept
+// gaps and regressions without sequence-based recovery.
 func (c *Codec) writeNotification(msg *Message) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()

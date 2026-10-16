@@ -174,9 +174,11 @@ func recoveryReadError(msg tea.Msg) error {
 // preserves workload removals rather than resurrecting a stale baseline row.
 func recoveryPushKey(msg NotificationMsg) string {
 	method := msg.Msg.Method
-	switch method {
-	case "discovery:nodes-changed", "nodes:changed", "errors:update", "cluster:identity-changed":
+	// This classifies cached snapshots for replay, not inbound RPC methods.
+	if method == "discovery:nodes-changed" || method == "nodes:changed" || method == "errors:update" || method == "cluster:identity-changed" {
 		return method
+	}
+	switch method {
 	case "engine:state-changed":
 		var e engineStatus
 		_ = decodeParams(msg.Msg.Params, &e)

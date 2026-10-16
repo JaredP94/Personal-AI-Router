@@ -136,10 +136,14 @@ Shared lifecycle for all workers:
 Every **notification** on the client connection carries top-level `epoch` (the
 sender's process UUID) and `seq` (a per-connection notification counter starting
 at 1). Requests and responses must carry **neither** field. The broker's client
-input rejects a missing notification envelope or a stamped request/response,
-logs `JSON-RPC protocol mismatch`, and closes the connection. This describes the
-broker's client boundary, not a guarantee that every worker/client reader
-currently terminates on a mismatch.
+input rejects a missing notification envelope or a stamped request/response.
+All Go stdio readers validate through the shared codec: only malformed-frame
+DecodeError is recoverable; envelope mismatch is terminal with a metadata-only
+protocol-mismatch diagnostic. Worker reader termination closes its owned control
+pipe, so EOF reaches the child and normal supervision observes its exit.
+Separate HTTP/mTLS cluster payloads are not stdio envelopes. Desktop TypeScript
+is the explicit observe-only inbound exception: it observes stamps and adopts
+the peer epoch, but does not reject missing stamps.
 
 ```json
 {"jsonrpc":"2.0","method":"app:ready","params":{"version":"dev"},"epoch":"27b5b4b2-15c3-4ccc-8938-51c985159020","seq":1}
@@ -154,8 +158,16 @@ sequence-gap replay or resync mechanism.
 
 The shared `jsonrpc.HeartbeatInterval` is **15 seconds** and
 `jsonrpc.HeartbeatTimeout` is **45 seconds** (three intervals). The broker emits
-`heartbeat` every interval. The timeout constant describes the intended silence
-budget; it is not evidence of an enforced watchdog/reconnect in every consumer.
+`heartbeat` every interval. TUI and desktop each arm a resettable one-shot 45s
+inbound-silence deadline, canceled at teardown; healthy heartbeats cause no client
+RPCs. Silence invalidates the session once and wakes pending calls. TUI exits its
+root model and main gracefully joins the owned broker before one automatic
+Spawn+fresh-model reconnect per invocation. Desktop retains the child handle,
+invalidates readiness/recovery and uses its owned graceful stop/start once until
+a fresh lifetime becomes ready. New lifetimes reinstall subscriptions and
+resync authoritative caches; a second failed retry surfaces disconnection.
+Broker client writes are cancellation-bound before startup, including app:ready
+and responses, even when stdio Close cannot unblock the underlying OS write.
 
 ### Notifications (broker → caller)
 

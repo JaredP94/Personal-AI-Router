@@ -143,8 +143,8 @@ func (b *Broker) runHeartbeat(ctx context.Context) {
 			// Notify is the stamping path: it stamps epoch and seq inside the
 			// codec's write lock so the wire keeps seq order. Hand-writing the
 			// frame and assigning seq here would race the broker's other
-			// notifications and could invert them (§2.7 gap detection reads an
-			// inversion as a dropped frame).
+			// notifications and violate monotonic wire order. Receivers do not
+			// trigger recovery on gaps or regressions.
 			//
 			// The epoch goes out BEFORE the heartbeat so a client that reads
 			// the stream in order has the epoch in hand before liveness.

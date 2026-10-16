@@ -236,8 +236,8 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         // write, so seq order and wire order cannot diverge: write() appends to
         // writeTail without awaiting, and nothing runs between the increment and
         // that append. Assigning the seq somewhere earlier (or awaiting in
-        // between) would let two notifications invert on the wire, which gap
-        // detection reads as a dropped frame.
+        // between) would violate the sender's monotonic wire guarantee.
+        // Receivers do not resync on gaps or regressions.
         return this.write({
             jsonrpc: '2.0',
             method,

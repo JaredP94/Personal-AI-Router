@@ -107,3 +107,23 @@ func TestWorkerMismatchClosesRealProcess(t *testing.T) {
 		t.Fatalf("missing named diagnostic: %s", diagnostics.String())
 	}
 }
+
+func TestWorkloadReaderRecoversMalformedAndDispatchesOnlyValidNotifications(t *testing.T) {
+	var input bytes.Buffer
+	input.WriteString("{not json}\n")
+	codec := NewCodec(writeOnlyReadWriter{&input})
+	_ = codec.Notify("ready", nil)
+	input.WriteString(`{"jsonrpc":"2.0","id":1,"method":"ignored-request"}` + "\n")
+	control := &terminalControl{make(chan struct{})}
+	calls := 0
+	m := &workloadManagerProcess{stdin: control, onNotify: func(method string, _ json.RawMessage) {
+		calls++
+		if method != "ready" {
+			t.Fatal("request dispatched as notification")
+		}
+	}}
+	m.readMessages(&input)
+	if calls != 1 {
+		t.Fatalf("valid notification not delivered: %d", calls)
+	}
+}

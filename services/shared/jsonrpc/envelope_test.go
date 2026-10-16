@@ -115,8 +115,8 @@ func TestEpochIsStableWithinProcess(t *testing.T) {
 // TestConcurrentNotifyWritesInSeqOrder pins the wire-order contract: the seq a
 // peer reads must equal its frame's position on the wire, with no gaps and no
 // repeats. Stamping outside the write lock inverted seq under concurrency —
-// goroutine A stamped seq 1, B stamped seq 2, B won wmu — which §2.7 gap
-// detection reads as a dropped frame and answers with a spurious resync.
+// goroutine A stamped seq 1, B stamped seq 2, B won wmu — violating the sender's
+// monotonic wire guarantee. Receiver recovery is epoch-only, never gap-based.
 //
 // Run with -count=20: the interleaving that broke the old code is rare, so a
 // single green run proves little.

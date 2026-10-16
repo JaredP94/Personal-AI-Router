@@ -45,6 +45,16 @@ observer / KVO" was wrong. v2 deletes three timers and explicitly retains one.
 
 ## 2. Design
 
+**Final acceptance reconciliation.** The envelope is notification-only; there is
+no ready gate, sequence-gap recovery, replay, or payload restructuring. Existing
+upstream deltas remain deltas. Snapshot-per-push below is the original rationale,
+not a claim that this change converts every event family to full snapshots.
+Every Go stdio receive path uses canonical codec validation and terminal owned
+transport teardown. Desktop TS is an explicit exception: observe-only inbound
+stamps, with adopted peer epoch, not strict rejection. Both shipped frontends
+enforce a resettable 45s silence deadline and lifecycle-owned bounded reconnect;
+fresh connections reinstall subscriptions and perform authoritative resync.
+
 ### 2.1 The load-bearing decision: snapshot-per-push
 
 `relay.Directory` already states the invariant, for one channel only:
@@ -144,7 +154,7 @@ protocol v2 frame. Enforcement therefore lives on the **receive** path, in
 `Codec.Read()`:
 
 - A frame with `Method != ""` and no `ID` (a notification) **must** carry both
-  `epoch` and `seq`. Absent either → `*DecodeError`, and the read loop treats
+  `epoch` and `seq`. Absent either → `*ProtocolMismatchError`, and the read loop treats
   it as **terminal**: close the connection, log `protocol mismatch: notification
   without epoch/seq`.
 - A frame carrying `epoch`/`seq` on a *response* or *request* is likewise
@@ -167,17 +177,19 @@ protocol v2 frame. Enforcement therefore lives on the **receive** path, in
   reordering anywhere.
 
 This yields deterministic bidirectional failure with no negotiation branch:
-a v1 broker never sends `epoch`, so a v2 worker refuses it; a v1 client never
-sends `protocol: 2` in `ready`, so the broker refuses it. Per AGENTS.md — one
+a v1 broker never sends notification stamps, so a v2 Go worker refuses it; a
+v1 caller's first unstamped notification is likewise terminal at the broker.
+Unstamped requests/responses remain valid; no ready handshake is required. Per AGENTS.md — one
 canonical path, no compatibility branch.
 
 ### 2.4 Client behaviour
 
-Per connection the client holds `{ epoch, lastSeq }`.
+Per connection the client owns observed/hydrated epoch generations and an inbound
+silence deadline. Sequence values do not gate application or recovery.
 
 | Observation | Action |
 |---|---|
-| `seq > lastSeq` | **Apply. Update `lastSeq`.** This is the only path that changes state, and it covers both contiguous delivery and gaps. |
+| Same-epoch notification, regardless of `seq` | **Apply.** Gaps and lower/repeated sequence values trigger no recovery. |
 | `epoch != held epoch` | Broker restarted. **Resync all.** Discard cached facts. |
 | Heartbeat silence > `HEARTBEAT_TIMEOUT` | Connection presumed dead; reconnect → new connection → new `seq` run → resync all. |
 
@@ -187,13 +199,9 @@ notifications were dropped, but under §2.1 the frame that reveals the gap
 state is correct the moment it is applied and a gap cannot cause drift. v2
 therefore does not branch on `seq` at all for state purposes.
 
-`seq` survives for exactly two duties:
-
-1. **Event-channel counters** (§2.7) — a gap there *is* lost data, because an
-   event has no snapshot to fold into. Those channels resync their counters.
-2. **Silence detection** — a channel that stays quiet while its neighbours skip
-   ahead is a stalled producer, which is a bug worth logging even though state
-   stays correct. `seq` is the only thing that makes that visible.
+`seq` retains the sender's per-connection monotonic wire guarantee. Receivers
+do not branch on gaps or regressions, including event channels. Silence is
+measured by elapsed time since inbound traffic, not sequence comparisons.
 
 ### 2.5 Resync
 
@@ -225,15 +233,16 @@ Snapshot getters, all existing:
 | **node hardware telemetry** | **NONE — added by spec B** |
 | **proxy request counters** | **NONE — added by spec B** |
 
-`broker:resync` is the only new method. It is called on epoch change, on event
-channel counter gaps (§2.7), and on connect — never on a timer.
+`broker:resync` is the only new method. It is called on epoch change and connect,
+with failed hydration retried on later same-epoch traffic — never on sequence
+gaps or a snapshot-polling timer.
 
 ### 2.6 Heartbeat
 
 The broker sends `heartbeat` on every live client connection every
 `HEARTBEAT_INTERVAL` (**15 s**). It carries `epoch` and `seq` like any
-notification and, per §2.1, the full node-set snapshot for its filter. The
-client **never** sends anything on a timer.
+notification, with an empty params object (no node-set snapshot). The
+client **never** sends watchdog or resync RPCs on a timer.
 
 **Decided: 15 s, timeout at 3× interval (45 s to declare a connection dead).**
 Rationale: after §2.1 the heartbeat is not load-bearing for correctness —
@@ -247,9 +256,13 @@ tray-resident app to buy back nothing; 30 s makes a genuinely hung broker look
 alive for over a minute. Both values are named constants in
 `services/shared/jsonrpc` so tuning is a one-line change, not a hunt.
 
-This is the asymmetry that pays for the battery goal: the server talks, the
-client listens, and the client's only periodic work is a `DispatchSourceTimer`
-that does nothing but compare two integers.
+The server talks and clients listen. Each connection owns a resettable one-shot
+silence deadline, canceled on teardown and guarded against stale callbacks, not a
+client ticker. Expiry wakes pending requests and marks disconnected once. TUI
+main gracefully joins its old Supervisor before one fresh Spawn/UI lifetime per
+invocation; desktop uses guarded owned stop/start, allowing one automatic retry
+until a fresh lifetime becomes ready. New lifetimes reinstall subscriptions and
+hydrate snapshots; no watchdog-generated healthy traffic is introduced.
 
 ### 2.7 Event channels
 
@@ -260,8 +273,8 @@ and they cannot be recovered.
 **Amended by spec A0:** `proxy/request` is no longer purely instantaneous. It now
 carries cumulative `requests` / `cache_affinity_hits` (§6.2), so a gap on it is
 *self-healing* — the next event restates the authoritative totals — and no counter
-snapshot getter is needed for it. `ready` is a handshake, not a channel, and is
-excluded from this rule.
+snapshot getter is needed for it. `ready` is a startup announcement, not a
+handshake gate. No event channel triggers sequence-gap recovery.
 
 ## 3. Changes by component
 
@@ -279,14 +292,14 @@ excluded from this rule.
 
 ## 4. Testing
 
-- **Codec** — notification without `epoch`/`seq` → terminal `DecodeError`;
+- **Codec** — notification without `epoch`/`seq` → terminal `ProtocolMismatchError`;
   `epoch`/`seq` on a response → terminal; monotonic stamping under concurrent
   writes.
 - **Relay** — two subscribers on one connection get contiguous `seq`; a
   reconnect yields `seq` restarting at 1 and a fresh `epoch` only if the broker
   restarted.
 - **Broker** — kill and restart the broker: client observes a new `epoch`,
-  calls `broker:resync`, and converges with **no timer running**. Assert
+  calls `broker:resync`, and converges with **no snapshot polling timer**. Assert
   `broker:resync` call count is 0 while the connection is healthy.
 - **Cross-process** (`services/tests`, real binaries) — v1 worker against v2
   broker must be refused at `ready`, deterministically, not silently.

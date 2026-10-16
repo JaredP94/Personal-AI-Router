@@ -68,7 +68,8 @@ func New(client *rpc.Client, logCh <-chan string, epochChanges <-chan string, vi
 	}
 }
 
-// Init starts each view and arms the broker notification, epoch and log loops.
+// Init installs connection subscriptions and arms the notification/log loops.
+// Ordered notification envelopes, not the lossy epoch callback channel, own recovery.
 func (m Model) Init() tea.Cmd {
 	// Subscriptions are installed once per new transport, before consuming pushes.
 	// All initial cached getters belong to the generation-owned recovery path.

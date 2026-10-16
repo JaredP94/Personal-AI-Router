@@ -71,8 +71,8 @@ func TestNotifyStampsProtocolV2Envelope(t *testing.T) {
 // TestNotifyWritesInSeqOrderUnderConcurrency pins the wire-order contract for the
 // hand-rolled stamp: the seq a peer reads must equal its frame's position on the
 // wire, with no gaps and no repeats. Assigning seq outside mu would let two
-// concurrent Notify calls invert — A takes 1, B takes 2, B wins the lock — which
-// §2.7 gap detection reads as a dropped frame and answers with a spurious resync.
+// concurrent Notify calls invert — A takes 1, B takes 2, B wins the lock —
+// violating monotonic wire order. Receivers never resync on a sequence gap.
 func TestNotifyWritesInSeqOrderUnderConcurrency(t *testing.T) {
 	const (
 		notifiers   = 16

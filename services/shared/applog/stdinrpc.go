@@ -143,15 +143,14 @@ func (n *Notifier) Write(p []byte) (int, error) {
 // responses StdinRPC writes through Write. So the stamp is assigned here, inside
 // the same critical section as the write. Stamping before taking mu is exactly
 // the bug jsonrpc.Codec.writeNotification documents: goroutine A takes seq 1, B
-// takes seq 2, B wins the lock and puts seq 2 on the wire first, and §2.7 gap
-// detection reads the inversion as a dropped frame and forces a spurious resync.
+// takes seq 2, B wins the lock and puts seq 2 on the wire first, violating
+// monotonic wire order. Gaps/regressions do not trigger receiver recovery.
 func (n *Notifier) Notify(method string, params any) error {
 	if n == nil {
 		return nil
 	}
-	// Marshal before taking seq: a params that cannot be marshaled must not
-	// consume a number, or the next frame's seq would show a gap the peer
-	// resyncs for.
+	// Marshal before taking seq so only successfully encoded frames consume
+	// a notification number.
 	var raw json.RawMessage
 	if params != nil {
 		b, err := json.Marshal(params)

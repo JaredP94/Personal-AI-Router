@@ -105,6 +105,7 @@ func TestNodeInfoDrainDeliversAFinalFrameWithoutANewline(t *testing.T) {
 func TestNodeInfoDrainSkipsFramesThatAreNotNotifications(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"result":{"level":"debug"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"not-a-notification"}`,
 		`not json at all`,
 		``,
 		observedFrame("10.172.54.72"),

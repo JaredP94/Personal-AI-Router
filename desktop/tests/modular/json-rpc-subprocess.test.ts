@@ -141,8 +141,8 @@ describe('JsonRpcSubprocess.notify', () => {
                 expect(String(frame.epoch).length).toBeGreaterThan(0)
                 epochs.add(String(frame.epoch))
                 // seq starts at 1 for this subprocess and increases by one per
-                // notification: gap detection reads a repeat or a gap as a
-                // dropped frame and forces a resync.
+                // notification, preserving the sender's wire-order guarantee.
+                // Gaps/regressions do not trigger receiver resync.
                 expect(frame.seq).toBe(index + 1)
             })
             // One subprocess is one epoch, so the peer can tell a restart from

@@ -51,3 +51,21 @@ func TestProtocolMismatchStopsOpenReadLoop(t *testing.T) {
 		})
 	}
 }
+
+func TestReadLoopRecoversMalformedAndAcceptsStampedControl(t *testing.T) {
+	var input, output bytes.Buffer
+	input.WriteString("{not json}\n")
+	writer := jsonrpc.NewCodec(terminalTestStream{strings.NewReader(""), &input})
+	if err := writer.Notify("log/set-level", map[string]string{"level": "invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	input.WriteString(`{"jsonrpc":"2.0","id":2,"method":"log/set-level","params":{"level":"invalid"}}` + "\n")
+	m := &Manager{codec: NewCodec(terminalTestStream{&input, &output}), cancel: func() {}}
+	if err := m.readLoop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	response, err := jsonrpc.NewCodec(terminalTestStream{&output, io.Discard}).Read()
+	if err != nil || !response.IsResponse() || string(*response.ID) != "2" {
+		t.Fatalf("valid control after malformed JSON was not executed: %v %v", response, err)
+	}
+}

@@ -124,9 +124,9 @@ func TestChildStdinFramesAreStamped(t *testing.T) {
 // pushes. Two control paths share this handle — the broker's log-level broadcast
 // and the membership watcher that pushes a new cluster principal — so they race in
 // practice. The seq node-info reads must equal the frame's position on the wire:
-// §2.7 gap detection reads an inversion as a dropped frame and answers with a
-// spurious resync, and the two senders also share one pipe, so an interleaved
-// frame would be undecodable on top of that.
+// the sender guarantees monotonic order, independent of the receiver's no-gap-
+// recovery policy. The senders share one pipe, so interleaved bytes would also
+// make the frame undecodable.
 //
 // Run under -race: the point of routing both pushes through the handle's codec is
 // that the stamp and the write share one critical section, and only the race
@@ -192,8 +192,8 @@ func TestNodeInfoControlFramesWriteInSeqOrder(t *testing.T) {
 // broker's busiest child push: a workload event reaches Forward from the
 // client's read loop, from rehydration, and from the discovery snapshot, so
 // concurrent senders are normal. The seq the manager reads must equal the frame's
-// position on the wire — §2.7 gap detection reads an inversion as a dropped frame
-// and answers with a spurious resync.
+// position on the wire. Gaps and regressions are accepted by receivers without
+// resync; monotonicity remains a sender guarantee.
 func TestWorkloadManagerForwardWritesInSeqOrder(t *testing.T) {
 	const (
 		senders     = 8
