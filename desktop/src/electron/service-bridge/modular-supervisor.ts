@@ -928,7 +928,19 @@ class ModularSupervisor {
             // No second automatic retry until a fresh lifetime becomes ready.
             this.silenceRestart = this.stop(false)
                 .then(() => {
-                    if (retry && generation === this.silenceRestartGeneration) this.start()
+                    // Decide on the ticket once, before start(): start() itself
+                    // advances the generation before any step that can throw.
+                    if (!retry || generation !== this.silenceRestartGeneration) return
+                    try {
+                        this.start()
+                    } catch (error) {
+                        log.error({
+                            sublevel: 'broker',
+                            message: `Silence recovery could not start the broker: ${getErrorString(error)}`
+                        })
+                        // The restart the owner is waiting on will not happen.
+                        this.onBrokerCrash?.({ code: null })
+                    }
                 })
                 .catch(error => {
                     log.error({

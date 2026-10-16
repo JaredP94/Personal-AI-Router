@@ -51,6 +51,7 @@ import {
 // signalling under test is the production path.
 const supervisor = getModularSupervisor()
 const originalStopProcesses = supervisor['stopProcesses']
+const originalValidateRequiredBinaries = supervisor['validateRequiredBinaries']
 let broker: JsonRpcSubprocess | null = null
 let releaseStop = (): void => undefined
 
@@ -104,6 +105,7 @@ describe('connector across a silence reconnect', () => {
         await flush()
         supervisor['processes'].clear()
         supervisor['stopProcesses'] = originalStopProcesses
+        supervisor['validateRequiredBinaries'] = originalValidateRequiredBinaries
         supervisor['isReady'] = false
         supervisor['brokerReady'] = false
         broker = null
@@ -177,21 +179,65 @@ describe('connector across a silence reconnect', () => {
         expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledTimes(1)
     })
 
-    it('reports a genuine failure when the automatic restart cannot start', async () => {
+    it('reports a genuine failure when the real automatic start() throws', async () => {
         await connect()
-        vi.mocked(supervisor.start).mockImplementationOnce(() => {
-            throw new Error('Required broker binary is missing')
+        // Run the production start(), which advances the restart ticket before
+        // its throwing steps; only the binary check underneath it fails.
+        vi.mocked(supervisor.start).mockRestore()
+        const validate = vi.fn(() => {
+            throw new Error('Required modular binary not found')
         })
+        supervisor['validateRequiredBinaries'] = validate
 
         currentBroker().emit('unresponsive', { source: 'broker' })
         await flush()
 
+        expect(validate).toHaveBeenCalledTimes(1)
         expect(getConnectorStatus()).toBe('disconnected')
         expect(getConnectorError()).toBeDefined()
         expect(didWeSpawnCli()).toBe(false)
-        expect(
-            mocks.notifyBrokerCrash.mock.calls.length +
-                mocks.notifyBrokerStartupFailure.mock.calls.length
-        ).toBe(1)
+        expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledTimes(1)
+        expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
+    })
+
+    it('reports a genuine failure when the owned stop before the restart fails', async () => {
+        await connect()
+        supervisor['stopProcesses'] = vi.fn().mockRejectedValue(new Error('teardown failed'))
+
+        currentBroker().emit('unresponsive', { source: 'broker' })
+        await flush()
+
+        expect(supervisor.start).toHaveBeenCalledTimes(1)
+        expect(getConnectorStatus()).toBe('disconnected')
+        expect(didWeSpawnCli()).toBe(false)
+        expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledTimes(1)
+    })
+
+    it('a user stop during the restart window wins over a throwing real start()', async () => {
+        await connect()
+        vi.mocked(supervisor.start).mockRestore()
+        const validate = vi.fn(() => {
+            throw new Error('Required modular binary not found')
+        })
+        supervisor['validateRequiredBinaries'] = validate
+        supervisor['stopProcesses'] = vi.fn(
+            () =>
+                new Promise<void>(resolve => {
+                    releaseStop = resolve
+                })
+        )
+
+        currentBroker().emit('unresponsive', { source: 'broker' })
+        const stopping = destroyConnector()
+        releaseStop()
+        await stopping
+        await flush()
+
+        expect(validate).not.toHaveBeenCalled()
+        expect(getConnectorStatus()).toBe('disconnected')
+        expect(getConnectorError()).toBeUndefined()
+        expect(didWeSpawnCli()).toBe(false)
+        expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
+        expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
     })
 })
