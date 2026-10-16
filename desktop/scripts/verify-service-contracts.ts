@@ -91,7 +91,7 @@ interface BinarySurface {
     dynamic: DynamicSite[]
 }
 
-const METHOD_RE = /^(?:[a-z][a-zA-Z0-9]*(?:[:/][a-zA-Z0-9.-]+)+|ready|error)$/
+const METHOD_RE = /^(?:[a-z][a-zA-Z0-9]*(?:[:/][a-zA-Z0-9.-]+)+|ready|error|heartbeat)$/
 
 function isMethodish(s: string): boolean {
     return METHOD_RE.test(s)
@@ -130,9 +130,14 @@ function buildConstMap(files: string[]): Map<string, string> {
 
 const QUOTED_RE = /"([^"]+)"/g
 const IDENT_RE = /\b([A-Za-z_]\w*)\b/g
-const NOTIFY_LITERAL_RE = /(?:notify|emit|publish|broadcast)\(\s*"([^"]+)"/gi
-const NOTIFY_PREFIX_CONCAT_RE = /(?:notify|emit|publish|broadcast)\(\s*"([^"]+)"\s*\+/i
-const NOTIFY_IDENT_RE = /(?:notify|emit|publish|broadcast)\(\s*([A-Za-z_]\w*)\s*,/gi
+// The broker's shutdown-aware notifier takes ctx before the method. Include
+// both literal heartbeat and constant-backed broker:epoch sites in the surface.
+const NOTIFY_LITERAL_RE =
+    /(?:(?:notify|emit|publish|broadcast)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)"([^"]+)"/gi
+const NOTIFY_PREFIX_CONCAT_RE =
+    /(?:(?:notify|emit|publish|broadcast)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)"([^"]+)"\s*\+/i
+const NOTIFY_IDENT_RE =
+    /(?:(?:notify|emit|publish|broadcast)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)([A-Za-z_]\w*)\s*,/gi
 
 /** A `| `nvpair-ui-broker` | 0.37.0 | … |` row — forbidden in hand-maintained docs. */
 const DOC_COMPONENT_ROW_RE = /^\|\s*`([a-z0-9-]+)`\s*\|\s*(\d+\.\d+\.\d+)\s*\|/gm

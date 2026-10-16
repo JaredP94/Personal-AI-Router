@@ -131,7 +131,45 @@ Shared lifecycle for all workers:
 
 ## JSON-RPC Surface
 
+### Protocol v2 envelope and recovery
+
+Every **notification** on the client connection carries top-level `epoch` (the
+sender's process UUID) and `seq` (a per-connection notification counter starting
+at 1). Requests and responses must carry **neither** field. The broker's client
+input rejects a missing notification envelope or a stamped request/response,
+logs `JSON-RPC protocol mismatch`, and closes the connection. This describes the
+broker's client boundary, not a guarantee that every worker/client reader
+currently terminates on a mismatch.
+
+```json
+{"jsonrpc":"2.0","method":"app:ready","params":{"version":"dev"},"epoch":"27b5b4b2-15c3-4ccc-8938-51c985159020","seq":1}
+```
+
+Except for explicit envelope examples, notification examples below show only
+method and payload for readability; real notification frames include the stamp.
+A changed epoch invalidates cached state: clients request `broker:resync` and
+refresh their subscribed snapshots. Sequence gaps within the same epoch do
+**not** trigger recovery; subsequent full snapshots repair state. There is no
+sequence-gap replay or resync mechanism.
+
+The shared `jsonrpc.HeartbeatInterval` is **15 seconds** and
+`jsonrpc.HeartbeatTimeout` is **45 seconds** (three intervals). The broker emits
+`heartbeat` every interval. The timeout constant describes the intended silence
+budget; it is not evidence of an enforced watchdog/reconnect in every consumer.
+
 ### Notifications (broker → caller)
+
+#### `broker:epoch`
+
+Announces `{epoch, protocol}` on the first heartbeat tick, before `heartbeat`,
+and again if the epoch changes. `protocol` is `2`; the payload epoch matches the
+top-level envelope and `broker:resync` result. Like every notification, this frame
+is stamped; it is not a response.
+
+#### `heartbeat`
+
+A liveness notification emitted every 15 seconds with an empty params object
+and the usual epoch/seq envelope. It does not carry a state snapshot.
 
 #### `app:ready`
 
@@ -227,6 +265,18 @@ ServiceError = { id, message, timestamp, nodeId?, severity?, action?, engineType
 The change-only cluster signals `nvpair-node-settings` pushes when `cluster_id` / `cluster_auto_sync` change. Relayed verbatim and unconditionally — the same way the UI receives them from the settings subprocess directly.
 
 ### Requests (caller → broker)
+
+#### `broker:resync`
+
+Returns the current `{epoch, protocol}` so a client can invalidate stale caches
+and then request current snapshots. It does not itself replay subscriptions or
+return those snapshots. Both request and response are **unstamped**: the epoch
+belongs inside `result`, not on the response envelope.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"broker:resync"}
+{"jsonrpc":"2.0","id":1,"result":{"epoch":"27b5b4b2-15c3-4ccc-8938-51c985159020","protocol":2}}
+```
 
 #### `discovery:get-nodes`
 

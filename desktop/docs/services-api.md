@@ -233,13 +233,16 @@
 | Method | Direction | In bridge? |
 |---|---|---|
 | `app:ready` | notification (we consume) | ✅ yes |
+| `broker:epoch` | notification (we consume) | ✅ yes |
 | `discovery:nodes-changed` | notification (we consume) | ✅ yes |
 | `engine:restore-enabled` | notification (we consume) | ➖ ignored |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
+| `heartbeat` | notification (we consume) | ✅ yes |
 | `proxy:ready` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
+| `broker:resync` | request (we call) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
 | `connection/cluster-identity` | request (we call) | ✅ yes |
 | `discovery:get-nodes` | request (we call) | ✅ yes |
