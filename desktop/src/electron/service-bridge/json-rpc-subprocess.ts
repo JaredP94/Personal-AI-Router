@@ -21,7 +21,14 @@ interface JsonRpcError {
     data?: JsonValue
 }
 
-export class JsonRpcResponseError extends Error {}
+export class JsonRpcResponseError extends Error {
+    constructor(
+        message: string,
+        readonly code: number
+    ) {
+        super(message)
+    }
+}
 
 type JsonRpcId = number | string
 
@@ -411,7 +418,10 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
 
         if (message.error) {
             pending.reject(
-                new JsonRpcResponseError(`${message.error.code}: ${message.error.message}`)
+                new JsonRpcResponseError(
+                    `${message.error.code}: ${message.error.message}`,
+                    message.error.code
+                )
             )
             return
         }

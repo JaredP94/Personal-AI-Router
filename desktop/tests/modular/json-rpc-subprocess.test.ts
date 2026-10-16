@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest'
-import { JsonRpcSubprocess, type JsonValue } from '@/electron/service-bridge/json-rpc-subprocess'
+import {
+    JsonRpcResponseError,
+    JsonRpcSubprocess,
+    type JsonValue
+} from '@/electron/service-bridge/json-rpc-subprocess'
 
 const FAKE_RPC = `
 const readline = require('readline').createInterface({ input: process.stdin })
@@ -43,6 +47,25 @@ function isJsonObject(value: JsonValue | undefined): value is Record<string, Jso
 }
 
 describe('JsonRpcSubprocess.sendWithResponse', () => {
+    it('retains numeric error codes and response-error identity without changing the message', async () => {
+        const rpc = new JsonRpcSubprocess('fake', process.execPath)
+        rpc.start(['-e', FAKE_RPC])
+        try {
+            let responseError: JsonRpcResponseError | undefined
+            try {
+                await rpc.call('reject')
+            } catch (error) {
+                if (!(error instanceof JsonRpcResponseError)) throw error
+                responseError = error
+            }
+            expect(responseError).toBeInstanceOf(JsonRpcResponseError)
+            expect(responseError?.code).toBe(-32000)
+            expect(responseError?.message).toBe('-32000: rejected')
+        } finally {
+            await rpc.stop()
+        }
+    })
+
     it('observes delayed responses without imposing a short timeout', async () => {
         const rpc = new JsonRpcSubprocess('fake', process.execPath)
         rpc.start(['-e', FAKE_RPC])

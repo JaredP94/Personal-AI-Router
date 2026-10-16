@@ -60,6 +60,14 @@ export class ModularStartupTimeoutError extends Error {
     }
 }
 
+interface EpochResyncPass {
+    epoch: string
+    observation: number
+    lifecycle: number
+    failed: boolean
+    workloadSnapshot: Set<string> | null
+}
+
 interface ReadinessWaiter {
     resolve: () => void
     reject: (error: Error) => void
@@ -433,11 +441,13 @@ class ModularSupervisor {
     // ready notifications during startup must not trigger a renderer store refresh
     // while remote peer facts are still unknown.
     private brokerHydrationDone = false
-    // Protocol v2 epoch last observed from the broker. Empty until the first
-    // stamped broker notification arrives; a change triggers a single read-only
-    // snapshot resync burst.
+    // Observation is distinct from successful hydration. A failed pass stays
+    // dirty until later traffic; newer observations get one serialized follow-up.
     private currentEpoch = ''
-    private resyncInFlight = false
+    private epochObservation = 0
+    private hydratedObservation = -1
+    private resyncLifecycle = 0
+    private activeResync: EpochResyncPass | null = null
 
     get ready(): boolean {
         return this.isReady && this.brokerReady
@@ -448,12 +458,58 @@ class ModularSupervisor {
     }
 
     noteEpoch(epoch: string): boolean {
-        if (!epoch || epoch === this.currentEpoch) return false
-        this.currentEpoch = epoch
-        if (!this.resyncInFlight) {
-            void this.resyncOnEpochChange(epoch)
+        if (!epoch) return false
+        const changed = epoch !== this.currentEpoch
+        if (changed) {
+            this.currentEpoch = epoch
+            this.epochObservation++
+            this.releaseWorkloadSnapshot(this.activeResync)
         }
-        return true
+        this.serviceEpochRecovery()
+        return changed
+    }
+
+    private releaseWorkloadSnapshot(pass: EpochResyncPass | null): void {
+        if (!pass?.workloadSnapshot) return
+        getModularBridgeState().endWorkloadRecovery(pass.workloadSnapshot)
+        pass.workloadSnapshot = null
+    }
+
+    private invalidateEpochRecovery(): void {
+        this.resyncLifecycle++
+        this.releaseWorkloadSnapshot(this.activeResync)
+        this.activeResync = null
+        this.currentEpoch = ''
+        this.epochObservation++
+        this.hydratedObservation = -1
+    }
+
+    private ownsEpochRecovery(pass: EpochResyncPass): boolean {
+        return (
+            !this.shuttingDown &&
+            this.activeResync === pass &&
+            pass.lifecycle === this.resyncLifecycle &&
+            pass.observation === this.epochObservation
+        )
+    }
+
+    private serviceEpochRecovery(): void {
+        if (
+            this.shuttingDown ||
+            this.activeResync ||
+            !this.currentEpoch ||
+            this.hydratedObservation === this.epochObservation
+        )
+            return
+        const pass: EpochResyncPass = {
+            epoch: this.currentEpoch,
+            observation: this.epochObservation,
+            lifecycle: this.resyncLifecycle,
+            failed: false,
+            workloadSnapshot: null
+        }
+        this.activeResync = pass
+        void this.resyncOnEpochChange(pass)
     }
 
     /** Register a handler invoked when the broker exits unexpectedly. */
@@ -513,14 +569,13 @@ class ModularSupervisor {
     }
 
     start(): void {
+        this.invalidateEpochRecovery()
         if (this.isReady) return
 
         this.shuttingDown = false
         this.brokerReady = false
         this.brokerHydrationDone = false
         this.readinessReported = false
-        this.currentEpoch = ''
-        this.resyncInFlight = false
 
         // Clear any workloads carried over from a previous run so stale entries
         // from before a restart/crash never linger. `onBrokerReady` then re-seeds
@@ -590,6 +645,7 @@ class ModularSupervisor {
     }
 
     async stop(): Promise<void> {
+        this.invalidateEpochRecovery()
         // Mark teardown first so the broker's exit during stop() is treated as a
         // deliberate shutdown, not a crash.
         this.shuttingDown = true
@@ -631,8 +687,6 @@ class ModularSupervisor {
         this.brokerHydrationDone = false
         this.isReady = false
         this.readinessReported = false
-        this.currentEpoch = ''
-        this.resyncInFlight = false
         this.rejectReadinessWaiters(
             new Error(`${APP_DISPLAY_NAME} service stopped before becoming ready`)
         )
@@ -835,8 +889,7 @@ class ModularSupervisor {
                 this.brokerHydrationDone = false
                 this.isReady = false
                 this.readinessReported = false
-                this.currentEpoch = ''
-                this.resyncInFlight = false
+                this.invalidateEpochRecovery()
                 this.rejectReadinessWaiters(
                     new Error(`${APP_DISPLAY_NAME} service exited before becoming ready`)
                 )
@@ -989,15 +1042,19 @@ class ModularSupervisor {
      * and never poll any peer's authoritative install state — leaving every
      * peer engine inferred from mDNS presence alone.
      */
+    private applyClusterPeerSnapshot(result: JsonValue | undefined): void {
+        const members = parseClusterNodes(result)
+        this.setClusterPeerIds(members)
+        getModularBridgeState().reconcilePendingInvitesWithMembers(members)
+        if (Array.isArray(objectValue(result)?.nodes)) {
+            emitBridgePush('nodes:changed', members)
+        }
+    }
+
     private async seedClusterPeerIds(): Promise<void> {
         try {
             const result = await this.callProcess('broker', 'nodes:get-initial')
-            const members = parseClusterNodes(result)
-            this.setClusterPeerIds(members)
-            getModularBridgeState().reconcilePendingInvitesWithMembers(members)
-            if (Array.isArray(objectValue(result)?.nodes)) {
-                emitBridgePush('nodes:changed', members)
-            }
+            this.applyClusterPeerSnapshot(result)
             log.info({
                 sublevel: 'broker',
                 message: `cluster peer seed: ${this.clusterPeerIds.size} remote member(s)`,
@@ -1090,31 +1147,35 @@ class ModularSupervisor {
         }, 500)
     }
 
+    private applyProxyStatus(engine: ProxyEngine, result: JsonValue | undefined): void {
+        const obj = objectValue(result)
+        if (obj && booleanValue(obj.ready)) {
+            getModularBridgeState().handleNotification({
+                source: proxyRelayPrefix(engine),
+                method: 'ready',
+                params: { port: numberValue(obj.port) }
+            })
+            this.emitStateRefreshIfHydrated()
+        }
+        // Hydrate routing totals on (re)connect, so a client that subscribes
+        // after a broker restart converges on the proxy's real counts without
+        // waiting for its next routed request.
+        if (obj) {
+            getModularBridgeState().setRoutingTotals(
+                engine,
+                numberValue(obj.requests),
+                numberValue(obj.cache_affinity_hits)
+            )
+        }
+    }
+
     private async pollProxyStatus(engine: ProxyEngine): Promise<void> {
         try {
             const result = await this.callProcess(
                 'broker',
                 `${proxyRelayPrefix(engine)}:get-status`
             )
-            const obj = objectValue(result)
-            if (obj && booleanValue(obj.ready)) {
-                getModularBridgeState().handleNotification({
-                    source: proxyRelayPrefix(engine),
-                    method: 'ready',
-                    params: { port: numberValue(obj.port) }
-                })
-                this.emitStateRefreshIfHydrated()
-            }
-            // Hydrate routing totals on (re)connect, so a client that subscribes
-            // after a broker restart converges on the proxy's real counts without
-            // waiting for its next routed request.
-            if (obj) {
-                getModularBridgeState().setRoutingTotals(
-                    engine,
-                    numberValue(obj.requests),
-                    numberValue(obj.cache_affinity_hits)
-                )
-            }
+            this.applyProxyStatus(engine, result)
         } catch (err) {
             log.verbose({
                 sublevel: 'broker',
@@ -1160,81 +1221,153 @@ class ModularSupervisor {
         }
     }
 
-    /**
-     * Re-fetch every consumed broker snapshot when the broker's protocol epoch
-     * changes. Coalesced by `resyncInFlight` so concurrent epoch changes never
-     * stack bursts.
-     */
-    private async resyncOnEpochChange(triggerEpoch: string): Promise<void> {
-        this.resyncInFlight = true
+    /** A guarded recovery fetch: startup's best-effort helpers must not hide failures. */
+    private async readRecoverySnapshot(
+        pass: EpochResyncPass,
+        method: string,
+        apply: (result: JsonValue | undefined) => void
+    ): Promise<boolean> {
+        if (!this.ownsEpochRecovery(pass)) return false
+        const result = await this.callProcess('broker', method)
+        if (!this.ownsEpochRecovery(pass)) return false
+        apply(result)
+        return this.ownsEpochRecovery(pass)
+    }
+
+    private async reconcileRecoveryInvites(pass: EpochResyncPass): Promise<void> {
+        const state = getModularBridgeState()
+        for (const invite of state.getPendingInvites()) {
+            if (!this.ownsEpochRecovery(pass)) return
+            let terminal = false
+            try {
+                const result = await this.callProcess('broker', 'cluster:invite-status', {
+                    inviteId: invite.inviteId
+                })
+                if (!this.ownsEpochRecovery(pass)) return
+                const status = parseInvite(result)
+                if (status.inviteId !== invite.inviteId || !objectValue(result)?.state) {
+                    pass.failed = true
+                    continue
+                }
+                terminal = status.state !== 'pending'
+            } catch (error) {
+                if (!this.ownsEpochRecovery(pass)) return
+                if (error instanceof JsonRpcResponseError && error.code === -32001) {
+                    terminal = true
+                } else {
+                    pass.failed = true
+                }
+            }
+            // A fresh cached object with the same id must not be pruned by an old reply.
+            if (terminal && state.getPendingInvites().includes(invite)) {
+                state.prunePendingInvite(invite.inviteId)
+            }
+        }
+    }
+
+    /** One owning pass; only a newer observation drains automatically, never a failure. */
+    private async resyncOnEpochChange(pass: EpochResyncPass): Promise<void> {
+        const state = getModularBridgeState()
         try {
-            try {
-                const resync = objectValue(await this.callProcess('broker', 'broker:resync'))
-                const resyncEpoch = stringValue(resync?.epoch)
-                if (resyncEpoch && this.currentEpoch === triggerEpoch) {
-                    this.currentEpoch = resyncEpoch
-                }
-            } catch (err) {
-                log.verbose({
-                    sublevel: 'broker',
-                    message: `broker:resync skipped: ${getErrorString(err)}`
-                })
-            }
+            if (
+                !(await this.readRecoverySnapshot(pass, 'broker:resync', result => {
+                    const epoch = stringValue(objectValue(result)?.epoch)
+                    if (epoch && epoch !== pass.epoch) this.noteEpoch(epoch)
+                }))
+            )
+                return
 
-            try {
-                const discoveryResult = await this.callProcess('broker', 'discovery:get-nodes')
-                const discoveryNodes = Array.isArray(discoveryResult)
-                    ? discoveryResult
-                    : objectValue(discoveryResult)?.nodes
-                if (Array.isArray(discoveryNodes)) {
-                    getModularBridgeState().handleNotification({
+            if (
+                !(await this.readRecoverySnapshot(pass, 'discovery:get-nodes', result => {
+                    const nodes = Array.isArray(result) ? result : objectValue(result)?.nodes
+                    if (Array.isArray(nodes)) {
+                        state.handleNotification({
+                            source: 'broker',
+                            method: 'discovery:nodes-changed',
+                            params: nodes
+                        })
+                    }
+                }))
+            )
+                return
+            if (
+                !(await this.readRecoverySnapshot(pass, 'nodes:get-initial', result => {
+                    this.applyClusterPeerSnapshot(result)
+                }))
+            )
+                return
+            if (
+                !(await this.readRecoverySnapshot(pass, 'cluster:get-node-id', result => {
+                    const identity = parseNodeIdentity(result)
+                    if (identity.nodeUuid) state.setSelfId(identity.nodeUuid)
+                }))
+            )
+                return
+            let engines: JsonValue[] = []
+            if (
+                !(await this.readRecoverySnapshot(pass, 'engine:get-installed', result => {
+                    const entries = objectValue(result)?.engines
+                    if (Array.isArray(entries)) engines = entries
+                    for (const engine of engines) state.applyEngineManagerStatus(engine)
+                }))
+            )
+                return
+            for (const engine of engines) {
+                await this.refreshManagedEngineModels(engine, pass)
+                if (!this.ownsEpochRecovery(pass)) return
+            }
+            if (
+                !(await this.readRecoverySnapshot(pass, 'errors:get-initial', result => {
+                    this.handleErrorsNotification({
                         source: 'broker',
-                        method: 'discovery:nodes-changed',
-                        params: discoveryNodes
+                        method: 'errors:update',
+                        params: result
                     })
-                }
-            } catch (err) {
-                log.verbose({
-                    sublevel: 'broker',
-                    message: `discovery:get-nodes resync skipped: ${getErrorString(err)}`
-                })
-            }
+                }))
+            )
+                return
 
-            await this.seedClusterPeerIds()
-            await this.resolveSelfId()
-            await this.hydrateEngineManager()
-
-            try {
-                const errorsResult = await this.callProcess('broker', 'errors:get-initial')
-                this.handleErrorsNotification({
-                    source: 'broker',
-                    method: 'errors:update',
-                    params: errorsResult
-                })
-            } catch (err) {
-                log.verbose({
-                    sublevel: 'broker',
-                    message: `errors:get-initial resync skipped: ${getErrorString(err)}`
-                })
-            }
-
-            await this.seedWorkloadBaseline()
+            if (!this.ownsEpochRecovery(pass)) return
+            const snapshot = state.beginWorkloadRecovery()
+            pass.workloadSnapshot = snapshot
+            if (
+                !(await this.readRecoverySnapshot(pass, 'workloads:get-initial', result => {
+                    state.endWorkloadRecovery(snapshot, parseWorkloadsInitial(result))
+                    pass.workloadSnapshot = null
+                }))
+            )
+                return
             for (const engine of PROXY_ENGINES) {
-                await this.pollProxyStatus(engine)
+                if (
+                    !(await this.readRecoverySnapshot(
+                        pass,
+                        `${proxyRelayPrefix(engine)}:get-status`,
+                        result => {
+                            this.applyProxyStatus(engine, result)
+                        }
+                    ))
+                )
+                    return
             }
 
-            try {
-                await this.callProcess('broker', 'telemetry/get-status')
-            } catch (err) {
-                log.verbose({
-                    sublevel: 'broker',
-                    message: `telemetry/get-status resync skipped: ${getErrorString(err)}`
-                })
-            }
+            await this.reconcileRecoveryInvites(pass)
+            if (!this.ownsEpochRecovery(pass)) return
+            if (!(await this.readRecoverySnapshot(pass, 'telemetry/get-status', () => {}))) return
+            if (!this.ownsEpochRecovery(pass)) return
 
+            if (!pass.failed) this.hydratedObservation = pass.observation
             this.emitStateRefreshIfHydrated()
+        } catch {
+            // Keep this observation dirty for a bounded retry on later traffic.
+            // Never log response bodies or invite data.
+            if (this.ownsEpochRecovery(pass)) pass.failed = true
         } finally {
-            this.resyncInFlight = false
+            this.releaseWorkloadSnapshot(pass)
+            // A previous lifetime's finalizer can never release a new owner.
+            if (this.activeResync === pass && pass.lifecycle === this.resyncLifecycle) {
+                this.activeResync = null
+                if (pass.observation !== this.epochObservation) this.serviceEpochRecovery()
+            }
         }
     }
 
@@ -2101,7 +2234,11 @@ class ModularSupervisor {
      * engine's loopback API and only works while it is running, so we clear the
      * list when the engine is stopped/uninstalled.
      */
-    refreshManagedEngineModels(params: JsonValue | undefined): void {
+    async refreshManagedEngineModels(
+        params: JsonValue | undefined,
+        pass?: EpochResyncPass
+    ): Promise<void> {
+        if (pass && !this.ownsEpochRecovery(pass)) return
         const obj = objectValue(params)
         if (!obj) return
         const engine = stringValue(obj.engine)
@@ -2127,21 +2264,23 @@ class ModularSupervisor {
         if (!this.hasProcess('broker')) return
         this.stoppedModelEngines.delete(engineType)
         const generation = this.beginModelRefresh(engineType)
-        this.callProcess('broker', 'engine:action', {
-            engine,
-            action: 'list_models'
-        })
-            .then(result => {
-                const models = parseListModelNames(result)
-                this.commitModelInventory(engineType, models, generation)
+        try {
+            const result = await this.callProcess('broker', 'engine:action', {
+                engine,
+                action: 'list_models'
             })
-            .catch(err => {
-                this.handleModelRefreshFailure(engineType, generation)
-                log.verbose({
-                    sublevel: 'engine-manager',
-                    message: `list_models for ${engine} failed: ${getErrorString(err)}`
-                })
+            if (pass && !this.ownsEpochRecovery(pass)) return
+            const models = parseListModelNames(result)
+            this.commitModelInventory(engineType, models, generation)
+        } catch (err) {
+            if (pass && !this.ownsEpochRecovery(pass)) return
+            if (pass) pass.failed = true
+            this.handleModelRefreshFailure(engineType, generation)
+            log.verbose({
+                sublevel: 'engine-manager',
+                message: `list_models for ${engine} failed: ${getErrorString(err)}`
             })
+        }
     }
 
     /**

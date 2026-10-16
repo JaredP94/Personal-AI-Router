@@ -934,6 +934,8 @@ class ModularBridgeState {
     private brokerNodeIds = new Set<string>()
     private errors: ServiceError[] = []
     private workloads = new Map<string, Workload>()
+    // Exists only during one epoch snapshot fetch, including removal tombstones.
+    private workloadRecovery: Set<string> | null = null
     private logs: LogEntry[] = []
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
@@ -1033,7 +1035,7 @@ class ModularBridgeState {
      * main accumulates them here and prunes them as they resolve — via membership
      * (`nodes:changed`), the local accept/decline result, the receiver-side
      * `cluster:invite-canceled` / `cluster:invite-expired` pushes, or the per-invite
-     * `cluster:invite-status` sweep (the backstop for a missed push). The backend
+     * `cluster:invite-status` epoch reconciliation (backstop for a missed push). The backend
      * owns inbound-invite expiry, so there is no client-side TTL.
      * Every mutation re-emits the full `cluster:pending-invites-changed` snapshot.
      */
@@ -1338,12 +1340,43 @@ class ModularBridgeState {
         return this.getWorkloads()
     }
 
+    /** Track only mutations made while this recovery snapshot is being fetched. */
+    beginWorkloadRecovery(): Set<string> {
+        const snapshot = new Set<string>()
+        this.workloadRecovery = snapshot
+        return snapshot
+    }
+
+    /** Apply an authoritative baseline, or just release an invalidated/failed fetch. */
+    endWorkloadRecovery(snapshot: Set<string>, workloads?: Workload[]): void {
+        if (this.workloadRecovery !== snapshot) return
+        this.workloadRecovery = null
+        if (!workloads) {
+            snapshot.clear()
+            return
+        }
+        const baseline = new Map(
+            workloads.map(workload => [workloadKey(workload.originatedFrom, workload.id), workload])
+        )
+        for (const [key, workload] of this.workloads) {
+            if (!snapshot.has(key) && !baseline.has(key)) this.evictWorkload(key, workload)
+        }
+        for (const [key, workload] of baseline) {
+            if (snapshot.has(key)) continue
+            this.workloads.set(key, workload)
+            emitBridgePush('workloads:upsert', workload)
+        }
+        snapshot.clear()
+    }
+
     /** Relay a broker `workloads:upsert` (`{ workloadInfo }`) into the catalog + UI. */
     upsertWorkloadFromInfo(params: JsonValue | undefined): void {
         const obj = objectValue(params)
         const workload = parseWorkload(obj?.workloadInfo)
         if (!workload) return
-        this.workloads.set(workloadKey(workload.originatedFrom, workload.id), workload)
+        const key = workloadKey(workload.originatedFrom, workload.id)
+        this.workloadRecovery?.add(key)
+        this.workloads.set(key, workload)
         emitBridgePush('workloads:upsert', workload)
     }
 
@@ -1353,12 +1386,15 @@ class ModularBridgeState {
         const workloadId = stringValue(obj?.workloadId)
         if (!workloadId) return
         const originatedFrom = nullableStringValue(obj?.originatedFrom)
-        this.workloads.delete(workloadKey(originatedFrom, workloadId))
+        const key = workloadKey(originatedFrom, workloadId)
+        this.workloadRecovery?.add(key)
+        this.workloads.delete(key)
         emitBridgePush('workloads:remove', { workloadId, originatedFrom })
     }
 
     /** Push a `workloads:remove` for an entry and drop it from the catalog. */
     private evictWorkload(key: string, workload: Workload): void {
+        this.workloadRecovery?.add(key)
         this.workloads.delete(key)
         emitBridgePush('workloads:remove', {
             workloadId: workload.id,
