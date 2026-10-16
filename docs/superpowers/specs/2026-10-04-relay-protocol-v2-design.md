@@ -234,8 +234,11 @@ Snapshot getters, all existing:
 | **proxy request counters** | **NONE — added by spec B** |
 
 `broker:resync` is the only new method. It is called on epoch change and connect,
-with failed hydration retried on later same-epoch traffic — never on sequence
-gaps or a snapshot-polling timer.
+with a failed `broker:resync` retried on later same-epoch traffic — never on
+sequence gaps or a snapshot-polling timer. A snapshot getter that fails (for
+example an optional worker that is not running) does not dirty the epoch: every
+successful domain is applied, the failed domain's view receives its ordinary
+error result, and the epoch counts as hydrated.
 
 ### 2.6 Heartbeat
 
@@ -261,7 +264,10 @@ silence deadline, canceled on teardown and guarded against stale callbacks, not 
 client ticker. Expiry wakes pending requests and marks disconnected once. TUI
 main gracefully joins its old Supervisor before one fresh Spawn/UI lifetime per
 invocation; desktop uses guarded owned stop/start, allowing one automatic retry
-until a fresh lifetime becomes ready. New lifetimes reinstall subscriptions and
+until a fresh lifetime becomes ready. An attempted desktop restart is a
+reconnect, not a crash: the connector keeps ownership, shows `reconnecting` and
+returns to `connected` on the new lifetime's ready signal; only an exhausted or
+failed retry is reported as a crash. New lifetimes reinstall subscriptions and
 hydrate snapshots; no watchdog-generated healthy traffic is introduced.
 
 ### 2.7 Event channels
