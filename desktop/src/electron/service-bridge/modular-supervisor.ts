@@ -69,6 +69,12 @@ interface EpochResyncPass {
     workloadSnapshot: Set<string> | null
 }
 
+/** One child a start attempt constructed, with the name it is tracked under. */
+interface SpawnedChild {
+    name: ModularProcessName
+    child: JsonRpcSubprocess
+}
+
 interface ReadinessWaiter {
     resolve: () => void
     reject: (error: Error) => void
@@ -642,48 +648,94 @@ class ModularSupervisor {
             }
         })
 
-        this.validateRequiredBinaries()
+        const spawned: SpawnedChild[] = []
+        try {
+            this.validateRequiredBinaries()
 
-        for (const definition of this.electronOwnedDefinitions()) {
-            const binaryPath = getModularBinaryPath(definition.baseName)
-            if (!fs.existsSync(binaryPath)) {
-                // Required binaries were validated above; only optional ones can
-                // reach here, so skip them rather than throwing.
-                log.warn({
+            for (const definition of this.electronOwnedDefinitions()) {
+                const binaryPath = getModularBinaryPath(definition.baseName)
+                if (!fs.existsSync(binaryPath)) {
+                    // Required binaries were validated above; only optional ones can
+                    // reach here, so skip them rather than throwing.
+                    log.warn({
+                        sublevel: definition.processName,
+                        message: 'Optional modular binary not present; skipping',
+                        data: { binaryPath }
+                    })
+                    continue
+                }
+
+                log.info({
                     sublevel: definition.processName,
-                    message: 'Optional modular binary not present; skipping',
+                    message: 'Starting modular subprocess',
                     data: { binaryPath }
                 })
-                continue
-            }
 
-            log.info({
-                sublevel: definition.processName,
-                message: 'Starting modular subprocess',
-                data: { binaryPath }
-            })
-
-            const child = new JsonRpcSubprocess(definition.processName, binaryPath)
-            this.processes.set(definition.processName, child)
-            this.attachChildHandlers(child)
-            try {
-                child.start(this.startupArgs(definition))
-            } catch (error) {
-                if (this.processes.get(definition.processName) === child) {
-                    this.processes.delete(definition.processName)
+                const child = new JsonRpcSubprocess(definition.processName, binaryPath)
+                this.processes.set(definition.processName, child)
+                spawned.push({ name: definition.processName, child })
+                this.attachChildHandlers(child)
+                try {
+                    child.start(this.startupArgs(definition))
+                } catch (error) {
+                    if (this.processes.get(definition.processName) === child) {
+                        this.processes.delete(definition.processName)
+                    }
+                    throw error
                 }
-                throw error
             }
+
+            getModularBridgeState().setLocalDiscoveryModelRefresher(engine =>
+                this.refreshDiscoveryEngineModels(engine)
+            )
+
+            this.isReady = true
+            this.updateReadiness()
+            startNodeInfoPoller()
+            log.info({ sublevel: 'lifecycle', message: 'Started modular service processes' })
+        } catch (error) {
+            this.abandonPartialStart(spawned)
+            throw error
+        }
+    }
+
+    /**
+     * Reap the children a failed start attempt spawned.
+     *
+     * A start that throws halfway hands its caller a startup failure and nothing
+     * else: the connector drops ownership of the tree, so a later user stop never
+     * reaches the processes this attempt already launched — they would run unowned
+     * while the next start spawned duplicates beside them. Teardown reuses the
+     * policy a normal stop applies (reverse spawn order, per-process grace, kill
+     * fallback) and is limited to the exact instances this attempt constructed.
+     *
+     * Every ownership decision happens synchronously, before this returns to the
+     * caller that reports the failure: a tracked map entry is dropped only when it
+     * still points at this attempt's instance, so an entry a newer start already
+     * replaced stays put, and the awaits left here can only reach instances this
+     * attempt created. `shuttingDown` marks those children's exits as deliberate so
+     * the connector's startup-failure report remains the one user-visible
+     * notification, and readiness ends not-ready with its waiters rejected so
+     * nothing hangs on a start that has already failed.
+     */
+    private abandonPartialStart(spawned: SpawnedChild[]): void {
+        this.shuttingDown = true
+        stopNodeInfoPoller()
+        this.isReady = false
+        this.brokerReady = false
+        this.brokerHydrationDone = false
+        this.readinessReported = false
+
+        const children: JsonRpcSubprocess[] = []
+        for (const entry of spawned) {
+            if (this.processes.get(entry.name) === entry.child) {
+                this.processes.delete(entry.name)
+            }
+            children.push(entry.child)
         }
 
-        getModularBridgeState().setLocalDiscoveryModelRefresher(engine =>
-            this.refreshDiscoveryEngineModels(engine)
-        )
-
-        this.isReady = true
-        this.updateReadiness()
-        startNodeInfoPoller()
-        log.info({ sublevel: 'lifecycle', message: 'Started modular service processes' })
+        this.rejectReadinessWaiters(new Error(`${APP_DISPLAY_NAME} service failed to start`))
+        void this.stopChildrenForTeardown(children)
     }
 
     async stop(cancelReconnect = true): Promise<void> {
@@ -753,14 +805,15 @@ class ModularSupervisor {
     }
 
     /**
-     * The one teardown policy for spawned subprocesses: stop in reverse spawn order
-     * so the broker goes last.
+     * The one teardown policy for spawned subprocesses, shared by an owned stop and
+     * by the cleanup of a start that failed halfway: stop in reverse spawn order so
+     * the broker goes last.
      *
      * The broker is the parent of the whole worker tree and runs each worker's
-     * graceful shutdown on its own exit — notably engine-manager's StopAll(), which
-     * stops the engines it launched. Give it a longer grace so a slow engine
-     * shutdown isn't cut short by SIGKILL (which would orphan the engine); every
-     * other process takes the default grace.
+     * graceful shutdown on its own exit — notably engine-manager's StopAll() (stops
+     * engines it launched). Give it a longer grace so a slow engine shutdown isn't
+     * cut short by SIGKILL (which would orphan the engine); every other process
+     * takes the default grace.
      */
     private async stopChildrenForTeardown(children: JsonRpcSubprocess[]): Promise<void> {
         for (const child of [...children].reverse()) {
