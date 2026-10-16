@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // notifyBuffer bounds the queue of server pushes awaiting consumption. A
@@ -54,20 +55,31 @@ type Client struct {
 	currentEpoch  string
 	onEpochChange func(epoch string)
 
-	closeOnce sync.Once
-	closeErr  error
-	done      chan struct{}
+	closeOnce        sync.Once
+	failureMu        sync.Mutex
+	closeErr         error
+	heartbeatTimeout time.Duration
+	reader           io.Reader
+	writer           io.Writer
+	sessionContext   context.Context
+	cancel           context.CancelFunc
+	done             chan struct{}
 }
 
 // NewClient builds a Client over the broker's stdout (r) and stdin (w).
 // Call Run to start the read loop before issuing requests.
 func NewClient(r io.Reader, w io.Writer) *Client {
-	return &Client{
-		codec:         NewCodec(readWriter{Reader: r, Writer: w}),
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{
+		sessionContext: ctx, cancel: cancel,
+		codec:  NewCodec(readWriter{Reader: r, Writer: w}),
+		reader: r, writer: w, heartbeatTimeout: jsonrpc.HeartbeatTimeout,
 		pending:       make(map[int64]chan *Message),
 		notifications: make(chan *Message, notifyBuffer),
 		done:          make(chan struct{}),
 	}
+	client.codec.BindWriteContext(ctx)
+	return client
 }
 
 // Notifications returns the channel of server-pushed frames (broker
@@ -78,8 +90,36 @@ func (c *Client) Notifications() <-chan *Message { return c.notifications }
 // Run drives the read loop until the stream closes or ctx is cancelled.
 // On exit it unblocks every pending Call and closes the notifications
 // channel so consumers observe the disconnect. It is safe to call once.
-func (c *Client) Run(ctx context.Context) error {
-	defer c.shutdown()
+func (c *Client) Run(ctx context.Context) (runErr error) {
+	stopParent := context.AfterFunc(ctx, c.cancel)
+	defer stopParent()
+	ctx = c.sessionContext
+	defer c.cancel()
+	closeTransport := func() {
+		if closer, ok := c.reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if closer, ok := c.writer.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
+	stopClose := context.AfterFunc(ctx, closeTransport)
+	defer stopClose()
+	deadline := &silenceDeadline{duration: c.heartbeatTimeout, expire: func() {
+		c.setError(ErrHeartbeatTimeout)
+		c.cancel()
+		closeTransport()
+	}}
+	defer func() {
+		deadline.stop()
+		if err := c.Err(); err != nil {
+			runErr = err
+		} else {
+			c.setError(runErr)
+		}
+		c.shutdown()
+	}()
+	deadline.reset()
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -96,6 +136,7 @@ func (c *Client) Run(ctx context.Context) error {
 			slog.Warn("JSON-RPC read error (terminal)", "err", err)
 			return err
 		}
+		deadline.reset()
 		switch {
 		case msg.IsResponse():
 			c.deliverResponse(msg)
@@ -191,6 +232,16 @@ func (c *Client) deliverResponse(msg *Message) {
 	}
 }
 
+// Err is the terminal session reason, published before Notifications closes.
+func (c *Client) Err() error { c.failureMu.Lock(); defer c.failureMu.Unlock(); return c.closeErr }
+func (c *Client) setError(err error) {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+	if c.closeErr == nil {
+		c.closeErr = err
+	}
+}
+
 func (c *Client) shutdown() {
 	c.closeOnce.Do(func() {
 		close(c.done)
@@ -212,6 +263,12 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*Message,
 	ch := make(chan *Message, 1)
 
 	c.pendingMu.Lock()
+	select {
+	case <-c.done:
+		c.pendingMu.Unlock()
+		return nil, fmt.Errorf("connection closed before %q", method)
+	default:
+	}
 	c.pending[id] = ch
 	c.pendingMu.Unlock()
 

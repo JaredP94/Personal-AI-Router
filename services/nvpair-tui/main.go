@@ -13,21 +13,47 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"nvpair-tui/rpc"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"nvpair-shared/applog"
-	"nvpair-tui/ui"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // It mirrors the convention every other component in this repo uses so
 // `nvpair-tui --version` reports the value from versions.json.
 var Version = "dev"
+
+type ownedSession interface {
+	Run() error
+	Shutdown()
+}
+
+// Main owns at most one reconnect per invocation, after the old process has
+// been gracefully joined. Views and pending commands never cross lifetimes.
+func runOwnedSessions(ctx context.Context, spawn func() (ownedSession, error)) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		session, err := spawn()
+		if err != nil {
+			return err
+		}
+		err = session.Run()
+		session.Shutdown()
+		if !errors.Is(err, rpc.ErrHeartbeatTimeout) || ctx.Err() != nil {
+			return err
+		}
+		if attempt == 1 {
+			return fmt.Errorf("broker remained unresponsive after one reconnect; restart PAIR: %w", err)
+		}
+	}
+	return nil
+}
 
 func main() {
 	brokerPath := flag.String("broker-path", "", "path to nvpair-ui-broker binary (default: ./nvpair-ui-broker alongside this executable)")
@@ -61,23 +87,8 @@ func main() {
 		}
 	}()
 
-	sup, err := Spawn(ctx, resolvedBroker)
-	if err != nil {
-		slog.Error("failed to start broker", "err", err)
-		os.Exit(1)
+	if err := runOwnedSessions(ctx, func() (ownedSession, error) { return Spawn(ctx, resolvedBroker) }); err != nil {
+		slog.Error("TUI connection failed", "err", err)
 	}
-
-	// The broker's stderr (its logs plus every worker's, prefixed) is fed
-	// into the UI's Logs view rather than the terminal, so it never
-	// collides with the full-screen TUI on stdout.
-	//
-	// sup.EpochChanges() is the same stream: when the broker is replaced and
-	// announces a new protocol epoch, the UI re-reads the read-only snapshots it
-	// cached from the old process instead of showing them as if they were fresh.
-	if err := ui.Run(sup.Client, sup.Stderr, sup.EpochChanges()); err != nil {
-		slog.Error("ui error", "err", err)
-	}
-
-	sup.Shutdown()
 	slog.Info("shutdown complete")
 }

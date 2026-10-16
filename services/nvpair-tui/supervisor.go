@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"nvpair-tui/rpc"
+	"nvpair-tui/ui"
 )
 
 // brokerName is the worker binary the TUI owns. We resolve it next to our
@@ -168,6 +169,9 @@ func Spawn(ctx context.Context, brokerPath string) (*Supervisor, error) {
 
 	return &Supervisor{cmd: cmd, stdin: stdin, Client: client, Stderr: stderr, epochChanges: epochChanges}, nil
 }
+
+// Run constructs fresh views for this owned client lifetime.
+func (s *Supervisor) Run() error { return ui.Run(s.Client, s.Stderr, s.EpochChanges()) }
 
 // Shutdown asks the broker to stop cleanly: send the shutdown RPC, close
 // its stdin (a second, EOF-based stop signal), then wait up to

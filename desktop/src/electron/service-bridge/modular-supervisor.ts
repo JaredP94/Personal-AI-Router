@@ -407,6 +407,10 @@ class ModularSupervisor {
     // from an unexpected broker crash so we don't fire the crash callback on a
     // normal stop/restart.
     private shuttingDown = false
+    private silenceRetryAvailable = true
+    private silenceRestartGeneration = 0
+    private silenceRestart: Promise<void> | null = null
+    private stopTask: Promise<void> | null = null
     // Invoked when the broker process exits unexpectedly (not via stop()). The
     // connector registers this to flip status and prompt the user — the
     // supervisor never imports the connector, keeping the dependency one-way.
@@ -569,6 +573,7 @@ class ModularSupervisor {
     }
 
     start(): void {
+        this.silenceRestartGeneration++
         this.invalidateEpochRecovery()
         if (this.isReady) return
 
@@ -644,7 +649,18 @@ class ModularSupervisor {
         log.info({ sublevel: 'lifecycle', message: 'Started modular service processes' })
     }
 
-    async stop(): Promise<void> {
+    async stop(cancelReconnect = true): Promise<void> {
+        if (cancelReconnect) this.silenceRestartGeneration++
+        if (this.stopTask) return this.stopTask
+        this.stopTask = this.stopProcesses()
+        try {
+            await this.stopTask
+        } finally {
+            this.stopTask = null
+        }
+    }
+
+    private async stopProcesses(): Promise<void> {
         this.invalidateEpochRecovery()
         // Mark teardown first so the broker's exit during stop() is treated as a
         // deliberate shutdown, not a crash.
@@ -880,6 +896,37 @@ class ModularSupervisor {
                 message: entry.text,
                 data: { stream: entry.stream }
             })
+        })
+        child.on('unresponsive', () => {
+            if (!isCurrent() || child.name !== 'broker' || this.shuttingDown || this.silenceRestart)
+                return
+            this.brokerReady = false
+            this.brokerHydrationDone = false
+            this.isReady = false
+            this.readinessReported = false
+            this.invalidateEpochRecovery()
+            this.rejectReadinessWaiters(
+                new Error('Broker connection lost: inbound silence timeout')
+            )
+            this.onBrokerCrash?.({ code: null })
+            const retry = this.silenceRetryAvailable
+            this.silenceRetryAvailable = false
+            const generation = ++this.silenceRestartGeneration
+            // Reuse owned graceful stop/start; a user stop invalidates the ticket.
+            // No second automatic retry until a fresh lifetime becomes ready.
+            this.silenceRestart = this.stop(false)
+                .then(() => {
+                    if (retry && generation === this.silenceRestartGeneration) this.start()
+                })
+                .catch(error => {
+                    log.error({
+                        sublevel: 'broker',
+                        message: `Silence recovery failed: ${getErrorString(error)}`
+                    })
+                })
+                .finally(() => {
+                    this.silenceRestart = null
+                })
         })
         child.on('exit', event => {
             if (!isCurrent()) return
@@ -1554,6 +1601,7 @@ class ModularSupervisor {
             return
         }
 
+        this.silenceRetryAvailable = true
         for (const waiter of this.readinessWaiters.values()) {
             clearTimeout(waiter.timeout)
             waiter.resolve()

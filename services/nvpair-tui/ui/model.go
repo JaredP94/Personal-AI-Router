@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -34,11 +35,12 @@ type Model struct {
 
 	width, height int
 
-	ready         bool
-	brokerVersion string
-	epoch         string
-	disconnected  bool
-	showFullHelp  bool
+	ready          bool
+	brokerVersion  string
+	epoch          string
+	connectionLoss error
+	disconnected   bool
+	showFullHelp   bool
 
 	connectionSetup    bool
 	hydratedEpoch      string
@@ -149,6 +151,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DisconnectedMsg:
 		m.disconnected = true
+		if errors.Is(m.client.Err(), rpc.ErrHeartbeatTimeout) {
+			m.connectionLoss = rpc.ErrHeartbeatTimeout
+			return m, tea.Quit
+		}
 		return m, nil
 
 	case EpochChangeMsg:

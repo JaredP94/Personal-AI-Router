@@ -17,9 +17,8 @@ import (
 // connection, and blocks until the user quits. The caller is responsible for
 // shutting the broker down afterwards.
 //
-// epochChanges is the consumer side of rpc.Client.OnEpochChange: an epoch
-// arriving on it makes the model re-fetch its read-only snapshots, because the
-// broker behind this connection has been replaced.
+// Ordered notification envelopes drive epoch recovery. A silence timeout exits
+// with rpc.ErrHeartbeatTimeout, allowing main to recreate the owned session.
 func Run(client *rpc.Client, stderr io.Reader, epochChanges <-chan string) error {
 	logCh := make(chan string, 2000)
 	go scanLines(stderr, logCh)
@@ -28,8 +27,14 @@ func Run(client *rpc.Client, stderr io.Reader, epochChanges <-chan string) error
 		New(client, logCh, epochChanges, defaultViews(client)),
 		tea.WithAltScreen(),
 	)
-	_, err := p.Run()
-	return err
+	final, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if model, ok := final.(Model); ok {
+		return model.connectionLoss
+	}
+	return nil
 }
 
 // scanLines forwards each line of r onto out, closing out at EOF. The

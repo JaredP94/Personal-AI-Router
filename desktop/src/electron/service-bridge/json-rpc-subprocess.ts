@@ -8,6 +8,7 @@ import { EventEmitter } from 'events'
 import getErrorString from '@/shared/utils/get-error-string'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { redactSensitiveLogText } from '@/electron/redact-log'
+import { MODULAR_HEARTBEAT_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[]
 
@@ -81,6 +82,7 @@ interface JsonRpcSubprocessEvents {
     request: [JsonRpcInboundRequest]
     log: [{ source: string; stream: 'stdout' | 'stderr'; text: string }]
     exit: [{ source: string; code: number | null }]
+    unresponsive: [{ source: string }]
 }
 
 const log = createStructuredLogger('service-bridge')
@@ -109,6 +111,10 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
      */
     private epoch: string = randomUUID()
     private notificationSeq = 0
+    private silenceTimer: ReturnType<typeof setTimeout> | null = null
+    private silenceGeneration = 0
+    private silenceEnabled = false
+    private silenceExpired = false
 
     constructor(name: string, binaryPath: string) {
         super()
@@ -128,9 +134,15 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
             detached: false
         })
         this.child = child
+        this.epoch = randomUUID()
+        this.notificationSeq = 0
+        this.writeTail = Promise.resolve()
+        this.silenceExpired = false
+        this.silenceEnabled = true
+        this.armSilenceDeadline(child)
 
         readline.createInterface({ input: child.stdout }).on('line', line => {
-            this.handleStdout(line)
+            if (this.child === child && !this.silenceExpired) this.handleStdout(line)
         })
 
         // Emitting is all this owes the line. The owner listening on 'log'
@@ -146,12 +158,16 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         })
 
         child.on('exit', code => {
+            if (this.child !== child) return
+            this.cancelSilenceDeadline()
             this.child = null
             this.failPending(new Error(`${this.name} exited before replying`))
             this.emit('exit', { source: this.name, code })
         })
 
         child.on('error', err => {
+            if (this.child !== child) return
+            this.cancelSilenceDeadline()
             this.child = null
             this.failPending(err)
             log.error({
@@ -255,6 +271,7 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
      * was actually signalled, is what tells those two apart in a field log.
      */
     async stop(graceMs = 5_000): Promise<void> {
+        this.cancelSilenceDeadline()
         const child = this.child
         if (!child) return
 
@@ -327,12 +344,18 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
     }
 
     private async write(message: JsonRpcMessage): Promise<void> {
+        if (this.silenceExpired)
+            throw new Error(`${this.name} connection lost: inbound silence timeout`)
         const child = this.child
         if (!child) throw new Error(`${this.name} is not running`)
 
         this.writeTail = this.writeTail.then(
             () =>
                 new Promise<void>((resolve, reject) => {
+                    if (this.child !== child || this.silenceExpired) {
+                        reject(new Error(`${this.name} connection is no longer active`))
+                        return
+                    }
                     child.stdin.write(`${JSON.stringify(message)}\n`, err => {
                         if (err) {
                             reject(err)
@@ -362,6 +385,8 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
             // Already emitted above; the owner logs it.
             return
         }
+
+        if (this.child) this.armSilenceDeadline(this.child)
 
         if (message.id !== undefined && message.method) {
             this.emit('request', {
@@ -427,6 +452,34 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         }
 
         pending.resolve(message.result)
+    }
+
+    private cancelSilenceDeadline(): void {
+        this.silenceEnabled = false
+        this.silenceGeneration++
+        if (this.silenceTimer) clearTimeout(this.silenceTimer)
+        this.silenceTimer = null
+    }
+
+    private armSilenceDeadline(child: ChildProcessWithoutNullStreams): void {
+        if (!this.silenceEnabled) return
+        if (this.silenceTimer) clearTimeout(this.silenceTimer)
+        const generation = ++this.silenceGeneration
+        this.silenceTimer = setTimeout(() => {
+            if (
+                this.child !== child ||
+                generation !== this.silenceGeneration ||
+                !this.silenceEnabled
+            )
+                return
+            this.cancelSilenceDeadline()
+            this.silenceExpired = true
+            this.failPending(new Error(`${this.name} connection lost: inbound silence timeout`))
+            // The owner retains the child handle and performs graceful stop/reap.
+            // This is distinct from EOF/exit and never sends a watchdog RPC.
+            this.emit('unresponsive', { source: this.name })
+        }, MODULAR_HEARTBEAT_TIMEOUT_MS)
+        this.silenceTimer.unref()
     }
 
     private failPending(error: Error): void {

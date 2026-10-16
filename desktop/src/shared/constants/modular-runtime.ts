@@ -13,6 +13,9 @@
 // responsibilities in docs/services-parity.md.
 export const MODULAR_CLUSTER_MANAGER_PORT = 14321
 
+// Three expected 15s heartbeat intervals; one resettable silence deadline, no polling RPC.
+export const MODULAR_HEARTBEAT_TIMEOUT_MS = 45_000
+
 export const MODULAR_NODE_INFO_PATH = '/v1/node-info'
 
 // Log levels accepted by every backend binary's shared `applog` package
