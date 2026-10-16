@@ -135,7 +135,8 @@ func (b *recoveryBroker) serve() {
 		case "errors:get-initial":
 			result = []any{}
 		case "workloads:get-initial":
-			result = workloads
+			// The broker's real shape: workloadsInitialResult{Workloads}.
+			result = map[string]any{"workloads": workloads}
 		}
 		b.writes.Lock()
 		if fail {

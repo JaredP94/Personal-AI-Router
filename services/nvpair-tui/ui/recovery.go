@@ -71,7 +71,11 @@ func (m *Model) beginRecovery() tea.Cmd {
 		}) tea.Msg {
 			return discoverySnapshotMsg{v.Nodes}
 		}),
-		snapshotQuery(client, "workloads:get-initial", func(v []workload) tea.Msg { return workloadsSnapshotMsg{v} }),
+		snapshotQuery(client, "workloads:get-initial", func(v struct {
+			Workloads []workload `json:"workloads"`
+		}) tea.Msg {
+			return workloadsSnapshotMsg{v.Workloads}
+		}),
 		snapshotQuery(client, "engine:get-installed", func(v struct {
 			Engines []engineStatus `json:"engines"`
 		}) tea.Msg {

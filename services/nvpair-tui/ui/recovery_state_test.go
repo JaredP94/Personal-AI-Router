@@ -31,8 +31,10 @@ func TestRecoveryConvergesAllSnapshotConsumers(t *testing.T) {
 				result = map[string]string{"nodeUuid": "new", "nodeId": "new-host"}
 			case "discovery:get-nodes", "nodes:get-initial":
 				result = map[string]any{"nodes": []any{}}
-			case "errors:get-initial", "workloads:get-initial":
+			case "errors:get-initial":
 				result = []any{}
+			case "workloads:get-initial":
+				result = map[string]any{"workloads": []any{}}
 			case "engine:get-installed":
 				result = map[string]any{"engines": []any{}}
 			}
