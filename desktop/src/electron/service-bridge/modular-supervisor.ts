@@ -733,7 +733,7 @@ class ModularSupervisor {
             message: `Stopped local engines for shutdown in ${Date.now() - teardownStartedAt}ms`
         })
 
-        const processes = Array.from(this.processes.values()).reverse()
+        const processes = Array.from(this.processes.values())
         this.processes.clear()
         this.localBridges.clear()
         this.brokerReady = false
@@ -744,13 +744,27 @@ class ModularSupervisor {
             new Error(`${APP_DISPLAY_NAME} service stopped before becoming ready`)
         )
 
-        for (const child of processes) {
+        await this.stopChildrenForTeardown(processes)
+
+        log.info({
+            sublevel: 'lifecycle',
+            message: `Stopped modular service processes in ${Date.now() - teardownStartedAt}ms`
+        })
+    }
+
+    /**
+     * The one teardown policy for spawned subprocesses: stop in reverse spawn order
+     * so the broker goes last.
+     *
+     * The broker is the parent of the whole worker tree and runs each worker's
+     * graceful shutdown on its own exit — notably engine-manager's StopAll(), which
+     * stops the engines it launched. Give it a longer grace so a slow engine
+     * shutdown isn't cut short by SIGKILL (which would orphan the engine); every
+     * other process takes the default grace.
+     */
+    private async stopChildrenForTeardown(children: JsonRpcSubprocess[]): Promise<void> {
+        for (const child of [...children].reverse()) {
             try {
-                // The broker is the parent of the whole worker tree and runs each
-                // worker's graceful shutdown on its own exit — notably
-                // engine-manager's StopAll() (stops engines it launched). Give it a
-                // longer grace so a slow engine shutdown isn't cut short by SIGKILL
-                // (which would orphan the engine).
                 await child.stop(child.name === 'broker' ? 15_000 : undefined)
             } catch (err) {
                 log.warn({
@@ -759,11 +773,6 @@ class ModularSupervisor {
                 })
             }
         }
-
-        log.info({
-            sublevel: 'lifecycle',
-            message: `Stopped modular service processes in ${Date.now() - teardownStartedAt}ms`
-        })
     }
 
     /** Stop engine processes before teardown without changing saved ON/OFF intent. */
