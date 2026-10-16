@@ -46,6 +46,8 @@ export interface JsonRpcNotification {
     source: string
     method: string
     params?: JsonValue
+    epoch?: string
+    seq?: number
 }
 
 /**
@@ -91,13 +93,14 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
      * JsonRpcSubprocess per child, restarted with the child), so a reconnect
      * starts a fresh run — the same per-connection contract the Go codec keeps.
      *
-     * Nothing publishes the broker's epoch yet, so this is a UUID minted here at
-     * construction. `validate()` checks presence, not equality, so it unblocks
-     * the envelope without the handshake and breaks nothing. Task 4 owns epoch
-     * reconciliation: once the broker publishes its epoch (runtime:ready), that
-     * published value replaces this local mint.
+     * Initialized to a local UUID so any notification sent before the peer's
+     * first inbound frame still carries a non-empty epoch (satisfying the Go
+     * codec's presence check). As soon as an inbound notification frame
+     * carries a non-empty epoch (or broker:epoch announces one in params),
+     * handleStdout adopts that peer epoch so both ends agree on the broker's
+     * identity.
      */
-    private readonly epoch = randomUUID()
+    private epoch: string = randomUUID()
     private notificationSeq = 0
 
     constructor(name: string, binaryPath: string) {
@@ -369,10 +372,31 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         }
 
         if (message.method) {
+            let inboundEpoch =
+                typeof message.epoch === 'string' && message.epoch.length > 0
+                    ? message.epoch
+                    : undefined
+            if (
+                !inboundEpoch &&
+                message.method === 'broker:epoch' &&
+                message.params &&
+                typeof message.params === 'object' &&
+                !Array.isArray(message.params) &&
+                typeof message.params.epoch === 'string' &&
+                message.params.epoch.length > 0
+            ) {
+                inboundEpoch = message.params.epoch
+            }
+            if (inboundEpoch) {
+                this.epoch = inboundEpoch
+            }
+            const inboundSeq = typeof message.seq === 'number' ? message.seq : undefined
             this.emit('notification', {
                 source: this.name,
                 method: message.method,
-                params: message.params
+                params: message.params,
+                ...(inboundEpoch !== undefined ? { epoch: inboundEpoch } : {}),
+                ...(inboundSeq !== undefined ? { seq: inboundSeq } : {})
             })
         }
     }

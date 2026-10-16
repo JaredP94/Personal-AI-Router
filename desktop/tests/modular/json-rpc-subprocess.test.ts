@@ -152,4 +152,76 @@ describe('JsonRpcSubprocess.notify', () => {
             await rpc.stop()
         }
     })
+
+    it('parses epoch and seq off inbound notifications and adopts the peer epoch for subsequent notify() calls', async () => {
+        const peerScript = `
+const readline = require('readline').createInterface({ input: process.stdin })
+readline.on('line', line => {
+  const frame = JSON.parse(line)
+  if (frame.method === 'trigger-peer-epoch') {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'heartbeat',
+      params: {},
+      epoch: 'broker-epoch-v2',
+      seq: 7
+    }) + '\\n')
+    return
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'echo', params: frame }) + '\\n')
+})
+`
+        const rpc = new JsonRpcSubprocess('fake', process.execPath)
+        rpc.start(['-e', peerScript])
+        try {
+            const firstEcho = new Promise<Record<string, JsonValue>>(resolve => {
+                const onNote = (note: { method: string; params?: JsonValue }): void => {
+                    if (note.method === 'echo' && isJsonObject(note.params)) {
+                        rpc.off('notification', onNote)
+                        resolve(note.params)
+                    }
+                }
+                rpc.on('notification', onNote)
+            })
+            await rpc.notify('before-peer-epoch')
+            const beforeFrame = await firstEcho
+            expect(typeof beforeFrame.epoch).toBe('string')
+            expect(beforeFrame.epoch).not.toBe('broker-epoch-v2')
+            expect(beforeFrame.seq).toBe(1)
+
+            const peerHeartbeat = new Promise<{
+                method: string
+                epoch?: string
+                seq?: number
+            }>(resolve => {
+                const onNote = (note: { method: string; epoch?: string; seq?: number }): void => {
+                    if (note.method === 'heartbeat') {
+                        rpc.off('notification', onNote)
+                        resolve(note)
+                    }
+                }
+                rpc.on('notification', onNote)
+            })
+            await rpc.notify('trigger-peer-epoch')
+            const heartbeatNote = await peerHeartbeat
+            expect(heartbeatNote.epoch).toBe('broker-epoch-v2')
+            expect(heartbeatNote.seq).toBe(7)
+
+            const secondEcho = new Promise<Record<string, JsonValue>>(resolve => {
+                const onNote = (note: { method: string; params?: JsonValue }): void => {
+                    if (note.method === 'echo' && isJsonObject(note.params)) {
+                        rpc.off('notification', onNote)
+                        resolve(note.params)
+                    }
+                }
+                rpc.on('notification', onNote)
+            })
+            await rpc.notify('after-peer-epoch')
+            const afterFrame = await secondEcho
+            expect(afterFrame.epoch).toBe('broker-epoch-v2')
+            expect(afterFrame.seq).toBe(3)
+        } finally {
+            await rpc.stop()
+        }
+    })
 })
