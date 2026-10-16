@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +118,28 @@ func TestNodeInfoDrainSkipsFramesThatAreNotNotifications(t *testing.T) {
 	}
 	if got[0].method != noderec.NotifyObservedAddresses {
 		t.Fatalf("method = %q, want %q", got[0].method, noderec.NotifyObservedAddresses)
+	}
+}
+
+// The drain decodes through one codec for the life of the connection. A codec
+// per line would allocate a fresh 1 MiB scanner buffer for every frame.
+func TestNodeInfoDrainReusesOneCodecPerConnection(t *testing.T) {
+	const frames = 64
+	var stream strings.Builder
+	for range frames {
+		stream.WriteString(observedFrame("10.172.54.73") + "\n")
+	}
+	input := stream.String()
+	delivered := 0
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	drainNodeInfoStdout(strings.NewReader(input), func(string, json.RawMessage) { delivered++ })
+	runtime.ReadMemStats(&after)
+	if delivered != frames {
+		t.Fatalf("delivered %d frames, want %d", delivered, frames)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 4<<20 {
+		t.Fatalf("draining %d small frames allocated %d bytes; the codec is not reused", frames, grew)
 	}
 }

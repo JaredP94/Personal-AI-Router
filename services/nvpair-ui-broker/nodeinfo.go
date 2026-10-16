@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,40 +129,67 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 
 // drainNodeInfoStdout consumes node-info's newline-delimited stdout until the
 // pipe goes away, handing every notification frame to onNotify. Frames that are
-// not notifications (a control-request response) carry no method and are skipped,
-// as is anything that isn't JSON.
+// not notifications (a control-request response) are skipped, as is anything
+// that isn't JSON; a protocol mismatch is terminal.
 //
 // This must never stop reading while the child lives: node-info writes its
 // observed-address reports here, and an unread stdout pipe fills up and blocks
 // the child mid-write, which silently ends address reporting for the rest of the
-// session. bufio.Scanner cannot be used for that reason — it fails permanently on
-// a frame past its limit — so an oversized frame is dropped on its own and the
-// next one is read normally.
+// session. A codec's bufio.Scanner fails permanently on a frame past its limit,
+// so nodeInfoFrames drops an oversized frame on its own before the codec sees
+// it, and the one codec for this connection reads the next frame normally.
 func drainNodeInfoStdout(stdout io.Reader, onNotify func(method string, params json.RawMessage)) {
-	reader := bufio.NewReaderSize(stdout, maxNodeInfoLine)
+	frames := &nodeInfoFrames{reader: bufio.NewReaderSize(stdout, maxNodeInfoLine)}
+	codec := jsonrpc.NewCodecMaxFrame(readWriter{frames, io.Discard}, maxNodeInfoLine)
 	for {
-		line, err := reader.ReadSlice('\n')
-		if errors.Is(err, bufio.ErrBufferFull) {
-			slog.Warn("skipping oversized node-info stdout frame", "limit", maxNodeInfoLine)
-			if err := discardToFrameEnd(reader); err != nil {
-				logNodeInfoDrainEnd(err)
+		msg, err := codec.Read()
+		if err != nil {
+			var de *jsonrpc.DecodeError
+			if errors.As(err, &de) {
+				continue
+			}
+			var mismatch *jsonrpc.ProtocolMismatchError
+			if errors.As(err, &mismatch) {
+				slog.Warn("node-info JSON-RPC read error (terminal)", "err", err)
 				return
 			}
+			logNodeInfoDrainEnd(err)
+			return
+		}
+		// json.Unmarshal copied Params out of the scanner's buffer.
+		if msg.IsNotification() && onNotify != nil {
+			onNotify(msg.Method, msg.Params)
+		}
+	}
+}
+
+// nodeInfoFrames yields node-info's stdout to the codec one complete frame at a
+// time, dropping any frame longer than maxNodeInfoLine. Each Read returns bytes
+// from at most one frame, so the codec's buffer never holds more than one.
+type nodeInfoFrames struct {
+	reader  *bufio.Reader
+	pending []byte // unread remainder of the current frame (reader's buffer)
+	err     error  // read error to report once pending is drained
+}
+
+func (f *nodeInfoFrames) Read(p []byte) (int, error) {
+	for len(f.pending) == 0 {
+		if f.err != nil {
+			return 0, f.err
+		}
+		line, err := f.reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			slog.Warn("skipping oversized node-info stdout frame", "limit", maxNodeInfoLine)
+			f.err = discardToFrameEnd(f.reader)
 			continue
 		}
 		// A trailing read error still carries whatever preceded it: a final frame
 		// written without its newline before the child exited is real output.
-		if len(line) > 0 {
-			if err := handleNodeInfoFrame(line, onNotify); err != nil {
-				slog.Warn("node-info JSON-RPC read error (terminal)", "err", err)
-				return
-			}
-		}
-		if err != nil {
-			logNodeInfoDrainEnd(err)
-			return
-		}
+		f.pending, f.err = line, err
 	}
+	n := copy(p, f.pending)
+	f.pending = f.pending[n:]
+	return n, nil
 }
 
 // discardToFrameEnd drops bytes through the end of the oversized frame, so the
@@ -174,23 +200,6 @@ func discardToFrameEnd(reader *bufio.Reader) error {
 			return err
 		}
 	}
-}
-
-// handleNodeInfoFrame decodes one frame. json.Unmarshal copies Params out, so
-// nothing retains reader's slice past the next read.
-func handleNodeInfoFrame(line []byte, onNotify func(method string, params json.RawMessage)) error {
-	msg, err := NewCodec(readWriter{bytes.NewReader(line), io.Discard}).Read()
-	if err != nil {
-		var de *jsonrpc.DecodeError
-		if errors.As(err, &de) || errors.Is(err, io.EOF) {
-			return nil
-		}
-		return err
-	}
-	if msg.IsNotification() && onNotify != nil {
-		onNotify(msg.Method, msg.Params)
-	}
-	return nil
 }
 
 // logNodeInfoDrainEnd separates the expected end of the stream — the child
