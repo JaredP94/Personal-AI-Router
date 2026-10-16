@@ -78,6 +78,16 @@ type recoveryBroker struct {
 
 func newRecoverySession(t *testing.T) (*recoveryBroker, *loop) {
 	t.Helper()
+	b, l := newRecoveryBroker(t)
+	l.exec(l.m.setupConnection())
+	l.until(t, func() bool { return l.m.connectionSetup })
+	return b, l
+}
+
+// newRecoveryBroker wires a model to the fixture broker without running
+// connection setup, so a test can shape setup's outcome first.
+func newRecoveryBroker(t *testing.T) (*recoveryBroker, *loop) {
+	t.Helper()
 	cli, srv := net.Pipe()
 	c := rpc.NewClient(cli, cli)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,10 +105,7 @@ func newRecoverySession(t *testing.T) (*recoveryBroker, *loop) {
 		b.mu.Unlock()
 	})
 	go b.serve()
-	l := newLoop(New(c, nil, defaultViews(c)))
-	l.exec(l.m.setupConnection())
-	l.until(t, func() bool { return l.m.connectionSetup })
-	return b, l
+	return b, newLoop(New(c, nil, defaultViews(c)))
 }
 func (b *recoveryBroker) serve() {
 	for {
@@ -396,5 +403,51 @@ func TestRecoveryAppliesHealthyDomainsAndStaysSilentWhenOptionalGettersFail(t *t
 		if count != before[method] {
 			t.Errorf("%s issued %d more time(s) while healthy in the same epoch", method, count-before[method])
 		}
+	}
+}
+
+// A failed connection setup must not leave the model deaf: it keeps consuming
+// notifications, retries setup on later traffic, and then hydrates normally.
+func TestSetupFailureKeepsConsumingAndRetriesOnLaterTraffic(t *testing.T) {
+	b, l := newRecoveryBroker(t)
+	b.mu.Lock()
+	b.fail = "discovery:subscribe"
+	b.mu.Unlock()
+	l.exec(l.m.setupConnection())
+	l.until(t, func() bool { return l.m.setupErr != nil })
+	if l.m.connectionSetup || l.m.disconnected {
+		t.Fatalf("setup failure misreported: setup=%v disconnected=%v", l.m.connectionSetup, l.m.disconnected)
+	}
+	b.push(t, "A", 1, "heartbeat", map[string]any{})
+	l.until(t, func() bool { return l.m.connectionSetup && l.m.hydratedEpoch == "A" })
+	if got := b.count("discovery:subscribe"); got != 2 {
+		t.Fatalf("discovery:subscribe sent %d times, want the failed attempt plus one retry", got)
+	}
+	if got := b.count("broker:resync"); got != 1 {
+		t.Fatalf("broker:resync sent %d times, want 1", got)
+	}
+}
+
+// Setup retries are bounded: a broker that keeps rejecting subscriptions is not
+// asked again on every heartbeat, but its notifications are still consumed.
+func TestSetupFailureRetriesAreBounded(t *testing.T) {
+	b, l := newRecoveryBroker(t)
+	b.mu.Lock()
+	b.broken = func(method string) bool { return method == "discovery:subscribe" }
+	b.mu.Unlock()
+	l.exec(l.m.setupConnection())
+	l.until(t, func() bool { return l.m.setupErr != nil })
+	for seq := 1; seq <= 10; seq++ {
+		b.push(t, "A", seq, "heartbeat", map[string]any{})
+		l.settle(t)
+	}
+	if l.m.epoch != "A" {
+		t.Fatalf("notifications not consumed after setup failure: epoch %q", l.m.epoch)
+	}
+	if got := b.count("discovery:subscribe"); got != maxSetupAttempts {
+		t.Fatalf("discovery:subscribe sent %d times, want %d", got, maxSetupAttempts)
+	}
+	if got := b.count("broker:resync"); got != 0 {
+		t.Fatalf("broker:resync sent %d times without subscriptions", got)
 	}
 }

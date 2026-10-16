@@ -9,6 +9,7 @@ import (
 	"io"
 	"nvpair-tui/rpc"
 	"testing"
+	"time"
 )
 
 type expiredSession struct{}
@@ -25,5 +26,30 @@ func TestSilenceLossExitsRootWithDistinctOwnerResult(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatal("root did not exit on silence")
+	}
+}
+
+// A setup that fails because the session already expired must still deliver
+// the silence loss to the owner, which only happens if notifications are
+// consumed after the failure.
+func TestSetupFailureStillDeliversSilenceLoss(t *testing.T) {
+	c := rpc.NewClient(expiredSession{}, io.Discard)
+	_ = c.Run(context.Background())
+	l := newLoop(New(c, nil, defaultViews(c)))
+	l.exec(l.m.setupConnection())
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case msg := <-l.inbox:
+			if _, ok := msg.(tea.QuitMsg); ok {
+				if !errors.Is(l.m.connectionLoss, rpc.ErrHeartbeatTimeout) {
+					t.Fatalf("quit without silence loss: %v", l.m.connectionLoss)
+				}
+				return
+			}
+			l.turn(t, msg)
+		case <-deadline:
+			t.Fatal("setup failure left the model deaf to the silence loss")
+		}
 	}
 }

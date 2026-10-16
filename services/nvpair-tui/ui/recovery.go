@@ -14,6 +14,10 @@ import (
 	"nvpair-tui/rpc"
 )
 
+// maxSetupAttempts bounds connection setup per transport: the initial attempt
+// plus retries driven by later inbound traffic.
+const maxSetupAttempts = 3
+
 type connectionSetupMsg struct{ err error }
 type discoverySnapshotMsg struct{ nodes []availableNode }
 type workloadsSnapshotMsg struct{ workloads []workload }

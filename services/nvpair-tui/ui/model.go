@@ -42,6 +42,10 @@ type Model struct {
 	showFullHelp   bool
 
 	connectionSetup    bool
+	setupErr           error // last setup failure; cleared once setup succeeds
+	setupActive        bool  // a setup retry is in flight
+	setupFailures      int
+	listening          bool // exactly one waitForNotification is parked
 	hydratedEpoch      string
 	recoveryGeneration uint64
 	recoveryActive     bool
@@ -123,12 +127,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case connectionSetupMsg:
+		m.setupActive = false
 		if msg.err != nil {
-			m.disconnected = true
-			return m, nil
+			// Keep consuming: the disconnect / silence-loss exit must still fire and
+			// the client's notification buffer must keep draining. Later inbound
+			// traffic retries setup, a bounded number of times.
+			m.setupErr = msg.err
+			m.setupFailures++
+			return m, m.listen()
 		}
-		m.connectionSetup = true
-		return m, tea.Batch(waitForNotification(m.client), m.beginRecovery())
+		m.connectionSetup, m.setupErr = true, nil
+		return m, tea.Batch(m.listen(), m.beginRecovery())
 
 	case NotificationMsg:
 		// Same-epoch traffic retries dirty hydration; no polling timer.
@@ -145,11 +154,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds := m.broadcast(msg)
-		cmds = append(cmds, waitForNotification(m.client), m.beginRecovery())
+		cmds = append(cmds, waitForNotification(m.client), m.retrySetup(), m.beginRecovery())
 		return m, tea.Batch(cmds...)
 
 	case DisconnectedMsg:
 		m.disconnected = true
+		m.listening = false
 		if errors.Is(m.client.Err(), rpc.ErrHeartbeatTimeout) {
 			m.connectionLoss = rpc.ErrHeartbeatTimeout
 			return m, tea.Quit
@@ -202,6 +212,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// every view; each ignores messages it doesn't own.
 		return m, tea.Batch(m.broadcast(msg)...)
 	}
+}
+
+// listen parks the single notification consumer unless it is already parked.
+// A NotificationMsg re-arms it itself, so a second consumer would race the
+// first and could reorder frames.
+func (m *Model) listen() tea.Cmd {
+	if m.listening {
+		return nil
+	}
+	m.listening = true
+	return waitForNotification(m.client)
+}
+
+// retrySetup re-runs a failed connection setup on inbound traffic, one attempt
+// at a time and at most maxSetupAttempts per transport.
+func (m *Model) retrySetup() tea.Cmd {
+	if m.connectionSetup || m.setupErr == nil || m.setupActive || m.disconnected || m.setupFailures >= maxSetupAttempts {
+		return nil
+	}
+	m.setupActive = true
+	return m.setupConnection()
 }
 
 func (m Model) View() string {
@@ -258,6 +289,8 @@ func (m Model) headerView() string {
 	switch {
 	case m.disconnected:
 		status = statusErrStyle.Render("broker disconnected")
+	case m.setupErr != nil:
+		status = statusErrStyle.Render("broker subscriptions failed")
 	case m.ready:
 		status = statusOKStyle.Render(fmt.Sprintf("broker ready  v%s%s", m.brokerVersion, epochSuffix(m.epoch)))
 	default:
