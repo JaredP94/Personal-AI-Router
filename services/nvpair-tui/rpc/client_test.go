@@ -182,9 +182,11 @@ func TestClientDisconnectClosesNotifications(t *testing.T) {
 
 // TestClientNotifyWritesInSeqOrderUnderConcurrency pins the wire-order contract
 // for the TUI's only notification send path: the seq the broker reads must equal
-// the frame's position on the wire, with no gaps and no repeats. §2.7 gap
-// detection treats an inversion as a dropped frame and answers with a spurious
-// resync, so stamping outside the codec's write lock would be a real defect.
+// the frame's position on the wire, with no gaps and no repeats. The codec
+// stamps seq under the same write lock that puts the frame on the wire, so wire
+// order equals seq order; stamping outside that lock would break the documented
+// per-connection ordering guarantee. (A receiver never resyncs on a seq gap; only
+// an epoch change starts recovery.)
 //
 // Run with -count=20: the interleaving that breaks an unstamped implementation
 // is rare, so a single green run proves little.
