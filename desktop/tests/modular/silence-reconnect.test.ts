@@ -25,7 +25,11 @@ vi.mock('@/electron/service-bridge/node-info-poller', () => ({
     stopNodeInfoPoller: vi.fn()
 }))
 
-import { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
+import {
+    getModularSupervisor,
+    ModularStartupTimeoutError
+} from '@/electron/service-bridge/modular-supervisor'
+import { MODULAR_STARTUP_READY_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 const supervisor = getModularSupervisor()
 const originalStopProcesses = supervisor['stopProcesses']
@@ -52,11 +56,14 @@ describe('silence reconnect owner', () => {
     afterEach(async () => {
         supervisor['processes'].clear()
         await flush()
+        supervisor['rejectReadinessWaiters'](new Error('test teardown'))
         supervisor['stopProcesses'] = originalStopProcesses
         supervisor['isReady'] = false
         supervisor['brokerReady'] = false
         supervisor['onBrokerCrash'] = undefined
         supervisor['onBrokerReconnecting'] = undefined
+        supervisor['onBrokerReconnectTimeout'] = undefined
+        vi.useRealTimers()
         vi.restoreAllMocks()
     })
     it('invalidates readiness, stops once and restarts only once until the new lifetime is ready', async () => {
@@ -113,5 +120,36 @@ describe('silence reconnect owner', () => {
         await flush()
         expect(supervisor.start).not.toHaveBeenCalled()
         expect(supervisor['stopProcesses']).toHaveBeenCalledTimes(1)
+    })
+    it('arms one readiness deadline per automatic start and ignores it once the ticket moves on', async () => {
+        vi.useFakeTimers()
+        const spawn = (): void => {
+            attach()
+            supervisor['isReady'] = true
+        }
+        vi.mocked(supervisor.start).mockImplementation(spawn)
+        const timedOut = vi.fn()
+        supervisor.setOnBrokerReconnectTimeout(timedOut)
+
+        spawn()
+        supervisor['brokerReady'] = true
+        supervisor['updateReadiness']()
+        supervisor['processes'].get('broker')?.emit('unresponsive', { source: 'broker' })
+        await flush()
+        expect(supervisor.start).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS)
+        expect(timedOut).toHaveBeenCalledTimes(1)
+        expect(timedOut.mock.calls[0]?.[0]).toBeInstanceOf(ModularStartupTimeoutError)
+
+        // A fresh lifetime earns a new retry; a user stop after its automatic
+        // start leaves that start's deadline stale even if its waiter survives.
+        supervisor['brokerReady'] = true
+        supervisor['updateReadiness']()
+        supervisor['processes'].get('broker')?.emit('unresponsive', { source: 'broker' })
+        await flush()
+        expect(supervisor.start).toHaveBeenCalledTimes(2)
+        await supervisor.stop()
+        await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS * 2)
+        expect(timedOut).toHaveBeenCalledTimes(1)
     })
 })

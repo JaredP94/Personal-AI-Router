@@ -37,14 +37,20 @@ vi.mock('@/electron/connector/broker-crash-notification', () => ({
     notifyBrokerStartupFailure: mocks.notifyBrokerStartupFailure
 }))
 
-import { getModularSupervisor } from '@/electron/service-bridge/modular-supervisor'
+import {
+    getModularSupervisor,
+    ModularStartupTimeoutError
+} from '@/electron/service-bridge/modular-supervisor'
 import {
     destroyConnector,
+    destroyConnectorSync,
     didWeSpawnCli,
     getConnectorError,
     getConnectorStatus,
-    initializeConnector
+    initializeConnector,
+    restartConnector
 } from '@/electron/connector'
+import { MODULAR_STARTUP_READY_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 // The real supervisor and the real connector handlers; only process spawning
 // and the owned teardown body are replaced, so the supervisor-to-connector
@@ -103,6 +109,7 @@ describe('connector across a silence reconnect', () => {
         supervisor['stopProcesses'] = vi.fn().mockResolvedValue(undefined)
         await destroyConnector({ force: true })
         await flush()
+        supervisor['rejectReadinessWaiters'](new Error('test teardown'))
         supervisor['processes'].clear()
         supervisor['stopProcesses'] = originalStopProcesses
         supervisor['validateRequiredBinaries'] = originalValidateRequiredBinaries
@@ -239,5 +246,140 @@ describe('connector across a silence reconnect', () => {
         expect(didWeSpawnCli()).toBe(false)
         expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
         expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+    })
+
+    describe('readiness deadline after the automatic restart', () => {
+        const timeoutError = new ModularStartupTimeoutError(MODULAR_STARTUP_READY_TIMEOUT_MS)
+            .message
+
+        beforeEach(() => {
+            vi.useFakeTimers()
+        })
+        afterEach(() => {
+            vi.useRealTimers()
+        })
+
+        async function reconnect(): Promise<void> {
+            await connect()
+            currentBroker().emit('unresponsive', { source: 'broker' })
+            await flush()
+            expect(supervisor.start).toHaveBeenCalledTimes(2)
+            expect(getConnectorStatus()).toBe('reconnecting')
+        }
+
+        it('reports a startup failure and keeps ownership when the restarted broker never becomes ready', async () => {
+            await reconnect()
+
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS - 1)
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+            expect(getConnectorError()).toBeUndefined()
+
+            await vi.advanceTimersByTimeAsync(1)
+            expect(getConnectorStatus()).toBe('reconnecting')
+            expect(getConnectorError()).toBe(timeoutError)
+            expect(didWeSpawnCli()).toBe(true)
+            expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledTimes(1)
+            expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledWith(timeoutError)
+            expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
+
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS * 2)
+            expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledTimes(1)
+
+            // A late ready still returns the owner to connected and clears the error.
+            brokerBecomesReady()
+            expect(getConnectorStatus()).toBe('connected')
+            expect(getConnectorError()).toBeUndefined()
+            expect(didWeSpawnCli()).toBe(true)
+        })
+
+        it('measures the deadline from the automatic start, not from the owned stop before it', async () => {
+            await connect()
+            supervisor['stopProcesses'] = vi.fn(
+                () =>
+                    new Promise<void>(resolve => {
+                        releaseStop = resolve
+                    })
+            )
+
+            currentBroker().emit('unresponsive', { source: 'broker' })
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS)
+            expect(supervisor.start).toHaveBeenCalledTimes(1)
+            releaseStop()
+            await flush()
+            expect(supervisor.start).toHaveBeenCalledTimes(2)
+
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS - 1)
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+            await vi.advanceTimersByTimeAsync(1)
+            expect(mocks.notifyBrokerStartupFailure).toHaveBeenCalledTimes(1)
+            expect(getConnectorError()).toBe(timeoutError)
+        })
+
+        it('stays quiet when the restarted broker becomes ready before the deadline', async () => {
+            await reconnect()
+
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS - 1)
+            brokerBecomesReady()
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS * 2)
+
+            expect(getConnectorStatus()).toBe('connected')
+            expect(getConnectorError()).toBeUndefined()
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+            expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
+        })
+
+        it('a deadline armed before a user restart has no effect on the new start', async () => {
+            await reconnect()
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS / 2)
+            // Owned teardown empties the process map but, unlike the real one,
+            // leaves the pending readiness waiter in place: only the ticket
+            // guards the stale deadline here.
+            supervisor['stopProcesses'] = vi.fn(async () => {
+                supervisor['processes'].clear()
+                supervisor['isReady'] = false
+            })
+
+            const restarting = restartConnector()
+            await flush()
+            expect(supervisor.start).toHaveBeenCalledTimes(3)
+            expect(getConnectorStatus()).toBe('connecting')
+
+            // The reconnect deadline passes while the user's start is still pending.
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS / 2 + 1)
+            expect(getConnectorStatus()).toBe('connecting')
+            expect(getConnectorError()).toBeUndefined()
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+
+            brokerBecomesReady()
+            await restarting
+            expect(getConnectorStatus()).toBe('connected')
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+        })
+
+        it('a deadline armed before quit has no effect after destroyConnector', async () => {
+            await reconnect()
+
+            await destroyConnector()
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS * 2)
+
+            expect(getConnectorStatus()).toBe('disconnected')
+            expect(getConnectorError()).toBeUndefined()
+            expect(didWeSpawnCli()).toBe(false)
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+            expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
+        })
+
+        it('a deadline armed before quit has no effect after destroyConnectorSync', async () => {
+            await reconnect()
+
+            destroyConnectorSync()
+            await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS * 2)
+
+            expect(getConnectorStatus()).toBe('disconnected')
+            expect(getConnectorError()).toBeUndefined()
+            expect(didWeSpawnCli()).toBe(false)
+            expect(mocks.notifyBrokerStartupFailure).not.toHaveBeenCalled()
+            expect(mocks.notifyBrokerCrash).not.toHaveBeenCalled()
+        })
     })
 })

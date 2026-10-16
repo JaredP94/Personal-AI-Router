@@ -34,6 +34,7 @@ import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
+    MODULAR_STARTUP_READY_TIMEOUT_MS,
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
@@ -418,6 +419,9 @@ class ModularSupervisor {
     // Invoked instead of onBrokerCrash when an unresponsive broker is about to be
     // restarted automatically: the owner keeps ownership and waits for onReady.
     private onBrokerReconnecting?: () => void
+    // Invoked when an automatically restarted broker misses its readiness
+    // deadline; the owner keeps ownership and still accepts a late onReady.
+    private onBrokerReconnectTimeout?: (error: ModularStartupTimeoutError) => void
     private onReady?: () => void
     // Set when an invite lazily created the cluster (the cluster-manager refuses
     // to invite while unclustered). Tracks that the cluster exists *only* because
@@ -529,6 +533,11 @@ class ModularSupervisor {
         this.onBrokerReconnecting = cb
     }
 
+    /** Register a handler invoked when an automatically restarted broker misses its readiness deadline. */
+    setOnBrokerReconnectTimeout(cb: (error: ModularStartupTimeoutError) => void): void {
+        this.onBrokerReconnectTimeout = cb
+    }
+
     /** Register a handler invoked whenever the broker reports app:ready. */
     setOnReady(cb: () => void): void {
         this.onReady = cb
@@ -558,6 +567,26 @@ class ModularSupervisor {
             }, timeoutMs)
             this.readinessWaiters.set(id, { resolve, reject, timeout })
             this.updateReadiness()
+        })
+    }
+
+    /**
+     * Give an automatic silence restart the same readiness deadline as an initial
+     * start. It is measured from the restart's start(), not from the silence: the
+     * owned stop of the silent tree can legitimately take longer than the whole
+     * budget (engine shutdown, then the broker's shutdown grace and SIGKILL).
+     * The deadline belongs to this start's ticket; any later start, user stop or
+     * new silence advances the ticket and makes it stale.
+     */
+    private watchReconnectReadiness(): void {
+        const generation = this.silenceRestartGeneration
+        void this.waitUntilReady(MODULAR_STARTUP_READY_TIMEOUT_MS).catch(error => {
+            if (
+                error instanceof ModularStartupTimeoutError &&
+                generation === this.silenceRestartGeneration
+            ) {
+                this.onBrokerReconnectTimeout?.(error)
+            }
         })
     }
 
@@ -940,7 +969,9 @@ class ModularSupervisor {
                         })
                         // The restart the owner is waiting on will not happen.
                         this.onBrokerCrash?.({ code: null })
+                        return
                     }
+                    this.watchReconnectReadiness()
                 })
                 .catch(error => {
                     log.error({

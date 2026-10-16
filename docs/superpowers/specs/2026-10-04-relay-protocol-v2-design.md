@@ -267,8 +267,13 @@ invocation; desktop uses guarded owned stop/start, allowing one automatic retry
 until a fresh lifetime becomes ready. An attempted desktop restart is a
 reconnect, not a crash: the connector keeps ownership, shows `reconnecting` and
 returns to `connected` on the new lifetime's ready signal; only an exhausted or
-failed retry is reported as a crash. New lifetimes reinstall subscriptions and
-hydrate snapshots; no watchdog-generated healthy traffic is introduced.
+failed retry is reported as a crash, including a restart whose start throws. The
+restarted lifetime gets the initial start's readiness deadline, measured from
+its start rather than from the silence; missing it shows the same startup
+failure as an initial start (`reconnecting` with the error, a notification,
+ownership kept), and a late ready still returns to `connected`. New lifetimes
+reinstall subscriptions and hydrate snapshots; no watchdog-generated healthy
+traffic is introduced.
 
 ### 2.7 Event channels
 

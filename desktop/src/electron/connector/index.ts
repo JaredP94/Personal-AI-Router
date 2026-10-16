@@ -62,6 +62,7 @@ function ensureBrokerCrashHandler(): void {
     const supervisor = getModularSupervisor()
     supervisor.setOnBrokerCrash(handleBrokerCrash)
     supervisor.setOnBrokerReconnecting(handleBrokerReconnecting)
+    supervisor.setOnBrokerReconnectTimeout(handleBrokerReconnectTimeout)
     supervisor.setOnReady(handleSupervisorReady)
 }
 
@@ -86,6 +87,29 @@ function handleBrokerReconnecting(): void {
         message: 'Broker stopped responding; restarting it'
     })
     setStatus('reconnecting')
+}
+
+/**
+ * The automatically restarted broker missed its readiness deadline. Report it
+ * exactly like an initial startup timeout; a late ready still reconnects.
+ */
+function handleBrokerReconnectTimeout(error: ModularStartupTimeoutError): void {
+    if (!weSpawned || status !== 'reconnecting') return
+    log.error({
+        sublevel: 'lifecycle',
+        message: 'Restarted broker did not become ready',
+        data: { error: error.message }
+    })
+    reportStartupTimeout(error.message)
+}
+
+/**
+ * A broker we spawned missed its readiness deadline. Ownership is kept so
+ * Restart and quit still work, and the next ready signal returns to connected.
+ */
+function reportStartupTimeout(error: string): void {
+    setStatus('reconnecting', error)
+    notifyBrokerStartupFailure(error)
 }
 
 /**
@@ -165,8 +189,7 @@ export const initializeConnector = async (): Promise<void> => {
         const errorString = getErrorString(error) ?? 'Failed to start modular service bridge'
         if (getConnectorStatus() === 'connected') return
         if (error instanceof ModularStartupTimeoutError) {
-            setStatus('reconnecting', errorString)
-            notifyBrokerStartupFailure(errorString)
+            reportStartupTimeout(errorString)
         } else if (status !== 'disconnected' || !serviceError) {
             weSpawned = false
             setStatus('disconnected', errorString)
