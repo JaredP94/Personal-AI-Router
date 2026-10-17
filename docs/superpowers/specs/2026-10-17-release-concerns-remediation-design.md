@@ -5,11 +5,27 @@ SPDX-License-Identifier: Apache-2.0
 
 # Release Concerns Remediation — Proposed Design
 
-**Status:** Proposed; user approval is required before implementation.
+**Status:** Owner decisions recorded 2026-10-17 (below); one policy question open.
 **Baseline:** `release/performance-and-docs`, candidate metadata `0.7.0-rc.2`.
 **Inputs:** [release checklist](../../release-readiness.mdx),
 [security boundaries](../../../SECURITY.md), and
 [performance evidence](../../performance-release-summary.mdx).
+
+## Owner Decisions (2026-10-17)
+
+| Topic | Decision | Effect on this design |
+| --- | --- | --- |
+| Tracing defaults | Off by default; existing "on" values reset and re-confirmed | §2.1 as written |
+| Collection topology | Build the secure gateway **and** keep local collection, chosen per node by a setting | §3.2 is in scope, not optional. Each node chooses "This device" or "Cluster collector: <paired node>"; one node opts in to host the collector |
+| Trace storage | Keep until the user deletes it; show on-device trace storage size in the UI with a clear action | §3.3 adds a storage-usage readout and a confirmed "Clear stored traces" action |
+| Envelope parity | Owner delegated; **canonical-envelope enforcement** chosen | §5 recommended resolution adopted |
+| Signing | No paid Apple Developer account, so **unsigned limited RC** | §8 unsigned path; helper/firewall automation reported unavailable, no repeated prompts |
+| Known limitations | Fix now | §9 items are in scope for the next release |
+
+**Open policy question:** whether prompt/completion capture may travel to a
+remote cluster collector through the authenticated gateway. Current contributor
+policy (`AGENTS.md`, `SECURITY.md`) allows content only to the *local* collector.
+Until decided, remote destinations carry metadata only and §2.3 applies.
 
 ## Intent and Scope
 
@@ -159,9 +175,9 @@ Custom Compose paths are an explicit advanced/operator-managed mode, not silentl
 approved managed deployments. If bindings/image/identity cannot be verified, do
 not mark them secure or enable content capture through the managed UI.
 
-### 3.2 Optional Paired-Node Metadata Collection
+### 3.2 Paired-Node Collection Through a Secure Gateway
 
-Recommended complete design: keep Phoenix private and add a small Go
+In scope per owner decision. Keep Phoenix private and add a small Go
 `nvpair-telemetry-gateway` service for authenticated remote **metadata-only**
 collection. This is an additive service, not a claim that today's Phoenix speaks
 PAIR mTLS. It requires the usual inventory, supervision, version, firewall,
@@ -184,10 +200,13 @@ contract and notice updates (15 services-tree executables / 13 workers if adopte
 - Expose remote dashboards through an operator-controlled authenticated tunnel
   or separately reviewed authenticated service, not an automatic public UI port.
 
-If the gateway is not approved/ready for the next release, the safe smaller
-scope is **local-only telemetry**: reject remote destinations and remove misleading
-remote collector advertisements/UI claims. Do not implement an insecure interim
-remote path. This scope decision is explicitly for the owner to approve.
+Each node offers a destination setting: **This device** (local managed Phoenix)
+or **Cluster collector** (a selected paired node that has opted in to host). The
+host node's own spans go to its local collector; peers' spans arrive through its
+gateway, so one Phoenix holds the cross-node traces linked by `traceparent`. If
+the gateway cannot be completed and verified for the release, ship
+**This device** only and hide the cluster option; never ship an insecure interim
+remote path.
 
 ### 3.3 Honest Readiness, Retention and Deletion
 
@@ -195,6 +214,12 @@ Separate container-running, verified bindings, authenticated gateway readiness,
 OTLP ingestion success, exporter delivery, and UI availability in status. A
 remote configured endpoint succeeding must not cause advertisement of an
 unrelated local port 4317.
+
+Report on-device trace storage in Settings → Service: the managed data volume's
+size, measured by the broker from Docker for the labelled managed volume only,
+with the time it was measured and a clear "unavailable" state when Docker or the
+volume cannot be inspected. Pair it with a confirmed **Clear stored traces**
+action (the scoped purge below), which reports the result and the new size.
 
 “Stop tracing,” “stop Phoenix,” and “delete stored traces” are different actions.
 Keep existing data on upgrade and ordinary stop. Show that persistent data
@@ -459,12 +484,12 @@ in advance. This is not a commitment to add every roadmap feature before an RC.
 5. **Exact-artifact verification:** native lifecycle/install/update/feed checks,
    new baseline/final profiling, notes and owner-approved tag/publication.
 
-Before an implementation plan, approve or amend the recommendations that change
-product behavior: disabled-by-default/migrated tracing, local-only content capture,
-local-only first versus inclusion of the secure gateway, persistent data with
-explicit purge, canonical-envelope enforcement versus a narrowed parity promise,
-unsigned RC versus signed distribution, and the disposition of existing product
-limitations. The candidate versions currently prepared are
+The owner decisions above settle the behavior-changing recommendations except
+remote content capture. Implementation proceeds as separate plans, one per
+subsystem, in the order above, with §9 limitations as their own plans. The
+macOS unclustered-reachability item needs a controlled second machine to
+reproduce; it cannot be scheduled as "fixed" before it is reproduced. The
+candidate versions currently prepared are
 provisional: re-evaluate component/product/protocol versions for the actual
 approved contract changes, regenerate contracts/notices, and rebuild. No release
 is authorized by this proposed design.
