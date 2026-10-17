@@ -39,7 +39,7 @@ This project exists as a forward-looking extension that introduces practical fea
 ### Summary of Enhancements vs. Upstream
 
 1. **oMLX Engine Integration (Apple Silicon Native MLX)**
-   - First-class support for [oMLX](https://github.com/jaredp94/omlx) as a supervised local inference engine alongside Ollama and LM Studio.
+   - First-class support for [oMLX](https://github.com/jundot/omlx) as a supervised local inference engine alongside Ollama and LM Studio.
    - Includes a dedicated `omlx-proxy` service, broker supervision, mDNS discovery (`om`), OpenAI-compatible ingress, dynamic fallback port negotiation, and full desktop UI integration.
 
 2. **Prefix Cache-Aware Routing (KV-Cache Affinity)**
