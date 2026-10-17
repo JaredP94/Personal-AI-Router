@@ -257,7 +257,7 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 // host's GPU inventory in the clear, and neither can a plain-HTTP caller on the
 // shared port. Refresh picks up a membership change or a peer paired after
 // startup.
-func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFunc {
+func nodeInfoHandler(mesh *clustertrust.Mesh, body func(*http.Request) []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()
 		if mesh.Clustered() {
@@ -267,8 +267,15 @@ func nodeInfoHandler(mesh *clustertrust.Mesh, body func() []byte) http.HandlerFu
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body())
+		_, _ = w.Write(body(r))
 	}
+}
+
+func isBackgroundNodeInfoPoll(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return r.Header.Get("X-NVPAIR-Poll") == "background"
 }
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -408,8 +415,14 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func() []byte {
-		return buildResponse(gpus, cpu, memTotal, collector.Snapshot(), hostUUID, clusterPrincipal())
+	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func(r *http.Request) []byte {
+		var snap statsSnapshot
+		if isBackgroundNodeInfoPoll(r) {
+			snap = collector.PeekSnapshot()
+		} else {
+			snap = collector.Snapshot()
+		}
+		return buildResponse(gpus, cpu, memTotal, snap, hostUUID, clusterPrincipal())
 	}))
 
 	// Listener layout (set up below depending on flags). Exactly one of the two

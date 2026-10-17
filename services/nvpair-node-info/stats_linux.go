@@ -132,7 +132,7 @@ func (c *statsCollector) run() {
 // the single-writer ticker goroutine, so the prevCPU update is race-free and
 // the atomic pointer swap on c.latest is the only publishing step.
 func (c *statsCollector) decodeSnapshot() *statsSnapshot {
-	previous := c.Snapshot()
+	previous := c.PeekSnapshot()
 	snap := &statsSnapshot{}
 
 	cur := readCPUTimes()
@@ -182,16 +182,23 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 	return utilizationSamples > 0
 }
 
-// Snapshot returns the latest published statsSnapshot. Safe for concurrent
-// callers — the value is immutable post-publish. Returns a zero-value
-// snapshot before the first tick, so callers need no nil checks.
-func (c *statsCollector) Snapshot() statsSnapshot {
-	c.lastSnapshot.Store(time.Now().UnixNano())
+// PeekSnapshot returns the latest published statsSnapshot without updating
+// lastSnapshot, so background polls and internal ticks do not reset the idle
+// GPU collection threshold.
+func (c *statsCollector) PeekSnapshot() statsSnapshot {
 	p := c.latest.Load()
 	if p == nil {
 		return statsSnapshot{}
 	}
 	return *p
+}
+
+// Snapshot returns the latest published statsSnapshot. Safe for concurrent
+// callers — the value is immutable post-publish. Returns a zero-value
+// snapshot before the first tick, so callers need no nil checks.
+func (c *statsCollector) Snapshot() statsSnapshot {
+	c.lastSnapshot.Store(time.Now().UnixNano())
+	return c.PeekSnapshot()
 }
 
 // Stop signals the tick goroutine to exit and waits for it. Safe to call any

@@ -449,7 +449,10 @@ async function fetchNodeInfo(host: string, port: number, run: AbortSignal): Prom
     const signal = AbortSignal.any([run, attempt.signal])
 
     try {
-        const response = await fetch(url, { signal })
+        const headers: Record<string, string> = {
+            'X-NVPAIR-Poll': hasVisibleUiWindow() ? 'foreground' : 'background'
+        }
+        const response = await fetch(url, { signal, headers })
         if (!response.ok) {
             await drainResponseBody(response)
             return { parsed: null, reason: `HTTP ${response.status}` }

@@ -182,6 +182,20 @@ func (c *statsCollector) decodeSystemSnapshot() *statsSnapshot {
 	return snap
 }
 
+func (c *statsCollector) PeekSnapshot() statsSnapshot {
+	p := c.latest.Load()
+	if p == nil {
+		return statsSnapshot{}
+	}
+	snap := *p
+	if gpu := c.latestGPU.Load(); gpu != nil {
+		snap.GPU = gpu.stats
+		snap.GPUInventory = gpu.inventory
+		snap.GPUSampledAt = gpu.sampledAt
+	}
+	return snap
+}
+
 func (c *statsCollector) Snapshot() statsSnapshot {
 	now := time.Now().UnixNano()
 	prev := c.lastSnapshot.Swap(now)
@@ -195,17 +209,7 @@ func (c *statsCollector) Snapshot() statsSnapshot {
 		default:
 		}
 	}
-	p := c.latest.Load()
-	if p == nil {
-		return statsSnapshot{}
-	}
-	snap := *p
-	if gpu := c.latestGPU.Load(); gpu != nil {
-		snap.GPU = gpu.stats
-		snap.GPUInventory = gpu.inventory
-		snap.GPUSampledAt = gpu.sampledAt
-	}
-	return snap
+	return c.PeekSnapshot()
 }
 
 func (c *statsCollector) Stop() {

@@ -287,6 +287,13 @@ func TestDarwinCollectorAdaptiveGPUInterval(t *testing.T) {
 	time.Sleep(70 * time.Millisecond)
 	idleReads := gpuReads.Load()
 
+	// Calling PeekSnapshot() (background poll) must NOT wake the collector from idle.
+	c.PeekSnapshot()
+	time.Sleep(5 * time.Millisecond)
+	if peekReads := gpuReads.Load(); peekReads != idleReads {
+		t.Fatalf("expected PeekSnapshot() not to wake collector from idle: idleReads=%d, peekReads=%d", idleReads, peekReads)
+	}
+
 	// Calling Snapshot() should immediately wake the collector from idle.
 	c.Snapshot()
 	time.Sleep(5 * time.Millisecond)
