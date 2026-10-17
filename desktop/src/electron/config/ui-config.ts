@@ -9,6 +9,7 @@ import {
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
+import { setStructuredLogLevel } from '@/shared/utils/log'
 
 interface UiConfig {
     /** When true, first-run onboarding has not been completed or explicitly dismissed. */
@@ -75,6 +76,7 @@ export function loadUiConfig(): void {
     } catch {
         config = { ...DEFAULTS }
     }
+    setStructuredLogLevel(getModularLogLevel())
 }
 
 function save(): void {
@@ -110,6 +112,7 @@ export function getModularLogLevel(): ModularLogLevel {
 
 export function setModularLogLevel(value: ModularLogLevel): void {
     config.modularLogLevel = value
+    setStructuredLogLevel(value)
     save()
 }
 

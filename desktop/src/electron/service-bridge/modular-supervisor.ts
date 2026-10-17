@@ -990,7 +990,9 @@ class ModularSupervisor {
         child.on('log', entry => {
             if (!isCurrent()) return
             getModularBridgeState().appendLog(entry.source, entry.stream, entry.text)
-            log[serviceLogLevel(entry.stream, entry.text)]({
+            const level = serviceLogLevel(entry.stream, entry.text)
+            if (level === 'verbose' && this.logLevel !== 'debug') return
+            log[level]({
                 sublevel: entry.source,
                 message: entry.text,
                 data: { stream: entry.stream }
@@ -1272,13 +1274,13 @@ class ModularSupervisor {
             })
             getModularBridgeState().applyRemoteEngineFacts(nodeId, result)
             const engines = objectValue(result)?.engines
-            log.info({
+            log.verbose({
                 sublevel: 'engine-manager',
                 message: `remote engine status polled for ${nodeId}`,
                 data: { engines: Array.isArray(engines) ? engines : [] }
             })
         } catch (err) {
-            log.warn({
+            log.verbose({
                 sublevel: 'engine-manager',
                 message: `remote engine status for ${nodeId} unavailable: ${getErrorString(err)}`
             })
@@ -1294,7 +1296,7 @@ class ModularSupervisor {
             if (node.id && node.id !== selfId) peerIds.add(node.id)
         }
         if (peerIds.size === 0) return
-        log.info({
+        log.verbose({
             sublevel: 'engine-manager',
             message: `remote engine status sweep: ${peerIds.size} peer(s)`,
             data: { peerIds: Array.from(peerIds) }
@@ -1603,15 +1605,6 @@ class ModularSupervisor {
     }
 
     private handleNotification(notification: JsonRpcNotification): void {
-        log.verbose({
-            sublevel: notification.source,
-            message: notification.method,
-            data:
-                notification.params && typeof notification.params === 'object'
-                    ? notification.params
-                    : {}
-        })
-
         if (notification.source === 'broker') {
             const candidateEpoch =
                 notification.epoch ||

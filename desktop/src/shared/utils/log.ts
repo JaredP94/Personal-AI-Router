@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'fs'
+import { MODULAR_DEFAULT_LOG_LEVEL, type ModularLogLevel } from '@/shared/constants/modular-runtime'
 import { LogEntry, LogLevel, StructuredLogger, StructuredLogPayload } from '@/shared/types/log'
 import { PathProvider } from '@/electron/path'
 import { join } from 'path'
@@ -18,6 +19,14 @@ const ROTATED_LOG_FILE_NAME = 'nvpair.1.jsonl'
 let logFilePath = ''
 let rotatedLogFilePath = ''
 let approxFileSize = 0
+let currentLogLevel: ModularLogLevel = MODULAR_DEFAULT_LOG_LEVEL
+
+function shouldWriteEntry(level: LogLevel): boolean {
+    if (level === 'error') return true
+    if (currentLogLevel === 'error') return false
+    if (level === 'warn' || level === 'info') return true
+    return currentLogLevel === 'debug'
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -59,7 +68,8 @@ function rotateIfNeeded(): void {
     }
 }
 
-function writeEntry(scope: string, level: string, payload: StructuredLogPayload): void {
+function writeEntry(scope: string, level: LogLevel, payload: StructuredLogPayload): void {
+    if (!shouldWriteEntry(level)) return
     const now = new Date()
     const normalizedData =
         payload.data !== undefined
@@ -97,6 +107,10 @@ function writeEntry(scope: string, level: string, payload: StructuredLogPayload)
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+export function setStructuredLogLevel(level: ModularLogLevel): void {
+    currentLogLevel = level
+}
 
 export function getStructuredLogFilePath(): string {
     return logFilePath
