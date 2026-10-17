@@ -194,9 +194,7 @@ func cmdTrust() -> Int32 {
         emit(["trusted": false, "reason": "host-unsigned"])
         return 0
     }
-    let rawCtlPath = Bundle.main.executablePath ?? CommandLine.arguments[0]
-    let ctlPath = URL(fileURLWithPath: rawCtlPath).resolvingSymlinksInPath().path
-    guard verifySignature(path: ctlPath, requirement: HelperConstants.ctlCodeSigningRequirement) else {
+    guard verifySelfSignature(requirement: HelperConstants.ctlCodeSigningRequirement) else {
         emit(["trusted": false, "reason": "ctl-unsigned"])
         return 0
     }

@@ -20,3 +20,20 @@ func verifySignature(path: String, requirement requirementString: String) -> Boo
     }
     return SecStaticCodeCheckValidity(code, [], req) == errSecSuccess
 }
+
+func verifySelfSignature(requirement requirementString: String) -> Bool {
+    var code: SecCode?
+    guard SecCodeCopySelf([], &code) == errSecSuccess,
+        let selfCode = code
+    else {
+        return false
+    }
+    var requirement: SecRequirement?
+    guard SecRequirementCreateWithString(requirementString as CFString, [], &requirement)
+        == errSecSuccess, let req = requirement
+    else {
+        return false
+    }
+    return SecCodeCheckValidity(selfCode, [], req) == errSecSuccess
+}
+
