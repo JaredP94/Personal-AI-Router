@@ -141,9 +141,11 @@ polls healthy local and discovered nodes every two seconds with a visible UI,
 and every 30 seconds when hidden/minimized, because rich telemetry is not part of
 the broker JSON-RPC surface. Consecutive failures back off to a 30-second cap;
 success or an endpoint change restores the visibility-appropriate cadence.
-Background polls read cached snapshots without keeping the hardware GPU sampler
-in interactive mode. The scanner's independent scheduling telemetry remains
-approximately two seconds with jitter/backoff.
+Explicit background UI polls read cached snapshots without renewing interactive
+GPU-sampling activity. Scanner/manual scheduling consumers retain foreground
+sampling to preserve their freshness contract, so a hidden UI alone does not
+guarantee idle hardware collection. Scanner telemetry remains approximately two
+seconds with jitter/backoff.
 
 ## State flow
 

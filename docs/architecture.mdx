@@ -271,11 +271,13 @@ compact maximum-GPU utilization for scheduling at roughly two seconds with jitte
 and capped failure backoff. The broker relays it straight to the job scheduler;
 routing never depends on renderer metrics.
 
-Current unreleased idle-performance changes mark background node-info requests
-so they peek at the cached snapshot without keeping the GPU sampler awake.
-Foreground reads still activate sampling. This reduces idle collection; it does
-not remove polling, mDNS browse/refresh loops, or the two-second trust refresh.
-Stale GPU observations remain distinguishable from fresh telemetry.
+Current unreleased changes let explicitly background UI requests peek at cached
+snapshots without renewing GPU-sampling activity. Scheduler consumers (scanner
+and manual nodes) intentionally remain foreground readers to preserve the
+10-second sample-freshness contract. Closing the UI therefore does not by itself
+guarantee idle hardware sampling. Coordinated collection/delivery budgets are
+still required before enabling unattended sampler backoff. Polling, mDNS loops,
+and the two-second trust refresh remain; stale samples remain distinguishable.
 
 ## Inference Data Flow
 

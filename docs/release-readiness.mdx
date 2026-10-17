@@ -55,6 +55,17 @@ Source anchors: each proxy's `telemetry.go`, `services/shared/telemetry/`,
 `services/nvpair-ui-broker/broker_telemetry.go`, and
 `docker-compose.telemetry.yml`.
 
+### Scheduling Telemetry and Idle Sampling
+
+Scheduler consumers retain foreground node-info reads. Letting manual probes
+(10 seconds) read a cached idle GPU sample (also 10 seconds) can exhaust most of
+the scheduler's 10-second freshness budget before the next observation arrives.
+Background reads remain available for explicitly hidden UI polling, but the
+scanner/manual consumers must not enable unattended sampler backoff until
+collection/delivery/freshness timing is coordinated and tested. The earlier
+profiling improvements from scheduler-background sampling must not be reused
+as measurements of this corrected release tree.
+
 ### Desktop Relay Envelope Validation
 
 Go codecs enforce notification `epoch`/`seq` stamps and reject them on

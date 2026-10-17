@@ -104,8 +104,10 @@ The broker does not expose rich node telemetry over JSON-RPC. Electron therefore
 polls each healthy discovered node's advertised `/v1/node-info` endpoint every
 two seconds with a visible UI or every 30 seconds when hidden/minimized, merging
 CPU, memory, GPU, and VRAM data into `metrics:update`. Consecutive failures back
-off to a 30-second cap and reset on success. Background polls use cached snapshots
-without renewing interactive GPU-sampling activity.
+off to a 30-second cap and reset on success. Explicit background UI polls use
+cached snapshots without renewing interactive GPU-sampling activity. Scheduling
+consumers deliberately retain foreground sampling; a hidden UI alone therefore
+does not guarantee the idle GPU cadence.
 Those renderer snapshots are display-only. Independently, the backend scanner
 samples a compact maximum-GPU utilization value on the same healthy cadence,
 with the same capped failure backoff, and sends it through the broker to the
