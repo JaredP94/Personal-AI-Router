@@ -96,10 +96,16 @@ func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
 	before := count()
 
 	// An identical re-pin folds in no new endorsements and rewrites nothing.
+	if err := ts.Pin(pin); err != nil {
+		t.Fatalf("identical re-pin: %v", err)
+	}
+	// Adding endorsements that are already present (or empty) rewrites nothing.
+	if err := ts.AddEndorsements(uuid, nil); err != nil {
+		t.Fatalf("empty add endorsements: %v", err)
+	}
+	// A fresh leaf for the same uuid is a DIFFERENT certificate, which the
+	// store refuses rather than silently re-pinning; it must not announce.
 	if err := ts.Pin(testPin(t, uuid)); err == nil {
-		// A fresh leaf for the same uuid is a DIFFERENT certificate, which the
-		// store refuses rather than silently re-pinning; either way it must not
-		// announce a change it did not make.
 		t.Log("re-pin with a new certificate was accepted")
 	}
 	// A rename to the values already stored changes nothing.
@@ -114,5 +120,21 @@ func TestTrustStoreStaysSilentWhenNothingChanged(t *testing.T) {
 
 	if count() != before {
 		t.Fatalf("announcements = %d, want %d — a no-op must stay silent", count(), before)
+	}
+
+	// Adding a genuinely new endorsement mutates the pin on disk and announces once,
+	// while re-adding that same endorsement is a no-op and stays silent.
+	end := Endorsement{By: "endorser-1", SigV2: "sig-1"}
+	if err := ts.AddEndorsements(uuid, []Endorsement{end}); err != nil {
+		t.Fatalf("add new endorsement: %v", err)
+	}
+	if count() != before+1 {
+		t.Fatalf("announcements after new endorsement = %d, want %d", count(), before+1)
+	}
+	if err := ts.AddEndorsements(uuid, []Endorsement{end}); err != nil {
+		t.Fatalf("re-add existing endorsement: %v", err)
+	}
+	if count() != before+1 {
+		t.Fatalf("announcements after duplicate endorsement = %d, want %d", count(), before+1)
 	}
 }
