@@ -71,21 +71,19 @@ func TestTLSConnectionRoutesToTLSServer(t *testing.T) {
 
 // TestMalformedConnectionDoesNotWedgeDispatch opens connections that never
 // complete (a silent client that sends no byte, and one that connects then
-// immediately closes) and confirms the dispatcher drops them without blocking:
-// a normal plain request afterwards must still succeed.
+// immediately closes) and confirms they do not block dispatch of a normal plain
+// request. The silent connection stays open until the test returns; this tests
+// concurrent dispatch, not expiry of the first-byte timeout.
 func TestMalformedConnectionDoesNotWedgeDispatch(t *testing.T) {
-	old := peekTimeout
-	peekTimeout = 200 * time.Millisecond
-	defer func() { peekTimeout = old }()
-
 	addr, cleanup := newSplitter(t)
 	defer cleanup()
 
-	// Silent client: connect, send nothing, let the peek deadline fire.
+	// Silent client: keep the first-byte read pending during the good request.
 	silent, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial silent: %v", err)
 	}
+	defer silent.Close()
 	// Immediate-close client: connect and close before sending a byte.
 	closer, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -93,12 +91,24 @@ func TestMalformedConnectionDoesNotWedgeDispatch(t *testing.T) {
 	}
 	_ = closer.Close()
 
-	// A good request must still be served while the silent conn is pending and
-	// after the closed one was dropped.
-	if body := httpGet(t, "http://"+addr+"/", nil); body != "plain" {
+	// Make one bounded request without retries so a dispatcher wedged on the
+	// silent connection cannot pass by waiting for its first-byte timeout.
+	client := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	resp, err := client.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("plain request while silent connection is pending: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read plain response: %v", err)
+	}
+	if string(body) != "plain" {
 		t.Fatalf("plain request after malformed conns served %q, want %q", body, "plain")
 	}
-	_ = silent.Close()
 }
 
 func TestCloseStopsAccepting(t *testing.T) {
