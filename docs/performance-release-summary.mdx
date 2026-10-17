@@ -1,0 +1,96 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Performance and Energy: Upcoming Release
+
+## What the Evidence Currently Supports
+
+The following are **historical development observations reported earlier in this
+session**, not fresh measurements of the corrected `0.7.0-rc.2` candidate. They
+must not be presented as a certified release benchmark. The earlier reports did
+not attach reproducible raw samples, hardware/power-state details, or a complete
+build identity for each comparison.
+
+The release review subsequently corrected operational alias selection and
+retained foreground sampling for scheduling consumers. In particular, the
+experimental Round 3 scheduler-background sampling was **deferred** because its
+collection/delivery timing could violate the existing freshness budget. Its
+aggregate CPU, memory, wakeup, and billed-energy totals cannot certify the
+upcoming release.
+
+## Previously Reported Development Comparison
+
+Reported setup: macOS arm64, tray-only idle, approximately 10-second windows.
+“After” is Round 2, after the first churn/logging fixes, before the experimental
+Round 3 sampling changes. CPU is the reported aggregate app-process self CPU as
+a percentage of one core; short-lived hardware-collector children were not
+included consistently. MB units are retained as originally reported.
+
+| Metric | Published-release baseline, reported | Round 2 development build, reported | Observed difference |
+| --- | ---: | ---: | ---: |
+| App-process CPU | 1.94% | 1.60% | −17.5% relative; −0.34 percentage points |
+| Physical footprint | 320.2 MB | 289.8 MB | −30.4 MB (−9.5%) |
+| Package idle wakeups | 14.49/s | 0.20/s | −98.6% |
+| Interrupt wakeups | 741.65/s | 519.84/s | −29.9% |
+| Logical disk writes | 44.8 KB/s | 0 observed in the sample | No writes observed during that window only |
+
+Reported active-Overview samples were approximately five seconds:
+
+| Metric | Baseline, reported | Round 2, reported | Observed difference |
+| --- | ---: | ---: | ---: |
+| Steady-state app-process CPU | ~5.20% | 3.40% | ~−34.6% relative |
+| Interrupt wakeups | 812.40/s | 474.12/s | −41.6% |
+
+Wakeups and unnecessary I/O are **energy-related indicators**, not watts,
+watt-hours, battery-runtime measurements, or proof of proportional energy
+savings. The previously reported kernel billed-energy reduction is excluded:
+its units/attribution were not validated and it came from the superseded Round 3
+build. Short samples, initialization, system load, cache state, and power state
+also limit causal and statistical claims. No zero-disk-I/O or battery-life
+promise follows from these observations.
+
+## Changes Retained in the Candidate
+
+| Improvement | Work avoided / intended benefit | Validation boundary |
+| --- | --- | --- |
+| No-op endorsement merges | Redundant trust-change notifications and downstream refreshes | Regression coverage; first-round profiling reported lower churn |
+| Stable manual-node identity with operational failover | Alias oscillation and unnecessary discovery/engine refreshes, without suppressing a healthy address | Corrected after profiling; alias/failover regressions pass; final profile pending |
+| TLS-aware peer probing | Plaintext engine probes that clustered peers will reject | Probe regression coverage; whole-app effect not isolated quantitatively |
+| Verbose/debug log gating and duplicate-log removal | Routine serialization and synchronous file writes | Logging/installer-independent tests; historical Round 2 I/O observation above |
+| Repeated rejection-warning deduplication | Recurrent warning writes from unchanged legacy-peer probes | Included after Round 2; no standalone measured saving claimed |
+| Filtered macOS kernel network events | Routing-cache-miss traffic and periodic socket-timeout wakeups | Source/tests and historical Round 3 observations; corrected-build profile pending |
+| Validated trust-pin byte caching | Repeated JSON/PEM/X.509 parsing of unchanged pins | Trust/race coverage; periodic directory/file reads remain |
+| Explicit background UI reads and Linux internal peek | Display/internal reads need not renew interactive sampling activity | Scheduler consumers remain foreground; **no unattended 10-second sampling claim** |
+
+The historical aggregate changes cannot be allocated precisely to individual
+fixes. Intentional discovery, trust refresh, telemetry delivery, and supervision
+still perform background work.
+
+## Final Artifact Profiling Gate
+
+Before publishing a new quantitative release claim:
+
+1. Preserve the baseline and final artifact hashes, source commits, service
+   versions, harness, machine/OS/GPU details, power source/mode, screen state,
+   cluster/peer versions, collector settings, engines/models, and workload.
+2. Use equivalent warm-up and topology; alternate baseline/candidate runs with
+   at least five repetitions per scenario and at least 120 seconds of steady
+   sampling after warm-up. Test tray-only, visible Overview, and controlled
+   inference, with tracing both disabled and enabled in its supported modes.
+3. Discover and sample the whole owned process tree dynamically, including
+   short-lived hardware collectors. Separate app CPU, child CPU, GPU counters,
+   physical footprint, RSS, logical writes, file growth, and wakeup counters.
+4. Measure physical energy/power only with a documented, supported instrument
+   and attribution method. Otherwise report the energy proxy metrics explicitly,
+   without converting kernel billed-energy counters into battery claims.
+5. Report per-run data, median and spread, failures/skips, and sampling limits.
+   Verify routing eligibility, telemetry freshness and alias failover during the
+   same scenarios; a lower counter with broken scheduling is not an improvement.
+6. Inspect the final candidate and repeat profile/lifecycle checks after any
+   runtime correction. A build or component test is not a packaged-runtime pass.
+
+Do not replace the installed application, alter real cluster membership, start
+engines, or enable payload capture solely to produce a benchmark without an
+explicitly authorized test environment.
