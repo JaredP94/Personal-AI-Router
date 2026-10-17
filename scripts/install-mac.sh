@@ -4,22 +4,27 @@
 
 # Automated installer and updater for Personal AI Router (PAIR) on macOS.
 #
-# Downloads tagged release artifacts via curl (which does not set the
-# com.apple.quarantine attribute), installs/updates PAIR.app into /Applications,
-# and eliminates the need for manual "xattr -cr" on unsigned builds.
+# Downloads tagged release artifacts and SHA256SUMS, verifies the selected DMG,
+# and installs/updates PAIR.app into /Applications. GitHub regular/latest is used
+# by default, even when that release's tag contains "rc".
+#
+# The fork's v0.7.0-rc.1 candidate is unsigned, unnotarized and macOS arm64 only.
+# curl downloads do not set com.apple.quarantine. Neither that nor a matching
+# checksum provides signing, notarization, or assurance of app/helper trust.
+# SHA256SUMS detects corruption, not compromise of the release publisher.
 #
 # Usage:
 #   # Install or update to latest release:
 #   curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 #
 #   # Install a specific version:
-#   ./scripts/install-mac.sh --version 0.6.0
+#   ./scripts/install-mac.sh --version 0.7.0-rc.1
 #
 #   # Launch after install:
 #   ./scripts/install-mac.sh --launch
 #
 #   # Install from a local DMG file (offline / dev testing):
-#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.6.0-arm64.dmg
+#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.7.0-rc.1-arm64.dmg
 
 set -euo pipefail
 
@@ -37,11 +42,17 @@ Usage:
   $(basename "$0") [options]
 
 Options:
-  -v, --version <version>  Install a specific version (e.g. 0.6.0 or v0.6.0). Defaults to latest.
+  -v, --version <version>  Install a specific version (e.g. 0.7.0-rc.1 or v0.7.0-rc.1).
       --repo <owner/repo>  GitHub repository to download from (default: $PAIR_REPO).
-      --dmg <path>         Install from a local .dmg file instead of downloading.
+      --dmg <path>         Install a local DMG; verify it independently first.
+                          Cannot be combined with --version.
       --launch             Launch Personal AI Router after installation.
   -h, --help               Show this help message.
+
+Defaults to GitHub's regular/latest release, even if its tag contains rc.
+The fork's v0.7.0-rc.1 candidate is unsigned, unnotarized and arm64 only.
+Downloaded DMGs require SHA256SUMS. Checksums and curl's lack of quarantine
+provide no signing, notarization, or assurance of app/helper trust.
 
 Environment Variables:
   PAIR_REPO                Override GitHub repository (default: $PAIR_REPO).
@@ -49,18 +60,38 @@ USG
     exit 0
 }
 
-# Parse CLI flags
+fail() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+require_value() {
+    if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        fail "$1 requires a non-empty value. Run '$0 --help' for usage."
+    fi
+}
+
+valid_version() {
+    # A version must remain a single safe URL path segment and asset basename.
+    local version="${1#v}"
+    [[ "$version" =~ ^[0-9][A-Za-z0-9._+-]*$ ]]
+}
+
+# Parse and validate user input before network access or process changes.
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--version)
+            require_value "$@"
             REQUESTED_VERSION="$2"
             shift 2
             ;;
         --repo)
+            require_value "$@"
             PAIR_REPO="$2"
             shift 2
             ;;
         --dmg)
+            require_value "$@"
             LOCAL_DMG="$2"
             shift 2
             ;;
@@ -72,12 +103,24 @@ while [[ $# -gt 0 ]]; do
             usage
             ;;
         *)
-            echo "Unknown option: $1" >&2
+            echo "Error: Unknown option: $1" >&2
             echo "Run '$(basename "$0") --help' for usage." >&2
             exit 1
             ;;
     esac
 done
+
+REPO_PATTERN='^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9_.-]+$'
+if ! [[ "$PAIR_REPO" =~ $REPO_PATTERN ]] || [ "${PAIR_REPO#*/}" = "." ] || [ "${PAIR_REPO#*/}" = ".." ]; then
+    fail "Invalid repository '$PAIR_REPO'; use GitHub owner/name (no URL or extra path)."
+fi
+if [ -n "$REQUESTED_VERSION" ] && ! valid_version "$REQUESTED_VERSION"; then
+    fail "Invalid version '$REQUESTED_VERSION'; use a filename-safe version such as 0.7.0-rc.1."
+fi
+if [ -n "$LOCAL_DMG" ]; then
+    [ -z "$REQUESTED_VERSION" ] || fail "--dmg and --version cannot be combined; choose one source."
+    [ -f "$LOCAL_DMG" ] && [ -r "$LOCAL_DMG" ] || fail "Local DMG is not a readable file: $LOCAL_DMG. Check its path and permissions."
+fi
 
 # Verify macOS host
 OS_TYPE="$(uname -s)"
@@ -99,24 +142,36 @@ esac
 
 TMP_DIR="$(mktemp -d /tmp/nvpair-install.XXXXXX)"
 MOUNT_POINT=""
+QUIT_PID=""
+
+finish_quit_request() {
+    if [ -n "$QUIT_PID" ]; then
+        # Only our own osascript child may be killed, never PAIR or its workers.
+        if kill -0 "$QUIT_PID" 2>/dev/null; then
+            kill -KILL "$QUIT_PID" 2>/dev/null || true
+        fi
+        wait "$QUIT_PID" 2>/dev/null || true
+        QUIT_PID=""
+    fi
+}
 
 cleanup() {
+    finish_quit_request
     if [ -n "$MOUNT_POINT" ] && [ -d "$MOUNT_POINT" ]; then
         hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || hdiutil detach "$MOUNT_POINT" -force -quiet 2>/dev/null || true
     fi
     rm -rf "$TMP_DIR"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 DMG_FILE=""
 
 if [ -n "$LOCAL_DMG" ]; then
-    if [ ! -f "$LOCAL_DMG" ]; then
-        echo "Error: Specified DMG file does not exist: $LOCAL_DMG" >&2
-        exit 1
-    fi
     DMG_FILE="$LOCAL_DMG"
     echo "Using local disk image: $DMG_FILE"
+    echo "Warning: Local DMGs are not checksum-verified here; verify this file independently before installing." >&2
 else
     if [ -n "$REQUESTED_VERSION" ]; then
         TAG="v${REQUESTED_VERSION#v}"
@@ -143,6 +198,7 @@ else
         fi
         VERSION="${TAG#v}"
     fi
+    valid_version "$TAG" || fail "Unsafe release tag '$TAG'; specify a filename-safe --version."
 
     DMG_NAME="NVPAIR-Setup-${VERSION}-${ARCH}.dmg"
     DOWNLOAD_URL="https://github.com/$PAIR_REPO/releases/download/${TAG}/${DMG_NAME}"
@@ -156,49 +212,77 @@ else
         echo "Please verify that release $TAG exists and contains $DMG_NAME." >&2
         exit 1
     fi
-fi
 
-# Stop any running Personal AI Router instances and helper processes
-echo "Stopping any active Personal AI Router processes..."
-for proc in \
-    "PAIR" \
-    "nvpair-tui" \
-    "ollama-proxy" \
-    "lmstudio-proxy" \
-    "omlx-proxy" \
-    "nvpair-node-info" \
-    "nvpair-node-scanner" \
-    "nvpair-manual-nodes" \
-    "nvpair-node-settings" \
-    "nvpair-engine-manager" \
-    "nvpair-workload-manager" \
-    "nvpair-cluster-manager" \
-    "nvpair-job-scheduler" \
-    "nvpair-errors" \
-    "nvpair-ui-broker"; do
-    pkill -TERM -x "$proc" 2>/dev/null || true
-done
-sleep 1
+    SUMS_FILE="$TMP_DIR/SHA256SUMS"
+    if ! curl -fL --progress-bar "https://github.com/$PAIR_REPO/releases/download/${TAG}/SHA256SUMS" -o "$SUMS_FILE"; then
+        fail "Required SHA256SUMS could not be downloaded for $TAG; nothing has been installed."
+    fi
+    SUM_PATTERN='^([[:xdigit:]]{64})  ([^/[:space:]]+)$'
+    SUM_COUNT=0
+    EXPECTED_SUM=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ $SUM_PATTERN ]] || fail "Invalid SHA256SUMS row; expected SHA256, two spaces, and a basename."
+        if [ "${BASH_REMATCH[2]}" = "$DMG_NAME" ]; then
+            SUM_COUNT=$((SUM_COUNT + 1))
+            EXPECTED_SUM="${BASH_REMATCH[1]}"
+        fi
+    done < "$SUMS_FILE"
+    [ "$SUM_COUNT" -eq 1 ] || fail "SHA256SUMS must contain exactly one entry for $DMG_NAME (found $SUM_COUNT)."
+    # Verify only the selected basename, never arbitrary paths from the manifest.
+    printf '%s  %s\n' "$EXPECTED_SUM" "$DMG_NAME" > "$TMP_DIR/selected.sha256"
+    if ! (cd "$TMP_DIR" && shasum -a 256 -c selected.sha256); then
+        fail "SHA256SUMS verification failed for $DMG_NAME; do not install this download."
+    fi
+fi
 
 # Mount disk image
 echo "Mounting disk image..."
 MOUNT_POINT="$TMP_DIR/mount"
 mkdir -p "$MOUNT_POINT"
-hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_POINT" -nobrowse -readonly -quiet
+if ! hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_POINT" -nobrowse -readonly -quiet; then
+    fail "Could not mount $DMG_FILE; the installed app has not been stopped or replaced."
+fi
 
-# Locate .app bundle inside DMG
+# Require the exact bundle and executable before asking the installed app to quit.
 APP_SRC="$MOUNT_POINT/PAIR.app"
-if [ ! -d "$APP_SRC" ]; then
-    APP_SRC="$(find "$MOUNT_POINT" -maxdepth 1 -name "*.app" | head -n1)"
-fi
-
-if [ -z "$APP_SRC" ] || [ ! -d "$APP_SRC" ]; then
-    echo "Error: Could not find application bundle in $DMG_FILE" >&2
-    exit 1
-fi
+[ -d "$APP_SRC" ] || fail "Required PAIR.app was not found at the root of $DMG_FILE."
+[ -f "$APP_SRC/Contents/MacOS/PAIR" ] && [ -x "$APP_SRC/Contents/MacOS/PAIR" ] || fail "PAIR.app is missing an executable Contents/MacOS/PAIR; obtain a correctly packaged DMG."
 
 DEST_DIR="/Applications"
 DEST_APP="$DEST_DIR/PAIR.app"
+
+app_owned_running() {
+    # Anchor the executable path, not global names shared with TUI/dev services.
+    # The literal dot and trailing slash exclude similarly named app bundles.
+    local status
+    if pgrep -f '^/Applications/PAIR[.]app/Contents/' >/dev/null; then
+        return 0
+    else
+        status=$?
+        [ "$status" -eq 1 ] || fail "Unable to check installed PAIR processes (pgrep status $status); quit PAIR and retry."
+        return 1
+    fi
+}
+
+if app_owned_running; then
+    echo "Asking installed PAIR to quit (up to 20 seconds)..."
+    osascript -e 'with timeout of 20 seconds' \
+        -e 'if application "/Applications/PAIR.app" is running then' \
+        -e 'tell application "/Applications/PAIR.app" to quit' \
+        -e 'end if' -e 'end timeout' >/dev/null 2>&1 &
+    QUIT_PID=$!
+    # AppleScript timeouts alone do not bound a stuck osascript process.
+    for ((elapsed=0; elapsed<20; elapsed++)); do
+        if ! app_owned_running; then
+            break
+        fi
+        sleep 1
+    done
+    finish_quit_request
+    if app_owned_running; then
+        fail "PAIR-owned processes remain after the 20-second quit window. Quit PAIR and its app-owned helpers, then retry; nothing was replaced."
+    fi
+fi
 
 # Check write permissions for /Applications
 NEED_SUDO=0
@@ -215,19 +299,14 @@ echo "Installing to $DEST_APP..."
 if [ "$NEED_SUDO" -eq 1 ]; then
     echo "Elevated permissions required to write to $DEST_DIR. Prompting for sudo..."
     sudo rm -rf "$DEST_APP"
-    sudo cp -R "$APP_SRC" "$DEST_DIR/"
+    sudo ditto "$APP_SRC" "$DEST_APP"
 else
     rm -rf "$DEST_APP"
-    cp -R "$APP_SRC" "$DEST_DIR/"
+    ditto "$APP_SRC" "$DEST_APP"
 fi
 
-# Ensure executable bits on Go workers and helper executables
-if [ -d "$DEST_APP/Contents/Resources/cli-bin" ]; then
-    chmod -R +x "$DEST_APP/Contents/Resources/cli-bin" 2>/dev/null || true
-fi
-if [ -d "$DEST_APP/Contents/MacOS" ]; then
-    chmod -R +x "$DEST_APP/Contents/MacOS" 2>/dev/null || true
-fi
+# ditto preserves packaged executable modes in both normal and sudo installs.
+# Do not recursively mark resource files executable or hide permission failures.
 
 # Unmount disk image
 hdiutil detach "$MOUNT_POINT" -quiet || hdiutil detach "$MOUNT_POINT" -force -quiet || true
