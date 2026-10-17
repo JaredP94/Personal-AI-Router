@@ -40,9 +40,10 @@ flowchart TB
   one cluster.
 - A **node** is one machine. Nodes are peers where each runs the same services, and
   each can both serve requests and route them elsewhere.
-- An **engine** is an inference server on a node, Ollama or LM Studio. A node can
-  run both, one, or neither, and a node with no running engine is not eligible to
-  serve.
+- An **engine** is an inference server on a node: Ollama, LM Studio, or oMLX.
+  A node can run any supported combination or none; a node with no running
+  engine is not eligible to serve. The bundled oMLX manifest supports macOS
+  arm64 only and does not provide model pull/delete actions.
 - **Models** belong to an engine on a specific node. Nothing is shared. The same
   model on two nodes is two independent copies and that duplication is what makes
   the two nodes interchangeable for a request.
@@ -77,10 +78,18 @@ flowchart TB
     TuiBroker --> TuiWorkers
 ```
 
-Electron starts only `nvpair-ui-broker`. In normal operation the broker starts
-the scanner and available optional workers, monitors them, reports crashes, and
-attempts bounded restart with backoff. Workers log to stderr, and stdout is
-reserved for newline-delimited JSON-RPC when stdio is used.
+Electron starts only `nvpair-ui-broker` as a Go service. The service inventory
+contains 14 executables: broker + 12 workers (including `omlx-proxy`) + TUI.
+The broker attempts to start available workers, monitors them, reports crashes,
+and attempts bounded restart after a successful initial start. Workers log to
+stderr; stdout is reserved for newline-delimited JSON-RPC in stdio mode.
+
+Standalone, only the scanner is required. Missing default auxiliary binaries or
+initial auxiliary spawn failures are non-fatal, but invalid explicit paths are
+fatal. Failed initial spawns are not automatically retried. Desktop additionally
+prevalidates broker, scanner, Ollama proxy, node-info, and node-settings binaries.
+`app:ready` does not establish that all optional HTTP listeners are ready; use
+their reported status.
 
 The terminal interface is a separate broker client for headless use, and is what
 the `nvpair` command on PATH resolves to. Do not run it and the desktop
@@ -98,7 +107,7 @@ the layers that are checked:
 | --- | --- |
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
 | Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
-| The broker | A `ping` request clients can call, which the terminal interface's health view uses. |
+| The broker | `ping` plus a 15-second notification heartbeat. Desktop detects 45 seconds of inbound silence and owns bounded stop/start recovery and rehydration. This does not monitor worker hangs. |
 | Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
 
 Worker supervision is restart-based. An unexpected exit is retried with
@@ -110,10 +119,13 @@ it, and a worker that exhausts its budget is left down with the entry standing.
 `nvpair-errors` is the exception that cannot report its own death, so its crashes
 go to stderr instead.
 
-The gap this leaves is a worker that is running but wedged. It is still holding its
-stdio pipe, but no longer answering. Nothing detects that today. It is detected when
-requests or by a UI state that quietly stops updating. To recover, restart the service from
-**Settings > Service**.
+The gap this leaves is an individual worker that is running but wedged. A healthy
+broker can keep emitting heartbeats while that worker stops answering. Request
+timeouts or stalled UI state may expose it; restart from **Settings > Service**.
+Broker-channel silence is handled separately by the frontend. Desktop allows an
+automatic recovery attempt, waits for readiness, and refreshes state; an
+unexpected broker exit still takes the crash path. Do not infer unconditional
+crash reconnect from the silence-recovery mechanism.
 
 ## Control Flow
 
@@ -142,6 +154,20 @@ main-process state and produce typed renderer push events.
 This entire path is local. The broker relays to workers on the same machine over
 stdio and it is not a cluster transport. Facts about other nodes arrive through
 the peer services described next, then surface as notifications on this path.
+
+The JSON-RPC 2.0 transport uses **relay protocol v2**. Every notification carries
+an `epoch` and `seq` envelope; requests and responses carry neither.
+`broker:resync` returns the epoch and `protocol: 2`, and `broker:epoch` announces
+them. Go codecs treat envelope mismatches as terminal rather than negotiating
+an older protocol. `seq` starts afresh per connection; sequence gaps or
+regressions do not trigger snapshot polling.
+
+On an epoch change, desktop rehydrates per-domain snapshots: discovery,
+membership/identity, engines and models, errors, workloads, proxy status, and
+telemetry status. Recovery is owned by the active connection/epoch so late
+results from an old lifetime cannot replace current state. The broker's
+15-second heartbeat and desktop's 45-second inbound-silence deadline provide
+channel liveness, not individual-worker health.
 
 ## Node-to-Node Communication
 
@@ -192,7 +218,8 @@ port, chosen by the connection's first byte. A TLS handshake record starts with
 
 | First Byte | Personality | Who Uses It |
 | --- | --- | --- |
-| Not `0x16` | Plaintext HTTP, loopback only | Your local applications |
+| Not `0x16`, proxy | Plaintext HTTP; substantive requests are loopback-only | Local applications; a non-loopback `OPTIONS` preflight may receive `204`, but grants no inference access |
+| Not `0x16`, cluster manager | Plaintext pairing bootstrap, allowed from the LAN | Nodes establishing trust with a PIN |
 | `0x16` | Mutual TLS | Paired nodes in the cluster |
 
 This is why an endpoint is `http://127.0.0.1:11434` for an application on the
@@ -200,10 +227,12 @@ machine itself while the same port serves authenticated TLS to the network. Loca
 clients need no certificates, and routed inference between nodes is never
 plaintext.
 
-The loopback restriction is enforced, not merely conventional. The listener binds
-all interfaces so the TLS personality can accept peers, but a plaintext request
-from any non-loopback address is refused with `403`. Without that check the port
-would be an open relay for anything on the network.
+The proxy's loopback restriction is enforced, not merely conventional. Its
+listener binds all interfaces so the TLS personality can accept peers, but a
+substantive plaintext request from a non-loopback address is refused with `403`.
+A preflight may receive `204` before that gate; it does not authorize the request
+that follows. The cluster manager is different: its LAN-accessible plaintext
+pairing bootstrap must work before a peer holds a certificate.
 
 Two consequences follow, and together they define how clients are expected to
 reach PAIR:
@@ -234,13 +263,19 @@ shows:
 Each of these listens on its own port. Refer to the [port map](#port-map) below.
 
 Electron polls every discovered node's `/v1/node-info` directly because that
-detail is richer than the broker's control surface exposes. Healthy nodes are
-sampled every two seconds; consecutive failures back off to 4, 8, 16, then 30
-seconds and reset on success. This is the one place Electron makes service-data
-HTTP calls of its own. Separately, the backend scanner samples a compact
-maximum-GPU utilization value for scheduling with the same healthy cadence and
-capped failure backoff, which the broker relays straight to the job scheduler.
-Routing never depends on renderer metrics.
+detail is richer than the broker's control surface exposes. Healthy-node polling
+runs every two seconds with a visible UI, or every 30 seconds when all windows
+are hidden/minimized; failures use capped backoff. This is the one place Electron
+makes service-data HTTP calls of its own. Separately, the backend scanner samples
+compact maximum-GPU utilization for scheduling at roughly two seconds with jitter
+and capped failure backoff. The broker relays it straight to the job scheduler;
+routing never depends on renderer metrics.
+
+Current unreleased idle-performance changes mark background node-info requests
+so they peek at the cached snapshot without keeping the GPU sampler awake.
+Foreground reads still activate sampling. This reduces idle collection; it does
+not remove polling, mDNS browse/refresh loops, or the two-second trust refresh.
+Stale GPU observations remain distinguishable from fresh telemetry.
 
 ## Inference Data Flow
 
@@ -323,8 +358,8 @@ ordering reaches a proxy in three steps:
 
 The ranking combines *pending work and GPU pressure*. A workload counts as
 pending while it is queued or running, and it is attributed to the node it was
-placed on. Both engines count together, so Ollama load affects LM Studio ordering
-and vice versa.
+placed on. All three engines count together, so load from Ollama, LM Studio, or
+oMLX affects the same node-wide ranking.
 
 GPU pressure is deliberately coarse. The scheduler smooths the busiest GPU's
 utilization, maps it to 0–3 pressure units at 40%, 70%, and 85%, and uses lower
@@ -437,10 +472,10 @@ one place lower in the order.
 to an engine's own port is absent from workload events. GPU-heavy external work
 can still raise pressure, but CPU-only work and queued demand remain invisible.
 
-**Both engines are counted as one pool.** Ollama and LM Studio load is summed,
-and maximum GPU pressure applies to the whole node. That is conservative on a
-typical single-GPU machine and can underuse a multi-GPU node where the engines
-occupy different devices.
+**All three engines are counted as one pool.** Ollama, LM Studio, and oMLX load
+is summed, and maximum GPU pressure applies to the whole node. That is
+conservative on a typical single-GPU machine and can underuse a multi-GPU node
+where the engines occupy different devices.
 
 **Every node ranks from its own view, and views lag.** There is no shared
 schedule. Two nodes dispatching at the same moment can briefly steer work to the
@@ -501,8 +536,8 @@ cluster authentication lives.
 
 An inherited `OLLAMA_HOST` naming a different local plaintext port is honored as
 well. The broker gives the proxy that normalized loopback-only alias, reserved
-against every engine and both proxies' port plans so a relocating engine can never
-land on it. `localhost` claims IPv4 and IPv6 together, and remote and HTTPS
+against engine and proxy port plans so a relocating engine can never land on it.
+`localhost` claims IPv4 and IPv6 together, and remote and HTTPS
 targets are never intercepted. Clients already configured through the variable
 therefore enter the same routing path without being reconfigured.
 
@@ -530,15 +565,21 @@ A default installation listens on these ports:
 | Port | Listener |
 | --- | --- |
 | `11434` | Ollama-compatible proxy (Ollama itself moves to `11435`+) |
-| `1234` | OpenAI-compatible proxy (LM Studio moves to `1235`+) |
-| `14318` | Node hardware and model inventory |
+| `1234` | LM Studio OpenAI-compatible proxy (LM Studio moves to `1235`+) |
+| `1236`+ | oMLX proxy fallback when `1234` is occupied/reserved by LM Studio; standalone oMLX proxy defaults to `1234` |
+| `14318` | Node hardware, utilization, and identity telemetry (not model inventory) |
 | `14319` | Service-error synchronization between nodes |
 | `14320` | Workload propagation between nodes |
 | `14321` | Pairing and cluster membership |
 | `14322` | Model list served to cluster peers |
 | `14323` | Cluster-scoped remote engine control |
-| `4317` | OpenTelemetry OTLP gRPC collector (Arize Phoenix) |
-| `6006` | Arize Phoenix web UI dashboard |
+| `4317` | Optional Phoenix OTLP gRPC collector, when its container is running |
+| `6006` | Optional Phoenix web UI / OTLP HTTP, when its container is running |
+
+The broker negotiates the oMLX fallback from `1236` upward, excluding reserved
+ports including `1234` and `1235`. Consult reported proxy status for its actual
+endpoint rather than assuming a fixed port. Phoenix's Compose mappings are not
+loopback-restricted; see [Observability](#observability-and-distributed-tracing).
 
 The `143xx` listeners are the peer surfaces from
 [Node-to-Node Communication](#node-to-node-communication). Their numbers are
@@ -561,8 +602,9 @@ browsing themselves.
 The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
-- The ports its sibling services registered: node-info, both proxies, errors,
-  workloads, cluster manager, and engine manager
+- The ports its sibling services registered: node-info, all three proxies,
+  errors, workloads, cluster manager, engine manager, and any advertised OTel
+  collector
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it — `ip=` for the address the node ranks first, and `ips=` for the whole
   ranked list
@@ -672,7 +714,8 @@ operations.
 
 ### Distributed Tracing Topology
 
-In a multi-node cluster, distributed traces correlate cross-node hops seamlessly:
+With providers explicitly configured to export to the same collector, propagated
+trace context can correlate cross-node hops:
 
 ```mermaid
 flowchart LR
@@ -683,34 +726,52 @@ flowchart LR
     IngressB -.->|"OTLP gRPC :4317"| Phoenix
 ```
 
-- **Single-Container Deployment:** Arize Phoenix runs as a single Docker
-  container (`http://localhost:6006`, OTLP gRPC `:4317`) hosted on one designated
-  cluster node.
+- **Optional Container:** The broker can operate a local Phoenix Docker Compose
+  container (`http://localhost:6006`, OTLP gRPC `:4317`). This requires Docker
+  with Compose support, independently of the Go service build.
 - **W3C TraceContext Propagation:** When Node A dispatches an inference request to
   Node B, it injects standard W3C `traceparent` HTTP headers into the outgoing
   request. Node B's cluster ingress extracts the trace context, linking both hops
   into a unified distributed trace.
-- **Zero-Config Discovery:** When local Phoenix is started, `nvpair-node-scanner`
-  automatically advertises `otel=4317` in mDNS TXT records so peer nodes in the
-  cluster auto-route telemetry without manual configuration.
-- **Fail-Open Resilience:** Telemetry emission uses non-blocking batch export. If
-  Phoenix is offline or unreachable, spans drop in memory with zero impact on
-  inference latency or routing availability.
+- **Advertisement, Not Exporter Selection:** When a local collector responds,
+  the broker registers `otel=4317` with the scanner for mDNS advertisement.
+  Proxy providers do not consume those advertisements to choose an exporter.
+  A collector on another node requires explicit startup configuration.
+- **Batched Export:** Providers batch spans so collector availability is not
+  intended to block inference. Instrumentation and buffering still have costs;
+  this is not a zero-overhead or measured zero-latency-impact guarantee.
 
 ### Dual-Mode Payload Control & Privacy
 
-PAIR strictly defends user privacy while accommodating local evaluation workflows:
+Proxy providers read configuration at startup from `PAIR_TELEMETRY_ENABLED`,
+`PAIR_TELEMETRY_ENDPOINT`, and `PAIR_TELEMETRY_RECORD_PAYLOADS`. Defaults are
+**enabled**, **`localhost:4317`**, and **payload capture false**. Endpoint fallback
+is `OTEL_EXPORTER_OTLP_ENDPOINT`; `OTEL_SDK_DISABLED=true` disables the SDK when
+no PAIR enabled override is set. See each proxy's `telemetry.go` for precedence.
 
-- **Operational Mode (`recordPayloads = false`, default):** Spans capture strictly
-  operational metadata (model, latency, Time to First Token, token throughput,
-  queue depth, cache affinity, error status). Prompts and generated text are
-  never recorded.
-- **Evaluation Mode (`recordPayloads = true`, opt-in):** Prompts and generated
-  model completions are attached to local spans to enable Arize Phoenix evaluation
-  features (hallucination detection, QA accuracy, drift analysis).
-- **Permanent Redaction:** Sensitive authentication headers (`Authorization`,
-  `Cookie`, `Set-Cookie`, `X-Pair-Pin`, `X-API-Key`, `Proxy-Authorization`) are
-  permanently replaced with `[REDACTED]` across all modes and sinks.
+The UI persists telemetry settings and broker status reports them, but those
+settings currently do **not** configure live proxy providers. Do not treat the
+UI switch or endpoint field as an effective exporter/privacy control. Changing
+startup environment requires starting new provider processes.
+
+With payload capture false, instrumentation omits explicit prompt/completion
+attributes while recording metadata and request headers. With
+`PAIR_TELEMETRY_RECORD_PAYLOADS=true` (or `1`), it can attach prompt and completion
+content. Contributor policy permits this only with explicit user opt-in for
+local evaluation; that local-only rule is **not an enforced endpoint restriction**.
+Export uses plaintext OTLP gRPC, not cluster mTLS, even for a configured remote
+collector.
+
+Header capture redacts a fixed case-insensitive list (`Authorization`, `Cookie`,
+`Set-Cookie`, `X-Pair-Pin`, `X-API-Key`, `Proxy-Auth`, `Proxy-Authorization`). This
+is not general secret scrubbing of arbitrary headers, prompt content, or every
+log sink. Keep credentials, PINs, and keys out of all capture paths.
+
+The supplied Compose file publishes `6006:6006` and `4317:4317` without loopback
+restriction or configured authentication/TLS. Phoenix stores traces in the
+`nvpair-phoenix-data` named volume; stopping the container does not erase it.
+Do not assume telemetry stays local or disappears on stop. See
+[SECURITY.md](../SECURITY.md) for deployment boundaries and data-handling details.
 
 ## Trust Boundaries
 
@@ -766,8 +827,8 @@ desktop build compiles the sibling tree directly.
 
 | Build In | Output | Contents |
 | --- | --- | --- |
-| `desktop/` | `desktop/cli-bin/` | What the app supervises, one OS/arch |
-| `services/` | `services/build/bin/` | All 13 executables, for standalone use |
+| `desktop/` | `desktop/cli-bin/` | 14 service executables including the unsupervised TUI, one OS/arch |
+| `services/` | `services/build/bin/` | All 14 service executables, for standalone use |
 
 `desktop/scripts/build-modular-binaries.ts` compiles the runtime inventory for a
 selected target and writes a manifest recording the source identity, versions,
@@ -778,20 +839,29 @@ stale or hand-placed binary is caught rather than silently supervised.
 stamped from `versions.json`. Building one component by hand without restaging is
 the one thing to avoid: the broker keeps running whatever is in `build/bin/`.
 
-Both paths produce binaries you run on the machine that built them. This tree
-provides build materials only. There is no packaging, installer, or signing step
-here, and installable builds come from the
-[releases page](https://github.com/NVIDIA/Personal-AI-Router/releases). Refer to
-[Building PAIR](building.mdx).
+The Go binaries can be cross-compiled. Desktop also builds operator tools outside
+`cli-bin/`: `collectlogs` and `inference-dispatcher`; these are not supervised
+service workers. Public electron-builder packaging/installer targets exist but
+produce unsigned, noncertified candidates, not NVIDIA's signed releases. The
+fork's current 0.7.0-rc.1 candidate is macOS arm64, unsigned and unnotarized;
+inspect real release assets rather than assuming upstream signing or coverage.
+Mac helper packaging requires the macOS SDK and Swift tools. NVIDIA signing,
+notarization, and helper approval are separate from compilation or downloading
+with `curl`. Refer to [Building PAIR](building.mdx).
 
 ## Authoritative Files
 
-When this document and the code disagree, these files decide:
+When this document and the code disagree, prefer the producing source:
 
-- Desktop process model: `desktop/docs/architecture.md`
-- Renderer API: `desktop/docs/frontend-api.md`
+- Desktop process model and recovery: `desktop/src/electron/service-bridge/modular-supervisor.ts`
+- Renderer contracts: `desktop/src/shared/types/ws-channels.ts` and `ipc-channels.ts`
 - Runtime inventory: `desktop/src/shared/constants/modular-binaries.ts`
-- Broker API and worker ownership: `services/nvpair-ui-broker/README.md`
+- Broker API and worker ownership: `services/nvpair-ui-broker/main.go` and `broker.go`
+- Relay envelopes: `services/shared/jsonrpc/envelope.go`
+- Proxy tracing: each proxy's `telemetry.go` and `services/shared/telemetry/`
 - Services versions: `services/versions.json`
-- Building: `desktop/package.json`, `services/build.sh`, and
-  `services/build.bat`
+- Building and packaging: `desktop/package.json`, `desktop/electron-builder.config.ts`,
+  `services/build.sh`, and `services/build.bat`
+
+The desktop architecture/API docs and broker README are companion references,
+not substitutes for checking the implementation.

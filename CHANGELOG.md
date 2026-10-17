@@ -12,6 +12,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Background Idle GPU Sampling**: Added `X-NVPAIR-Poll: background` header support (`PeekSnapshot()`) across `nvpair-node-info`, `nvpair-node-scanner`, `nvpair-manual-nodes`, and the Electron `node-info-poller` so background discovery and hidden-window polls read cached snapshots without resetting the 6-second client-activity window, allowing `nvpair-node-info` to drop GPU sampling from 2s to 10s when no interactive UI is open.
+- **macOS Kernel Event Network Monitor**: Replaced `AF_ROUTE` routing-socket monitoring with a filtered `AF_SYSTEM` kernel-event socket managed by Go's `kqueue` netpoller. Shared network monitors, including those in discovery and the three proxies, no longer wake for routing-cache misses or a 200ms socket timeout.
+- **Cluster Trust Certificate Caching**: Cache validated raw bytes for `cluster/trusted/*.json` in `clustertrust.Trust.Reload()` to avoid repeatedly decoding unchanged pins and parsing their X.509 certificates. Trust-directory polling remains in place.
+- **Desktop File Logging**: Gate verbose/debug/silly file writes on the configured `modularLogLevel` being `debug`, and remove duplicate notification logging. Routine remote-engine polling uses verbose logging. This reduces idle log I/O; it does not suppress real warnings or guarantee zero disk writes.
+
+### Fixed
+- **Cluster Endorsement Broadcast Churn**: Report an endorsement merge as changed only when an endorsement was added successfully, avoiding redundant `cluster:trust-changed` broadcasts on unchanged roster gossip.
+- **Manual & Cluster Node Alias Deduplication**: A manually added alias supersedes a cluster-seeded entry at the same address while retaining cluster identity; removing it restores cluster seeding. The broker deterministically selects one surviving alias per canonical node key on upserts and trust refreshes, avoiding name oscillation.
+- **TLS-Aware Manual Node Probing & Log Deduplication**: Ordered `node-info` and `engine-manager` probes ahead of plaintext engine probes on clustered/TLS nodes in `nvpair-manual-nodes` and deduplicated non-loopback plaintext rejection warnings once per remote IP across `ollama-proxy`, `lmstudio-proxy`, and `omlx-proxy`.
+- **Linux Idle GPU Activity Tracking**: Fixed `nvpair-node-info`'s internal 1-second Linux `decodeSnapshot` loop calling `Snapshot()` instead of `PeekSnapshot()`, which previously prevented Linux nodes from entering the 10-second idle GPU sampling cadence.
+- **macOS Installer Safety**: Validate options and release asset names, require and verify `SHA256SUMS` for downloads before mounting, and validate the exact `PAIR.app` before stopping the installed application. Normal quit is bounded and scoped to the installed bundle; independent TUI/dev services are no longer killed by global names. Older downloads without a checksum manifest fail closed; local DMGs require independent verification.
+
+### Documentation
+- Backfilled the `0.7.0-rc.1` changelog and corrected fork artifact/signing claims, engine capabilities, worker inventory, relay v2 recovery, logging, and telemetry/privacy limitations across user and architecture guides and `AGENTS.md`.
+- Regenerated dependency notices, retained companion Go attribution files, fixed embedded Markdown fencing, and replaced the stale services notice with a canonical-root pointer. README-only/missing upstream license text remains flagged for review.
+- Added [next-release readiness follow-ups](docs/release-readiness.mdx), including unwired telemetry settings, collector exposure, private vulnerability reporting, attribution review, and final artifact validation. These are not resolved by documentation changes.
+
+## [0.7.0-rc.1] - 2026-10-17
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork, published
+from `d18e6d2`. GitHub lists it as the regular/latest release for update discovery;
+that channel designation does not make it a production-certified build. Windows,
+Linux desktop, and Intel Mac packages were not published. Privileged-helper
+registration and helper-based firewall setup are unavailable in this unsigned
+candidate. See the [release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.1)
+for validation scope and remaining limitations.
+
+**Upgrade compatibility:** Relay protocol v2 is a breaking stdio contract. Upgrade
+desktop/TUI and bundled service binaries together; do not mix protocol versions.
+Desktop `0.7.0-rc.1` and service product/installer `1.1.0` have independent version
+cycles.
+
+### Added
+- **Relay Protocol v2 (`nvpair-shared/jsonrpc`, `nvpair-ui-broker`, `desktop`, `nvpair-tui`)**: Stamped `epoch` and monotonic `seq` on every stdio notification envelope while keeping requests and responses unstamped; report `protocol: 2` in broker epoch/resync payloads; added `broker:epoch`, `broker:resync`, and 15-second `heartbeat` liveness notifications. Go codecs now terminate incompatible stdio sessions with a protocol-mismatch diagnostic; the desktop parser extracts stamps but does not enforce every inbound envelope invariant.
+- **Session Liveness & Automatic Reconnect Ownership (`desktop`, `nvpair-tui`)**: Added a 45-second inbound-silence detector that expires unresponsive broker sessions and triggers a frontend-owned reconnect with a bounded readiness deadline while preserving shutdown ownership across reconnects.
+- **Service-Authoritative Routing Metrics (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`)**: Moved routing and prefix-cache affinity metric aggregation into the Go proxies (`metrics/get` and `metrics/routing-update`) via `nvpair-shared/routingmetrics` rather than reimplementing metric math in clients.
+
+### Changed
+- **Epoch-Driven State Recovery (`desktop`, `nvpair-tui`)**: Desktop and TUI refresh subscribed state snapshots per domain when the broker announces a new epoch, without sequence-gap polling or repeated healthy-connection resync bursts.
+- **Broker Node-Info Connection Reuse (`nvpair-ui-broker`)**: Reused a single JSON-RPC codec per `nvpair-node-info` connection instead of allocating a new codec on each control push.
+
+### Fixed
+- **TUI Snapshot Recovery Resilience (`nvpair-tui`)**: Applied successful snapshot domains even when optional workers are unavailable, adopted the broker's object-shaped workload snapshot response, and kept notification consumption active if initial connection setup partially fails.
+- **Failed Desktop Startup Cleanup (`desktop`)**: Ensured a failed desktop startup reaps any subprocess instances it created without disturbing a newer concurrent start attempt, and made broker client writes cancellation-aware during teardown.
+
 ## [0.6.0] - 2026-10-04
 
 ### Changed

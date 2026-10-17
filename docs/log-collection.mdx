@@ -111,7 +111,7 @@ The script leaves the on-disk log exactly as written and replaces identifiers
 when it produces a copy. That ordering follows from three things.
 
 There is one implementation instead of one for each process. Replacing
-identifiers while logging would mean the same rules in Go for the 13 services and
+identifiers while logging would mean the same rules in Go across the services and
 again in TypeScript for the desktop logger, because JSON-RPC traffic the Go side
 cannot rewrite feeds the desktop log file, which is functional data. Two
 implementations of the same rules drift, and nodes on different app versions would

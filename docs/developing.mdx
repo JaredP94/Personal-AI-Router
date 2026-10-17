@@ -106,6 +106,19 @@ npm run service-contracts:check   # fails on drift or stale generated output
 Handling a method is not the same as covering it. Check the Go struct's JSON
 fields and confirm each one you care about reaches the consumer.
 
+The local wire format is JSON-RPC 2.0 with relay protocol v2. Every notification
+carries `epoch` and `seq`; requests and responses carry neither. `broker:resync`
+returns the epoch and `protocol: 2`. Go codecs treat envelope mismatches as
+terminal, not as recoverable malformed JSON. Keep matched clients and workers.
+
+On an epoch change, the desktop bridge rehydrates each domain from authoritative
+snapshots (discovery, membership, engines/models, errors, workloads, and proxy
+status). Sequence gaps do not trigger snapshot polling. The broker sends a
+heartbeat every 15 seconds; desktop owns a bounded stop/start recovery after
+45 seconds of inbound silence, followed by readiness and snapshot recovery.
+This does not imply unconditional reconnect after an unexpected broker exit or
+heartbeat monitoring of individual workers.
+
 ### Adding Renderer State
 
 State flows one way: the service is authoritative, stores hold snapshots, and
@@ -147,12 +160,25 @@ These are not style preferences. Reviews and tooling catch them.
   the user for local AI metrics and evaluation. Pairing PINs, auth keys, and
   credentials remain strictly forbidden in all sinks at all times.
 
-The pairing PIN is the one exception that needs explaining. The cluster manager
-returns it in results and notifications that travel the broker's stdout, so it
-*does* reach the log path. `src/electron/service-bridge/json-rpc-subprocess.ts`
-strips it with `redactSensitiveLogText` from `src/shared/utils/redact-log.ts`
-before any sink sees it. That choke point makes the guarantee hold, so a new path
-from subprocess output to a log or export must go through it.
+The cluster manager returns a pairing PIN in protocol results and notifications
+on the broker's stdout; protocol output is not itself a system log.
+`src/electron/service-bridge/json-rpc-subprocess.ts` sanitizes it with
+`redactSensitiveLogText` from `src/electron/redact-log.ts` before emitting the
+mirrored desktop log copies, while parsing the original frame for the UI.
+Preserve that boundary for every new log or export path; it is PIN redaction,
+not a general-purpose secret scrubber.
+
+The local-only evaluation exception above is contributor policy, not an enforced
+exporter-transport guarantee. Current proxy providers read startup environment
+configuration, not the saved telemetry UI switches; see
+[Observability](architecture.mdx#observability-and-distributed-tracing).
+
+Desktop persists `modularLogLevel`, defaulting to `warn`, and passes it to the
+broker and workers. Current unreleased logging changes preserve structured
+service severity and write verbose protocol/debug entries to the desktop log
+file only at `debug`. Standalone Go services still default to `info`.
+Do not infer severity solely from stderr or promise that idle operation has no
+I/O.
 
 ## Checks
 
@@ -160,7 +186,7 @@ On Linux and macOS, the `Makefile` at the repository root wraps everything, and
 it is the shortest path to a clean run:
 
 ```bash
-make check    # build-script verify, lint, typecheck, contracts, desktop tests
+make check    # SPDX headers, build-script verify, lint, typecheck, contracts, desktop tests
 make test     # desktop unit tests plus go test in every services module
 ```
 
@@ -172,7 +198,10 @@ npm run lint
 npm run typecheck
 npm run test:unit
 npm run service-contracts:check
+npm run dead-code:check
 ```
+
+`dead-code:check` is not included in `make check`; run it separately.
 
 Run the Go tests from a Go component directory, and from `services/tests` for
 cross-process coverage:

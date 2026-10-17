@@ -1,0 +1,125 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Next Release Readiness
+
+This is the follow-up checklist from the 2026-10-17 documentation/dependency
+notice audit. It describes the current checkout, not a certification of the next
+release. No release was published and no installed app was replaced by this
+audit.
+
+## Documentation and Installer Maintenance
+
+- [x] Backfill `0.7.0-rc.1` in the changelog using its published notes and source;
+  keep later performance changes under **Unreleased**.
+- [x] Separate supported build targets from published assets. The fork's latest
+  release is an unsigned/unnotarized macOS arm64 candidate, even though GitHub
+  marks it regular/latest.
+- [x] Correct process inventory: 14 service executables, 12 supervised workers,
+  and a separate TUI; distinguish standalone/desktop startup requirements.
+- [x] Document relay v2 envelopes, epoch recovery, broker-client silence handling,
+  three-engine behavior, current telemetry configuration, and idle polling.
+- [x] Update contributor/agent guidance and regenerate canonical dependency
+  notices. The stale services notice now points to the root notice.
+- [x] Update the macOS installer: validate arguments, require the release checksum
+  manifest, verify before mounting, validate `PAIR.app` before shutdown, and
+  scope bounded normal quit to the installed bundle rather than global worker
+  names. Local `--dmg` files require independent verification. Downloads from
+  older releases without `SHA256SUMS` now fail closed.
+
+Installer tests use mocked commands and a temporary destination. They do not
+certify real mounting, sudo installation, OS consent dialogs, or packaged app
+lifecycle. Those require an explicitly authorized artifact test.
+
+## Open Release Decisions
+
+### Effective Tracing and Privacy Controls
+
+**Runtime work is still required.** The UI persists enabled/endpoint/payload
+settings, but proxy providers read startup environment variables. Defaults are
+tracing enabled, `localhost:4317`, payload capture off. Collector advertisements
+do not select exporter destinations. Decide and implement the effective
+configuration contract, then test UI → broker → proxies end to end, including
+restart, disabled tracing, payload opt-in/off, and actual collector destination.
+
+The supplied Phoenix configuration exposes ports `6006` and `4317` without
+loopback host restrictions or configured authentication/TLS; export is plaintext.
+Decide the secured deployment/remote-collector policy. Verify header/content
+capture and named-volume retention/deletion. A documentation warning does not
+implement these privacy controls. See [Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations).
+
+Source anchors: each proxy's `telemetry.go`, `services/shared/telemetry/`,
+`services/nvpair-node-settings/manager.go`,
+`services/nvpair-ui-broker/broker_telemetry.go`, and
+`docker-compose.telemetry.yml`.
+
+### Desktop Relay Envelope Validation
+
+Go codecs enforce notification `epoch`/`seq` stamps and reject them on
+requests/responses. The desktop `JsonRpcSubprocess.handleStdout()` currently
+extracts optional stamps but does not reject every malformed/missing envelope.
+Keep client and worker versions matched; decide whether the desktop should
+implement the same terminal validation and add regression coverage before
+claiming universal protocol rejection.
+
+### Private Vulnerability Reporting
+
+GitHub's `repos/JaredP94/Personal-AI-Router/private-vulnerability-reporting` API
+returned `enabled: false` on 2026-10-17. Enable private reporting or publish a
+verified private maintainer contact, then update [Security](../SECURITY.md).
+Repository settings were not changed by this audit. Do not assume NVIDIA PSIRT
+owns reports about fork-only code.
+
+### Attribution Review and Artifact Contents
+
+Regeneration inventories **296 component/version entries**: 240 npm/Electron and
+56 Go. That inventory is not legal completeness approval:
+
+- **23 npm entries use README fallback text.** Obtain/review authoritative
+  attribution for their exact versions; markers in the root notice identify
+  them. Do not invent grants or copyright holders from a license label.
+- `github.com/mattn/go-localereader v0.0.1` still lacks authoritative license
+  text in the module cache and remains explicitly unresolved.
+- Confirm vendored Kaizen CSS terms and Lucide/Feather attribution preservation
+  in built CSS, outside the npm dependency graph.
+- Inspect final app artifacts for the canonical `LICENSE` and
+  `THIRD_PARTY_NOTICES.md` plus Electron's separate `LICENSES.chromium.html`.
+- Reference standalone service installers currently omit the canonical notices;
+  `services/installer_build.sh` and the Windows NSIS inventory also omit
+  `omlx-proxy`. Fix and test those packaging paths before distributing their
+  outputs. They were not changed or built in this documentation pass.
+- Engines and the Phoenix image are separately downloaded software with their
+  own terms, not bundled distributions covered by the desktop dependency scan.
+
+The generator now preserves companion Go NOTICE/COPYRIGHT files, safely fences
+embedded Markdown, uses `go list -mod=readonly`, and identifies yaml.v3's combined
+MIT/Apache terms. It still scans installed npm packages: regenerate from a clean,
+lockfile-matched dependency tree before packaging.
+
+## Repeatable Checks
+
+From the repository root:
+
+```bash
+node scripts/spdx-headers.mjs
+bash -n scripts/install-mac.sh
+shellcheck scripts/install-mac.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+```
+
+Installer tests require Python 3.9 or newer. From `desktop/`:
+
+```bash
+npm run licenses
+npm run lint
+npm run typecheck
+npm run test:unit
+npm run dead-code:check
+npm run service-contracts:check
+```
+
+Review the regenerated notice diff; unchanged inputs should reproduce identical
+output. These checks do not replace Go suites, authorized live inference tests,
+or inspection/lifecycle testing of the final release artifacts.

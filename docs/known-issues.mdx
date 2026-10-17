@@ -7,7 +7,32 @@ SPDX-License-Identifier: Apache-2.0
 
 This page lists significant limitations, with what to expect and what to do
 about them. This is not a bug tracker. Report anything not listed here as an
-[issue](https://github.com/NVIDIA/Personal-AI-Router/issues).
+[issue](https://github.com/JaredP94/Personal-AI-Router/issues).
+Report vulnerabilities privately as described in [Security](../SECURITY.md).
+
+## Current Fork Release Is an Unsigned macOS Candidate
+
+The latest published fork build, `0.7.0-rc.1`, targets macOS arm64 only. It is
+unsigned/unnotarized; its privileged helper and helper-based firewall setup are
+unavailable. Downloading via `curl` or verifying its checksum does not change
+those trust restrictions. Windows/Linux desktop and Intel Mac runtime validation
+remain outstanding for that candidate. See the [release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.1)
+for the exact tested scope; source-platform support is not artifact certification.
+
+## Observability Settings Do Not Yet Configure Proxy Tracing
+
+The desktop switches save settings, but proxies currently configure their tracer
+providers from startup environment variables. Tracing defaults to enabled at
+`localhost:4317`, with prompt/completion capture off. Collector advertisements do
+not automatically select the exporter destination. UI status is not proof of
+what a running proxy exports; use the environment controls documented in
+[Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations) and restart.
+
+The supplied Phoenix configuration publishes UI/ingestion ports without host
+loopback restrictions or configured authentication/TLS. OTLP is plaintext;
+non-denylisted request headers can be exported even when payload recording is
+off. Trace data survives container stop in a named Docker volume. This needs a
+runtime/privacy review before the next release, not just documentation changes.
 
 ## Unified-Memory Systems Report Misleading GPU Memory
 
@@ -26,31 +51,38 @@ memory total on that architecture, so PAIR substitutes system memory instead.
 The other two cases are the gap.
 
 **The impact is display, not routing.** These numbers appear on a node's card
-and in the GPU chart. Routing does not consider VRAM at all, because the
-scheduler counts workloads. A wrong figure does not send work to the wrong place.
+and in the GPU chart. Scheduling uses pending jobs and GPU utilization pressure,
+not these VRAM capacity figures. A wrong memory figure does not directly alter
+the scheduler's ranking.
 It misleads *you* when you decide which node should hold a large model, so on
 those systems judge capacity from the machine's own tools rather than from PAIR.
 
-## Scheduling Only Counts Jobs
+## Scheduling Is Not a Capacity or Latency Model
 
-The single scheduling policy ranks nodes by how much work is already queued on
-them. It does not consider GPU model, available memory, current utilization,
-measured latency, whether a model is already loaded, or how expensive a request
-looks. On a cluster of similar machines this behaves reasonably. On a mixed one,
-expect work to land on a slower node about as often as a faster one.
+The scheduler ranks by pending work plus smoothed GPU-utilization pressure, then
+pressure and stable UUID; stale/invalid telemetry gets neutral pressure. Proxies
+also apply engine/model eligibility and prefix-affinity hints. This is not a
+prediction based on GPU model, free memory, measured latency, or request cost.
+A mixed-hardware cluster may therefore assign work to a slower eligible node;
+a prefix-affinity preference does not prove an engine KV-cache hit.
 
 The full list of gaps is in
 [Scheduler Limitations](architecture.mdx#scheduler-limitations).
 Improving this is on the roadmap, and knowing which signals matter on your
 hardware would help. Refer to
-[Where PAIR is going](../README.md#where-pair-is-going).
+[Roadmap](../README.md#roadmap).
 
-## PAIR Does Not Detect a Stuck Service Automatically
+## Worker Hangs Are Distinct from Broker-Client Silence
 
-PAIR restarts a background service that exits, but nothing detects one that is
-still running and no longer responding. The symptom is state that quietly stops
-updating, such as nodes that never refresh or jobs that never complete.
-Restarting from **Settings > Service** resolves it.
+A successfully started worker is crash-supervised, but a worker can remain alive
+and stop responding without triggering a restart. Optional workers that fail
+their initial spawn are not automatically retried. State may stop updating;
+restart services from **Settings > Service** to retry.
+
+Relay protocol v2 separately monitors the broker-client link: heartbeats every
+15 seconds and a 45-second inbound-silence deadline trigger frontend-owned
+recovery with a readiness deadline. This is not per-worker hang detection or a
+guarantee that every unexpected broker exit automatically reconnects.
 
 ## macOS Can Stop Answering LAN Connections While Unclustered
 

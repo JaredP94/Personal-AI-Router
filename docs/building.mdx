@@ -102,14 +102,25 @@ service-build scripts cover `win32`, `linux`, and `darwin` on x64 and arm64.
 Refer to `desktop/package.json` for their names. The Go services use no cgo, so
 you can build any of those targets from any host.
 
-A local build produces an application you run on the machine that built it. Use
-the [releases page](https://github.com/NVIDIA/Personal-AI-Router/releases) for
-installable builds. This guide does not cover producing distributable artifacts.
+`npm run build` produces application bundles, not a complete staged runtime.
+The platform `build:mac:*`, `build:linux:*`, and `build:win:*` scripts in
+`desktop/package.json` also stage Go binaries/tools and run electron-builder to
+produce packages. These public packaging targets are unsigned, noncertified
+candidates, not NVIDIA's signed distribution pipeline. The fork's current
+**0.7.0-rc.1** candidate is **macOS arm64, unsigned and unnotarized**; inspect the
+actual release assets rather than assuming upstream platform or signing status.
+
+Go cross-compilation does not extend to the macOS privileged helper. Its package
+build requires a macOS SDK and Xcode Command Line Tools (`swiftc`, `xcrun`, and
+`lipo`). NVIDIA signing and notarization are separate release-policy steps, not
+credentials or approvals supplied by this checkout. Downloading an app with
+`curl` cannot sign/notarize it or approve its privileged helper.
 
 ## Build the Services Alone
 
-The service scripts read `services/versions.json`, stamp each version, build 13
-executables, and stage them together in `services/build/bin/`.
+The service scripts read `services/versions.json`, stamp each version, build 14
+service executables (broker + 12 workers, including `omlx-proxy`, + TUI), and
+stage them together in `services/build/bin/`.
 
 Linux and macOS:
 
@@ -171,20 +182,28 @@ programmatically rather than through the desktop or terminal interface:
 Linux and macOS:
 
 ```bash
-cd services
-./build/bin/nvpair-ui-broker
+cd services/build/bin
+./nvpair-ui-broker
 ```
 
 Windows Command Prompt:
 
 ```bat
-cd services
-build\bin\nvpair-ui-broker.exe
+cd services\build\bin
+nvpair-ui-broker.exe
 ```
 
-The broker speaks newline-delimited JSON-RPC on stdout and logs to stderr, and it
-expects the worker binaries beside it. A programmatic client normally spawns it
-with piped stdio. A quick check that it came up, on Linux or macOS:
+The broker speaks newline-delimited JSON-RPC on stdout and logs to stderr. Unless
+explicit worker paths are supplied, it resolves workers from its **current
+working directory**, not its executable directory. A programmatic client normally
+spawns it with piped stdio and `services/build/bin/` as its working directory.
+Standalone, only the scanner is required; other missing default binaries or
+initial spawn failures degrade capabilities without aborting. Invalid explicit
+paths are fatal, and failed initial auxiliary spawns are not automatically
+retried. Desktop additionally prevalidates broker, scanner, Ollama proxy,
+node-info, and node-settings binaries.
+
+A quick check that it came up, on Linux or macOS:
 
 ```bash
 cd services/build/bin
@@ -204,8 +223,9 @@ be empty while LAN browsing starts. Set `NVPAIR_LOG_LEVEL=debug` or pass
 `info`, `warn`, and `error`.
 
 For the methods, notifications, and worker ownership, refer to the
-[broker reference](../services/nvpair-ui-broker/README.md). That document, not
-this one, is the source of truth for API usage.
+[broker reference](../services/nvpair-ui-broker/README.md) and the
+[architecture](architecture.mdx#control-flow), including relay protocol v2.
+When a reference disagrees with the producing Go source, the source decides.
 
 ### Write Your Own Client
 

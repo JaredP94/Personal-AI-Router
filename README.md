@@ -44,20 +44,31 @@ This project exists as a forward-looking extension that introduces practical fea
 
 2. **Prefix Cache-Aware Routing (KV-Cache Affinity)**
    - Dynamic prompt and conversation prefix hashing across Ollama, LM Studio, and oMLX proxies.
-   - Routes conversational turns and shared-prompt workloads to nodes that already hold warm KV cache state, dramatically cutting Time-to-First-Token (TTFT) and eliminating redundant prompt prefill computation.
+   - Prefers nodes with observed conversation/prefix affinity when they remain eligible. This is a routing heuristic, not proof of an engine cache hit or a guaranteed TTFT improvement.
    - Adds live telemetry and diagnostics in **Settings → Service → Routing Diagnostics**.
 
-3. **Tailscale Overlay & Multi-Network Clustering**
-   - **Automatic Tailscale Discovery**: Synchronizes and bridges confirmed cluster members over Tailscale overlay networks (`100.64.0.0/10` CGNAT) directly into the broker relay directory.
-   - **Wi-Fi Preference with Dynamic Fallback**: Prefers low-latency physical Wi-Fi/Ethernet connections when available and cleanly falls back to Tailscale when roaming, with an automatic 15-second dynamic recovery probe.
+3. **Overlay Addresses & Multi-Network Clustering**
+   - Advertises and ranks physical and overlay addresses, including Tailscale CGNAT (`100.64.0.0/10`), and retries known peer addresses as connectivity changes. This is not automatic enumeration of every tailnet device.
+   - Cluster trust is still required for authenticated inference/control traffic over an overlay; reachability alone does not authorize a peer.
 
 4. **Remote Node Engine & Model Discovery**
    - Directly probes `nvpair-engine-manager` over cluster mTLS on remote nodes.
    - Automatically discovers running engines, `modelsByEngine`, and `loadedByEngine` across the cluster, seamlessly bridging remote models into local Ollama, LM Studio, and oMLX proxies.
 
-5. **Automated Zero-Quarantine macOS Installation & Updates**
-   - Provides a one-line automated installer and updater script (`scripts/install-mac.sh`) that installs and upgrades releases via Terminal without triggering macOS Gatekeeper quarantine (`xattr -cr`).
+5. **Terminal-Based macOS Installation & Updates**
+   - Provides an installer/updater script (`scripts/install-mac.sh`) for published macOS disk images. Downloading with `curl` normally avoids browser-added quarantine, but does not provide Developer ID signing, notarization, or privileged-helper approval.
    - Adapts the desktop in-app updates card on macOS to provide 1-click update command copying and direct GitHub release navigation.
+
+6. **Arize Phoenix & OpenTelemetry Observability**
+   - Built-in OpenTelemetry distributed tracing (`traceparent` W3C context propagation across multi-node cluster hops) and one-click Arize Phoenix Docker container lifecycle management (`http://localhost:6006`, OTLP gRPC `:4317`) directly from **Settings → Service**.
+   - Records streaming TTFT, token metrics, and routing decisions; supports collector advertisement and Phoenix image update checks. **Current limitation:** proxy tracing uses startup environment configuration (enabled by default, `localhost:4317`, payload capture off), not the persisted UI switches or advertised collector selection. OTLP is plaintext, other request headers can be captured despite payload capture being off, and the supplied container exposes its ports beyond loopback. See [Security](SECURITY.md) before use.
+
+7. **Relay Protocol v2, Session Recovery & Live Menu Bar Activity**
+   - Relay v2 JSON-RPC 2.0 notification envelopes (`epoch`, `seq`; `protocol: 2` in broker epoch/resync payloads) with automatic per-domain state resynchronization (`broker:epoch`, `broker:resync`), 15-second heartbeat liveness monitoring with 45-second frontend-owned silence reconnects, and service-authoritative routing metrics (`metrics/get`, `metrics/routing-update`).
+   - Dynamic monochrome template menu bar / system tray icon displaying live active job counts and 30-second failure alerts (`!`).
+
+8. **Idle Energy & Wakeup Optimizations (Unreleased)**
+   - Background-aware node-info polling restores the 10-second idle GPU sampling cadence on macOS/Linux. Filtered macOS kernel network events, unchanged trust-pin caching, reduced notification churn, and debug-only verbose file logging reduce background work. These changes are not in the published `0.7.0-rc.1` candidate.
 
 ## What is supported
 
@@ -65,7 +76,7 @@ This project exists as a forward-looking extension that introduces practical fea
 | --- | --- |
 | **Operating systems** | Windows 11; Linux; macOS |
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
-| **Installers** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. On other Linux distributions, [build from source](docs/building.mdx). |
+| **Packaging targets** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. Published assets vary by release; this fork's current candidate ships **macOS arm64 only**. For other targets, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
 | **Inference engines** | Ollama, LM Studio, and oMLX (Apple Silicon MLX) |
 
@@ -89,32 +100,46 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 ### Download a release
 
-A released installer is signed, sets up the background services and the desktop
-application together, and adds the firewall rules PAIR needs on Windows. It also
-tells you when a newer release exists and installs it on your say-so from
-**Settings → Service**. A build you make yourself is unsigned and checks no
-update feed, so you would upgrade it by pulling and rebuilding.
-
 Download PAIR from this fork's
-[GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases)
-(upstream official releases are hosted at [NVIDIA/Personal-AI-Router](https://github.com/NVIDIA/Personal-AI-Router/releases)).
-Release downloads include:
+[GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
+The latest published build is **`0.7.0-rc.1` (2026-10-17), an unsigned,
+unnotarized macOS Apple Silicon candidate**, not an NVIDIA-signed release.
+It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
+and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
+Its privileged helper and automatic helper-based firewall setup are unavailable.
+Automatic updater installation is not certified for this unsigned candidate;
+use the Terminal installer or a manual replacement. Read its
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.1).
 
-- a Windows installer;
-- a Debian package for Linux; and
-- a macOS disk image.
+Upstream official releases are separate and available at
+[NVIDIA/Personal-AI-Router](https://github.com/NVIDIA/Personal-AI-Router/releases).
+Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
+promise that this fork publishes all of them for each release.
 
-**On macOS,** you can install or update directly via Terminal with a single command to bypass Gatekeeper quarantine (`xattr -cr`):
+**Upgrade clients and services together:** `0.7.0-rc.1` introduces relay protocol
+v2. Do not mix older desktop/TUI clients or individual workers with the new
+bundle. Unreleased performance changes are listed separately in the changelog.
+
+**On macOS,** review the installer script before running it. It replaces
+`/Applications/PAIR.app` while retaining application data. A `curl` download
+normally avoids browser-added quarantine; it does **not** make an unsigned app
+trusted or repair privileged-helper signing:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-Alternatively, double-click the downloaded `.dmg` and drag NVIDIA Personal AI Router to your **Applications** folder.
+To pin the candidate, pass `--version 0.7.0-rc.1` using `bash -s --` after the pipe.
+The installer checks the downloaded DMG against that release's `SHA256SUMS` before
+installation. This detects corruption but is not a signature or independent
+publisher authentication. Local `--dmg` installs require your own verification.
 
-**On Windows,** double-click the installer download and follow the prompts.
+Alternatively, open the downloaded `.dmg` and drag `PAIR.app` to **Applications**.
+Do not disable system-wide macOS security protections to run this build.
 
-**On Linux,** install the package from the directory you downloaded it into:
+**On Windows,** when an installer is available, double-click it and follow the prompts.
+
+**On Linux,** when a Debian package is available, install it from the download directory:
 
 ```bash
 sudo apt install ./NVPAIR-Setup-*.deb
@@ -136,15 +161,18 @@ you want by its full filename instead.
   status there.
 
 - **Get an engine running.** On the node's card, open **Engine settings** and
-  select **Install** next to Ollama or LM Studio. PAIR downloads and sets the
-  engine up for you, so nothing needs to be in place beforehand. If PAIR already
-  found an engine you installed yourself, start that one instead.
+  select **Install** next to Ollama, LM Studio, or oMLX (Apple Silicon only).
+  PAIR downloads and sets the engine up for you, subject to its platform and
+  installation prerequisites. If PAIR already found an engine you installed
+  yourself, start that one instead.
 
   ![The Install engines dialog with Ollama downloading, reporting progress as it installs.](docs/assets/onboarding/engine-lifecycle/01-engine-installing.png)
 
-- **Add a model.** Select **Add model** on the same card and download one.
-  `qwen4:12b` is used for this example; it can be replaced with a model of your
-  choice.
+- **Add a model.** For engines with download support, select **Add model** on
+  the same card. The bundled oMLX manifest supports listing/loading/unloading
+  existing models, not model pull/delete actions; prepare its model library
+  through oMLX. `qwen4:12b` is used for the Ollama example below; replace it with
+  a model available to your engine.
 
   ![A node card with its engine expanded, one model pulling and the Add model button beside the list.](docs/assets/onboarding/getting-started/07-add-model.png)
 
@@ -185,7 +213,7 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 }
 ```
 
-If you changed a port, or you are using LM Studio rather than Ollama, copy the
+If you changed a port, or you are using LM Studio or oMLX rather than Ollama, copy the
 URL from **Endpoints → API endpoints** instead of assuming the one above.
 
 That is a single machine working. To route across machines, pair a second one
@@ -256,22 +284,25 @@ Each entry assumes the ones before it.
    machines, prepare a model, and send a first request. This is the only document
    most users need.
 3. **[Managing engines](docs/engine-lifecycle.mdx)** — install, start, stop,
-   update, and uninstall engines; what PAIR restores after you quit or relaunch.
-4. **[Engine settings](docs/engine-settings.mdx)** — change an engine's ports and
-   its launch command, on this machine or a paired one, and give a browser access
-   to your models.
-5. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
+   update, and uninstall engines; configure ports and models; what PAIR restores
+   after you quit or relaunch.
+4. **[Terminal interface](docs/terminal-interface.mdx)** — the same tasks from a
    terminal, for a machine with no desktop environment. Skip it if every machine
    you run has a desktop.
-6. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
+5. **[Troubleshooting](docs/troubleshooting.mdx)** — worth skimming once before
    you need it, so you know where the diagnostics live. Alongside it,
    **[Known issues](docs/known-issues.mdx)** lists the significant limitations we
    are already aware of, and
    **[Collecting and sanitizing logs](docs/log-collection.mdx)** covers preparing
    a log you can share.
-7. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
+6. **[Architecture](docs/architecture.mdx)** — the process model, how a request is
    routed, and where the trust boundaries are. Read this before changing
    anything, or if you want to know why PAIR behaves the way it does.
+7. **[Prefix-aware routing specification](docs/prefix-aware-routing-spec.mdx)** —
+   how passive conversation and prompt prefix affinity works across the Ollama,
+   LM Studio, and oMLX proxies, along with its
+   **[implementation validation](docs/cache-affinity-validation.mdx)** and the
+   standalone **[Inference dispatcher](docs/inference-dispatcher.mdx)**.
 8. **[Building and running](docs/building.mdx)** — prerequisites, building from
    source, running the services without the desktop application, and writing
    your own client against the JSON-RPC API.
@@ -288,7 +319,10 @@ Component references, for when you already know what you are looking for:
 
 ## Releases & Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md) for a detailed history of changes across all releases.
+See [`CHANGELOG.md`](CHANGELOG.md) for published changes and the separate
+**Unreleased** section, and [Next release readiness](docs/release-readiness.mdx)
+for outstanding runtime, privacy, attribution, and artifact checks. Desktop release versions are independent of the service
+product and per-component versions in `services/versions.json`.
 
 Downloads and release notes are available on the
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases)
@@ -312,8 +346,10 @@ feedback and contributions will help shape priorities.
 - [ ] EXO support.
 - [ ] ComfyUI integration.
 - [ ] Unsloth support.
-- [x] Tailscale integration *(Implemented in this fork: overlay routing and dynamic Wi-Fi fallback)*.
+- [x] Overlay address preference/fallback, including Tailscale addresses.
 - [x] oMLX support *(Implemented in this fork: Apple Silicon native MLX engine)*.
+- [x] OpenTelemetry instrumentation and Phoenix container lifecycle management.
+- [ ] Wire persisted telemetry switches and collector discovery into running proxy configuration; verify privacy controls end to end.
 
 ### Routing and clusters
 
@@ -327,11 +363,12 @@ feedback and contributions will help shape priorities.
 
 - [ ] Requester-only clients that send work without hosting an inference engine.
 - [ ] Launch PAIR automatically on system startup.
-- [x] Configure engine launch options and environment variables from PAIR.
+- [ ] Configure engine launch options and environment variables from PAIR.
+- [x] Live menu bar job activity indicator and Relay Protocol v2 session recovery *(Implemented in this fork)*.
 - [ ] Stability and reliability improvements informed by real-world use.
 
 Have a feature request or a workflow you want PAIR to support? Open an
-[issue](https://github.com/NVIDIA/Personal-AI-Router/issues) and tell us how you
+[issue](https://github.com/JaredP94/Personal-AI-Router/issues) and tell us how you
 would use it.
 
 ## Development Team
