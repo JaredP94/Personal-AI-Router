@@ -404,13 +404,10 @@ func TestHandleHTTP_RealSocketWriteDeadline(t *testing.T) {
 }
 
 // TestHandleHTTP_RealSocketFlushDeadline is the flush-path counterpart to the
-// write-deadline test. A streaming response is flushed after every chunk, so a
-// small chunk buffers on a successful Write (no network I/O) and the actual
-// network write happens in a separate Flush. If only Write is deadline-aware, a
-// stalled client makes that Flush block unbounded and the handler never returns
-// — a zombie the 64 KiB Write-blocking test does not catch. This drives real,
-// paced small flushed chunks over a real socket and asserts the flush deadline
-// terminates the workload as failed.
+// write-deadline test. Paced small chunks and constrained downstream TCP buffers
+// create an intended flush-pressure fixture over a real socket; chunk boundaries
+// may still coalesce. A stalled client must terminate the workload as failed
+// rather than leaving a Flush blocked without a deadline.
 func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 	orig := idleClientWriteTimeout
 	idleClientWriteTimeout = 300 * time.Millisecond
@@ -430,9 +427,8 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 				return
 			}
 			flusher.Flush()
-			// Pace so the reverse proxy's 32 KiB copy read returns one small
-			// chunk per iteration rather than coalescing many into a >2 KiB
-			// write (which would block inside Write, not Flush).
+			// Pacing reduces coalescing into larger writes, keeping pressure
+			// on the flush path without assuming exact chunk boundaries.
 			time.Sleep(2 * time.Millisecond)
 			select {
 			case <-r.Context().Done():
@@ -452,7 +448,26 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: http.HandlerFunc(p.handleHTTP)}
+	// Bound both downstream buffers so a non-reading client creates pressure
+	// within the test budget, independently of the host's default TCP buffers.
+	srv := &http.Server{
+		Handler: http.HandlerFunc(p.handleHTTP),
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			if state != http.StateNew {
+				return
+			}
+			tcpConn, ok := conn.(*net.TCPConn)
+			if !ok {
+				t.Errorf("accepted connection is not TCP: %T", conn)
+				_ = conn.Close()
+				return
+			}
+			if err := tcpConn.SetWriteBuffer(4096); err != nil {
+				t.Errorf("set downstream send buffer: %v", err)
+				_ = conn.Close()
+			}
+		},
+	}
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
@@ -461,6 +476,13 @@ func TestHandleHTTP_RealSocketFlushDeadline(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer conn.Close()
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("client connection is not TCP: %T", conn)
+	}
+	if err := tcpConn.SetReadBuffer(4096); err != nil {
+		t.Fatalf("set downstream receive buffer: %v", err)
+	}
 
 	body := `{"model":"llama"}`
 	reqText := "POST /v1/chat/completions HTTP/1.1\r\n" +
