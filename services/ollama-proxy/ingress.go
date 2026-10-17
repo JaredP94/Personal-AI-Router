@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -19,6 +20,22 @@ import (
 )
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+
+var plaintextRejectWarned sync.Map
+
+func logPlaintextReject(r *http.Request) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if _, loaded := plaintextRejectWarned.LoadOrStore(host, struct{}{}); !loaded {
+		slog.Warn("rejected non-loopback plaintext request; cluster peers must use mTLS",
+			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+		return
+	}
+	slog.Debug("rejected non-loopback plaintext request; cluster peers must use mTLS",
+		"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+}
 
 // localBackend is the explicit loopback engine the cluster mTLS ingress
 // forwards to. It is supplied by the broker over node/set-local-backend and is
@@ -72,8 +89,7 @@ func (p *Proxy) handlePlain(w http.ResponseWriter, r *http.Request) {
 		if cors.WritePreflight(w, r) {
 			return
 		}
-		slog.Warn("rejected non-loopback plaintext request; cluster peers must use mTLS",
-			"remote", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
+		logPlaintextReject(r)
 		writeIngressError(w, http.StatusForbidden, "loopback-only",
 			"plaintext requests are accepted only from loopback; cluster peers must use the mTLS ingress")
 		return
