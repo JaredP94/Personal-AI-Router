@@ -109,6 +109,7 @@ FunctionEnd
   DetailPrint "Checking for running ${PRODUCT_NAME} processes..."
   nsExec::ExecToLog 'taskkill /F /IM "ollama-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "lmstudio-proxy.exe"'
+  nsExec::ExecToLog 'taskkill /F /IM "omlx-proxy.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-node-info.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-node-scanner.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-manual-nodes.exe"'
@@ -146,6 +147,8 @@ Section "Install"
 
   SetOutPath "$INSTDIR"
   File "EULA.txt"
+  File "..\..\LICENSE"
+  File "..\..\THIRD_PARTY_NOTICES.md"
 
   SetOutPath "$INSTDIR\bin"
   ; ollama-proxy's listen port is now a dual-protocol endpoint: loopback
@@ -159,6 +162,10 @@ Section "Install"
   ; same dual-protocol port (loopback plaintext + cluster mTLS ingress); it
   ; listens for clients and browses mDNS, so it gets firewall rules below.
   File "..\build\bin\lmstudio-proxy.exe"
+  ; omlx-proxy fronts the cluster's MLX engines with the same dual-protocol port
+  ; (loopback plaintext + cluster mTLS ingress); it listens for clients and
+  ; browses mDNS, so it gets firewall rules below.
+  File "..\build\bin\omlx-proxy.exe"
   File "..\build\bin\nvpair-node-info.exe"
   File "..\build\bin\nvpair-node-scanner.exe"
   File "..\build\bin\nvpair-manual-nodes.exe"
@@ -229,6 +236,7 @@ Section "Install"
   ; public networks.
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Ollama Proxy" dir=in action=allow program="$INSTDIR\bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR LM Studio Proxy" dir=in action=allow program="$INSTDIR\bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR oMLX Proxy" dir=in action=allow program="$INSTDIR\bin\omlx-proxy.exe" enable=yes profile=any remoteip=localsubnet'
 
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Node Info" dir=in action=allow program="$INSTDIR\bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Node Scanner" dir=in action=allow program="$INSTDIR\bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
@@ -236,6 +244,7 @@ Section "Install"
   ; mDNS needs UDP 5353 inbound
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\ollama-proxy.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS LM Studio Proxy (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\lmstudio-proxy.exe" enable=yes profile=any remoteip=localsubnet'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS oMLX Proxy (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\omlx-proxy.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS Node Info (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\nvpair-node-info.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS Node Scanner (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\nvpair-node-scanner.exe" enable=yes profile=any remoteip=localsubnet'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR mDNS Workload Manager (UDP 5353)" dir=in action=allow protocol=UDP localport=5353 program="$INSTDIR\bin\nvpair-workload-manager.exe" enable=yes profile=any remoteip=localsubnet'
@@ -272,8 +281,12 @@ Section "Uninstall"
 
   ; Remove firewall exceptions
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Ollama Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR LM Studio Proxy"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR oMLX Proxy"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Node Info"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS (UDP 5353)"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS LM Studio Proxy (UDP 5353)"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS oMLX Proxy (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Node Scanner"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS Node Info (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS Node Scanner (UDP 5353)"'
@@ -290,6 +303,7 @@ Section "Uninstall"
   ; Remove files
   Delete "$INSTDIR\bin\ollama-proxy.exe"
   Delete "$INSTDIR\bin\lmstudio-proxy.exe"
+  Delete "$INSTDIR\bin\omlx-proxy.exe"
   Delete "$INSTDIR\bin\nvpair-node-info.exe"
   Delete "$INSTDIR\bin\nvpair-node-scanner.exe"
   Delete "$INSTDIR\bin\nvpair-manual-nodes.exe"
@@ -303,6 +317,8 @@ Section "Uninstall"
   Delete "$INSTDIR\bin\nvpair-tui.exe"
   RMDir  "$INSTDIR\bin"
   Delete "$INSTDIR\EULA.txt"
+  Delete "$INSTDIR\LICENSE"
+  Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
   Delete "$INSTDIR\uninstall.exe"
   RMDir  "$INSTDIR"
 
