@@ -3520,126 +3520,7 @@ License: MIT
 
 Repository: https://github.com/TooTallNate/node-agent-base
 
-````text
-(README fallback; authoritative license text requires human review.)
-
-agent-base
-==========
-### Turn a function into an [`http.Agent`][http.Agent] instance
-[![Build Status](https://github.com/TooTallNate/node-agent-base/workflows/Node%20CI/badge.svg)](https://github.com/TooTallNate/node-agent-base/actions?workflow=Node+CI)
-
-This module provides an `http.Agent` generator. That is, you pass it an async
-callback function, and it returns a new `http.Agent` instance that will invoke the
-given callback function when sending outbound HTTP requests.
-
-#### Some subclasses:
-
-Here's some more interesting uses of `agent-base`.
-Send a pull request to list yours!
-
- * [`http-proxy-agent`][http-proxy-agent]: An HTTP(s) proxy `http.Agent` implementation for HTTP endpoints
- * [`https-proxy-agent`][https-proxy-agent]: An HTTP(s) proxy `http.Agent` implementation for HTTPS endpoints
- * [`pac-proxy-agent`][pac-proxy-agent]: A PAC file proxy `http.Agent` implementation for HTTP and HTTPS
- * [`socks-proxy-agent`][socks-proxy-agent]: A SOCKS proxy `http.Agent` implementation for HTTP and HTTPS
-
-
-Installation
-------------
-
-Install with `npm`:
-
-``` bash
-$ npm install agent-base
-```
-
-
-Example
--------
-
-Here's a minimal example that creates a new `net.Socket` connection to the server
-for every HTTP request (i.e. the equivalent of `agent: false` option):
-
-```js
-var net = require('net');
-var tls = require('tls');
-var url = require('url');
-var http = require('http');
-var agent = require('agent-base');
-
-var endpoint = 'http://nodejs.org/api/';
-var parsed = url.parse(endpoint);
-
-// This is the important part!
-parsed.agent = agent(function (req, opts) {
-  var socket;
-  // `secureEndpoint` is true when using the https module
-  if (opts.secureEndpoint) {
-    socket = tls.connect(opts);
-  } else {
-    socket = net.connect(opts);
-  }
-  return socket;
-});
-
-// Everything else works just like normal...
-http.get(parsed, function (res) {
-  console.log('"response" event!', res.headers);
-  res.pipe(process.stdout);
-});
-```
-
-Returning a Promise or using an `async` function is also supported:
-
-```js
-agent(async function (req, opts) {
-  await sleep(1000);
-  // etc…
-});
-```
-
-Return another `http.Agent` instance to "pass through" the responsibility
-for that HTTP request to that agent:
-
-```js
-agent(function (req, opts) {
-  return opts.secureEndpoint ? https.globalAgent : http.globalAgent;
-});
-```
-
-
-API
----
-
-## Agent(Function callback[, Object options]) → [http.Agent][]
-
-Creates a base `http.Agent` that will execute the callback function `callback`
-for every HTTP request that it is used as the `agent` for. The callback function
-is responsible for creating a `stream.Duplex` instance of some kind that will be
-used as the underlying socket in the HTTP request.
-
-The `options` object accepts the following properties:
-
-  * `timeout` - Number - Timeout for the `callback()` function in milliseconds. Defaults to Infinity (optional).
-
-The callback function should have the following signature:
-
-### callback(http.ClientRequest req, Object options, Function cb) → undefined
-
-The ClientRequest `req` can be accessed to read request headers and
-and the path, etc. The `options` object contains the options passed
-to the `http.request()`/`https.request()` function call, and is formatted
-to be directly passed to `net.connect()`/`tls.connect()`, or however
-else you want a Socket to be created. Pass the created socket to
-the callback function `cb` once created, and the HTTP request will
-continue to proceed.
-
-If the `https` module is used to invoke the HTTP request, then the
-`secureEndpoint` property on `options` _will be set to `true`_.
-
-
-License
--------
-
+```text
 (The MIT License)
 
 Copyright (c) 2013 Nathan Rajlich &lt;nathan@tootallnate.net&gt;
@@ -3663,12 +3544,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-[http-proxy-agent]: https://github.com/TooTallNate/node-http-proxy-agent
-[https-proxy-agent]: https://github.com/TooTallNate/node-https-proxy-agent
-[pac-proxy-agent]: https://github.com/TooTallNate/node-pac-proxy-agent
-[socks-proxy-agent]: https://github.com/TooTallNate/node-socks-proxy-agent
-[http.Agent]: https://nodejs.org/api/http.html#http_class_http_agent
-````
+```
 
 ### argparse 2.0.1
 
@@ -10716,122 +10592,7 @@ License: MIT
 
 Repository: https://github.com/TooTallNate/node-https-proxy-agent
 
-````text
-(README fallback; authoritative license text requires human review.)
-
-https-proxy-agent
-================
-### An HTTP(s) proxy `http.Agent` implementation for HTTPS
-[![Build Status](https://github.com/TooTallNate/node-https-proxy-agent/workflows/Node%20CI/badge.svg)](https://github.com/TooTallNate/node-https-proxy-agent/actions?workflow=Node+CI)
-
-This module provides an `http.Agent` implementation that connects to a specified
-HTTP or HTTPS proxy server, and can be used with the built-in `https` module.
-
-Specifically, this `Agent` implementation connects to an intermediary "proxy"
-server and issues the [CONNECT HTTP method][CONNECT], which tells the proxy to
-open a direct TCP connection to the destination server.
-
-Since this agent implements the CONNECT HTTP method, it also works with other
-protocols that use this method when connecting over proxies (i.e. WebSockets).
-See the "Examples" section below for more.
-
-
-Installation
-------------
-
-Install with `npm`:
-
-``` bash
-$ npm install https-proxy-agent
-```
-
-
-Examples
---------
-
-#### `https` module example
-
-``` js
-var url = require('url');
-var https = require('https');
-var HttpsProxyAgent = require('https-proxy-agent');
-
-// HTTP/HTTPS proxy to connect to
-var proxy = process.env.http_proxy || 'http://168.63.76.32:3128';
-console.log('using proxy server %j', proxy);
-
-// HTTPS endpoint for the proxy to connect to
-var endpoint = process.argv[2] || 'https://graph.facebook.com/tootallnate';
-console.log('attempting to GET %j', endpoint);
-var options = url.parse(endpoint);
-
-// create an instance of the `HttpsProxyAgent` class with the proxy server information
-var agent = new HttpsProxyAgent(proxy);
-options.agent = agent;
-
-https.get(options, function (res) {
-  console.log('"response" event!', res.headers);
-  res.pipe(process.stdout);
-});
-```
-
-#### `ws` WebSocket connection example
-
-``` js
-var url = require('url');
-var WebSocket = require('ws');
-var HttpsProxyAgent = require('https-proxy-agent');
-
-// HTTP/HTTPS proxy to connect to
-var proxy = process.env.http_proxy || 'http://168.63.76.32:3128';
-console.log('using proxy server %j', proxy);
-
-// WebSocket endpoint for the proxy to connect to
-var endpoint = process.argv[2] || 'ws://echo.websocket.org';
-var parsed = url.parse(endpoint);
-console.log('attempting to connect to WebSocket %j', endpoint);
-
-// create an instance of the `HttpsProxyAgent` class with the proxy server information
-var options = url.parse(proxy);
-
-var agent = new HttpsProxyAgent(options);
-
-// finally, initiate the WebSocket connection
-var socket = new WebSocket(endpoint, { agent: agent });
-
-socket.on('open', function () {
-  console.log('"open" event!');
-  socket.send('hello world');
-});
-
-socket.on('message', function (data, flags) {
-  console.log('"message" event! %j %j', data, flags);
-  socket.close();
-});
-```
-
-API
----
-
-### new HttpsProxyAgent(Object options)
-
-The `HttpsProxyAgent` class implements an `http.Agent` subclass that connects
-to the specified "HTTP(s) proxy server" in order to proxy HTTPS and/or WebSocket
-requests. This is achieved by using the [HTTP `CONNECT` method][CONNECT].
-
-The `options` argument may either be a string URI of the proxy server to use, or an
-"options" object with more specific properties:
-
-  * `host` - String - Proxy host to connect to (may use `hostname` as well). Required.
-  * `port` - Number - Proxy port to connect to. Required.
-  * `protocol` - String - If `https:`, then use TLS to connect to the proxy.
-  * `headers` - Object - Additional HTTP headers to be sent on the HTTP CONNECT method.
-  * Any other options given are passed to the `net.connect()`/`tls.connect()` functions.
-
-
-License
--------
-
+```text
 (The MIT License)
 
 Copyright (c) 2013 Nathan Rajlich &lt;nathan@tootallnate.net&gt;
@@ -10855,8 +10616,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-[CONNECT]: http://en.wikipedia.org/wiki/HTTP_tunnel#HTTP_CONNECT_Tunneling
-````
+```
 
 ### is-potential-custom-element-name 1.0.1
 

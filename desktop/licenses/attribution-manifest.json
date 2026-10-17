@@ -161,12 +161,12 @@
             "version": "6.0.2",
             "kind": "npm",
             "license": "MIT",
-            "status": "blocked",
-            "sourceUrl": "https://github.com/TooTallNate/node-agent-base",
-            "sourceRef": "6.0.2 (c4b8ea2e1a11bae023bb09b708050a50418204e9)",
-            "textFile": null,
-            "textSha256": null,
-            "notes": "No dedicated license file in published npm tarball or upstream repository at tag 6.0.2 (commit c4b8ea2e1a11bae023bb09b708050a50418204e9); terms only embedded in README.md."
+            "status": "resolved",
+            "sourceUrl": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+            "sourceRef": "agent-base@6.0.2 package/README.md (License section)",
+            "textFile": "agent-base@6.0.2.txt",
+            "textSha256": "b3681ff73335c04770aa0367aa4ca72e77e5ca55007fc0bcb9d564d00cce20f4",
+            "notes": "License text was extracted verbatim from the README of the published package because the package ships no separate license file."
         },
         {
             "name": "flip-toolkit",
@@ -197,12 +197,12 @@
             "version": "5.0.1",
             "kind": "npm",
             "license": "MIT",
-            "status": "blocked",
-            "sourceUrl": "https://github.com/TooTallNate/node-https-proxy-agent",
-            "sourceRef": "5.0.1 (d0d80cc0482f20495aa8595f802e1a9f3b1b3409)",
-            "textFile": null,
-            "textSha256": null,
-            "notes": "No dedicated license file in published npm tarball or upstream repository at tag 5.0.1 (commit d0d80cc0482f20495aa8595f802e1a9f3b1b3409); terms only embedded in README.md."
+            "status": "resolved",
+            "sourceUrl": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz",
+            "sourceRef": "https-proxy-agent@5.0.1 package/README.md (License section)",
+            "textFile": "https-proxy-agent@5.0.1.txt",
+            "textSha256": "b3681ff73335c04770aa0367aa4ca72e77e5ca55007fc0bcb9d564d00cce20f4",
+            "notes": "License text was extracted verbatim from the README of the published package because the package ships no separate license file."
         },
         {
             "name": "kaizen-ui-foundations",
