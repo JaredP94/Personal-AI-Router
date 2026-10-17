@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Release Concerns Remediation — Proposed Design
 
-**Status:** Owner decisions recorded 2026-10-17 (below); one policy question open.
+**Status:** Owner decisions recorded 2026-10-17 (below).
 **Baseline:** `release/performance-and-docs`, candidate metadata `0.7.0-rc.2`.
 **Inputs:** [release checklist](../../release-readiness.mdx),
 [security boundaries](../../../SECURITY.md), and
@@ -16,16 +16,15 @@ SPDX-License-Identifier: Apache-2.0
 | Topic | Decision | Effect on this design |
 | --- | --- | --- |
 | Tracing defaults | Off by default; existing "on" values reset and re-confirmed | §2.1 as written |
-| Collection topology | Build the secure gateway **and** keep local collection, chosen per node by a setting | §3.2 is in scope, not optional. Each node chooses "This device" or "Cluster collector: <paired node>"; one node opts in to host the collector |
+| Collection topology | Local only: each node traces only requests it originated, to its own Phoenix; a node without a running collector loses its own traces | §3.2 per-node model; no gateway, remote destination or cross-node export |
 | Trace storage | Keep until the user deletes it; show on-device trace storage size in the UI with a clear action | §3.3 adds a storage-usage readout and a confirmed "Clear stored traces" action |
 | Envelope parity | Owner delegated; **canonical-envelope enforcement** chosen | §5 recommended resolution adopted |
 | Signing | No paid Apple Developer account, so **unsigned limited RC** | §8 unsigned path; helper/firewall automation reported unavailable, no repeated prompts |
 | Known limitations | Fix now | §9 items are in scope for the next release |
 
-**Open policy question:** whether prompt/completion capture may travel to a
-remote cluster collector through the authenticated gateway. Current contributor
-policy (`AGENTS.md`, `SECURITY.md`) allows content only to the *local* collector.
-Until decided, remote destinations carry metadata only and §2.3 applies.
+Content capture therefore stays on the originating device, as current
+contributor policy (`AGENTS.md`, `SECURITY.md`) already requires; no policy
+change is needed.
 
 ## Intent and Scope
 
@@ -62,9 +61,9 @@ authorized by approving documentation alone.
 | --- | --- | --- |
 | UI settings do not configure proxies; environment can override consent | Broker-reconciled, revisioned desired/effective settings; fail-closed provider lifecycle | UI → persistence → every proxy, restart, race and opt-out tests |
 | Global tracer fallback, queued/in-flight content during opt-out | Explicit no-op state, generation-gated export and bounded cancellation | No newly exported revoked-generation spans; stale buffers discarded |
-| Arbitrary headers/content and collector endpoints | Typed destination policy, metadata allowlist, local-only payload consent | Synthetic-secret tests across every capture/export/log path |
-| Unrestricted, duplicated/stale Phoenix Compose; plaintext remote OTLP | Versioned loopback-only managed deployment; optional pinned-peer mTLS gateway | Real bind/transport checks, migration tests, pin revocation and bad-peer tests |
-| Misleading collector advertisement/status and retention | Advertise only an authenticated reachable gateway; distinguish settings, delivery, storage and deletion | Authenticated readiness, accurate status and scoped purge tests |
+| Arbitrary headers/content and collector endpoints | Loopback-only destination, metadata allowlist, local payload consent | Synthetic-secret tests across every capture/export/log path |
+| Unrestricted, duplicated/stale Phoenix Compose; plaintext OTLP | Versioned loopback-only managed deployment; per-node collection with no cross-node export | Real bind checks, migration tests, non-loopback endpoint rejection |
+| Misleading collector advertisement/status and retention | Remove `otel` advertisement; distinguish settings, delivery, storage and deletion | Accurate status, storage readout and scoped purge tests |
 | Idle sampling versus scheduling freshness | Independent telemetry delivery, bounded sampling budgets and demand leases | Phase/jitter/latency/expiry tests with real sample age and routing assertions |
 | Desktop accepts missing/malformed envelope stamps | Lossless v2 decoder with shared Go/TypeScript conformance fixtures | Exact error/termination/liveness parity; owned cleanup and recovery tests |
 | Private fork reporting disabled | Owner enables and tests private reporting or verifies a private contact | Owner/API/channel evidence; accurate SECURITY policy |
@@ -84,9 +83,8 @@ configuration**, rather than unrelated setters racing on partial state:
 - `enabled` defaults to **false**.
 - `recordPayloads` defaults to **false** and is valid only for the managed local
   destination with explicit consent for the current policy version.
-- Destination is `local` or an explicitly selected `pairedNode` identity; it is
-  not an arbitrary unauthenticated URL. Discovery can suggest a collector but
-  cannot select or authorize it.
+- The destination is always this node's own collector on a loopback port
+  (§3.2); there is no remote destination and discovery never selects one.
 - Store consent provenance/policy version, not prompts, credentials or tokens.
   Missing/corrupt settings and old implicit `true` defaults are not proof of
   consent. Migration preserves unrelated settings and starts tracing/capture off
@@ -146,8 +144,8 @@ Local payload capture is separately consented, UTF-8-safe and bounded (proposed
 maximum 16 KiB each for prompt and completion per span, with truncation metadata).
 Do not capture PINs or credentials intentionally; arbitrary user content cannot
 be certified secret-free. Metadata-only and payload modes need distinct tests.
-Selecting a remote destination rejects payload capture, even over mTLS; changing
-that policy would require a separate explicit policy decision.
+Content never leaves the originating node: there is no remote destination, and
+the serving node records nothing for peer-originated requests (§3.2).
 
 **Source anchors:** `services/shared/telemetry/`, each proxy's `telemetry.go`,
 `services/nvpair-ui-broker/proxy.go`, `broker.go`, `broker_telemetry.go`,
@@ -175,45 +173,38 @@ Custom Compose paths are an explicit advanced/operator-managed mode, not silentl
 approved managed deployments. If bindings/image/identity cannot be verified, do
 not mark them secure or enable content capture through the managed UI.
 
-### 3.2 Paired-Node Collection Through a Secure Gateway
+### 3.2 Per-node Collection: Each Node Traces What It Originated
 
-In scope per owner decision. Keep Phoenix private and add a small Go
-`nvpair-telemetry-gateway` service for authenticated remote **metadata-only**
-collection. This is an additive service, not a claim that today's Phoenix speaks
-PAIR mTLS. It requires the usual inventory, supervision, version, firewall,
-contract and notice updates (15 services-tree executables / 13 workers if adopted).
+Owner decision: there is no cross-node trace collection. A node traces only the
+requests that entered through its own loopback proxy, and exports them only to
+its own managed Phoenix on `127.0.0.1`. If that node's collector is not
+running, those traces are dropped; another node's Phoenix never receives them.
+This keeps all trace content on the device that originated it and matches the
+existing local-only contributor policy without amendment.
 
-- The collector host explicitly enables sharing. Its broker starts the gateway
-  only after local OTLP ingestion readiness is verified.
-- The gateway exposes OTLP gRPC over pinned-leaf mTLS using existing
-  `clustertrust` client/server primitives, with a reported bound port. It forwards
-  solely to the managed loopback collector, never an arbitrary forwarding URL.
-- Exporters connect only to the selected pinned cluster principal. mDNS supplies
-  address candidates, not authority. Advertise a distinct secured capability and
-  protocol version, not the old ambiguous plaintext `otel=4317` claim.
-- Reject nonmembers, plaintext, payload-bearing remote spans and invalid schema;
-  bound requests, concurrency, queues, per-peer rate, retries and shutdown time.
-- Revalidate membership on RPCs/batches and close persistent connections when
-  pins/membership are revoked; a once-authenticated gRPC session is not permanent
-  authorization. Removing a selected collector disables its route—no fallback
-  to a discovered or plaintext endpoint.
-- Expose remote dashboards through an operator-controlled authenticated tunnel
-  or separately reviewed authenticated service, not an automatic public UI port.
-
-Each node offers a destination setting: **This device** (local managed Phoenix)
-or **Cluster collector** (a selected paired node that has opted in to host). The
-host node's own spans go to its local collector; peers' spans arrive through its
-gateway, so one Phoenix holds the cross-node traces linked by `traceparent`. If
-the gateway cannot be completed and verified for the release, ship
-**This device** only and hide the cluster option; never ship an insecure interim
-remote path.
+- The originating node keeps the complete view of its own requests: root span,
+  routing decision, and the dispatch span to whichever node served it, including
+  serving-node identity, latency, TTFT and token counts as observed end to end.
+- The serving node exports **nothing** for peer-originated requests. Remove the
+  `pair.cluster.ingress` span and stop propagating trace context to peers
+  (outbound dispatch injection and ingress extraction). Exporting metadata
+  fragments of another node's sessions into the serving node's Phoenix would be
+  confusing and leaks request metadata the originator never chose to share.
+  Peer load remains visible through workloads, not traces.
+- A client-supplied `traceparent` on the local loopback proxy may still parent
+  the root span, so applications that trace themselves link to PAIR's spans.
+- Remove the `otel` mDNS service key, its advertisement/reconcile path and
+  scanner parsing: nothing consumes it, and advertising a plaintext collector
+  invites misconfiguration. No remote destination, gateway or new executable is
+  added; the service inventory stays at 14 executables.
+- The only configurable destination is a loopback port, so an operator can run
+  their own local collector; non-loopback hosts are rejected by the Go validator.
 
 ### 3.3 Honest Readiness, Retention and Deletion
 
-Separate container-running, verified bindings, authenticated gateway readiness,
-OTLP ingestion success, exporter delivery, and UI availability in status. A
-remote configured endpoint succeeding must not cause advertisement of an
-unrelated local port 4317.
+Separate container-running, verified loopback bindings, OTLP ingestion success,
+exporter delivery, and UI availability in status. When tracing is on but the
+collector is not running, say so plainly: this node's traces are being dropped.
 
 Report on-device trace storage in Settings → Service: the managed data volume's
 size, measured by the broker from Docker for the labelled managed volume only,
@@ -405,8 +396,7 @@ including Electron's separate `LICENSES.chromium.html`.
 
 Test Windows install/uninstall and Linux/macOS archives; cross-compilation is
 not runtime/installer proof. Until those reference paths pass, do not distribute
-their outputs or describe them as supported release artifacts. New gateway
-inventory/dependencies must enter the same gates if that design is adopted.
+their outputs or describe them as supported release artifacts.
 
 ## 8. Distribution, Lifecycle and Publication
 
@@ -479,13 +469,11 @@ in advance. This is not a commitment to add every roadmap feature before an RC.
    accurate status and scoped storage deletion.
 3. **Protocol and scheduler correctness:** v2 conformance codec; end-to-end age
    accounting and delivery; only then enable measured adaptive collection.
-4. **Optional secure cluster collector:** mTLS gateway and revocation if selected;
-   otherwise enforce the local-only release scope without insecure fallback.
-5. **Exact-artifact verification:** native lifecycle/install/update/feed checks,
+4. **Exact-artifact verification:** native lifecycle/install/update/feed checks,
    new baseline/final profiling, notes and owner-approved tag/publication.
 
-The owner decisions above settle the behavior-changing recommendations except
-remote content capture. Implementation proceeds as separate plans, one per
+The owner decisions above settle the behavior-changing recommendations.
+Implementation proceeds as separate plans, one per
 subsystem, in the order above, with §9 limitations as their own plans. The
 macOS unclustered-reachability item needs a controlled second machine to
 reproduce; it cannot be scheduled as "fixed" before it is reproduced. The
