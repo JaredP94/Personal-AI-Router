@@ -199,9 +199,16 @@ npm run typecheck
 npm run test:unit
 npm run service-contracts:check
 npm run dead-code:check
+npm run licenses:check
 ```
 
 `dead-code:check` is not included in `make check`; run it separately.
+
+`npm run licenses:check` (also callable as `make licenses-check` from the repository root)
+is a release check that verifies third-party notices against `attribution-manifest.json`
+and fails on stale notices or unresolved entries without downloading Go modules. It is
+deliberately not part of `make check` so that everyday development checks remain green
+while owner-blocked attribution decisions are pending.
 
 Run the Go tests from a Go component directory, and from `services/tests` for
 cross-process coverage:

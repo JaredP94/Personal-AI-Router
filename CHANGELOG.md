@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **macOS Firewall Setup Status in Service Settings**: Added a "Firewall setup: manual" status card to Service Settings on builds that cannot satisfy helper code-signing requirements, providing clear guidance on allowing incoming network connections when macOS firewall prompts appear.
+- **Attribution Manifest & Release Gate**: Added `desktop/licenses/attribution-manifest.json`, reviewed upstream license texts in `desktop/licenses/texts/`, and `npm run licenses:check` (`make licenses-check`) to verify third-party license notices against manifest digests and fail on stale notices or unresolved entries without downloading Go modules.
+
 ### Changed
 - **Explicit Background UI Sampling**: Hidden-window polls can request cached node-info snapshots with `X-NVPAIR-Poll: background` without renewing interactive activity. Scanner/manual scheduling consumers deliberately retain foreground sampling: combining a 10-second sampler, 10-second manual probes, and 10-second scheduler freshness can leave pressure stale. Unattended sampler backoff is deferred until those budgets are coordinated; closing the UI alone does not guarantee 10-second GPU sampling.
 - **macOS Kernel Event Network Monitor**: Replaced `AF_ROUTE` routing-socket monitoring with a filtered `AF_SYSTEM` kernel-event socket managed by Go's `kqueue` netpoller. Shared network monitors, including those in discovery and the three proxies, no longer wake for routing-cache misses or a 200ms socket timeout.
@@ -19,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Desktop File Logging**: Gate verbose/debug/silly file writes on the configured `modularLogLevel` being `debug`, and remove duplicate notification logging. Routine remote-engine polling uses verbose logging. This reduces idle log I/O; it does not suppress real warnings or guarantee zero disk writes.
 
 ### Fixed
+- **Unsigned macOS Helper Registration Prompts**: `nvpair-helper-ctl trust` checks the running host application and control tool against helper code-signing requirements before prompting; unsigned builds skip the helper explanation dialog and registration attempts entirely instead of repeatedly prompting.
+- **Standalone Service Installer Packaging & Firewall Cleanup**: `services/installer_build.sh` stages every component in `services/versions.json` along with `LICENSE` and `THIRD_PARTY_NOTICES.md`, failing before archive creation if any file is missing or non-executable. The Windows NSIS installer (`nvpair-setup.nsi`) installs `omlx-proxy.exe` with firewall rules, bundles license notices, and removes all firewall rules on uninstall (fixing leaked LM Studio proxy firewall rules).
+- **Kaizen CSS Vendoring Integrity**: `desktop/scripts/vendor-kaizen-ui-foundations-css.ts` validates pinned SHA-256 digests of downloaded CSS bytes before writing to disk, failing closed on digest mismatches.
+- **Dependency Attribution Notices**: Audited 24 dependencies previously using README fallback or missing texts, resolving them with authoritative upstream license files and incorporating Lucide's attribution directly into the canonical notice.
 - **Cluster Endorsement Broadcast Churn**: Report an endorsement merge as changed only when an endorsement was added successfully, avoiding redundant `cluster:trust-changed` broadcasts on unchanged roster gossip.
 - **Manual & Cluster Node Alias Deduplication**: A manually added alias supersedes a cluster-seeded entry at the same address while retaining cluster identity; removing it restores cluster seeding. The broker keeps a deterministic display alias per canonical node key, but prefers a reachable engine address over metadata-only or failed aliases for operational state, avoiding both name oscillation and suppression of healthy routes.
 - **TLS-Aware Manual Node Probing & Log Deduplication**: Ordered `node-info` and `engine-manager` probes ahead of plaintext engine probes on clustered/TLS nodes in `nvpair-manual-nodes` and deduplicated non-loopback plaintext rejection warnings once per remote IP across `ollama-proxy`, `lmstudio-proxy`, and `omlx-proxy`.
@@ -29,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backfilled the `0.7.0-rc.1` changelog and corrected fork artifact/signing claims, engine capabilities, worker inventory, relay v2 recovery, logging, and telemetry/privacy limitations across user and architecture guides and `AGENTS.md`.
 - Regenerated dependency notices, retained companion Go attribution files, fixed embedded Markdown fencing, and replaced the stale services notice with a canonical-root pointer. README-only/missing upstream license text remains flagged for review.
 - Added [next-release readiness follow-ups](docs/release-readiness.mdx), including unwired telemetry settings, collector exposure, private vulnerability reporting, attribution review, and final artifact validation. These are not resolved by documentation changes.
+- Documented the unsigned macOS firewall status card in [Known issues](docs/known-issues.mdx) and added `npm run licenses:check` / `make licenses-check` as a release check in [Developing](docs/developing.mdx) and `AGENTS.md`.
+- Updated [Next Release Readiness](docs/release-readiness.mdx) with completed installer packaging, Kaizen CSS integrity verification, audited attribution (recording 5 remaining owner-blocked decisions), and pending private vulnerability reporting.
 
 ## [0.7.0-rc.1] - 2026-10-17
 
