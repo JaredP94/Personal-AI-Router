@@ -250,11 +250,13 @@ graph and requires separate review, including preservation in built CSS.
 | `js-yaml` | 4.2.0 | MIT |
 | `jsdom` | 29.1.1 | MIT |
 | `jsonfile` | 6.2.1 | MIT |
+| `kaizen-ui-foundations` | 1.0.0 | UNKNOWN |
 | `lazy-val` | 1.0.5 | MIT |
 | `lodash.escaperegexp` | 4.1.2 | MIT |
 | `lodash.isequal` | 4.5.0 | MIT |
 | `loose-envify` | 1.4.0 | MIT |
 | `lru-cache` | 11.3.6 | BlueOak-1.0.0 |
+| `lucide` |  | ISC |
 | `lucide-react` | 1.16.0 | ISC |
 | `math-intrinsics` | 1.1.0 | MIT |
 | `mdast-util-to-hast` | 13.2.1 | MIT |
@@ -1228,23 +1230,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `number`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/number
-# or
-$ npm install @radix-ui/number
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/primitive 1.1.3
 
@@ -1552,23 +1561,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-compose-refs`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-compose-refs
-# or
-$ npm install @radix-ui/react-compose-refs
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-context 1.1.2
 
@@ -1576,23 +1592,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-context`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-context
-# or
-$ npm install @radix-ui/react-context
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-context-menu 2.2.16
 
@@ -1660,23 +1683,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-direction`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-direction
-# or
-$ npm install @radix-ui/react-direction
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-View docs [here](https://radix-ui.com/primitives/docs/utilities/direction).
-````
 
 ### @radix-ui/react-dismissable-layer 1.1.11
 
@@ -1864,23 +1894,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-id`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-id
-# or
-$ npm install @radix-ui/react-id
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-View docs [here](https://radix-ui.com/primitives/docs/utilities/id-provider).
-````
 
 ### @radix-ui/react-label 2.1.7
 
@@ -2668,23 +2705,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-use-callback-ref`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-use-callback-ref
-# or
-$ npm install @radix-ui/react-use-callback-ref
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-use-controllable-state 1.2.2
 
@@ -2752,23 +2796,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-use-escape-keydown`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-use-escape-keydown
-# or
-$ npm install @radix-ui/react-use-escape-keydown
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-use-is-hydrated 0.1.0
 
@@ -2806,23 +2857,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-use-layout-effect`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-use-layout-effect
-# or
-$ npm install @radix-ui/react-use-layout-effect
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-use-previous 1.1.1
 
@@ -2830,23 +2888,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-use-previous`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-use-previous
-# or
-$ npm install @radix-ui/react-use-previous
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-use-rect 1.1.1
 
@@ -2854,23 +2919,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-use-rect`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-use-rect
-# or
-$ npm install @radix-ui/react-use-rect
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-use-size 1.1.1
 
@@ -2878,23 +2950,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `react-use-size`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/react-use-size
-# or
-$ npm install @radix-ui/react-use-size
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @radix-ui/react-visually-hidden 1.2.3
 
@@ -2932,23 +3011,30 @@ License: MIT
 
 Repository: https://github.com/radix-ui/primitives
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# `rect`
+Copyright (c) 2022 WorkOS
 
-## Installation
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-```sh
-$ yarn add @radix-ui/rect
-# or
-$ npm install @radix-ui/rect
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
-
-## Usage
-
-This is an internal utility, not intended for public usage.
-````
 
 ### @shikijs/core 4.0.2
 
@@ -5187,91 +5273,30 @@ License: MIT
 
 Repository: https://github.com/aholachek/react-flip-toolkit
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-# flip-toolkit
+Copyright (c) 2018 Alex Holachek
 
-[![Minified & Gzipped size](https://badgen.net/bundlephobia/minzip/flip-toolkit)](https://bundlephobia.com/result?p=flip-toolkit)
-[![MIT license](https://badgen.net/npm/license/react-flip-toolkit)](http://opensource.org/licenses/MIT)
-[![npm version](https://badgen.net/npm/v/flip-toolkit)](https://npmjs.org/package/flip-toolkit 'View this project on npm')
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Using `Vue.js` ? Try [vue-flip-toolkit](https://github.com/mattrothenberg/vue-flip-toolkit).
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-## Basic Example
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-[**Fork this example on CodeSandbox**](https://codesandbox.io/s/5v1k1nwz8l)
-
-```js
-import { Flipper } from 'flip-toolkit'
-const container = document.querySelector('.container')
-const square = document.querySelector('.square')
-const innerSquare = document.querySelector('.inner-square')
-
-const flipper = new Flipper({ element: container })
-
-// add flipped children to the parent
-flipper.addFlipped({
-  element: square,
-  // assign a unique id to the element
-  flipId: 'square',
-  onStart: () => console.log('animation started!'),
-  onSpringUpdate: springValue =>
-    console.log(`current spring value: ${springValue}`),
-  onComplete: () => console.log('animation completed!')
-})
-
-// to add an inverted child
-// (so that the text doesn't warp)
-// use this method with
-// a reference to the parent element
-flipper.addInverted({
-  element: innerSquare,
-  parent: square
-})
-
-square.addEventListener('click', () => {
-  // record positions before they change
-  flipper.recordBeforeUpdate()
-  square.classList.toggle('big-square')
-  // record new positions, and begin animations
-  flipper.update()
-})
 ```
-
-To learn more about which configuration options are available, [check out the code for the `Flipper` class here](../react-flip-toolkit/src/FlipToolkit/Flipper.ts) or [read the docs for `react-flip-toolkit`](../react-flip-toolkit/README.md)
-
-## Spring
-
-`flip-toolkit` also exports a utility function, `spring`, that can be used to orchestrate non-FLIP animations.
-
-[**Fork this example on CodeSandbox**](https://codesandbox.io/s/spring-example-6xw5p)
-
-```js
-import { spring } from "flip-toolkit";
-
-const container = document.querySelector(".container");
-const squares = [...container.querySelectorAll(".square")];
-
-squares.forEach((el, i) => {
-  spring({
-    config: "wobbly",
-    values: {
-      translateY: [-15, 0],
-      opacity: [0, 1]
-    },
-    onUpdate: ({ translateY, opacity }) => {
-      el.style.opacity = opacity;
-      el.style.transform = `translateY(${translateY}px)`;
-    },
-    delay: i * 25,
-    onComplete: () => {
-      // add callback logic here if necessary
-    }
-  });
-});
-```
-````
 
 ### follow-redirects 1.16.0
 
@@ -11007,6 +11032,16 @@ OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHE
  ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+### kaizen-ui-foundations 1.0.0
+
+License: UNKNOWN
+
+Repository: https://webassets.nvidia.com/kaizen-ui-foundations/1.0.0/base-external.css
+
+```text
+(no license file found)
+```
+
 ### lazy-val 1.0.5
 
 License: MIT
@@ -11233,6 +11268,36 @@ No contributor can revoke this license.
 without any warranty or condition, and no contributor
 will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
+```
+
+### lucide 
+
+License: ISC
+
+Repository: desktop/src/ui/lib/kaizen-ui-foundations/base-external.css
+
+```text
+/**
+* Lucide Icons CSS (Open Source Alternative)
+* Maps NVIDIA icon names to Lucide equivalents
+*
+* ISC License
+*
+* Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+*
+* Permission to use, copy, modify, and/or distribute this software for any
+* purpose with or without fee is hereby granted, provided that the above
+* copyright notice and this permission notice appear in all copies.
+*
+* THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+* WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+* MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+* ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+* WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+* ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+* OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/
+
 ```
 
 ### lucide-react 1.16.0
@@ -11818,1512 +11883,30 @@ License: MIT
 
 Repository: https://github.com/KingSora/OverlayScrollbars
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-<div align="center">
-  <a href="https://kingsora.github.io/OverlayScrollbars">
-    <img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/logo/logo.png" width="160" height="160" alt="OverlayScrollbars">
-  </a>
-</div>
-<br />
-<div align="center">
+Copyright (c) 2022 Rene Haas
 
-  [![Downloads](https://img.shields.io/npm/dm/overlayscrollbars.svg?style=flat-square)](https://www.npmjs.com/package/overlayscrollbars)
-  [![Version](https://img.shields.io/npm/v/overlayscrollbars.svg?style=flat-square)](https://www.npmjs.com/package/overlayscrollbars)
-  [![License](https://img.shields.io/github/license/kingsora/overlayscrollbars.svg?style=flat-square)](https://github.com/KingSora/OverlayScrollbars/blob/master/LICENSE)
-  [![Code Coverage](https://img.shields.io/codecov/c/github/KingSora/OverlayScrollbars?style=flat-square)](https://app.codecov.io/gh/KingSora/OverlayScrollbars)
-  [![Max. Bundle Size](https://img.shields.io/bundlephobia/minzip/overlayscrollbars?label=max.%20bundle%20size&style=flat-square)](https://bundlephobia.com/package/overlayscrollbars)
-  
-</div>
-<h3 align="center">
-  <a href="https://kingsora.github.io/OverlayScrollbars">Website</a>
-  &nbsp;&nbsp;&bull;&nbsp;&nbsp;
-  <a href="https://kingsora.github.io/OverlayScrollbars/examples">Examples</a>
-</h3>
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-# OverlayScrollbars
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-> A javascript scrollbar plugin that hides the native scrollbars, provides custom styleable overlay scrollbars, and preserves the native functionality and feel.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-## Why?
-
-I created this plugin because I hate ugly and space-consuming scrollbars. Similar plugins didn't meet my requirements in terms of features, quality, simplicity, license or browser support.
-
-## Goals & Features
-
- - Simple, powerful and well-documented API.
- - High browser compatibility - **Firefox 59+**, **Chrome 55+**, **Opera 42+**, **Edge 15+** and **Safari 10+**.
- - **Fully Accessible** - Native scrolling behavior is fully preserved.
- - Can run on the server (`Node`, `Deno` and `Bun`) - **SSR**, **SSG** and **ISR** support.
- - Tested on various devices - **Mobile**, **Desktop** and **Tablet**.
- - Tested with various (and mixed) inputs - **Mouse**, **Touch** and **Pen**.
- - **Treeshaking** - bundle only what you really need.
- - Automatic update detection - **no polling required**.
- - Leverage latest browser features - best performance in new browsers.
- - Flow independent - supports all values for `direction`, `flex-direction` and `writing-mode`.
- - Supports scroll snapping.
- - Supports all **virtual scrolling** libraries.
- - Supports the `body` element.
- - Easy and effective scrollbar styling.
- - Highly customizable.
- - TypeScript support - completely written in TypeScript.
- - Dependency-free - 100% self-written to ensure small size and best functionality.
- - High quality and fully typed framework versions for [`react`](https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-react), [`vue`](https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-vue), [`angular`](https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-ngx), [`svelte`](https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-svelte) and [`solid`](https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-solid).
-
-## Choose your framework
-
-In addition to the vanilla JavaScript version, you can use the official framework components & utilities:
-
-<a href="https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-react"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/packages/overlayscrollbars-react/logo.svg" width="80" height="80" alt="React"></a>
-<a href="https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-vue"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/packages/overlayscrollbars-vue/logo.svg" width="80" height="80" alt="Vue"></a>
-<a href="https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-ngx"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/packages/overlayscrollbars-ngx/logo.svg" width="80" height="80" alt="Angular"></a>
-<a href="https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-svelte"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/packages/overlayscrollbars-svelte/logo.svg" width="80" height="80" alt="Svelte"></a>
-<a href="https://github.com/KingSora/OverlayScrollbars/tree/master/packages/overlayscrollbars-solid"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/packages/overlayscrollbars-solid/logo.svg" width="80" height="80" alt="Solid"></a>
-
-## Getting started
-
-### npm & nodejs
-
-OverlayScrollbars can be downloaded from [npm](https://www.npmjs.com/package/overlayscrollbars) or the package manager of your choice:
-```sh
-npm install overlayscrollbars
 ```
-Once installed, it can be imported:
-```js
-import 'overlayscrollbars/overlayscrollbars.css';
-import { 
-  OverlayScrollbars, 
-  ScrollbarsHidingPlugin, 
-  SizeObserverPlugin, 
-  ClickScrollPlugin 
-} from 'overlayscrollbars';
-```
-
-> __Note__: If the path `'overlayscrollbars/overlayscrollbars.css'` is not working use `'overlayscrollbars/styles/overlayscrollbars.css'` as the import path for the CSS file.
-
-You can use this [Node Example](https://github.com/KingSora/OverlayScrollbars/tree/master/examples/node) as an reference / starting point.
-
-### Manual Download & Embedding
-
-You can use OverlayScrollbars without any bundler or package manager.  
-Simply download one of the [Releases](https://github.com/KingSora/OverlayScrollbars/releases) or use a [CDN](https://cdnjs.com/libraries/overlayscrollbars).
-
-- Use the javascript files with the `.browser` extension.
-- Use the javascript files with the `.es5` extension if you need to support older browsers, otherwise use the `.es6` files.
-- For production use the javascript / stylesheet files with the `.min` extension. 
-
-Embed OverlayScrollbars manually in your HTML:
-```html
-<link type="text/css" href="path/to/overlayscrollbars.css" rel="stylesheet" />
-<script type="text/javascript" src="path/to/overlayscrollbars.browser.es.js" defer></script>
-```
-
-Use the global variable `OverlayScrollbarsGlobal` to access the api similar to how you can do it in nodejs / modules:
-```js
-var { 
-  OverlayScrollbars, 
-  ScrollbarsHidingPlugin, 
-  SizeObserverPlugin, 
-  ClickScrollPlugin  
-} = OverlayScrollbarsGlobal;
-```
-
-You can use this [Browser Example](https://github.com/KingSora/OverlayScrollbars/tree/master/examples/browser) as an reference or a starting point.
-
-The examples in this documentation use the `import` syntax instead of the `OverlayScrollbarsGlobal` object. However, both versions are equivalent.
-
-## Initialization
-
-The initialization of `OverlayScrollbars` is explicit _per element_. Only the scrollbars of the element on which the plugin is initialized will be changed. Scrollbars of child elements will remain unchanged unless the plugin is initialized on them as well.
-
-You can either initialize a new instance directly with an `Element` or with an `Object` where you have more control over the initialization process. 
-
-```js
-// Simple initialization with an element
-const osInstance = OverlayScrollbars(document.querySelector('#myElement'), {});
-```
-
-### Bridging initialization flickering
-
-When you initialize OverlayScrollbars, it takes a few milliseconds to create and append all the elements to the DOM. During this time, the native scrollbars are still visible and will be switched out after the initialization is finished. This is seen as flickering. 
-
-To fix this behavior apply the `data-overlayscrollbars-initialize` attribute to the target element (and the `html` element as well when initializing a scrollbar for the `body` element).
-
-```html
-<!-- for the body element -->
-<html data-overlayscrollbars-initialize>
-  <head></head>
-  <body data-overlayscrollbars-initialize></body>
-</html>
-
-<!-- for all other elements -->
-<div data-overlayscrollbars-initialize>
-  OverlayScrollbars is applied to this div
-</div>
-```
-
-### Initialization with an Object
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-  <br />
-  
-The only required field is the `target` field. This is the field to which the plugin will be applied.  
-If you use the object initialization with only the `target` field, the result is equivalent to the element initialization:
-```js
-// Both initializations have the same outcome
-
-OverlayScrollbars(document.querySelector('#myElement'), {});
-OverlayScrollbars({ target: document.querySelector('#myElement') }, {});
-```
-
-When initializing with an object you can specify how the library handles generated elements.
-For example, you can specify an existing element as the `viewport' element. Then the library won't generate it, but use the specified element instead:
-
- ```js
-OverlayScrollbars({ 
-  target: document.querySelector('#target'),
-  elements: {
-    viewport: document.querySelector('#viewport'),
-  },
-}, {});
-```
-
-This is very useful if you have a fixed DOM structure and don't want OverlayScrollbars to create its own elements. These cases are very common when you want another library to work with OverlayScrollbars.
-
----
-
-You can also decide to which element the scrollbars should be applied to:
-
- ```js
-OverlayScrollbars({ 
-  target: document.querySelector('#target'),
-  scrollbars: {
-    slot: document.querySelector('#target').parentElement,
-  },
-}, {});
-```
-
----
-
-Last but not least, you can decide when to cancel the initialization:
-
- ```js
-OverlayScrollbars({ 
-  target: document.querySelector('#target'),
-  cancel: {
-    nativeScrollbarsOverlaid: true,
-    body: null,
-  }
-}, {});
-```
-
-In the above example, the initialization will be aborted if the native scrollbars are overlaid, or if your target is a `body` element and the plugin has determined that initializing to the `body` element would interfere with native functionality such as `window.scrollTo`.
-
-</details>
-
-## Styling
-
-OverlayScrollbars provides a set of `CSS Custom Properties` which makes styling easy and fast.
-
-Out of the box you can choose between two scrollbar themes called `os-theme-dark` and `os-theme-light`. You can use the `scrollbars.theme` option to change the theme.
-
-Custom scrollbar themes can be done in several ways. The easiest and fastest way is to use the predefined set of `CSS Custom Properties` aka CSS variables. If that's not enough, you can add custom class names or add custom styling to the existing class names.  
-
-### Styling in depth
-
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-
-  ### CSS Custom properties
-
-  OverlayScrollbars provides the following `CSS Custom Properties`:
-
-  **Viewport styling:**
-
-  ```scss
-  [data-overlayscrollbars-viewport] {
-    overflow-x: var(--os-viewport-overflow-x);
-    overflow-y: var(--os-viewport-overflow-y);
-  }
-  ```
-
-  You can use the `--os-viewport-overflow-x` and `--os-viewport-overflow-y` properties to re-apply the correct `overflow` styles in case other styling rules (e.g. from 3rd party libraries) are overwriting them.
-
-  **Scrollbar styling:**
-
-  ```scss
-  .os-scrollbar {
-    // The size of the scrollbar
-    --os-size: 0;
-    // The axis-perpendicular padding of the scrollbar (horizontal: padding-y, vertical: padding-x)
-    --os-padding-perpendicular: 0;
-    // The axis padding of the scrollbar (horizontal: padding-x, vertical: padding-y)
-    --os-padding-axis: 0;
-    // The border radius of the scrollbar track
-    --os-track-border-radius: 0;
-    // The background of the scrollbar track
-    --os-track-bg: none;
-    // The :hover background of the scrollbar track
-    --os-track-bg-hover: none;
-    // The :active background of the scrollbar track
-    --os-track-bg-active: none;
-    // The border of the scrollbar track
-    --os-track-border: none;
-    // The :hover background of the scrollbar track
-    --os-track-border-hover: none;
-    // The :active background of the scrollbar track
-    --os-track-border-active: none;
-    // The border radius of the scrollbar handle
-    --os-handle-border-radius: 0;
-    // The background of the scrollbar handle
-    --os-handle-bg: none;
-    // The :hover background of the scrollbar handle
-    --os-handle-bg-hover: none;
-    // The :active background of the scrollbar handle
-    --os-handle-bg-active: none;
-    // The border of the scrollbar handle
-    --os-handle-border: none;
-    // The :hover border of the scrollbar handle
-    --os-handle-border-hover: none;
-    // The :active border of the scrollbar handle
-    --os-handle-border-active: none;
-    // The min size of the scrollbar handle
-    --os-handle-min-size: 33px;
-    // The max size of the scrollbar handle
-    --os-handle-max-size: none;
-    // The axis-perpendicular size of the scrollbar handle (horizontal: height, vertical: width)
-    --os-handle-perpendicular-size: 100%;
-    // The :hover axis-perpendicular size of the scrollbar handle (horizontal: height, vertical: width)
-    --os-handle-perpendicular-size-hover: 100%;
-    // The :active axis-perpendicular size of the scrollbar handle (horizontal: height, vertical: width)
-    --os-handle-perpendicular-size-active: 100%;
-    // Increases the interactive area of the scrollbar handle.
-    --os-handle-interactive-area-offset: 0;
-  }
-  ```
-
-  You can change the properties for both scrollbars at once, or for each scrollbar axis. In the example below, I've chosen `os-theme-custom` as the theme name:
-
-  ```scss
-  // Horizontal and vertical scrollbar are 10px 
-  .os-theme-custom {
-    --os-size: 10px;
-  }
-
-  // Horizontal scrollbar is 10px
-  .os-theme-custom.os-scrollbar-horizontal {
-    --os-size: 10px;
-  }
-  // Vertical scrollbar is 20px
-  .os-theme-custom.os-scrollbar-vertical {
-    --os-size: 20px;
-  }
-  ```
-
-  You can then use your theme by assigning it via the `scrollbars.theme` option:
-
-  ```js
-  OverlayScrollbars(document.body, {
-    scrollbars: {
-      theme: 'os-theme-custom'
-    }
-  });
-  ```
-
-  Since scrollbar styles are usually simple, this set of options should be enough to get the styling you want.
-  If you need more freedom, you can create your own styles by adding styling to the base class names described in the next section.
-
-  ### Scrollbars structure and CSS class names
-
-  The scrollbars HTML markup looks like:
-
-  ```html
-  <div class="os-scrollbar os-scrollbar-horizontal">
-      <div class="os-scrollbar-track">
-          <div class="os-scrollbar-handle">
-          </div>
-      </div>
-  </div>
-  <div class="os-scrollbar os-scrollbar-vertical">
-      <div class="os-scrollbar-track">
-          <div class="os-scrollbar-handle">
-          </div>
-      </div>
-  </div>
-  ```
-
-  The class names are simplified, in a real application the `.os-scrollbar` element can have additional class names which modify the appearance (mostly visibility and alignment).  
-
-  Below is a list of the most important class names you will encounter:
-
-  | CSS class name | description |
-| :--- | :--- |
-| `.os-scrollbar` | The root element of a scrollbar. |
-| `.os-scrollbar-rtl` | Indicates a `RTL` direction of the host element the scrollbar belongs to. |
-| `.os-scrollbar-horizontal` | The root element of a horizontal scrollbar. |
-| `.os-scrollbar-vertical` | The root element of a vertical scrollbar. |
-| `.os-scrollbar-handle-interactive` | Indicates that the handle inside the scrollbar is interactive (`scrollbars.dragScroll` is not `false`). |
-| `.os-scrollbar-track-interactive` | Indicates that the track inside the scrollbar is interactive (`scrollbars.clickScroll` is not `false`). |
-| `.os-scrollbar-track` | The track element. This is the track of the nested handle element. If `scrollbars.clickScroll` is not `false` this is the element users can click to change the scroll offset. |
-| `.os-scrollbar-handle` | The handle element. If `scrollbars.dragScroll` is not `false` this is the handle users can drag to change the scroll offset. |
-
-  If you create your own theme, please only use the classes listed above. All other classes are modifier classes used to change visibility, alignment and pointer-events of the scrollbars.
-
-  ### Gotchas
-
-  It is important that the chosen theme class name in your CSS file matches the assigned theme name in the options. If the CSS class name is `.my-theme`, the `scrollbars.theme` must be `'my-theme'`.  
-    
-    
-  Please be aware of your stack. For example, `css-modules` will change your class names to avoid naming collisions. Always check that your CSS is what you expect it to be.
-
-</details>
-
-## Options
-
-You can initialize OverlayScrollbars with an initial set of options, which can be changed at any time with the `options` method:
-```js
-OverlayScrollbars(document.querySelector('#myElement'), {
-  overflow: {
-    x: 'hidden',
-  },
-});
-```
-
-### Options in depth
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-  <br />
-
-The default options are:
-```js
-const defaultOptions = {
-  paddingAbsolute: false,
-  showNativeOverlaidScrollbars: false,
-  update: {
-    elementEvents: [['img', 'load']],
-    debounce: {
-      mutation: [0, 33],
-      resize: null,
-      event: [33, 99],
-      env: [222, 666, true],
-    },
-    attributes: null,
-    ignoreMutation: null,
-    flowDirectionStyles: null,
-  },
-  overflow: {
-    x: 'scroll',
-    y: 'scroll',
-  },
-  scrollbars: {
-    theme: 'os-theme-dark',
-    visibility: 'auto',
-    autoHide: 'never',
-    autoHideDelay: 1300,
-    autoHideSuspend: false,
-    dragScroll: true,
-    clickScroll: false,
-    pointers: ['mouse', 'touch', 'pen'],
-  },
-};
-```
-
-### `paddingAbsolute`
-
-| type  | default |
-| :--- | :--- |
-| `boolean` | `false` |
-
-Indicates whether the padding for the content should be absolute.
-
-### `showNativeOverlaidScrollbars`
-
-| type  | default |
-| :--- | :--- |
-| `boolean` | `false` |
-
-Indicates whether the native overlaid scrollbars should be visible.
-
-### `update.elementEvents`
-
-| type  | default |
-| :--- | :--- |
-| `Array<[string, string]> \| null` | `[['img', 'load']]` |
-
-An array of tuples. The first value in the tuple is an `selector` and the second value are `event names`. The plugin will update itself if any of the elements with the specified selector emits any of the specified events. The default value can be interpreted as "The plugin will update itself if any `img` element emits a `load` event."
-
-### `update.debounce`
-
-Options to debounce updates to fine-tune performance.
-
-Each **field** in this object has the following type:
-| type |
-| :--- |
-| `[timeout?: number, maxWait?: number, leading?: boolean] \| number \| null` |
-
-The tuple type of `[timeout?: number, maxWait?: number, leading?: boolean]` has three values:
-- timeout: The timeout of the debounce in milliseconds.
-- maxWait: The max wait of the debounce in milliseconds.
-- leading: Indicates whether the debounce is also executed on the leading edge.
-
-If a `number` is specified it is treated as the timeout in milliseconds.
-
-If `null` is specified no debounce will take place.
-
-> __Note__: If 0 is used as the timeout, `requestAnimationFrame` will be used instead of `setTimeout` for the debounce.
-
-### `update.debounce.mutation`
-
-| type  | default |
-| :--- | :--- |
-| `[timeout?: number, maxWait?: number, leading?: boolean] \| number \| null` | `[0, 33]` |
-
-Debounce updates which were triggered by a MutationObserver.
-
-### `update.debounce.resize`
-
-| type  | default |
-| :--- | :--- |
-| `[timeout?: number, maxWait?: number, leading?: boolean] \| number \| null` | `null` |
-
-Debounce updates which were triggered by a ResizeObserver.
-
-### `update.debounce.event`
-
-| type  | default |
-| :--- | :--- |
-| `[timeout?: number, maxWait?: number, leading?: boolean] \| number \| null` | `[33, 99]` |
-
-Debounce updates which were triggered by an event registered in the `update.elementEvents` option.
-
-### `update.debounce.env`
-
-| type  | default |
-| :--- | :--- |
-| `[timeout?: number, maxWait?: number, leading?: boolean] \| number \| null` | `[222, 666, true]` |
-
-Debounce updates which were triggered by environmental changes. (e.g. zooming & window resize)
-
-### `update.attributes`
-
-| type  | default |
-| :--- | :--- |
-| `string[] \| null` | `null` |
-
-> __Note__: There is a base array of attributes that the `MutationObserver` always observes, even if this option is `null`.
-
-An array of additional attributes that the `MutationObserver` should observe the content for. 
-
-### `update.ignoreMutation`
-
-| type  | default |
-| :--- | :--- |
-| `((mutation) => boolean) \| null` | `null` |
-
-A function which receives a [`MutationRecord`](https://developer.mozilla.org/en-US/docs/Web/API/MutationRecord) as an argument. If the function returns a truthy value the mutation will be ignored and the plugin won't update. **Useful to fine-tune performance.**
-
-### `update.flowDirectionStyles`
-
-| type  | default |
-| :--- | :--- |
-| `((viewport) => Record<string, unknown>) \| null` | `null` |
-
-A function which returns a map of styles which influence the viewports flow direction or `null` if the default behavior shall be used.
-The default behavior reads the computed `display`, `flexDirection`, `direction` and `writingMode` styles of the viewport element.
-
-This function can be used to skip or customize the expensive "non default flow direction" check:
-Use an empty style object to skip the check.
-Non-empty style objects will lead to a check when they change compared to the previously returned value.
-
-Examples of styles which influence the flow direction:
-- `direction: rtl`
-- `flexDirection: column-reverse`
-- `writingMode: vertical-rl`
-
-### `overflow.x`
-
-| type  | default |
-| :--- | :--- |
-| `string` | `'scroll'` |
-
-> __Note__: Valid values are: `'hidden'`, `'scroll'`, `'visible'`, `'visible-hidden'` and `'visible-scroll'`.
-
-The overflow behavior for the horizontal (x) axis.
-
-### `overflow.y`
-
-| type  | default |
-| :--- | :--- |
-| `string` | `'scroll'` |
-
-> __Note__: Valid values are: `'hidden'`, `'scroll'`, `'visible'`, `'visible-hidden'` and `'visible-scroll'`.
-
-The overflow behavior for the vertical (y) axis.
-
-### `scrollbars.theme`
-
-| type  | default |
-| :--- | :--- |
-| `string \| null` | `'os-theme-dark'` |
-
-Applies the specified theme (classname) to the scrollbars.
-
-### `scrollbars.visibility`
-
-| type  | default |
-| :--- | :--- |
-| `string` | `'auto'` |
-
-> __Note__: Valid values are: `'visible'`, `'hidden'`, and `'auto'`.
-
-The visibility of a scrollbar if its scroll axis is able to have a scrollable overflow. (Scrollable overflow for an axis is only possible with the overflow behavior set to `'scroll'` or `'visible-scroll'`).
-
-### `scrollbars.autoHide`
-
-| type  | default |
-| :--- | :--- |
-| `string` | `'never'` |
-
-> __Note__: Valid values are: `'never'`, `'scroll'`, `'leave'` and `'move'`.
-
-Dictates whether to hide visible scrollbars automatically after a certain user action.
-
-### `scrollbars.autoHideDelay`
-
-| type  | default |
-| :--- | :--- |
-| `number` | `1300` |
-
-The delay in milliseconds before the scrollbars are automatically hidden.
-
-### `scrollbars.autoHideSuspend`
-
-| type  | default | 
-| :--- | :--- |
-| `boolean` | `false` |
-
-Suspend the autoHide functionality until the first scroll interaction is performed.  
-The default value for this option is `false` for backwards compatibility reasons but is recommended to be `true` for better accessibility.
-
-### `scrollbars.dragScroll`
-
-| type  | default |
-| :--- | :--- |
-| `boolean` | `true` |
-
-Indicates whether you can drag the scrollbar handles for scrolling.
-
-### `scrollbars.clickScroll`
-
-| type  | default |
-| :--- | :--- |
-| `boolean \| 'instant' \| ((isHorizontal) => Partial<ScrollbarsClickScrollBehaviorOptions>)` | `false` |
-
-> __Note__: The **ClickScrollPlugin** is required if this option is not `false` or `'instant'`.
-
-Indicates whether you can click on the scrollbar track for scrolling.
-
-Can also be a function which customizes the click scroll behavior.
-
-### `scrollbars.pointers`
-
-| type  | default |
-| :--- | :--- |
-| `string[] \| null` | `['mouse', 'touch', 'pen']` |
-
-The [`PointerTypes`](https://developer.mozilla.org/en-US/docs/Web/API/PointerEvent/pointerType) the plugin should react to.
-
-#### TypeScript 
-
-```ts
-// The options of a OverlayScrollbars instance.
-type Options = {
-  // Whether the padding should be absolute.
-  paddingAbsolute: boolean;
-  // Whether to show the native scrollbars. Has effect only if the native scrollbars are overlaid.
-  showNativeOverlaidScrollbars: boolean;
-  // Customizes the automatic update behavior.
-  update: {
-    /**
-     * The given Event(s) from the elements with the given selector(s) will trigger an update.
-     * Useful for everything the MutationObserver and ResizeObserver can't detect
-     * e.g.: An image's `load` event or the `transitionend` / `animationend` events.
-     */
-    elementEvents: Array<[elementSelector: string, eventNames: string]> | null;
-    /**
-     * Options to debounce updates to fine-tune performance.
-     * It is possible to debounce updates caused by mutations, resizes, events and environmental changes.
-     */
-    debounce: {
-      // Debounce updates which were triggered by a MutationObserver.
-      mutation: OptionsDebounceValue;
-      // Debounce updates which were triggered by a ResizeObserver.
-      resize: OptionsDebounceValue;
-      // Debounce updates which were triggered by a Event.
-      event: OptionsDebounceValue;
-      // Debounce updates which were triggered by environmental changes. (e.g. zooming & window resize)
-      env: OptionsDebounceValue;
-    };
-    /**
-     * HTML attributes which will trigger an update if they're changed.
-     * Basic attributes like `id`, `class`, `style` etc. are always observed and don't have to be added explicitly.
-     */
-    attributes: string[] | null;
-    // A function which makes it possible to ignore a content mutation or `null` if nothing should be ignored.
-    ignoreMutation: ((mutation: MutationRecord) => boolean) | null;
-    /**
-     * A function which returns a map of styles which influence the viewports flow direction or `null` if the default behavior shall be used.
-     * This function can be used to skip or customize the expensive "non default flow direction" check.
-     */
-    flowDirectionStyles:
-      | ((viewport: HTMLElement) => Record<string, unknown>)
-      | null;
-  };
-  // Customizes the overflow behavior per axis.
-  overflow: {
-    // The overflow behavior of the horizontal (x) axis.
-    x: OverflowBehavior;
-    // The overflow behavior of the vertical (y) axis.
-    y: OverflowBehavior;
-  };
-  // Customizes appearance of the scrollbars.
-  scrollbars: {
-    // The scrollbar's theme. The theme value will be added as `class` to all `scrollbar` elements of the instance.
-    theme: string | null;
-    // The scrollbar's visibility behavior.
-    visibility: ScrollbarsVisibilityBehavior;
-    // The scrollbar's auto hide behavior.
-    autoHide: ScrollbarsAutoHideBehavior;
-    // The scrollbar's auto hide delay in milliseconds.
-    autoHideDelay: number;
-    // Whether the scrollbar's auto hide behavior is suspended until a scroll happened.
-    autoHideSuspend: boolean;
-    // Whether it is possible to drag the handle of a scrollbar to scroll the viewport.
-    dragScroll: boolean;
-    // Whether it is possible to click the track of a scrollbar to scroll the viewport.
-    clickScroll: ScrollbarsClickScrollBehavior;
-    // An array of pointer types that shall be supported.
-    pointers: string[] | null;
-  };
-};
-
-/**
- * If a tuple is provided you can customize the `timeout` and the `maxWait` in milliseconds. The third value `leading` indicates whether the debounce is also executed on the leading edge.
- * A single number customizes the `timeout` in milliseconds.
- * If the `timeout` is `0`, a debounce still exists. (its executed via `requestAnimationFrame`).
- */
-type OptionsDebounceValue =
-  | [
-      timeout?: number | false | null | undefined,
-      maxWait?: number | false | null | undefined,
-      leading?: boolean | null | undefined,
-    ]
-  | number
-  | false
-  | null;
-
-// The overflow behavior of an axis.
-type OverflowBehavior =
-  // No scrolling is possible and the content is clipped.
-  | 'hidden'
-  // No scrolling is possible and the content isn't clipped.
-  | 'visible'
-  // Scrolling is possible if there is an overflow.
-  | 'scroll'
-  /**
-   * If the other axis has no overflow the behavior is similar to `visible`.
-   * If the other axis has overflow the behavior is similar to `hidden`.
-   */
-  | 'visible-hidden'
-  /**
-   * If the other axis has no overflow the behavior is similar to `visible`.
-   * If the other axis has overflow the behavior is similar to `scroll`.
-   */
-  | 'visible-scroll';
-
-// The scrollbars visibility behavior.
-type ScrollbarsVisibilityBehavior =
-  // The scrollbars are always visible.
-  | 'visible'
-  // The scrollbars are always hidden.
-  | 'hidden'
-  // The scrollbars are only visibile if there is overflow.
-  | 'auto';
-
-// The scrollbars auto hide behavior
-type ScrollbarsAutoHideBehavior =
-  // The scrollbars are never hidden automatically.
-  | 'never'
-  // The scrollbars are hidden unless the user scrolls.
-  | 'scroll'
-  // The scrollbars are hidden unless the pointer moves in the host element or the user scrolls.
-  | 'move'
-  // The scrollbars are hidden if the pointer leaves the host element or unless the user scrolls.
-  | 'leave';
-
-// The scrollbar click scroll behavior.
-type ScrollbarsClickScrollBehavior =
-  | boolean
-  | 'instant'
-  | ((
-      isHorizontal: boolean
-    ) => Partial<ScrollbarsClickScrollBehaviorOptions> | false | null | undefined | void);
-
-interface ScrollbarsClickScrollBehaviorOptions {
-  // The scroll distance of the click scroll. If `0` the `clickScrollDistance` is the destination distance. Default: `one viewport unit`.
-  clickScrollDistance: number;
-  // The duration in milliseconds it takes to scroll the `clickScrollDistance`. Default `200`.
-  clickScrollDuration: number;
-  // The delay in milliseconds between click and press scroll. Default: `150`.
-  clickPressDelay: number;
-  // The duration in milliseconds it takes to travel one viewport unit during press scroll. Default: `90`.
-  pressDistanceDuration: number;
-}
-```
-
-</details>
-
-## Events
-
-You can initialize OverlayScrollbars with an initial set of events, which can be managed at any time with the `on` and `off` methods:
-```js
-OverlayScrollbars(document.querySelector('#myElement'), {}, {
-  updated(osInstance, onUpdatedArgs) {
-    // ...
-  }
-});
-```
-
-### Events in depth
-
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-  <br />
-
-> __Note__: Every event receives the `instance` from which it was dispatched as the first argument. Always.
-
-### `initialized`
-
-| arguments  | description |
-| :--- | :--- |
-| `instance` | The instance which dispatched the event. |
-
-Dispatched after all generated elements, observers and events were appended to the DOM.
-
-### `updated`
-
-| arguments  | description |
-| :--- | :--- |
-| `instance` | The instance which dispatched the event. |
-| `onUpdatedArgs` | An `object` which describes the update in detail. |
-
-> __Note__: If an update was triggered but nothing changed, the event won't be dispatched.
-
-Dispatched after the instance was updated. 
-
-### `destroyed`
-
-| arguments  | description |
-| :--- | :--- |
-| `instance` | The instance which dispatched the event. |
-| `canceled` | A `boolean` which indicates whether the initialization was canceled and thus destroyed. |
-
-Dispatched after all generated elements, observers and events were removed from the DOM.
-
-### `scroll`
-
-| arguments  | description |
-| :--- | :--- |
-| `instance` | The instance which dispatched the event. |
-| `event` | The original `event` argument of the DOM event. |
-
-Dispatched by scrolling the viewport.
-
-#### TypeScript 
-
-```ts
-// A mapping between event names and their listener arguments.
-type EventListenerArgs = {
-  // Dispatched after all elements are initialized and appended.
-  initialized: [instance: OverlayScrollbars];
-  // Dispatched after an update.
-  updated: [instance: OverlayScrollbars, onUpdatedArgs: OnUpdatedEventListenerArgs];
-  // Dispatched after all elements, observers and events are destroyed.
-  destroyed: [instance: OverlayScrollbars, canceled: boolean];
-  // Dispatched on scroll.
-  scroll: [instance: OverlayScrollbars, event: Event];
-};
-
-interface OnUpdatedEventListenerArgs {
-  // Hints which describe what changed in the DOM.
-  updateHints: {
-    // Whether the size of the host element changed.
-    sizeChanged: boolean;
-    // Whether the direction of the host element changed.
-    directionChanged: boolean;
-    // Whether the intrinsic height behavior changed.
-    heightIntrinsicChanged: boolean;
-    // Whether the overflow edge (clientWidth / clientHeight) of the viewport element changed.
-    overflowEdgeChanged: boolean;
-    // Whether the overflow amount changed.
-    overflowAmountChanged: boolean;
-    // Whether the overflow style changed.
-    overflowStyleChanged: boolean;
-    // Whether the scroll coordinates changed.
-    scrollCoordinatesChanged: boolean;
-    // Whether an host mutation took place.
-    hostMutation: boolean;
-    // Whether an content mutation took place.
-    contentMutation: boolean;
-  };
-  // The changed options.
-  changedOptions: PartialOptions;
-  // Whether the update happened with force-invalidated cache.
-  force: boolean;
-}
-```
-
-</details>
-
-## Instance
-
-The OverlayScrollbars instance can be created by calling the `OverlayScrollbars` function with an element and options object.
-
-```js
-const osInstance = OverlayScrollbars(document.body, {});
-```
-
-### Instance Methods
-
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-
-  ### `options(): Options`
-
-  Get the current options of the instance.
-
-  | returns | description |
-  | :--- | :--- |
-  | `Options` | The current options. |
-
-  ### `options(newOptions, pure?): Options`
-
-  Sets the current options of the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | newOptions | `PartialOptions` | The new (partial) options which should be applied. |
-  | pure | `boolean \| undefined` | Whether the options should be reset before the new options are added. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `Options` | The complete new options. |
-
-  ### `on(eventListeners, pure?): Function`
-
-  Adds event listeners to the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | eventListeners | `EventListeners` | An object which contains the added listeners. The fields are the event names and the listeners. |
-  | pure | `boolean \| undefined` | Whether all already added event listeners should be removed before the new listeners are added. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `Function` | A function which removes all added event listeners. |
-
-  ### `on(name, listener): Function`
-
-  Adds a single event listener to the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | name | `string` | The event name. |
-  | listener | `Function` | The function invoked when the event is dispatched. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `Function` | A function which removes the added event listener. |
-  
-  ### `on(name, listeners): Function`
-
-  Adds multiple event listeners to the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | name | `string` | The event name. |
-  | listeners | `Function[]` | The functions invoked when the event is dispatched. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `Function` | A function which removes the added event listeners. |
-
-  ### `off(name, listener): void`
-
-  Removes a single event listener from the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | name | `string` | The event name. |
-  | listener | `Function` | The function to be removed. |
-
-  ### `off(name, listeners): void`
-
-  Removes multiple event listeners from the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | name | `string` | The event name. |
-  | listeners | `Function[]` | The functions to be removed. |
-
-  ### `update(force?): boolean`
-
-  Updates the instance.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | force | `boolean \| undefined` |  Whether the update should force the cache to be invalidated. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `Function` | A boolean which indicates whether the `update` event was triggered through this update. |
-
-  ### `sleep(sleeping: boolean): void`
-
-  Puts the instance to sleep or wakes it up.
-
-  When the instance is sleeping updates and (almost) all event listeners are ignored.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | sleeping | `boolean` |  Whether the instance should be put to sleep. |
-
-  ### `state(): State`
-
-  Gets the instance's state.
-
-  | returns | description |
-  | :--- | :--- |
-  | `State` | An object describing the state of the instance. |
-
-  ### `elements(): Elements`
-
-  Gets the instances elements.
-
-  | returns | description |
-  | :--- | :--- |
-  | `Elements` | An object describing the elements of the instance. |
-
-  ### `destroy(): void`
-
-  Destroys the instance and removes all added elements.
-
-  ### `plugin(plugin: object): object | undefined`
-
-  Gets the instance modules instance of the passed plugin.
-
-  | returns | description |
-  | :--- | :--- |
-  | `object \| undefined` | An object which describes the plugins instance modules instance or `undefined` if no instance was found. |
-
-  #### TypeScript 
-
-  ```ts
-  // A simplified version of the OverlayScrollbars TypeScript interface.
-  interface OverlayScrollbars {
-    // Get the current options of the instance.
-    options(): Options;
-    // Sets the current options of the instance.
-    options(newOptions: PartialOptions, pure?: boolean): Options;
-
-    // Adds event listeners to the instance.
-    on(eventListeners: EventListeners, pure?: boolean): () => void;
-    // Adds a single event listener to the instance.
-    on<N extends keyof EventListenerArgs>(name: N, listener: EventListener<N>): () => void;
-    // Adds multiple event listeners to the instance.
-    on<N extends keyof EventListenerArgs>(name: N, listener: EventListener<N>[]): () => void;
-
-    // Removes a single event listener from the instance.
-    off<N extends keyof EventListenerArgs>(name: N, listener: EventListener<N>): void;
-    // Removes multiple event listeners from the instance.
-    off<N extends keyof EventListenerArgs>(name: N, listener: EventListener<N>[]): void;
-
-    // Updates the instance.
-    update(force?: boolean): boolean;
-
-    // Puts the instance to sleep or wakes it up.
-    sleep(sleeping: boolean): void;
-
-    // Gets the instance's state.
-    state(): State;
-
-    // Gets the instance's elements.
-    elements(): Elements;
-
-    // Destroys the instance and removes all added elements.
-    destroy(): void;
-
-    // Gets the instance modules instance of the passed plugin.
-    plugin<P extends InstancePlugin>(osPlugin: P): InferInstancePluginModuleInstance<P> | undefined;
-  }
-
-  // Describes a OverlayScrollbars instances state.
-  interface State {
-    // Describes the current padding in pixels.
-    padding: TRBL;
-    // Whether the current padding is absolute.
-    paddingAbsolute: boolean;
-    // The client width (x) & height (y) of the viewport in pixels.
-    overflowEdge: XY<number>;
-    // The overflow amount in pixels.
-    overflowAmount: XY<number>;
-    // The css overflow style of the viewport.
-    overflowStyle: XY<OverflowStyle>;
-    // Whether the viewport has an overflow.
-    hasOverflow: XY<boolean>;
-    // The scroll coordinates of the viewport.
-    scrollCoordinates: {
-      // The start (origin) scroll coordinates for each axis.
-      start: XY<number>;
-      // The end scroll coordinates for each axis.
-      end: XY<number>;
-    };
-    // Whether the direction is considered rtl.
-    directionRTL: boolean;
-    // Whether the instance is sleeping.
-    sleeping: boolean;
-    // Whether the instance is considered destroyed.
-    destroyed: boolean;
-  }
-
-  // Describes the elements of a OverlayScrollbars instance.
-  interface Elements {
-    // The element the instance was applied to.
-    target: HTMLElement;
-    // The host element. It's the root of all other elements.
-    host: HTMLElement;
-    /**
-     * The element responsible for the correct padding.
-     * Depending on initialization it can be the same as the viewport element.
-     */
-    padding: HTMLElement;
-    // The element responsible of the scrolling.
-    viewport: HTMLElement;
-    /**
-     * The element responsible for holding the actual content.
-     * Depending on initialization it can be the same as the viewport element.
-     */
-    content: HTMLElement;
-    /**
-     * The element through which you can get the current `scrollLeft` or `scrollTop` offset.
-     * Depending on the target element it can be the same as the viewport element.
-     */
-    scrollOffsetElement: HTMLElement;
-    /**
-     * The element through which you can add `scroll` events.
-     * Depending on the target element it can be the same as the viewport element.
-     */
-    scrollEventElement: HTMLElement | Document;
-    // The horizontal scrollbar's elements.
-    scrollbarHorizontal: CloneableScrollbarElements;
-    // The vertical scrollbar's elements.
-    scrollbarVertical: CloneableScrollbarElements;
-  }
-  ```
-</details>
-
-
-## Static Object
-
-The static `OverlayScrollbars` object.
-
-```js
-OverlayScrollbars.plugin(SomePlugin);
-```
-
-### Static Object Methods
-
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-
-  ### `valid(osInstance): boolean`
-
-  Checks whether the passed value is a valid and not destroyed overlayscrollbars instance
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | osInstance | `any` | The value to be checked. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `boolean` | Whether the passed value is a valid and not destroyed overlayscrollbars instance. |
-
-  ### `env(): Environment`
-
-  Gets the environment.
-
-  | returns | description |
-  | :--- | :--- |
-  | `Environment` | An object describing the environment. |
-
-  ### `nonce(newNonce): void`
-
-  Sets the nonce attribute for inline styles.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | newNonce | `string \| undefined` | The new nonce attribute for inline styles. |
-
-  ### `trustedTypePolicy(newTrustedTypePolicy): void`
-
-  Sets the trusted type policy.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | newTrustedTypePolicy | `TrustedTypePolicy \| undefined` | The new trusted type policy. |
-
-  ### `plugin(plugin): object | undefined`
-
-  Adds a single plugin.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | plugin | `object` | The plugin to be added. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `object \| void` | An object describing the plugin's static module instance or `void` if no instance was found. |
-
-  ### `plugin(plugins): (object | void)[]`
-
-  Adds multiple plugins.
-
-  | parameter | type | description |
-  | :--- | :--- | :--- |
-  | plugins | `object[]` | The plugins to be added. |
-
-  | returns | description |
-  | :--- | :--- |
-  | `(object \| void)[]` | An array describing the plugins static modules instances or `undefined` if no instance was found. |
-
-  #### TypeScript
-
-  ```ts
-  // The OverlayScrollbars static object.
-  interface OverlayScrollbarsStatic {
-    // Gets the instance of the passed target or `undefined` the target has no instance.
-    (target: InitializationTarget): OverlayScrollbars | undefined;
-    // Initializes OverlayScrollbars to the passed target with passed options and event listeners.
-    (target: InitializationTarget, options: PartialOptions, eventListeners?: EventListeners): OverlayScrollbars;
-
-    // Checks whether the passed value is a valid and not destroyed overlayscrollbars instance.
-    valid(osInstance: any): osInstance is OverlayScrollbars;
-
-    // Gets the environment.
-    env(): Environment;
-
-    // Sets the nonce attribute for inline styles.
-    nonce(newNonce: string | undefined): void;
-
-    // Adds a single plugin.
-    plugin(plugin: Plugin): InferStaticPluginModuleInstance<Plugin>
-    // Adds multiple plugins.
-    plugin(plugins: Plugin[]): InferStaticPluginModuleInstance<Plugin>[];
-  }
-
-  // Describes the OverlayScrollbars environment.
-  interface Environment {
-    // The native scrollbars size of the browser / system.
-    scrollbarsSize: XY<number>;
-    // Whether the native scrollbars are overlaid.
-    scrollbarsOverlaid: XY<boolean>;
-    // Whether the browser supports native scrollbar hiding.
-    scrollbarsHiding: boolean;
-    // Whether the browser supports the ScrollTimeline API.
-    scrollTimeline: boolean;
-    // The default Initialization to use if nothing else is specified.
-    staticDefaultInitialization: Initialization;
-    // The default Options to use if nothing else is specified.
-    staticDefaultOptions: Options;
-
-    // Returns the current default Initialization.
-    getDefaultInitialization(): Initialization;
-    // Returns the current default Options.
-    getDefaultOptions(): Options;
-
-    /**
-     * Sets a new default Initialization.
-     * If the new default Initialization is partially filled, its deeply merged with the current default Initialization.
-     * @param newDefaultInitialization The new default Initialization.
-     * @returns The current default Initialization.
-     */
-    setDefaultInitialization(newDefaultInitialization: PartialInitialization): Initialization;
-    /**
-     * Sets new default Options.
-     * If the new default Options are partially filled, they're deeply merged with the current default Options.
-     * @param newDefaultOptions The new default Options.
-     * @returns The current default options.
-     */
-    setDefaultOptions(newDefaultOptions: PartialOptions): Options;
-  }
-  ```
-</details>
-
-## Plugins
-
-Anything that is not considered core functionality or old browser compatibility is exposed via a plugin. This is done because all unused plugins are omitted during treeshaking and won't end up in your final bundle. OverlayScrollbars ships with the following plugins:
-
-- **ScrollbarsHidingPlugin**: Needed for old browsers that don't support native scrollbar styling. [You can find the list of browsers where you need this plugin here](https://caniuse.com/?search=scrollbar%20styling) (note that even though `iOS Safari >= 14` is marked as unsupported, you only need this plugin for `iOS < 7.1`).
-- **SizeObserverPlugin**: Needed for old browsers that don't support the `ResizeObserver` api. [You can find the list of browsers that need this plugin here](https://caniuse.com/?search=ResizeObserver)
-- **ClickScrollPlugin**: If you want to use the option `scrollbars: { clickScroll: true }`.
-
-### Consuming Plugins
-
-Plugins are consumed like:
-```ts
-import { 
-  OverlayScrollbars, 
-  ScrollbarsHidingPlugin, 
-  SizeObserverPlugin, 
-  ClickScrollPlugin 
-} from 'overlayscrollbars';
-
-// Single plugin
-OverlayScrollbars.plugin(ScrollbarsHidingPlugin);
-
-// Multiple plugins
-OverlayScrollbars.plugin([SizeObserverPlugin, ClickScrollPlugin]);
-```
-
-### Plugins in depth
-
-<details>
-  <summary>
-    This is an in depth topic. Click here to read it.
-  </summary>
-  <br />
-
-Plugins are plain objects with a **single field**, the name of the field is the name of the plugin. This name is the plugin's identifier and _must_ be unique across all plugins. In case multiple plugins have the same name, the last added plugin overwrites the plugin added previously under the same name.
-
-### Plugin Modules
-
-A Plugin module is the constructor of a plugin module's instance. There are two kinds of plugin modules: `static` and `instance`. A single plugin must have one or more modules. A plugin module can return an instance, but doesn't have to.
-
-#### Static Plugin Module
-
-The `static` plugin module is invoked when the plugin is added with the `OverlayScrollbars.plugin` function.
-
-Example plugin with a `static` module:
-```js
-const staticPlugin = {
-  // Plugin has the name `examplePlugin`.
-  examplePlugin: {
-    // The `static` function describes a static module and returns the module instance or void / undefined if no instance is needed.
-    // The `osStatic` parameter is the global `OverlayScrollbars` object.
-    static: (osStatic) => {
-      let count = 0;
-      const staticPluginModuleInstance = {
-        getCount: () => count,
-        increment: () => { count++ },
-      }
-      return staticPluginModuleInstance;
-    }
-  }
-}
-```
-
-When the plugin is added with the `OverlayScrollbars.plugin` function, the static module instance is returned:
-```js
-const staticModuleInstance = OverlayScrollbars.plugin(staticPlugin); // Plugins static module is invoked
-staticModuleInstance.count; // 0
-staticModuleInstance.increment();
-staticModuleInstance.count; // 1
-```
-
-#### Instance Plugin Module
-
-The `instance` plugin module is invoked when a new `OverlayScrollbars` instance is created but before the `initialized` event is dispatched.
-
-Example plugin with a `instance` module:
-```js
-const instancePlugin = {
-  // Plugin has the name `examplePlugin`.
-  examplePlugin: {
-    // Instance function describes na instance module and returns the module instance or void / undefined if no instance is needed.
-    // The `osInstance` parameter is the OverlayScrollbar instance the plugin is bound to.
-    // The `event` parameter is a function which adds events to the instance which can't be removed from outside the plugin.
-    // The `osStatic` parameter is the global OverlayScrollbar object.
-    instance: (osInstance, event, osStatic) => {
-      let count = 0;
-
-      const instancePluginModuleInstance = {
-        getCount: () => count,
-        increment: () => { count++ },
-      }
-
-      // Event which fires when the instance was initialized.
-      event('initialized', () => {
-        console.log("instance initialized");
-      });
-
-      // Event which fires when the viewport was scrolled.
-      const removeScrollEvent = event('scroll', () => {
-        console.log("viewport scrolled");
-        removeScrollEvent(); // Removes the event after the first scroll.
-      });
-      
-      return instancePluginModuleInstance;
-    }
-  }
-}
-```
-
-When the plugin is added with the `OverlayScrollbars.plugin` function, all OverlayScrollbar instances will automatically add the plugin from that point on. Previously created instances will not have the plugin. The instance module instance is returned with the `osInstance.plugin` function:
-```js
-OverlayScrollbars.plugin(instancePlugin); // Plugin is added
-
-const osInstance = OverlayScrollbars(document.body, {}); // Plugin's instance module is invoked
-const instancePluginInstance = osInstance.plugin(instancePlugin);
-
-instancePluginInstance.count; // 0
-instancePluginInstance.increment();
-instancePluginInstance.count; // 1
-```
-
-#### TypeScript
-
-```ts
-// Describes a OverlayScrollbar plugin.
-type Plugin<
-  // The name of the plugin.
-  Name extends string = string,
-  // The module instance type of the static module.
-  S extends PluginModuleInstance | void = PluginModuleInstance | void, 
-  // The module instance type of the instance module.
-  I extends PluginModuleInstance | void = PluginModuleInstance | void 
-> = {
-  [pluginName in Name]: PluginModule<S, I>;
-};
-
-// Describes a OverlayScrollbar plugin which has only a static module.
-type StaticPlugin<
-  Name extends string = string,
-  T extends PluginModuleInstance = PluginModuleInstance
-> = Plugin<Name, T, void>;
-
-// Describes a OverlayScrollbar plugin which has only a instance module.
-type InstancePlugin<
-  Name extends string = string,
-  T extends PluginModuleInstance = PluginModuleInstance
-> = Plugin<Name, void, T>;
-
-// Infers the type of the static module's instance of the passed plugin.
-type InferStaticPluginModuleInstance<T extends StaticPlugin>;
-
-// Infers the type of the instance modules instance of the passed plugin.
-type InferInstancePluginModuleInstance<T extends InstancePlugin>;
-```
-
-</details>
-
-
-## FAQ
-
-<details>
-  <summary>
-    How do I <code>get / set</code> the <code>scroll position</code> of an element I applied OverlayScrollbars to?
-  </summary>
-  <br />
-
- If you applied `OverlayScrollbars` to the `body` element you can use [`window.scrollX`](https://developer.mozilla.org/en-US/docs/Web/API/Window/scrollX), [`window.scrollY`](https://developer.mozilla.org/en-US/docs/Web/API/Window/scrollY), [`window.scroll`](https://developer.mozilla.org/en-US/docs/Web/API/Window/scroll), [`window.scrollTo`](https://developer.mozilla.org/en-US/docs/Web/API/Window/scrollTo), [`window.scrollBy`](https://developer.mozilla.org/en-US/docs/Web/API/Window/scrollBy) or any other native api. 
-
-If the plugin was applied to any other element you have to get the `viewport` element with the `instance.elements()` function first. With this element you can use [`element.scrollTop`](https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollTop), [`element.scrollLeft`](https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollLeft), [`element.scroll`](https://developer.mozilla.org/en-US/docs/Web/API/Element/scroll), [`element.scrollTo`](https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollTo), [`element.scrollBy`](https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollBy) or any other native api.
-
-```js
-const { viewport } = osInstance.elements();
-const { scrollLeft, scrollTop } = viewport; // Get scroll offset
-viewport.scrollTo({ top: 0 }); // Set scroll offset
-```
-</details>
-
-<details>
-  <summary>
-    Is it possible to <code>limit / adjust the scrollbar handle length</code>? 
-  </summary>
-  <br />
-
- You can adjust a scrollbar's handle length by setting a `min-width / min-height` and `max-width / max-height` style:
-
-```css
-/* horizontal boundaries */
-.os-scrollbar-horizontal .os-scrollbar-handle {
-  min-width: 50px;
-  max-width: 200px;
-}
-/* vertical boundaries */
-.os-scrollbar-vertical .os-scrollbar-handle {
-  min-height: 40px;
-  max-height: 40px;
-}
-```
-
-  You can assign the same value to both properties to force the scrollbar to be always the same size.  
-  Setting the `width` and `height` properties won't work since those are set by the plugin automatically. 
-
-</details>
-
-## Feature comparison to `v1`
-
-- The `scroll` function is missing. Planned as a `plugin`. (WIP)
-- Initialization to the `textarea` element isn't supported yet. Planned as a `plugin`. (WIP) 
-
-## Future Plans
-
- - Provide plugin based support for missing features. (treeshakeable)
- - Frequent updates in terms of bug-fixes and enhancements. (always use latest browser features)
- - Improve tests. (unit & browser tests)
-
-## Used by
-
-- [Spotify](https://github.com/KingSora/OverlayScrollbars/issues/150#issuecomment-658658186)
-- [IntelliJ IDEA](https://github.com/JetBrains/intellij-community/blob/ee35416f381ed33f976d7b9322a5ee6156e7fa2f/platform/platform-api/src/com/intellij/ui/jcef/JBCefScrollbarsHelper.java#L41-L50)
-- [Storybook](https://github.com/storybookjs/storybook/blob/32d2fafa8d1d2e197e885349f2c01f5422bde5b4/code/ui/components/package.json#L66-L67)
-- [Admin LTE](https://github.com/ColorlibHQ/AdminLTE/blob/3113ac5efed25971ccd0972f5eeff3c364f218dc/src/html/components/_scripts.astro#L6-L7)
-- and many more...
-
-## Sponsors
-<table>
-  <tbody>
-    <tr>
-        <td>
-            <a href="https://www.browserstack.com" target="_blank">
-              <img align="center" src="https://kingsora.github.io/OverlayScrollbars/img/browserstack.png" width="250">
-            </a>
-        </td>
-        <td>
-          Thanks to <a href="https://www.browserstack.com" target="_blank">BrowserStack</a> for sponsoring open source projects and letting me test OverlayScrollbars for free.
-        </td>
-    </tr>
-  </tbody>
-</table>
-
-## License
-
-MIT
-````
 
 ### overlayscrollbars-react 0.5.6
 
@@ -13331,156 +11914,30 @@ License: MIT
 
 Repository: https://github.com/KingSora/OverlayScrollbars
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-<div align="center">
-  <a href="https://kingsora.github.io/OverlayScrollbars"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/logo/logo.png" width="160" height="160" alt="OverlayScrollbars"></a>
-  <a href="https://reactjs.org"><img src="https://raw.githubusercontent.com/KingSora/OverlayScrollbars/master/packages/overlayscrollbars-react/logo.svg" width="160" height="160" alt="React"></a>
-</div>
-<br />
-<div align="center">
+Copyright (c) 2022 Rene Haas
 
-  [![OverlayScrollbars](https://img.shields.io/badge/OverlayScrollbars-%5E2.0.0-338EFF?style=flat-square)](https://github.com/KingSora/OverlayScrollbars)
-  [![React](https://img.shields.io/badge/React-%3E=16.8.0-61DAFB?style=flat-square&logo=React)](https://github.com/facebook/react/)
-  [![Downloads](https://img.shields.io/npm/dt/overlayscrollbars-react.svg?style=flat-square)](https://www.npmjs.com/package/overlayscrollbars-react)
-  [![Version](https://img.shields.io/npm/v/overlayscrollbars-react.svg?style=flat-square)](https://www.npmjs.com/package/overlayscrollbars-react)
-  [![License](https://img.shields.io/github/license/kingsora/overlayscrollbars.svg?style=flat-square)](#)
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-</div>
-<h3 align="center">
-  <a href="https://kingsora.github.io/OverlayScrollbars">Website</a>
-  &nbsp;&nbsp;&bull;&nbsp;&nbsp;
-  <a href="https://kingsora.github.io/OverlayScrollbars/examples">Examples</a>
-</h3>
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-# OverlayScrollbars for React
-
-This is the official OverlayScrollbars React wrapper.
-
-## Installation
-
-```sh
-npm install overlayscrollbars-react
-```
-
-## Peer Dependencies
-
-OverlayScrollbars for React has the following **peer dependencies**:
-
-- The vanilla JavaScript library: [overlayscrollbars](https://www.npmjs.com/package/overlayscrollbars)
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ```
-npm install overlayscrollbars
-```
-
-- The React framework: [react](https://www.npmjs.com/package/react)
-
-```
-npm install react
-```
-
-## Usage
-
-The first step is to import the CSS file into your app:
-```ts
-import 'overlayscrollbars/overlayscrollbars.css';
-```
-
-> __Note__: If the path `'overlayscrollbars/overlayscrollbars.css'` is not working use `'overlayscrollbars/styles/overlayscrollbars.css'` as the import path for the CSS file.
-
-## Component
-
-The main entry point is the `OverlayScrollbarsComponent` which can be used in your application as a component:
-
-```jsx
-import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
-
-// ...
-
-<OverlayScrollbarsComponent defer>
-  example content
-</OverlayScrollbarsComponent>
-```
-
-### Properties
-
-The component accepts all properties of regular elements such as `div` and `span`.  
-Additionally it has custom optional properties:
-
-- `element`: accepts a `string` which represents the tag of the root element.
-- `options`: accepts an `object` which represents the OverlayScrollbars options.
-- `events`: accepts an `object` which represents the OverlayScrollbars events.
-- `defer`: accepts an `boolean` or `object`. Defers the initialization to a point in time when the browser is idle.
-
-> __Note__: None of the properties has to be memoized.
-
-> __Note__: Its **highly recommended** to use the `defer` option whenever possible to defer the initialization to a browser's idle period.
-
-```jsx
-// example usage
-<OverlayScrollbarsComponent
-  element="span"
-  options={{ scrollbars: { autoHide: 'scroll' } }}
-  events={{ scroll: () => { /* ... */ } }}
-  defer
-/>
-```
-
-### Ref
-
-The `ref` of the `OverlayScrollbarsComponent` will give you an object with which you can access the OverlayScrollbars `instance` and the root `element` of the component.  
-The ref object has two properties:
-
-- `osInstance`: a function which returns the OverlayScrollbars instance.
-- `getElement`: a function which returns the root element.
-
-## Hook
-
-In case the `OverlayScrollbarsComponent` is not enough, you can also use the `useOverlayScrollbars` hook:
-
-```jsx
-import { useOverlayScrollbars } from "overlayscrollbars-react";
-
-// example usage
-const Component = () => {
-  const ref = useRef();
-  const [initialize, instance] = useOverlayScrollbars({ options, events, defer });
-  
-  useEffect(() => {
-    initialize(ref.current);
-  }, [initialize]);
-  
-  return <div ref={ref} />
-}
-```
-
-The hook is for advanced usage and lets you control the whole initialization process. This is useful if you want to integrate it with other plugins such as `react-window` or `react-virtualized`.
-
-The hook will destroy the instance automatically if the component unmounts.
-
-### Parameters
-
-Parameters are optional and similar to the `OverlayScrollbarsComponent`.
-Its an `object` with optional properties:
-
-- `options`: accepts an `object` which represents the OverlayScrollbars options.
-- `events`: accepts an `object` which represents the OverlayScrollbars events.
-- `defer`: accepts an `boolean` or `object`. Defers the initialization to a point in time when the browser is idle.
-
-### Return
-
-The `useOverlayScrollbars` hook returns a `tuple` with two values:
-
-- The first value is the `initialization` function, it takes one argument which is the `InitializationTarget`.
-- The second value is a function which returns the current OverlayScrollbars instance or `null` if not initialized.
-
-> __Note__: The identity of both functions is stable and won't change, thus they can safely be used in any dependency array.
-
-## License
-
-MIT
-````
 
 ### parse5 8.0.1
 
@@ -13727,13 +12184,28 @@ License: MIT
 Repository: https://github.com/facebook/react
 
 ```text
-(README fallback; authoritative license text requires human review.)
+MIT License
 
-# react-compiler-runtime
+Copyright (c) Meta Platforms, Inc. and affiliates.
 
-Backwards compatible shim for runtime APIs used by React Compiler. Primarily meant for React versions prior to 19, but it will also work on > 19.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-See also https://github.com/reactwg/react-compiler/discussions/6.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```
 
 ### react-day-picker 9.14.0
@@ -13802,547 +12274,30 @@ License: MIT
 
 Repository: https://github.com/aholachek/react-flip-toolkit
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+MIT License
 
-<p align="center">
-  <a href="https://codepen.io/aholachek/pen/ERRpEj">
-  <img src="./example-assets/rft-logo.gif" width='500px' alt='react-flip-toolkit animated logo' />
-  </a>
-</p>
+Copyright (c) 2018 Alex Holachek
 
-[![Minified & Gzipped size](https://badgen.net/bundlephobia/minzip/react-flip-toolkit)](https://bundlephobia.com/result?p=react-flip-toolkit)
-[![MIT license](https://badgen.net/npm/license/react-flip-toolkit)](http://opensource.org/licenses/MIT)
-[![npm version](https://badgen.net/npm/v/react-flip-toolkit)](https://npmjs.org/package/react-flip-toolkit 'View this project on npm')
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-**Comparison with other React FLIP libraries**
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-| Feature                                                                        | [`react-flip-move`](https://github.com/joshwcomeau/react-flip-move) | [`react-overdrive`](https://github.com/berzniz/react-overdrive) | `react-flip-toolkit` |
-| ------------------------------------------------------------------------------ | :-----------------------------------------------------------------: | :-------------------------------------------------------------: | :------------------: |
-| Animate position                                                               |                                 ✅                                  |                               ✅                                |          ✅          |
-| Animate scale                                                                  |                                 ❌                                  |                               ✅                                |          ✅          |
-| Animate opacity                                                                |                                 ❌                                  |                               ✅                                |          ✅          |
-| [Animate parent's size without warping children](#nested-scale-transforms) |                                 ❌                                  |                               ❌                                |          ✅          |
-| Use real FLIP instead of cloning & crossfading                                 |                                 ✅                                  |                               ❌                                |          ✅          |
-| [Use springs for animations](https://codesandbox.io/s/react-flip-toolkit-spring-settings-explorer-vjrsh)                                                     |                                 ❌                                  |                               ❌                                |          ✅          |
-| Support spring-based stagger effects                                           |                                 ❌                                  |                               ❌                                |          ✅          |
-| [Usable with frameworks other than React](packages/flip-toolkit)               |                                 ❌                                  |                               ❌                                |          ✅          |
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-## Quick start
-
-`npm install react-flip-toolkit` or `yarn add react-flip-toolkit`
-
-1. Wrap all animated children with a single `Flipper` component that has a `flipKey` prop that changes every time animations should happen.
-
-2. Wrap elements that should be animated with `Flipped` components that have a `flipId` prop matching them across renders.
-
-
-## Table of Contents
-
-- [Forkable Examples](#forkable-examples)
-  - [Simple Example: An Expanding Div](#simple-example-an-expanding-div)
-  - [Simple Example: Two Divs](#simple-example-two-divs)
-  - [Simple Example: List Shuffle](#simple-example-list-shuffle)
-  - [List Transitions](#list-transitions)
-  - [Stagger Effects](#stagger-effects)
-  - [Spring Customizations](#spring-customizations)
-  - [Nested Scale Transforms](#nested-scale-transforms)
-  - [Route-based Animations With React Router](#route-based-animations-with-react-router)
-  - [More examples](#more-examples)
-- [The Components](#the-components)
-  - [`Flipper`](#flipper)
-    - [Basic Props](#basic-props)
-    - [Advanced Props](#advanced-props)
-  - [`Flipped`](#flipped)
-    - [Wrapping a React Component](#wrapping-a-react-component)
-    - [Basic props](#basic-props)
-    - [Callback props](#callback-props)
-    - [Transform props](#transform-props)
-    - [Advanced props](#advanced-props)
-  - [`Spring`](#spring)
-- [Library details](#library-details)
-- [Troubleshooting](#troubleshooting)
-  - [Problem #1: Nothing is happening](#problem-1-nothing-is-happening)
-  - [Problem #2: Things look weird / animations aren't behaving](#problem-2-things-look-weird--animations-arent-behaving)
-  - [Problem #3: It's still not working](#problem-3-its-still-not-working)
-- [Performance](#performance)
-  - [`Memoization`](#memoization)
-  - [`will-change:transform`](#will-changetransform)
-
-## Forkable Examples
-
-### Simple Example: An Expanding Div
-
-<a href="https://codesandbox.io/s/8130rn9q2">
-<img src="./example-assets/square.gif" height="200px" alt="animated square" />
-</a>
-
-[Fork this example on Code Sandbox](https://codesandbox.io/s/8130rn9q2)
-
-
-```jsx
-import React, { useState } from 'react'
-import { Flipper, Flipped } from 'react-flip-toolkit'
-
-const AnimatedSquare = () => {
-  const [fullScreen, setFullScreen] = useState(false)
-  const toggleFullScreen = () => setFullScreen(prevState => !prevState)
-
-  return (
-    <Flipper flipKey={fullScreen}>
-      <Flipped flipId="square">
-        <div
-          className={fullScreen ? 'full-screen-square' : 'square'}
-          onClick={toggleFullScreen}
-        />
-      </Flipped>
-    </Flipper>
-  )
-}
 ```
-
-### Simple Example: Two Divs
-
-<a href="https://codesandbox.io/s/74q85nq1qq">
-<img src="./example-assets/2squares.gif" height="200px" alt="2 animated squares" />
-</a>
-
-[Fork this example on Code Sandbox](https://codesandbox.io/s/74q85nq1qq)
-
-```jsx
-import React, { useState } from 'react'
-import { Flipper, Flipped } from 'react-flip-toolkit'
-
-const Square = ({ toggleFullScreen }) => (
-  <Flipped flipId="square">
-    <div className="square" onClick={toggleFullScreen} />
-  </Flipped>
-)
-
-const FullScreenSquare = ({ toggleFullScreen }) => (
-  <Flipped flipId="square">
-    <div className="full-screen-square" onClick={toggleFullScreen} />
-  </Flipped>
-)
-
-const AnimatedSquare = () => {
-  const [fullScreen, setFullScreen] = useState(false)
-  const toggleFullScreen = () => setFullScreen(prevState => !prevState)
-
-  return (
-    <Flipper flipKey={fullScreen}>
-      {fullScreen ? (
-        <FullScreenSquare toggleFullScreen={toggleFullScreen} />
-      ) : (
-        <Square toggleFullScreen={toggleFullScreen} />
-      )}
-    </Flipper>
-  )
-}
-```
-
-### Simple Example: List Shuffle
-
-<a href="https://codesandbox.io/s/14v8o5xy44">
-<img src="./example-assets/listshuffle.gif" height="60px" alt="shuffling a list" />
-</a>
-
-[Fork this example on Code Sandbox](https://codesandbox.io/s/14v8o5xy44)
-
-```jsx
-import React, { useState } from 'react'
-import { Flipper, Flipped } from 'react-flip-toolkit'
-import shuffle from 'lodash.shuffle'
-
-const ListShuffler = () => {
-  const [data, setData] = useState([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-  const shuffleList = () => setData(shuffle(data))
-
-  return (
-    <Flipper flipKey={data.join('')}>
-      <button onClick={shuffleList}> shuffle</button>
-      <ul className="list">
-        {data.map(d => (
-          <Flipped key={d} flipId={d}>
-            <li>{d}</li>
-          </Flipped>
-        ))}
-      </ul>
-    </Flipper>
-  )
-}
-```
-
-### List Transitions
-
-Add some interest to a dynamic list of cards by animating changes to cards' sizes and positions.
-
-<a href="https://codesandbox.io/s/list-transitions-ju549">
-<img src="./example-assets/listanimations.gif" height="200px" alt='animated list' />
-</a>
-
-[Fork this example on Code Sandbox](https://codesandbox.io/s/list-transitions-ju549)
-
-### Stagger Effects
-
-The `react-flip-toolkit` library offers spring-driven stagger configurations so that you can achieve complex sequenced effects.
-
-For the most basic stagger effect, you can simply add a `stagger` boolean prop to your `Flipped` element:
-
-```jsx
-<Flipped flipId={`element-${i}`} stagger>
-  <AnimatedListItem/>
-</Flipped>
-```
-
-<a href="https://codesandbox.io/s/wnnxl223n8">
-<img src="./example-assets/list-transition.gif" height="300px" alt='animation for the selected state of a list item' />
-</a>
-
-[Fork this example on Code Sandbox](https://codesandbox.io/s/wnnxl223n8)
-
-
-### Spring Customizations
-
-`react-flip-toolkit` uses springs for animations. To customize the spring, you can pass in a preset name:
-
-```jsx
-// spring preset can be one of: "stiff", "noWobble", "gentle", "veryGentle", or "wobbly"
-<Flipper flipKey='foo' spring='wobbly'>
-  {/* Flipped components go here...*/}
-</Flipper>
-```
-
-or a custom spring config:
-
-```jsx
-<Flipper flipKey='foo' spring={{ stiffness: 280, damping: 22 }} >
-  {/* Flipped components go here...*/}
-</Flipper>
-```
-[View all spring options in the interactive explorer](https://codesandbox.io/s/react-flip-toolkit-spring-settings-explorer-vjrsh)
-
-
-### Nested Scale Transforms
-
-<a href="https://codesandbox.io/s/github/aholachek/react-stripe-menu">
-<img src="./example-assets/stripe-menu.gif" height="300px" alt="stripe menu" />
-</a>
-
-- [Fork this example on Code Sandbox](https://codesandbox.io/s/github/aholachek/react-stripe-menu)
-- [Fork Github repo](https://github.com/aholachek/react-stripe-menu)
-
-
-Interesting animations often involve scale transforms in addition to simple translate transforms. The problem with scale animations has to do with children &mdash; if you scale a div up 2x, you will warp any children it has by scaling them up too, creating a weird-looking animation. That's why this library allows you to wrap the child with a `Flipped` component that has an `inverseFlipId` to counteract the transforms of the parent:
-
-```jsx
-<Flipped flipId={id}>
-  <div>
-    <Flipped inverseFlipId={id} scale>
-      <div>some text that will not be warped</div>
-    </Flipped>
-  </div>
-</Flipped>
-```
-
-By default, both the scale and the translation transforms of the parent will be counteracted (this allows children components to make their own FLIP animations without being affected by the parent).
-But for many use cases, you'll want to additionally specify the `scale` prop to limit the adjustment to the scale and allow the positioning to move with the parent.
-
-Note: the DOM element with the inverse transform should lie flush against its parent container for the most seamless animation.
-
-That means any layout styles &mdash; padding, flexbox, etc&mdash;should be applied to the inverted container (the element wrapped with a `Flipped` component with an `inverseFlipId`) rather than the parent `Flipped` container.
-
-
-
-### Route-based Animations With React Router
-
-<a href="https://github.com/aholachek/react-flip-toolkit-router-example">
-  <img src="./example-assets/compressed-demo.gif" width='500px' alt='React-flip-toolkit with React-Router' />
-</a>
-
-[Fork Github repo](https://github.com/aholachek/react-flip-toolkit-router-example)
-
-
-`react-flip-toolkit` works great with client-side routers to provide route-driven transitions:
-
-```jsx
-<Route
-  render={({ location, search }) => {
-    return (
-      <Flipper
-        flipKey={`${location.pathname}-${location.search}`}
-      >
-      {/* Child routes that contain Flipped components go here...*/}
-      </Flipper>
-    )
-  }}
-/>
-```
-
-### More examples
-
-- [Guitar shop](https://react-flip-toolkit-demos.surge.sh/guitar)
-- [React-flip-toolkit logo](https://codepen.io/aholachek/pen/ERRpEj)
-- [Using Portals](https://react-flip-toolkit-demos.surge.sh/portal)
-
-## The Components
-
-### `Flipper`
-
-The parent wrapper component that contains all the elements to be animated. You'll often need only one of these per page, but sometimes it will be more convenient to have multiple `Flipper` regions of your page concerned with different transitions.
-
-```jsx
-<Flipper flipKey={someKeyThatChanges}>{/* children */}</Flipper>
-```
-
-#### Basic Props
-
-| prop                    |  default   | type                       | details                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ----------------------- | :--------: | :------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| flipKey **(required)**  |     -      | `string`, `number`, `bool` | Changing this tells `react-flip-toolkit` to transition child elements wrapped in `Flipped` components.                                                                                                                                                                                                                                                                                                          |
-| children **(required)** |     -      | `node`                     | One or more element children                                                                                                                                                                                                                                                                                                                                                                                    |
-| spring                  | `noWobble` | `string` or `object`       | Provide a string referencing one of the spring presets &mdash; `noWobble` (default), `veryGentle`, `gentle`, `wobbly`, or `stiff`, OR provide an object with stiffness and damping parameters. [Explore the spring setting options here](https://codesandbox.io/s/react-flip-toolkit-spring-settings-explorer-vjrsh). The prop provided here will be the spring default that can be overrided on a per-element basis on the `Flipped` component. |
-| applyTransformOrigin    |   `true`   | `bool`                     | Whether or not `react-flip-toolkit` should apply a transform-origin of "0 0" to animating children (this is generally, but not always, desirable for FLIP animations)                                                                                                                                                                                                                                           |
-| element                 |   `div`    | `string`                   | If you'd like the wrapper element created by the `Flipped` container to be something other than a `div`, you can specify that here.                                                                                                                                                                                                                                                                             |
-| className               |     -      | `string`                   | A class applied to the wrapper element, helpful for styling.                                                                                                                                                                                                                                                                                                                                                    |
-| staggerConfig           |     -      | `object`                   | Provide configuration for staggered `Flipped` children. The config object might look something like the code snippet below:                                                                                                                                                                                                                                                                                     |
-
-```js
-staggerConfig={{
-  // the "default" config will apply to staggered elements without explicit keys
-      default: {
-        // default direction is forwards
-        reverse: true,
-        // default is .1, 0 < n < 1
-        speed: .5
-      },
-  // this will apply to Flipped elements with the prop stagger='namedStagger'
-    namedStagger : { speed: .2 }
-  }}
-```
-
-#### Advanced Props
-
-| prop                    | default | type       | details                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ----------------------- | :-----: | :--------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| decisionData            |    -    | `any`      | Sometimes, you'll want the animated children of `Flipper` to behave differently depending on the state transition &mdash; maybe only certain `Flipped` elements should animate in response to a particular change. By providing the `decisionData` prop to the `Flipper` component, you'll make that data available to the `shouldFlip` and `shouldInvert` methods of each child `Flipped` component, so they can decided for themselves whether to animate or not.                                                                                                                                                                                                                                    |
-| debug                   | `false` | `boolean`  | This experimental prop will pause your animation right at the initial application of FLIP-ped styles. That will allow you to inspect the state of the animation at the very beginning, when it should look similar or identical to the UI before the animation began.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| portalKey               |    -    | `string`   | In general, the `Flipper` component will only apply transitions to its descendents. This allows multiple `Flipper` elements to coexist on the same page, but it will prevent animations from working if you use [portals](https://reactjs.org/docs/portals.html). You can provide a unique `portalKey` prop to `Flipper` to tell it to scope element selections to the entire document, not just to its children, so that elements in portals can be transitioned.                                                                                                                                                                                                                                     |
-| onStart              |    -    | `function` | This callback prop will be called before any of the individual FLIP animations have started. It receives as arguments the HTMLElement of the Flipper and the decisionData object described elsewhere.                                                                                                                                                                                                                                                                                                                                                                        |
-| onComplete              |    -    | `function` | This callback prop will be called when all individual FLIP animations have completed. Its single argument is a list of `flipId`s for the `Flipped` components that were activated during the animation. If an animation is interrupted, `onComplete` will be still called right before the in-progress animation is terminated.                                                                                                                                                                                                                                                                                                                                                                        |
-| handleEnterUpdateDelete |    -    | `function` | By default, `react-flip-toolkit` finishes animating out exiting elements before animating in new elements, with updating elements transforming immediately. You might want to have more control over the sequence of transitions &mdash; say, if you wanted to hide elements, pause, update elements, pause again, and finally animate in new elements. Or you might want transitions to happen simultaneously. If so, provide the function `handleEnterUpdateDelete` as a prop. [The best way to understand how this works is to check out this interactive example.](https://codesandbox.io/s/4q7qpkn8q0) `handleEnterUpdateDelete` receives the following arguments every time a transition occurs: |
-
-```js
-handleEnterUpdateDelete({
-  // this func applies an opacity of 0 to entering elements so
-  // they can be faded in - it should be called immediately
-  hideEnteringElements,
-  // calls `onAppear` for all entering elements
-  animateEnteringElements,
-  //calls `onExit` for all exiting elements
-  // returns a promise that resolves when all elements have exited
-  animateExitingElements,
-  // the main event: `FLIP` animations for updating elements
-  // this also returns a promise that resolves when
-  // animations have completed
-  animateFlippedElements
-})
-```
-
-### `Flipped`
-
-Wraps an element that should be animated.
-
-E.g. in one component you can have
-
-```jsx
-<Flipped flipId="coolDiv">
-  <div className="small" />
-</Flipped>
-```
-
-and in another component somewhere else you can have
-
-```jsx
-<Flipped flipId="coolDiv">
-  <div className="big" />
-</Flipped>
-```
-
-and they will be tweened by `react-flip-toolkit`.
-
-The `Flipped` component produces no markup, it simply passes some props down to its wrapped child.
-
-#### Wrapping a React Component
-
-If you want to wrap a React component rather than a JSX element like a `div`, you can provide a render prop and then apply the `flippedProps` directly to the wrapped element in your component:
-
-```jsx
-<Flipped>
-  {flippedProps => <MyCoolComponent flippedProps={flippedProps} />}
-</Flipped>
-
-const MyCoolComponent = ({ flippedProps }) => <div {...flippedProps} />
-```
-
-You can also simply provide a regular React component as long as that component spreads unrecognized props directly onto the wrapped element (this technique works well for wrapping styled components):
-
-```jsx
-<Flipped>
-  <MyCoolComponent />
-</Flipped>
-
-const MyCoolComponent = ({ knownProp, ...rest }) => <div {...rest} />
-```
-
-#### Basic props
-
-| prop                                                   |  default   | type                  | details                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------ | :--------: | :-------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| children **(required)**                                |     -      | `node` or `function`  | Wrap a single element, React component, or render prop child with the `Flipped` component                                                                                                                                                                                                                                                                                                                                                               |
-| flipId **(required unless inverseFlipId is provided)** |     -      | `string`              | Use this to tell `react-flip-toolkit` how elements should be matched across renders so they can be animated.                                                                                                                                                                                                                                                                                                                                            |
-| inverseFlipId                                          |     -      | `string`              | Refer to the id of the parent `Flipped` container whose transform you want to cancel out. If this prop is provided, the `Flipped` component will become a limited version of itself that is only responsible for cancelling out its parent transform. It will read from any provided `transform` props and will ignore all other props (besides `inverseFlipId`.) [Read more about canceling out parent transforms here.](#practical-scale-transitions) |
-| transformOrigin                                        |  `"0 0"`   | `string`              | This is a convenience method to apply the proper CSS `transform-origin` to the element being FLIP-ped. This will override `react-flip-toolkit`'s default application of `transform-origin: 0 0;` if it is provided as a prop.                                                                                                                                                                                                                           |
-| spring                                                 | `noWobble` | `string` or `object`  | Provide a string referencing one of the spring presets &mdash; `noWobble` (default), `veryGentle`, `gentle`, `wobbly`, or `stiff`, OR provide an object with stiffness and damping parameters. [Explore the spring setting options here.](https://codepen.io/aholachek/full/bKmZbV/)                                                                                                                                                                               |
-| stagger                                                |  `false`   | `boolean` or `string` | Provide a natural, spring-based staggering effect in which the spring easing of each item is pinned to the previous one's movement. Provide `true` to stagger the element with all other staggered elements. If you want to get more granular, you can provide a string key and the element will be staggered with other elements with the same key.                                                                                                    |
-| delayUntil                                               |  `false`   | `string` (flipId) | Delay an animation by providing a reference to another `Flipped` component that it should wait for before animating (the other `Flipped` component should have a stagger delay as that is the only use case in which this prop is necessary.)                                                                                                    |
-
-#### Callback props
-
-<p>
-<a href="https://codesandbox.io/s/q787wz5lx4">
-  <img src="./example-assets/enter-update-delete.gif" height="300px" alt='animation of a sentence transforming into another sentence' />
-</a>
-</p>
-
-The above animation uses `onAppear` and `onExit` callbacks for fade-in and fade-out animations.
-
-| prop             | arguments                           | details                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ---------------- | :---------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| onAppear         | `element`, `index`, `{previous: decisionData, current: decisionData }`                  | Called when the element first appears in the DOM. It is provided a reference to the DOM element being transitioned as the first argument, and the index of the element relative to all appearing elements as the second. Note: If you provide an `onAppear` prop, the default opacity of the element will be set to 0 to allow you to animate it in without any initial flicker. If you don't want any opacity animation, just set the element's opacity to 1 immediately in your `onAppear` function. |
-| onStart          | `element`, `{previous: decisionData, current: decisionData }`                          | Called when the FLIP animation for the element starts. It is provided a reference to the DOM element being transitioned as the first argument.                                                                                                                                                                                                                                                                                                                                                         |
-| onStartImmediate | `element`, `{previous: decisionData, current: decisionData }`                          | Similar to `onStart`, but guaranteed to run for all FLIP-ped elements on the initial tick of the FLIP animation, before the next frame has rendered, even if the element in question has a stagger delay. It is provided a reference to the DOM element being transitioned as the first argument.                                                                                                                                                                                                      |
-| onSpringUpdate   | `springValue`                       | Called with the current spring value (normally between 0 - 1 but might briefly go over or under that range depending on the level of "bounciness" of the spring). Useful if you'd like to tween other, non-FLIP animations in concert with a FLIP transition.                                                                                                                                                                                                                                          |
-| onComplete       | `element`,`{previous: decisionData, current: decisionData }`                          | Called when the FLIP animation completes. It is provided a reference to the DOM element being transitioned as the first argument. (If transitions are interruped by new ones, `onComplete` will still be called.)                                                                                                                                                                                                                                                                                      |
-| onExit           | `element`, `index`, `removeElement`, `{previous: decisionData, current: decisionData }` | Called when the element is removed from the DOM. It must call the `removeElement` function when the exit transition has completed.                                                                                                                                                                                                                                                                                                                                                                     |
-
-#### Transform props
-
-By default the FLIP-ped elements' translate, scale, and opacity properties are all transformed. However, certain effects require more control so if you specify any of these props, _only the specified attribute(s) will be tweened_:
-
-| prop      |  type  | details                             |
-| --------- | :----: | :---------------------------------- |
-| translate | `bool` | Tween `translateX` and `translateY` |
-| scale     | `bool` | Tween `scaleX` and `scaleY`         |
-| opacity   | `bool` |                                     |
-
-#### Advanced props
-
-Functions to control when FLIP happens
-
-| prop         | arguments                                     | details                                                                                                                                                                                                                                              |
-| ------------ | :-------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| shouldFlip   | `previousDecisionData`, `currentDecisionData` | A function provided with the current and previous `decisionData` props passed down by the `Flipper` component. Returns a `boolean` to indicate whether a `Flipped` component should animate at that particular moment or not.                        |
-| shouldInvert | `previousDecisionData`, `currentDecisionData` | A function provided with the current and previous `decisionData` props passed down by the `Flipper` component. Returns a `boolean` indicating whether to apply inverted transforms to all `Flipped` children that request it via an `inverseFlipId`. |
-
-
-### `Spring`
-
-As a convenience, `react-flip-toolkit` exports a tiny function to access the same spring system used to create FLIP transitions.
-
-[Fork example on CodeSandbox](https://codesandbox.io/s/react-flip-toolkit-spring-example-e6pyc)
-
-```jsx
-import { spring } from 'react-flip-toolkit'
-
-spring({
-  config: "wobbly",
-  values: {
-    translateY: [-15, 0],
-    opacity: [0, 1]
-  },
-  onUpdate: ({ translateY, opacity }) => {
-    el.style.opacity = opacity;
-    el.style.transform = `translateY(${translateY}px)`;
-  },
-  delay: i * 25,
-  onComplete: () => console.log('done')
-});
-```
-
-<a href="https://codesandbox.io/s/react-flip-toolkit-spring-example-e6pyc">
-  <img src="./example-assets/spring.gif" alt="spring example" width="200px"/>
-</a>
-
-
-## Global configuration functions
-
-You can programmatically call the following functions if you need to disable (or re-enable) FLIP animations everywhere.
-
-#### `disableFlip()`
-
-Global switch to disable all animations in all `Flipper` containers.
-
-#### `enableFlip()`
-
-Global switch to (re-)enable all animations in all `Flipper` containers. Animations are enabled by default. Calling this function is needed only if animations were previously disabled with `disableFlip()`.
-
-#### `isFlipEnabled()`
-
-Returns a boolean indicating whether animations are globally enabled or disabled.
-
-
-## Library details
-
-<a href="https://www.browserstack.com/">
-<img src="./example-assets/browserstack.png" alt="browserstack" width="140"/>
-</a>
-
-- Tested in latest Chrome, Firefox, Safari, and Edge with [Browserstack](https://www.browserstack.com/).
-- Requires React 16+
-- Uses [Rematrix](https://github.com/jlmakes/rematrix) for matrix calculations and a simplified fork of [Rebound](https://github.com/facebook/rebound-js) for spring animations
-
-## Troubleshooting
-
-### Problem #1: Nothing is happening
-
-- Make sure you're updating the `flipKey` attribute in the `Flipper` component whenever an animation should happen.
-- If one of your `Flipped` components is wrapping another React component rather than a DOM element, [use a render prop to get the Flipped props](#wrapping-a-react-component) and pass down to the necessary DOM element.
-- Is the element that's receiving props from `Flipped` visible in the DOM? `react-flip-toolkit` attempts to optimize performance by not animating elements that are off-screen or elements that have no width or height.
-- `display:inline` elements cannot be animated. If you want an `inline` element to animate, set `display:inline-block`.
-- Do you have the [prefers-reduced-motion](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion) setting turned on? As of v7.1.0 that setting will disable all animations.
-
-### Problem #2: Things look weird / animations aren't behaving
-
-- **Check to make sure all `flipId`s are unique.** At any point, there can only be one element with a specified `flipId` on the page. If there are multiple `Flipped` elements on the page with the same id, the animation will break.
-- **Make sure you are animating the element you want to animate and not, for instance, a wrapper div**. If you are animating an inline element like some text, but have wrapped it in a `div`, you're actually animating the div, which might have a much wider width that you'd expect at certain points, which will throw off the animation. Check to see if you need to add an `inline-block` style to the animated element.
-- Make sure you don't have any **competing CSS transitions** on the element in question.
-- **If you are animating an image**, try giving the image hard-coded dimensions and seeing if that fixes the problem. (If you are relying on the innate dimensions of the image, it might not have been fully rendered by the browser in time for the new image dimensions to be measured.)
-
-### Problem #3: It's still not working
-
-- Try out the `debug` prop. If you still can't figure out what's going wrong, you can add the [the `debug` prop](#props) directly on your `Flipper` component to pause transitions at the beginning.
-- If you think something might actually be broken, or are completely stuck, feel free to make an issue.
-
-## Performance
-
-`React-flip-toolkit` does a lot of work under the hood to try to maximize the performance of your animations &mdash; for instance, off-screen elements won't be animated, and style updates are batched to prevent [layout thrashing](https://developers.google.com/web/fundamentals/performance/rendering/avoid-large-complex-layouts-and-layout-thrashing).
-However, if you are building particularly complex animations&mdash;ones that involve dozens of elements or large images&mdash; there are some additional strategies you can use to ensure performant animations.
-
-### `Memoization`
-
-When you trigger a complex FLIP animation with `react-flip-toolkit`, `React` could be spending vital milliseconds doing unnecessary reconciliation work before allowing the animation to start. If you notice a slight delay between when the animation is triggered, and when it begins, this is probably the culprit. To short-circuit this possibly unnecessary work, try memoizing your component by using [`React.memo`](https://reactjs.org/docs/react-api.html#reactmemo) or [`PureComponent`](https://reactjs.org/docs/react-api.html#reactpurecomponent) for your animated elements, and seeing if you can refactor your code to minimize prop updates to animated children when an animation is about to occur.
-
-### `will-change:transform`
-
-```css
-.box {
-  will-change: transform;
-}
-```
-
-This [CSS property](https://dev.opera.com/articles/css-will-change-property/) tells the browser to anticipate changes to an element. It should be used with caution, because it can increase browser resource usage. If you notice rendering issues in your animation, try seeing if it increases the performance of the animation.
-````
 
 ### react-is 16.13.1
 
@@ -14717,333 +12672,73 @@ License: ISC
 
 Repository: https://github.com/lddubeau/saxes
 
-````text
-(README fallback; authoritative license text requires human review.)
+```text
+The ISC License
 
-# saxes
+Copyright (c) Contributors
 
-A sax-style non-validating parser for XML.
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
 
-Saxes is a fork of [sax](https://github.com/isaacs/sax-js) 1.2.4. All mentions
-of sax in this project's documentation are references to sax 1.2.4.
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-Designed with [node](http://nodejs.org/) in mind, but should work fine in the
-browser or other CommonJS implementations.
+====
 
-Saxes does not support Node versions older than 10.
+The following license is the one that governed sax, from which saxes
+was forked. Isaac Schlueter is not *directly* involved with saxes so
+don't go bugging him for saxes issues.
 
-## Notable Differences from Sax.
+The ISC License
 
-* Saxes aims to be much stricter than sax with regards to XML
-  well-formedness. Sax, even in its so-called "strict mode", is not strict. It
-  silently accepts structures that are not well-formed XML. Projects that need
-  better compliance with well-formedness constraints cannot use sax as-is.
+Copyright (c) Isaac Z. Schlueter and Contributors
 
-  Consequently, saxes does not support HTML, or pseudo-XML, or bad XML. Saxes
-  will report well-formedness errors in all these cases but it won't try to
-  extract data from malformed documents like sax does.
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
 
-* Saxes is much much faster than sax, mostly because of a substantial redesign
-  of the internal parsing logic. The speed improvement is not merely due to
-  removing features that were supported by sax. That helped a bit, but saxes
-  adds some expensive checks in its aim for conformance with the XML
-  specification. Redesigning the parsing logic is what accounts for most of the
-  performance improvement.
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-* Saxes does not aim to support antiquated platforms. We will not pollute the
-  source or the default build with support for antiquated platforms. If you want
-  support for IE 11, you are welcome to produce a PR that adds a *new build*
-  transpiled to ES5.
+====
 
-* Saxes handles errors differently from sax: it provides a default onerror
-  handler which throws. You can replace it with your own handler if you want. If
-  your handler does nothing, there is no `resume` method to call.
+`String.fromCodePoint` by Mathias Bynens is no longer used, but it can
+still be found in old commits. It was once used according to terms of
+MIT License, as follows:
 
-* There's no `Stream` API. A revamped API may be introduced later. (It is still
-  a "streaming parser" in the general sense that you write a character stream to
-  it.)
+    Copyright Mathias Bynens <https://mathiasbynens.be/>
 
-* Saxes does not have facilities for limiting the size the data chunks passed to
-  event handlers. See the FAQ entry for more details.
+    Permission is hereby granted, free of charge, to any person obtaining
+    a copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
 
-## Conformance
+    The above copyright notice and this permission notice shall be
+    included in all copies or substantial portions of the Software.
 
-Saxes supports:
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+    NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+    LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+    OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+    WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-* [XML 1.0 fifth edition](https://www.w3.org/TR/2008/REC-xml-20081126/)
-* [XML 1.1 second edition](https://www.w3.org/TR/2006/REC-xml11-20060816/)
-* [Namespaces in XML 1.0 (Third Edition)](https://www.w3.org/TR/2009/REC-xml-names-20091208/).
-* [Namespaces in XML 1.1 (Second Edition)](https://www.w3.org/TR/2006/REC-xml-names11-20060816/).
-
-## Limitations
-
-This is a non-validating parser so it only verifies whether the document is
-well-formed. We do aim to raise errors for all malformed constructs
-encountered. However, this parser does not thorougly parse the contents of
-DTDs. So most malformedness errors caused by errors **in DTDs** cannot be
-reported.
-
-## Regarding `<!DOCTYPE` and `<!ENTITY`
-
-The parser will handle the basic XML entities in text nodes and attribute
-values: `&amp; &lt; &gt; &apos; &quot;`. It's possible to define additional
-entities in XML by putting them in the DTD. This parser doesn't do anything with
-that. If you want to listen to the `doctype` event, and then fetch the
-doctypes, and read the entities and add them to `parser.ENTITIES`, then be my
-guest.
-
-## Documentation
-
-The source code contains JSDOC comments. Use them. What follows is a brief
-summary of what is available. The final authority is the source code.
-
-**PAY CLOSE ATTENTION TO WHAT IS PUBLIC AND WHAT IS PRIVATE.**
-
-The move to TypeScript makes it so that everything is now formally private,
-protected, or public.
-
-If you use anything not public, that's at your own peril.
-
-If there's a mistake in the documentation, raise an issue. If you just assume,
-you may assume incorrectly.
-
-## Summary Usage Information
-
-### Example
-
-```javascript
-var saxes = require("./lib/saxes"),
-  parser = new saxes.SaxesParser();
-
-parser.on("error", function (e) {
-  // an error happened.
-});
-parser.on("text", function (t) {
-  // got some text.  t is the string of text.
-});
-parser.on("opentag", function (node) {
-  // opened a tag.  node has "name" and "attributes"
-});
-parser.on("end", function () {
-  // parser stream is done, and ready to have more stuff written to it.
-});
-
-parser.write('<xml>Hello, <who name="world">world</who>!</xml>').close();
 ```
-
-### Constructor Arguments
-
-Settings supported:
-
-* `xmlns` - Boolean. If `true`, then namespaces are supported. Default
-  is `false`.
-
-* `position` - Boolean. If `false`, then don't track line/col/position. Unset is
-  treated as `true`. Default is unset. Currently, setting this to `false` only
-  results in a cosmetic change: the errors reported do not contain position
-  information. sax-js would literally turn off the position-computing logic if
-  this flag was set to false. The notion was that it would optimize
-  execution. In saxes at least it turns out that continually testing this flag
-  causes a cost that offsets the benefits of turning off this logic.
-
-* `fileName` - String. Set a file name for error reporting. This is useful only
-  when tracking positions. You may leave it unset.
-
-* `fragment` - Boolean. If `true`, parse the XML as an XML fragment. Default is
-  `false`.
-
-* `additionalNamespaces` - A plain object whose key, value pairs define
-   namespaces known before parsing the XML file. It is not legal to pass
-   bindings for the namespaces `"xml"` or `"xmlns"`.
-
-* `defaultXMLVersion` - The default version of the XML specification to use if
-  the document contains no XML declaration. If the document does contain an XML
-  declaration, then this setting is ignored. Must be `"1.0"` or `"1.1"`. The
-  default is `"1.0"`.
-
-* `forceXMLVersion` - Boolean. A flag indicating whether to force the XML
-  version used for parsing to the value of ``defaultXMLVersion``. When this flag
-  is ``true``, ``defaultXMLVersion`` must be specified. If unspecified, the
-  default value of this flag is ``false``.
-
-  Example: suppose you are parsing a document that has an XML declaration
-  specifying XML version 1.1.
-
-  If you set ``defaultXMLVersion`` to ``"1.0"`` without setting
-  ``forceXMLVersion`` then the XML declaration will override the value of
-  ``defaultXMLVersion`` and the document will be parsed according to XML 1.1.
-
-  If you set ``defaultXMLVersion`` to ``"1.0"`` and set ``forceXMLVersion`` to
-  ``true``, then the XML declaration will be ignored and the document will be
-  parsed according to XML 1.0.
-
-### Methods
-
-`write` - Write bytes onto the stream. You don't have to pass the whole document
-in one `write` call. You can read your source chunk by chunk and call `write`
-with each chunk.
-
-`close` - Close the stream. Once closed, no more data may be written until it is
-done processing the buffer, which is signaled by the `end` event.
-
-### Properties
-
-The parser has the following properties:
-
-`line`, `column`, `columnIndex`, `position` - Indications of the position in the
-XML document where the parser currently is looking. The `columnIndex` property
-counts columns as if indexing into a JavaScript string, whereas the `column`
-property counts Unicode characters.
-
-`closed` - Boolean indicating whether or not the parser can be written to.  If
-it's `true`, then wait for the `ready` event to write again.
-
-`opt` - Any options passed into the constructor.
-
-`xmlDecl` - The XML declaration for this document. It contains the fields
-`version`, `encoding` and `standalone`. They are all `undefined` before
-encountering the XML declaration. If they are undefined after the XML
-declaration, the corresponding value was not set by the declaration. There is no
-event associated with the XML declaration. In a well-formed document, the XML
-declaration may be preceded only by an optional BOM. So by the time any event
-generated by the parser happens, the declaration has been processed if present
-at all. Otherwise, you have a malformed document, and as stated above, you
-cannot rely on the parser data!
-
-### Error Handling
-
-The parser continues to parse even upon encountering errors, and does its best
-to continue reporting errors. You should heed all errors reported. After an
-error, however, saxes may interpret your document incorrectly. For instance
-``<foo a=bc="d"/>`` is invalid XML. Did you mean to have ``<foo a="bc=d"/>`` or
-``<foo a="b" c="d"/>`` or some other variation?  For the sake of continuing to
-provide errors, saxes will continue parsing the document, but the structure it
-reports may be incorrect. It is only after the errors are fixed in the document
-that saxes can provide a reliable interpretation of the document.
-
-That leaves you with two rules of thumb when using saxes:
-
-* Pay attention to the errors that saxes report. The default `onerror` handler
-  throws, so by default, you cannot miss errors.
-
-* **ONCE AN ERROR HAS BEEN ENCOUNTERED, STOP RELYING ON THE EVENT HANDLERS OTHER
-  THAN `onerror`.** As explained above, when saxes runs into a well-formedness
-  problem, it makes a guess in order to continue reporting more errors. The guess
-  may be wrong.
-
-### Events
-
-To listen to an event, override `on<eventname>`. The list of supported events
-are also in the exported `EVENTS` array.
-
-See the JSDOC comments in the source code for a description of each supported
-event.
-
-### Parsing XML Fragments
-
-The XML specification does not define any method by which to parse XML
-fragments. However, there are usage scenarios in which it is desirable to parse
-fragments. In order to allow this, saxes provides three initialization options.
-
-If you pass the option `fragment: true` to the parser constructor, the parser
-will expect an XML fragment. It essentially starts with a parsing state
-equivalent to the one it would be in if `parser.write("<foo">)` had been called
-right after initialization. In other words, it expects content which is
-acceptable inside an element. This also turns off well-formedness checks that
-are inappropriate when parsing a fragment.
-
-The option `additionalNamespaces` allows you to define additional prefix-to-URI
-bindings known before parsing starts. You would use this over `resolvePrefix` if
-you have at the ready a series of namespaces bindings to use.
-
-The option `resolvePrefix` allows you to pass a function which saxes will use if
-it is unable to resolve a namespace prefix by itself. You would use this over
-`additionalNamespaces` in a context where getting a complete list of defined
-namespaces is onerous.
-
-Note that you can use `additionalNamespaces` and `resolvePrefix` together if you
-want. `additionalNamespaces` applies before `resolvePrefix`.
-
-The options `additionalNamespaces` and `resolvePrefix` are really meant to be
-used for parsing fragments. However, saxes won't prevent you from using them
-with `fragment: false`. Note that if you do this, your document may parse
-without errors and yet be malformed because the document can refer to namespaces
-which are not defined *in* the document.
-
-Of course, `additionalNamespaces` and `resolvePrefix` are used only if `xmlns`
-is `true`. If you are parsing a fragment that does not use namespaces, there's
-no point in setting these options.
-
-### Performance Tips
-
-* saxes works faster on files that use newlines (``\u000A``) as end of line
-  markers than files that use other end of line markers (like ``\r`` or
-  ``\r\n``). The XML specification requires that conformant applications behave
-  as if all characters that are to be treated as end of line characters are
-  converted to ``\u000A`` prior to parsing. The optimal code path for saxes is a
-  file in which all end of line characters are already ``\u000A``.
-
-* Don't split Unicode strings you feed to saxes across surrogates. When you
-  naively split a string in JavaScript, you run the risk of splitting a Unicode
-  character into two surrogates. e.g.  In the following example ``a`` and ``b``
-  each contain half of a single Unicode character: ``const a = "\u{1F4A9}"[0];
-  const b = "\u{1F4A9}"[1]`` If you feed such split surrogates to versions of
-  saxes prior to 4, you'd get errors. Saxes version 4 and over are able to
-  detect when a chunk of data ends with a surrogate and carry over the surrogate
-  to the next chunk. However this operation entails slicing and concatenating
-  strings. If you can feed your data in a way that does not split surrogates,
-  you should do it. (Obviously, feeding all the data at once with a single write
-  is fastest.)
-
-* Don't set event handlers you don't need. Saxes has always aimed to avoid doing
-  work that will just be tossed away but future improvements hope to do this
-  more aggressively. One way saxes knows whether or not some data is needed is
-  by checking whether a handler has been set for a specific event.
-
-## FAQ
-
-Q. Why has saxes dropped support for limiting the size of data chunks passed to
-event handlers?
-
-A. With sax you could set ``MAX_BUFFER_LENGTH`` to cause the parser to limit the
-size of data chunks passed to event handlers. So if you ran into a span of text
-above the limit, multiple ``text`` events with smaller data chunks were fired
-instead of a single event with a large chunk.
-
-However, that functionality had some problematic characteristics. It had an
-arbitrary default value. It was library-wide so all parsers created from a
-single instance of the ``sax`` library shared it. This could potentially cause
-conflicts among libraries running in the same VM but using sax for different
-purposes.
-
-These issues could have been easily fixed, but there were larger issues. The
-buffer limit arbitrarily applied to some events but not others. It would split
-``text``, ``cdata`` and ``script`` events. However, if a ``comment``,
-``doctype``, ``attribute`` or ``processing instruction`` were more than the
-limit, the parser would generate an error and you were left picking up the
-pieces.
-
-It was not intuitive to use. You'd think setting the limit to 1K would prevent
-chunks bigger than 1K to be passed to event handlers. But that was not the
-case. A comment in the source code told you that you might go over the limit if
-you passed large chunks to ``write``. So if you want a 1K limit, don't pass 64K
-chunks to ``write``. Fair enough. You know what limit you want so you can
-control the size of the data you pass to ``write``. So you limit the chunks to
-``write`` to 1K at a time. Even if you do this, your event handlers may get data
-chunks that are 2K in size. Suppose on the previous ``write`` the parser has
-just finished processing an open tag, so it is ready for text. Your ``write``
-passes 1K of text. You are not above the limit yet, so no event is generated
-yet. The next ``write`` passes another 1K of text. It so happens that sax checks
-buffer limits only once per ``write``, after the chunk of data has been
-processed. Now you've hit the limit and you get a ``text`` event with 2K of
-data. So even if you limit your ``write`` calls to the buffer limit you've set,
-you may still get events with chunks at twice the buffer size limit you've
-specified.
-
-We may consider reinstating an equivalent functionality, provided that it
-addresses the issues above and does not cause a huge performance drop for
-use-case scenarios that don't need it.
-````
 
 ### scheduler 0.27.0
 
