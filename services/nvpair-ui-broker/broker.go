@@ -656,7 +656,7 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// hold no cluster identity — the desktop app's two-second telemetry poll and
 	// baseline LAN discovery — so gating it would remove node telemetry from the UI.
 	// The accepted risk and its compensating controls are recorded under
-	// "Documented Risk Acceptances" in desktop/SECURITY.md.
+	// the repository-root SECURITY.md.
 	//
 	// node-info still implements the cluster-gated mode (pass it --cluster-dir and
 	// it admits only pinned peers). It is kept, unenabled, on purpose: it is the
@@ -1312,27 +1312,30 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 // the alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
 func (b *Broker) upsertManualNode(s manualNodeStatus) {
-	en := manualToEnriched(s)
-	key := en.storeKey()
+	key := manualToEnriched(s).storeKey()
 	receivedAt := time.Now()
-
-	b.annotateManualTrust(&en, s)
 
 	b.manualMu.Lock()
 	oldKey, existed := b.manualNodeKeys[s.ID]
 	b.manualNodeKeys[s.ID] = key
 	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
+	canonical, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
+	if !ok {
+		canonical = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
+	}
 
+	en := manualToEnriched(canonical.status)
+	b.annotateManualTrust(&en, canonical.status)
 	b.store.Upsert(en, sourceManual)
 	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
 	if b.relayDir != nil {
-		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(s, key))
+		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(canonical.status, key))
 	}
 	// Bridge a reachable manual node into each engine's proxy (ollama-proxy /
 	// lmstudio-proxy) so inference can route to it; an unreachable engine is
 	// pulled back out. No-op for a proxy the broker doesn't supervise.
-	b.bridgeManualNode(s, key)
+	b.bridgeManualNode(canonical.status, key)
 
 	if existed && oldKey != key {
 		// This alias moved off oldKey: refresh oldKey from a surviving alias, or
@@ -1389,20 +1392,43 @@ func (b *Broker) reprojectOrRelease(key string) {
 	b.removeTelemetry(sourceManual, key)
 }
 
-// survivingAliasLocked returns the last-seen status of a manual alias still
-// resolving to key, picking the lexicographically smallest alias id for a stable
-// choice. Callers must hold manualMu.
+// survivingAliasLocked keeps the smallest alias id as the display identity,
+// while preferring an address with a reachable engine over metadata-only or
+// unreachable aliases. Ties use alias id, never probe arrival or map order.
+// Callers must hold manualMu.
 func (b *Broker) survivingAliasLocked(key string) (manualNodeStatusEntry, bool) {
-	best := ""
+	displayID, best := "", ""
+	bestRank := -1
 	for id, k := range b.manualNodeKeys {
-		if k == key && (best == "" || id < best) {
-			best = id
+		if k != key {
+			continue
+		}
+		entry, ok := b.manualNodeStatuses[id]
+		if !ok {
+			continue
+		}
+		if displayID == "" || id < displayID {
+			displayID = id
+		}
+		status := entry.status
+		rank := 0
+		if status.NodeInfoUp {
+			rank = 1
+		}
+		if status.OllamaUp || status.LMStudioUp || status.OMLXUp ||
+			len(status.OllamaModels)+len(status.LMStudioModels)+len(status.OMLXModels)+len(status.ModelsByEngine) > 0 {
+			rank = 2
+		}
+		if rank > bestRank || (rank == bestRank && id < best) {
+			best, bestRank = id, rank
 		}
 	}
 	if best == "" {
 		return manualNodeStatusEntry{}, false
 	}
-	return b.manualNodeStatuses[best], true
+	entry := b.manualNodeStatuses[best]
+	entry.status.ID = displayID
+	return entry, true
 }
 
 // clearManualNodesState is the manual-nodes supervisor's clearHandle: on a

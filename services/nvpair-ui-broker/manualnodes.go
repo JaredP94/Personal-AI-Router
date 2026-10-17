@@ -245,9 +245,19 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 
 func (b *Broker) refreshManualNodesTrust() {
 	b.manualMu.Lock()
-	entries := make([]manualNodeStatusEntry, 0, len(b.manualNodeStatuses))
-	for _, entry := range b.manualNodeStatuses {
-		entries = append(entries, entry)
+	seenKeys := make(map[string]struct{}, len(b.manualNodeKeys))
+	entries := make([]manualNodeStatusEntry, 0, len(b.manualNodeKeys))
+	for _, key := range b.manualNodeKeys {
+		if key == "" {
+			continue
+		}
+		if _, dup := seenKeys[key]; dup {
+			continue
+		}
+		seenKeys[key] = struct{}{}
+		if canonical, ok := b.survivingAliasLocked(key); ok {
+			entries = append(entries, canonical)
+		}
 	}
 	b.manualMu.Unlock()
 
