@@ -22,6 +22,7 @@ import {
     readCliBinManifest
 } from '@/electron/service-bridge/modular-supervisor'
 import { modularShippedBinaryBaseNames } from '@/shared/constants/modular-binaries'
+import { getFirewallSetupMode } from '@/electron/services/mac-helper-setup'
 
 const LICENSE_FILE = 'LICENSE'
 const THIRD_PARTY_LICENSE_FILE = 'THIRD_PARTY_NOTICES.md'
@@ -84,6 +85,10 @@ export function registerServiceIpc(): void {
             binaries,
             licenseType
         }
+    })
+
+    safeHandle('service:get-firewall-setup', async () => {
+        return getFirewallSetupMode()
     })
 
     safeHandle('service:get-log-level', async () => {

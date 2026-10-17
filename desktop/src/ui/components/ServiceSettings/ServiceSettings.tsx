@@ -25,6 +25,7 @@ import { isElectron } from '@/ui/api/bootstrap'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import ApplicationUpdatesCard from './UpdatesSettings'
 import VersionsCard from './VersionsCard'
+import FirewallSetupCard from './FirewallSetupCard'
 import RoutingDiagnostics from './RoutingDiagnostics'
 import ObservabilityCard from './ObservabilityCard'
 import WipeAppDataCard from './WipeAppDataCard'
@@ -385,6 +386,7 @@ export default function ServiceSettings() {
 
             <RoutingDiagnostics />
             <ObservabilityCard />
+            <FirewallSetupCard />
             <VersionsCard />
         </Stack>
     )

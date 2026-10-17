@@ -104,6 +104,7 @@ export interface IpcChannelMap {
     'service:open-log-file': { request: void; response: void }
     'service:open-log-dir': { request: void; response: void }
     'service:get-versions': { request: void; response: ServiceVersions }
+    'service:get-firewall-setup': { request: void; response: FirewallSetupMode }
     'service:open-license': { request: void; response: void }
     'service:open-third-party-licenses': { request: void; response: void }
 
