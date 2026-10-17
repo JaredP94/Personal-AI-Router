@@ -126,16 +126,20 @@ func readResyncFrame(t *testing.T, sc *bufio.Scanner, conn net.Conn, timeout tim
 	return rawKeys, decoded
 }
 
+// blockingReadWriter fails its single in-flight write when released.
 type blockingReadWriter struct {
-	writeStarted chan struct{}
-	unblock      chan struct{}
-	once         sync.Once
+	writeStarted  chan struct{}
+	writeReturned chan struct{}
+	unblock       chan struct{}
+	once          sync.Once
+	closeOnce     sync.Once
 }
 
 func newBlockingReadWriter() *blockingReadWriter {
 	return &blockingReadWriter{
-		writeStarted: make(chan struct{}),
-		unblock:      make(chan struct{}),
+		writeStarted:  make(chan struct{}),
+		writeReturned: make(chan struct{}),
+		unblock:       make(chan struct{}),
 	}
 }
 
@@ -144,40 +148,57 @@ func (w *blockingReadWriter) Read(p []byte) (int, error) {
 }
 
 func (w *blockingReadWriter) Write(p []byte) (int, error) {
+	defer close(w.writeReturned)
 	w.once.Do(func() { close(w.writeStarted) })
 	<-w.unblock
 	return 0, io.ErrClosedPipe
 }
 
 func (w *blockingReadWriter) Close() error {
-	select {
-	case <-w.unblock:
-	default:
-		close(w.unblock)
-	}
+	w.closeOnce.Do(func() { close(w.unblock) })
 	return nil
 }
 
+// waitForWriteReturn is called after joining the heartbeat: if cancellation
+// happened before its first tick, there is no write to wait for.
+func (w *blockingReadWriter) waitForWriteReturn() {
+	select {
+	case <-w.writeStarted:
+		<-w.writeReturned
+	default:
+	}
+}
+
 type noopCloseBlockingReadWriter struct {
-	writeStarted chan struct{}
-	once         sync.Once
+	*blockingReadWriter
 }
 
 func newNoopCloseBlockingReadWriter() *noopCloseBlockingReadWriter {
-	return &noopCloseBlockingReadWriter{writeStarted: make(chan struct{})}
-}
-
-func (w *noopCloseBlockingReadWriter) Read(p []byte) (int, error) {
-	return 0, io.EOF
-}
-
-func (w *noopCloseBlockingReadWriter) Write(p []byte) (int, error) {
-	w.once.Do(func() { close(w.writeStarted) })
-	select {}
+	return &noopCloseBlockingReadWriter{blockingReadWriter: newBlockingReadWriter()}
 }
 
 func (w *noopCloseBlockingReadWriter) Close() error {
 	return nil
+}
+
+// release is test-owned and idempotent; transport Close must remain a no-op
+// until the bounded-stop assertion has observed the forced abandonment.
+func (w *noopCloseBlockingReadWriter) release() {
+	_ = w.blockingReadWriter.Close()
+}
+
+// joinHeartbeatForCleanup distinguishes a real private-done join from another
+// bounded abandonment. Even on failure, keep joining before restoring the logger.
+func joinHeartbeatForCleanup(t *testing.T, stopHeartbeat func(), logs *lockedBuffer) {
+	t.Helper()
+	for {
+		before := strings.Count(string(logs.Bytes()), "abandoning heartbeat shutdown join")
+		stopHeartbeat()
+		if strings.Count(string(logs.Bytes()), "abandoning heartbeat shutdown join") == before {
+			return
+		}
+		t.Error("heartbeat cleanup abandoned its join after the test released the writer")
+	}
 }
 
 // TestHeartbeatStopBoundsNoopTransportClose covers stdio-shaped shutdown: Close
@@ -199,18 +220,29 @@ func TestHeartbeatStopBoundsNoopTransportClose(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopHeartbeat := b.startHeartbeat(ctx, cancel)
+	var stopped <-chan struct{}
+	// LIFO cleanup keeps the logger captured until all test-owned work settles.
+	t.Cleanup(func() {
+		cancel()
+		writer.release()
+		if stopped != nil {
+			<-stopped
+		}
+		joinHeartbeatForCleanup(t, stopHeartbeat, &logs)
+		writer.waitForWriteReturn()
+	})
 
 	select {
 	case <-writer.writeStarted:
 	case <-time.After(2 * time.Second):
-		cancel()
 		t.Fatal("heartbeat never entered the blocking writer")
 	}
 
-	stopped := make(chan struct{})
+	stopDone := make(chan struct{})
+	stopped = stopDone
 	started := time.Now()
 	go func() {
-		defer close(stopped)
+		defer close(stopDone)
 		stopHeartbeat()
 	}()
 
@@ -246,17 +278,30 @@ func TestHeartbeatStopJoinsWhenTransportCloseUnblocks(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopHeartbeat := b.startHeartbeat(ctx, cancel)
+	var stopped <-chan struct{}
+	t.Cleanup(func() {
+		cancel()
+		_ = writer.Close()
+		if stopped != nil {
+			<-stopped
+		}
+		joinHeartbeatForCleanup(t, stopHeartbeat, &logs)
+		writer.waitForWriteReturn()
+		if got := string(logs.Bytes()); strings.Contains(got, "abandon") {
+			t.Errorf("clean heartbeat cleanup logged abandonment: %q", got)
+		}
+	})
 
 	select {
 	case <-writer.writeStarted:
 	case <-time.After(2 * time.Second):
-		cancel()
 		t.Fatal("heartbeat never entered the blocking writer")
 	}
 
-	stopped := make(chan struct{})
+	stopDone := make(chan struct{})
+	stopped = stopDone
 	go func() {
-		defer close(stopped)
+		defer close(stopDone)
 		stopHeartbeat()
 	}()
 
@@ -288,6 +333,12 @@ func TestHeartbeatCancelClosesBlockedWriteAndReturns(t *testing.T) {
 		defer close(done)
 		b.runHeartbeat(ctx)
 	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = writer.Close()
+		<-done
+		writer.waitForWriteReturn()
+	})
 
 	select {
 	case <-writer.writeStarted:
