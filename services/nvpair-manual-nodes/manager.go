@@ -437,10 +437,6 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
 
-	ollamaUp, ollamaModels := m.probeOllama(addr, 11434)
-	lmStudioUp, lmStudioModels := m.probeLMStudio(addr, lmStudioPort)
-	omlxUp, omlxModels := m.probeOMLX(addr, omlxPort)
-
 	// Pick scheme + port + client based on the entry's TLS hint.
 	// The operator decides which scheme this manual node uses; we
 	// don't probe both. TLSPort > 0 means HTTPS on that port via
@@ -496,6 +492,15 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	finalModelsByEngine := emRes.ModelsByEngine
 	finalLoadedByEngine := emRes.LoadedByEngine
 
+	// Plaintext engine probes are only valid for unclustered/non-mTLS nodes;
+	// clustered peers reject non-loopback plaintext requests on their proxy
+	// ports and publish their authoritative inventory via Engine Manager (:14322).
+	canProbePlaintextEngines := !entry.MTLS && !useTLS && clusterUUID == ""
+
+	var (
+		ollamaUp, lmStudioUp, omlxUp             bool
+		ollamaModels, lmStudioModels, omlxModels []string
+	)
 	if emUp {
 		if finalModelsByEngine != nil {
 			if olModels, ok := finalModelsByEngine["ollama"]; ok {
@@ -509,6 +514,17 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			if omModels, ok := finalModelsByEngine["omlx"]; ok {
 				omlxUp = true
 				omlxModels = omModels
+			}
+		}
+		if canProbePlaintextEngines {
+			if !ollamaUp {
+				ollamaUp, ollamaModels = m.probeOllama(addr, 11434)
+			}
+			if !lmStudioUp {
+				lmStudioUp, lmStudioModels = m.probeLMStudio(addr, lmStudioPort)
+			}
+			if !omlxUp {
+				omlxUp, omlxModels = m.probeOMLX(addr, omlxPort)
 			}
 		}
 		if ollamaUp && (finalModelsByEngine == nil || finalModelsByEngine["ollama"] == nil) && len(ollamaModels) > 0 {
@@ -533,6 +549,11 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			finalModels = mergeModels(finalModels, omlxModels)
 		}
 	} else {
+		if canProbePlaintextEngines {
+			ollamaUp, ollamaModels = m.probeOllama(addr, 11434)
+			lmStudioUp, lmStudioModels = m.probeLMStudio(addr, lmStudioPort)
+			omlxUp, omlxModels = m.probeOMLX(addr, omlxPort)
+		}
 		finalModels = mergeModels(ollamaModels, lmStudioModels, omlxModels)
 		finalModelsByEngine = make(map[string][]string)
 		if len(ollamaModels) > 0 {
@@ -922,7 +943,13 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
 	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
 	start := time.Now()
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false, NodeInfoResponse{}
+	}
+	// Scheduling telemetry must retain active sampling while the cadence/freshness design remains unresolved.
+	req.Header.Set("X-NVPAIR-Poll", "foreground")
+	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("manual probe node-info failed",
 			"addr", addr, "port", port, "scheme", scheme,
@@ -968,9 +995,30 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 		MTLSRequired: entry.TLSPort > 0 && entry.MTLS,
 	}
 
+	var supersededClusterIDs []string
 	m.mu.Lock()
+	for existingID, tn := range m.nodes {
+		if existingID == id || !tn.fromCluster {
+			continue
+		}
+		if tn.entry.Address == entry.Address {
+			if status.HostUUID == "" && tn.status.HostUUID != "" {
+				status.HostUUID = tn.status.HostUUID
+			}
+			if status.ClusterUUID == "" && tn.status.ClusterUUID != "" {
+				status.ClusterUUID = tn.status.ClusterUUID
+			}
+			delete(m.nodes, existingID)
+			supersededClusterIDs = append(supersededClusterIDs, existingID)
+		}
+	}
 	m.nodes[id] = &trackedNode{entry: entry, status: status}
 	m.mu.Unlock()
+
+	for _, oldID := range supersededClusterIDs {
+		m.codec.Notify("node/removed", ManualNodeStatus{ID: oldID})
+		_ = m.codec.Notify("errors:clear", errors.ClearParams{ID: probeFailedID(oldID)})
+	}
 
 	go func() {
 		m.probeNode(entry)
@@ -993,6 +1041,7 @@ func (m *Manager) removeNode(id string) bool {
 	_, exists := m.nodes[id]
 	if exists {
 		delete(m.nodes, id)
+		m.lastMembersMtime = time.Time{}
 	}
 	m.mu.Unlock()
 
@@ -1008,6 +1057,7 @@ func (m *Manager) removeNode(id string) bool {
 		}); err != nil {
 			log.Printf("failed to send errors:clear on remove for %s: %v", id, err)
 		}
+		m.syncClusterMembers()
 	}
 	return exists
 }

@@ -86,6 +86,23 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 	return m, rw, rt
 }
 
+func TestProbeNodeInfoKeepsSchedulingTelemetryActive(t *testing.T) {
+	m, _, rt := newTestManager()
+	var poll string
+	rt.set(http.MethodGet, "node.local:14318", "/v1/node-info", func(req *http.Request) (*http.Response, error) {
+		poll = req.Header.Get("X-NVPAIR-Poll")
+		return httpJSON(http.StatusOK, `{"hostUuid":"peer-uuid"}`)
+	})
+
+	up, info := m.probeNodeInfo(m.client, "http", "node.local", 14318)
+	if !up || info.HostUUID != "peer-uuid" {
+		t.Fatalf("probeNodeInfo = %v, %+v; want a successful peer response", up, info)
+	}
+	if poll != "foreground" {
+		t.Fatalf("scheduling telemetry poll = %q, want foreground to retain active sampling", poll)
+	}
+}
+
 func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, info NodeInfoResponse) {
 	host := net.JoinHostPort(addr, "11434")
 	rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
@@ -779,6 +796,74 @@ func TestSyncClusterMembers(t *testing.T) {
 	}
 }
 
+func TestAddNodeSupersedesClusterSeededEntryAtSameAddress(t *testing.T) {
+	clusterDir := t.TempDir()
+	selfUUID := "11111111-1111-1111-1111-111111111111"
+	peerUUID := "22222222-2222-2222-2222-222222222222"
+
+	idData := []byte(`{"node_uuid":"` + selfUUID + `"}`)
+	if err := os.WriteFile(filepath.Join(clusterDir, "identity.json"), idData, 0o600); err != nil {
+		t.Fatalf("write identity.json: %v", err)
+	}
+
+	members := []clusterMemberEntry{
+		{
+			ID:        "Self",
+			NodeUUID:  selfUUID,
+			Name:      "Self",
+			IPAddress: "127.0.0.1",
+			State:     "member",
+		},
+		{
+			ID:        "desktop-peer.local",
+			NodeUUID:  peerUUID,
+			Name:      "desktop-peer.local",
+			IPAddress: "192.0.2.2",
+			State:     "member",
+		},
+	}
+	data, err := json.Marshal(members)
+	if err != nil {
+		t.Fatalf("marshal members: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(clusterDir, "members.json"), data, 0o600); err != nil {
+		t.Fatalf("write members.json: %v", err)
+	}
+
+	rw := newCaptureRW()
+	m, err := NewManager(NewCodec(rw), tlsClientOptions{}, nil, clusterDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	m.client = &http.Client{Transport: newFakeRoundTripper()}
+
+	m.syncClusterMembers()
+	if got := len(m.listNodes()); got != 1 {
+		t.Fatalf("expected 1 cluster-seeded node, got %d", got)
+	}
+
+	// Replaying a user-added manual node for the same IP with a custom friendly
+	// name must replace the cluster-seeded entry rather than keeping two entries
+	// for the same address.
+	st := m.addNode(ManualEntry{Address: "192.0.2.2", Name: "manual-peer"})
+	if st.HostUUID != peerUUID {
+		t.Fatalf("expected user-added node to inherit known HostUUID %q, got %q", peerUUID, st.HostUUID)
+	}
+	nodes := m.listNodes()
+	if len(nodes) != 1 || nodes[0].ID != "manual-peer" {
+		t.Fatalf("expected single superseded node 'manual-peer', got %+v", nodes)
+	}
+
+	// Removing the user-added alias restores the cluster member entry from members.json.
+	if !m.removeNode("manual-peer") {
+		t.Fatalf("expected removeNode('manual-peer') to succeed")
+	}
+	nodesAfter := m.listNodes()
+	if len(nodesAfter) != 1 || nodesAfter[0].ID != "desktop-peer.local" {
+		t.Fatalf("expected cluster member 'desktop-peer.local' restored after user alias removal, got %+v", nodesAfter)
+	}
+}
+
 func TestProbeEngineManagerReportsModels(t *testing.T) {
 	m, _, rt := newTestManager()
 
@@ -840,6 +925,36 @@ func TestProbeEngineManagerReportsModels(t *testing.T) {
 	}
 	if len(n.LoadedByEngine["omlx"]) != 1 || n.LoadedByEngine["omlx"][0] != "mlx-qwen" {
 		t.Errorf("unexpected LoadedByEngine[omlx]: %#v", n.LoadedByEngine["omlx"])
+	}
+}
+
+func TestProbeNodeSkipsPlaintextEngineProbesForClusteredNode(t *testing.T) {
+	m, _, rt := newTestManager()
+
+	var plaintextProbes int
+	for _, port := range []string{"11434", "1234", "1236"} {
+		host := net.JoinHostPort("clustered.local", port)
+		rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
+			plaintextProbes++
+			return httpJSON(http.StatusForbidden, `{"error":"cluster peers must use mTLS"}`)
+		})
+		rt.set(http.MethodGet, host, "/v1/models", func(*http.Request) (*http.Response, error) {
+			plaintextProbes++
+			return httpJSON(http.StatusForbidden, `{"error":"cluster peers must use mTLS"}`)
+		})
+	}
+
+	infoHost := net.JoinHostPort("clustered.local", "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"hostUuid":"uuid-clustered-1","clusterUuid":"uuid-clustered-1"}`)
+	})
+
+	entry := ManualEntry{Address: "clustered.local", Name: "clustered-peer", MTLS: true}
+	m.addNode(entry)
+	m.probeNode(entry)
+
+	if plaintextProbes != 0 {
+		t.Fatalf("expected 0 plaintext engine probes for clustered/mTLS node, got %d", plaintextProbes)
 	}
 }
 
