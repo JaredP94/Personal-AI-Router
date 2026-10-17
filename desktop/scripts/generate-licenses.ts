@@ -7,24 +7,27 @@
  *   - every runtime (production) npm dependency + all their transitives
  *   - the Electron runtime itself (declared as a devDependency, but shipped
  *     with the packaged app, so legally it has to appear in the report)
- *   - the Go modules linked into the thirteen service binaries, which the
- *     installer ships from `../services` as extraResources
+ *   - the Go modules linked into service components listed in
+ *     `services/versions.json`, shipped by the installer as extraResources
  *
  * Dev-only tooling (vite, tsx, typescript, prettier, knip, etc.) is deliberately
  * excluded — it is not redistributed and does not need attribution.
  *
- * There is deliberately one notice file. The packaged app ships this same file,
- * so a reader cannot end up with a copy that disagrees with the repository.
+ * The repository-root notice is canonical; services/THIRD_PARTY_NOTICES.md
+ * points to it. The desktop packaging configuration ships the canonical file.
+ * Collected metadata and texts need human review; this is not a completeness
+ * certification or an inventory of separately installed software.
  *
  * Run:
  *   npm run licenses            writes the notice (invoked on every build)
  */
 import { init, type InitOpts, type ModuleInfo, type ModuleInfos } from 'license-checker-rseidelsohn'
 import { readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pkg from '../package.json' with { type: 'json' }
 import { collectGoModuleEntries, type LicenseEntry } from './collect-go-licenses'
+import { renderLicenseText } from './render-license-text'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -63,6 +66,7 @@ function normalizeLicense(licenses: string | string[] | undefined): string {
 function toEntry(key: string, info: ModuleInfo): Entry {
     const { name, version } = parseKey(key)
     const licenseText = (info.licenseText ?? '').trim()
+    const readmeFallback = /^readme(?:[.-]|$)/i.test(basename(info.licenseFile ?? ''))
     return {
         name,
         version,
@@ -71,7 +75,11 @@ function toEntry(key: string, info: ModuleInfo): Entry {
         email: info.email ?? null,
         repository: info.repository ?? null,
         homepage: info.url ?? null,
-        licenseText: licenseText.length > 0 ? licenseText : '(no license file found in package)'
+        licenseText: !licenseText
+            ? '(no license file found in package)'
+            : readmeFallback
+              ? `(README fallback; authoritative license text requires human review.)\n\n${licenseText}`
+              : licenseText
     }
 }
 
@@ -140,14 +148,26 @@ function renderMarkdown(entries: Entry[]): string {
         '',
         'NVIDIA Personal AI Router is distributed under the Apache License 2.0 (see',
         '`LICENSE`). It incorporates the third-party open-source software listed below.',
-        'Each component is the property of its respective copyright holders and is',
-        'distributed under its own license; the full license text for each component is',
-        'reproduced in this file.',
+        'Each component belongs to its respective copyright holders and is distributed',
+        'under its own license. This file collects package/module-provided license and',
+        'attribution texts with automatically derived license metadata. The npm scanner',
+        'may fall back to a README rather than an authoritative license file; missing',
+        'upstream text is marked where detected. Neither a README nor a license label',
+        'alone establishes that all required notices are present. Human license review',
+        'is required; this generated inventory is not a certification of completeness.',
         '',
-        'Scope: npm dependencies and the Electron runtime shipped in the desktop',
-        'application, plus the Go modules linked into the thirteen shipped service',
-        'binaries across the Windows, Linux, and macOS targets. First-party modules',
-        '(`nvpair-shared`, `eapnoob`) are excluded.',
+        'Scope: production npm dependencies from the installed desktop dependency tree,',
+        'the Electron runtime, and Go modules linked into the service components listed',
+        'in `services/versions.json`, across Windows, Linux, and macOS targets.',
+        'First-party modules (`nvpair-shared`, `eapnoob`) are excluded. This repository-root',
+        'file is canonical; `services/THIRD_PARTY_NOTICES.md` is only a pointer.',
+        '',
+        'Electron Chromium dependency notices ship separately with the Electron runtime',
+        'as `LICENSES.chromium.html`; they are not reproduced here. Optional inference',
+        'engines (Ollama, LM Studio, oMLX) and the Phoenix container image are installed',
+        'separately, not bundled in the desktop application, and are governed by their',
+        'upstream terms. Vendored Kaizen CSS attribution is outside the npm dependency',
+        'graph and requires separate review, including preservation in built CSS.',
         '',
         '## Components',
         '',
@@ -164,7 +184,7 @@ function renderMarkdown(entries: Entry[]): string {
     for (const e of entries) {
         parts.push(`### ${e.name} ${e.version}`, '', `License: ${e.license}`, '')
         if (e.repository !== null) parts.push(`Repository: ${e.repository}`, '')
-        parts.push('```text', e.licenseText, '```', '')
+        parts.push(renderLicenseText(e.licenseText), '')
     }
 
     return `${parts.join('\n').trimEnd()}\n`
