@@ -76,13 +76,18 @@ type Trust struct {
 	dir  string
 	mu   sync.RWMutex
 	ders map[string][]byte
+	raw  map[string][]byte
 }
 
 // newTrust opens clusterDir/trusted. The pins are read by the owning Mesh's
 // first Refresh, not here, so there is one place that decides when the cluster
 // dir is read.
 func newTrust(clusterDir string) *Trust {
-	return &Trust{dir: filepath.Join(clusterDir, "trusted"), ders: map[string][]byte{}}
+	return &Trust{
+		dir:  filepath.Join(clusterDir, "trusted"),
+		ders: map[string][]byte{},
+		raw:  map[string][]byte{},
+	}
 }
 
 // Reload re-reads the trusted/ directory, replacing the in-memory pin set.
@@ -108,6 +113,7 @@ func (t *Trust) Reload() {
 	// A missing dir leaves entries nil, so the loop below is a no-op and the
 	// empty set is published — the authoritative "no peers trusted".
 	ders := make(map[string][]byte, len(entries))
+	raw := make(map[string][]byte, len(entries))
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".tmp") {
@@ -121,9 +127,23 @@ func (t *Trust) Reload() {
 			// dir won't read: the file's presence says the peer is still
 			// trusted, so failing to open it is missing information rather than
 			// a revocation. A pin we have never read stays absent.
-			if previous, ok := t.DER(fileUUID); ok {
-				ders[fileUUID] = previous
+			t.mu.RLock()
+			prevDER, ok := t.ders[fileUUID]
+			prevRaw := t.raw[fileUUID]
+			t.mu.RUnlock()
+			if ok {
+				ders[fileUUID] = prevDER
+				raw[fileUUID] = prevRaw
 			}
+			continue
+		}
+		t.mu.RLock()
+		prevRaw, hadRaw := t.raw[fileUUID]
+		prevDER, hadDER := t.ders[fileUUID]
+		t.mu.RUnlock()
+		if hadRaw && hadDER && bytes.Equal(data, prevRaw) {
+			ders[fileUUID] = prevDER
+			raw[fileUUID] = prevRaw
 			continue
 		}
 		var pin struct {
@@ -142,9 +162,11 @@ func (t *Trust) Reload() {
 			continue
 		}
 		ders[fileUUID] = der
+		raw[fileUUID] = data
 	}
 	t.mu.Lock()
 	t.ders = ders
+	t.raw = raw
 	t.mu.Unlock()
 }
 
