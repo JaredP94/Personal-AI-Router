@@ -536,42 +536,37 @@ When a status is not specific enough, the services' own reporting is behind
 
 ## Observability & Evaluations with Arize Phoenix
 
-PAIR includes built-in OpenTelemetry (OTel) distributed tracing and Arize
-Phoenix observability to monitor inference latency, Time to First Token (TTFT),
+PAIR includes built-in OpenTelemetry (OTel) tracing and Arize Phoenix
+observability to monitor inference latency, Time to First Token (TTFT),
 token throughput, and cluster scheduling decisions.
 
-Phoenix can run as one Docker container on a designated host. **Current
-limitation:** the desktop tracing switches persist settings but do not configure
-running proxy tracer providers, and advertised collectors are not automatically
-selected by exporters. Proxy startup defaults are tracing enabled,
-`localhost:4317`, and prompt/completion capture off. Read
-[Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations) before
-starting a collector or enabling capture.
+Phoenix runs as a managed Docker container on the local host. Tracing defaults to
+off, and proxies are configured dynamically by the broker when enabled. Exporters
+dial only loopback (`127.0.0.1:<collectorPort>`, default `4317`), and both container
+ports bind strictly to loopback (`127.0.0.1:6006` and `127.0.0.1:<collectorPort>`).
+Read [Security](../SECURITY.md#opentelemetry-and-phoenix-boundaries-and-privacy-controls)
+for the privacy boundaries and data handling details.
 
-To manage the container:
+To manage the container and tracing:
 
-1. **Designate a host machine** and ensure Docker Desktop or Docker Engine is
-   running.
+1. Ensure Docker Desktop or Docker Engine is running on your machine.
 2. In PAIR Desktop, go to **Settings → Service** and scroll to
    **Observability & Evaluations (Arize Phoenix)**.
 3. Select **Start Phoenix**. PAIR will launch the container in the background
    and verify collector connectivity.
 4. Select **Open Dashboard ↗** to open the Phoenix web interface at
    `http://localhost:6006`.
-Do not rely on **Capture Prompt & Completion Text** to change a running
-proxy's capture mode. Set `PAIR_TELEMETRY_RECORD_PAYLOADS=true` only for an
-explicitly authorized local evaluation, in the launching process's environment,
-and restart workers. Endpoint/enabled overrides are likewise startup environment
-settings, documented in Security. Peers need their exporter endpoint configured;
-`otel=4317` advertisement alone does not route their traces.
-
-The supplied Compose file publishes ports `6006` and `4317` beyond loopback,
-without configured authentication/TLS. Firewall them appropriately. OTLP export
-is plaintext; request headers outside the fixed redaction denylist may contain
-sensitive data even with payload capture off. Captured prompts/completions are
-not generally secret-scrubbed. Stopping Phoenix retains its trace-data volume.
-Distributed context propagation can link routed requests once the participating
-proxies export to the intended collector.
+5. Toggle **Enable OpenTelemetry Tracing** to begin exporting local inference spans.
+   The broker reconciles settings dynamically into running proxies.
+6. **Capture Prompt & Completion Text** requires explicit user consent via a confirmation
+   dialog. When enabled, prompt and completion payloads are truncated to 16 KB UTF-8.
+   When off, only model/routing metadata and allowlisted headers (`Content-Type` and
+   `Content-Length`) are recorded.
+7. Tracing is strictly local: serving nodes record nothing for peer-originated requests,
+   and W3C trace context headers are stripped so traces never cross nodes.
+8. On-device trace storage in Docker volume `nvpair-phoenix-data` is measured and reported
+   in the card. Use **Clear traces** (and confirm with `delete-traces`) to permanently purge
+   stored trace data.
 
 ## Keeping PAIR Up to Date
 

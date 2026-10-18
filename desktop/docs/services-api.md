@@ -18,6 +18,8 @@
 ### Requests the backend handles but the bridge never calls (unused capability)
 - ⚠️ lmstudio-proxy → node/selected
 - ⚠️ lmstudio-proxy → node/set-local-backend
+- ⚠️ lmstudio-proxy → telemetry/configure
+- ⚠️ lmstudio-proxy → telemetry/status
 - ⚠️ nvpair-engine-manager → engine:describe
 - ⚠️ nvpair-engine-manager → engine:errors
 - ⚠️ nvpair-engine-manager → engine:logs
@@ -30,6 +32,7 @@
 - ⚠️ nvpair-node-info → n/a
 - ⚠️ nvpair-node-settings → settings/get-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/get-force-ports
+- ⚠️ nvpair-node-settings → settings/get-telemetry-config
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/set-force-ports
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
@@ -41,8 +44,12 @@
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 - ⚠️ ollama-proxy → node/selected
 - ⚠️ ollama-proxy → node/set-local-backend
+- ⚠️ ollama-proxy → telemetry/configure
+- ⚠️ ollama-proxy → telemetry/status
 - ⚠️ omlx-proxy → node/selected
 - ⚠️ omlx-proxy → node/set-local-backend
+- ⚠️ omlx-proxy → telemetry/configure
+- ⚠️ omlx-proxy → telemetry/status
 
 ### Backend binaries not listed in `modular-binaries.ts`
 - none ✅
@@ -68,6 +75,8 @@
 | `node/set-local-backend` | request (we call) | ⚠️ not called |
 | `node/set-priority` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
+| `telemetry/configure` | request (we call) | ⚠️ not called |
+| `telemetry/status` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `method (var)  (proxy.go)`
@@ -196,20 +205,17 @@
 | `connection/cluster-auto-sync` | notification (we consume) | ➖ ignored |
 | `connection/cluster-identity` | notification (we consume) | ✅ yes |
 | `ready` | notification (we consume) | ✅ yes |
+| `settings/telemetry-changed` | notification (we consume) | ➖ ignored |
 | `settings/get-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/get-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/get-cluster-id` | request (we call) | ✅ yes |
 | `settings/get-force-ports` | request (we call) | ⚠️ not called |
-| `settings/get-telemetry-enabled` | request (we call) | ✅ yes |
-| `settings/get-telemetry-endpoint` | request (we call) | ✅ yes |
-| `settings/get-telemetry-record-payloads` | request (we call) | ✅ yes |
+| `settings/get-telemetry-config` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
-| `settings/set-telemetry-enabled` | request (we call) | ✅ yes |
-| `settings/set-telemetry-endpoint` | request (we call) | ✅ yes |
-| `settings/set-telemetry-record-payloads` | request (we call) | ✅ yes |
+| `settings/set-telemetry-config` | request (we call) | ✅ yes |
 
 ## nvpair-tui
 
@@ -267,18 +273,17 @@
 | `proxy:subscribe` | request (we call) | ✅ yes |
 | `proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
-| `telemetry/check-update` | request (we call) | ✅ yes |
 | `telemetry/get-status` | request (we call) | ✅ yes |
+| `telemetry/purge-storage` | request (we call) | ✅ yes |
 | `telemetry/start` | request (we call) | ✅ yes |
 | `telemetry/stop` | request (we call) | ✅ yes |
-| `telemetry/update` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:subscribe` | request (we call) | ✅ yes |
 | `workloads:unsubscribe` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (broker.go, 5 sites)`
+- `method (var)  (broker.go, 6 sites)`
 - `proxy:*  (broker.go)`
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
@@ -317,6 +322,8 @@
 | `node/set-local-backend` | request (we call) | ⚠️ not called |
 | `node/set-priority` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
+| `telemetry/configure` | request (we call) | ⚠️ not called |
+| `telemetry/status` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `method (var)  (proxy.go)`
@@ -342,6 +349,8 @@
 | `node/set-local-backend` | request (we call) | ⚠️ not called |
 | `node/set-priority` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
+| `telemetry/configure` | request (we call) | ⚠️ not called |
+| `telemetry/status` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `method (var)  (proxy.go)`

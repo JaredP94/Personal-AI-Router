@@ -424,13 +424,16 @@ type Proxy struct {
 	runID string
 
 	bufPool   *bufpool.Pool
-	telemetry *telemetry.Provider
+	telemetry *telemetry.Manager
 }
 
-func NewProxy(codec *Codec, discovery *Discovery, port int, tel ...*telemetry.Provider) *Proxy {
-	var tp *telemetry.Provider
+func NewProxy(codec *Codec, discovery *Discovery, port int, tel ...*telemetry.Manager) *Proxy {
+	var tp *telemetry.Manager
 	if len(tel) > 0 {
 		tp = tel[0]
+	}
+	if tp == nil {
+		tp = telemetry.NewManager("nvpair-ollama-proxy", telemetry.OTLPExporter)
 	}
 	return &Proxy{
 		prt:       prefixhash.NewPrefixRoutingTable(10000, 5*time.Minute),
@@ -1176,6 +1179,7 @@ func (p *Proxy) serveModelList(w http.ResponseWriter, r *http.Request, candidate
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	session := p.telemetry.Session()
 	start := time.Now()
 	reqID := strconv.FormatUint(p.nextRequestID.Add(1), 10)
 
@@ -1188,7 +1192,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if isInf {
 		ctx = telemetry.ExtractHTTPContext(r)
 		var rootSpan trace.Span
-		ctx, rootSpan = p.telemetry.Tracer().Start(ctx, "pair.proxy.inference", trace.WithSpanKind(trace.SpanKindServer))
+		ctx, rootSpan = session.Tracer().Start(ctx, "pair.proxy.inference", trace.WithSpanKind(trace.SpanKindServer))
 		span = rootSpan
 		defer func() {
 			if span != nil {
@@ -1201,21 +1205,24 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		isStreaming := isStreamingRequest(r.URL.Path, bodyBytes)
 		span.SetAttributes(
 			attribute.String("gen_ai.system", "pair"),
-			attribute.String("gen_ai.request.model", model),
-			attribute.String("http.request.method", r.Method),
-			attribute.String("http.route", r.URL.Path),
+			metadataAttribute("gen_ai.request.model", model),
+			metadataAttribute("http.request.method", r.Method),
+			metadataAttribute("http.route", r.URL.Path),
 			attribute.String("pair.client.protocol", "ollama"),
 			attribute.String("pair.request_id", reqID),
 			attribute.Bool("pair.is_streaming", isStreaming),
 		)
-		recordRequestHeaders(span, r.Header)
-		if p.telemetry.RecordPayloads() {
-			promptStr := extractPrompt(bodyBytes)
+		span.SetAttributes(telemetry.RequestAttributes(r.Header)...)
+		if session.RecordPayloads() {
+			promptStr, truncated := telemetry.TruncateUTF8(extractPrompt(bodyBytes), telemetry.MaxPayloadBytes)
 			if promptStr != "" {
 				span.SetAttributes(
 					attribute.String("gen_ai.prompt", promptStr),
 					attribute.String("input.value", promptStr),
 				)
+				if truncated {
+					span.SetAttributes(attribute.Bool("gen_ai.prompt.truncated", true))
+				}
 			}
 		}
 		r = r.WithContext(ctx)
@@ -1233,14 +1240,14 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		candidates, cacheAffinity = p.reserveCandidateWithAffinity(candidates, warmNodeID)
 	}
 	if isInf {
-		_, schedSpan := p.telemetry.Tracer().Start(ctx, "pair.router.schedule", trace.WithSpanKind(trace.SpanKindInternal))
+		_, schedSpan := session.Tracer().Start(ctx, "pair.router.schedule", trace.WithSpanKind(trace.SpanKindInternal))
 		schedAttrs := []attribute.KeyValue{
 			attribute.Int("pair.route.candidate_count", len(candidates)),
 			attribute.Bool("pair.route.cache_affinity", cacheAffinity),
 		}
 		if len(candidates) > 0 {
 			schedAttrs = append(schedAttrs,
-				attribute.String("pair.route.selected_node_id", candidates[0].id),
+				metadataAttribute("pair.route.selected_node_id", candidates[0].id),
 				attribute.Int("pair.route.gpu_pressure", candidates[0].gpuPressure),
 				attribute.Int("pair.route.queue_depth", candidates[0].queueDepth),
 			)
@@ -1424,12 +1431,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		retry := false
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK, idle: idleClientWriteTimeout}
 
-		var dispatchCtx context.Context
 		var dispatchSpan trace.Span
 		var telReader *telemetryBodyReader
 		dispatchStart := time.Now()
 		if isInf {
-			dispatchCtx, dispatchSpan = p.telemetry.Tracer().Start(ctx, "pair.engine.dispatch", trace.WithSpanKind(trace.SpanKindClient))
+			_, dispatchSpan = session.Tracer().Start(ctx, "pair.engine.dispatch", trace.WithSpanKind(trace.SpanKindClient))
 			host := cand.url.Hostname()
 			port := 0
 			if pStr := cand.url.Port(); pStr != "" {
@@ -1441,8 +1447,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			isLocal := isLocalHost(cand.url.Host) || cand.peerUUID == ""
 			dispatchSpan.SetAttributes(
-				attribute.String("pair.route.target_node_id", cand.id),
-				attribute.String("server.address", host),
+				metadataAttribute("pair.route.target_node_id", cand.id),
+				metadataAttribute("server.address", host),
 				attribute.Int("server.port", port),
 				attribute.Bool("pair.route.is_local", isLocal),
 			)
@@ -1456,9 +1462,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				req.URL.Scheme = cand.url.Scheme
 				req.URL.Host = cand.url.Host
 				req.Host = cand.url.Host
-				if isInf && dispatchCtx != nil {
-					telemetry.InjectHTTPContext(dispatchCtx, req)
-				}
+				stripTraceContext(req.Header)
 			},
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
@@ -1480,7 +1484,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				cors.CompletePreflightFallback(resp)
 				upstreamBody = newAffinityBodyReader(resp.Body, resp.Header.Get("Content-Type"), r.URL.Path)
 				if isInf && dispatchSpan != nil {
-					telReader = newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, p.telemetry.RecordPayloads())
+					telReader = newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, session)
 					resp.Body = telReader
 				} else {
 					resp.Body = upstreamBody
@@ -2368,6 +2372,12 @@ func (p *Proxy) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case "telemetry/configure":
+		p.handleTelemetryConfigure(msg)
+
+	case "telemetry/status":
+		p.handleTelemetryStatus(msg)
+
 	case "nodes/list":
 		nodes := p.discovery.Nodes()
 		if err := p.codec.Respond(msg.ID, NodesResult{Nodes: nodes}); err != nil {

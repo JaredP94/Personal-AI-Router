@@ -4,9 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"reflect"
 	"testing"
@@ -913,6 +915,10 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 }
 
 func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
+	var logs lockedBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -963,9 +969,16 @@ func TestUnknownCustomBackendStatusFailuresKeepRestoreGated(t *testing.T) {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	if !bytes.Contains(logs.Bytes(), []byte(`level=WARN msg="LM Studio backend port remains unknown; keeping ownership gate closed"`)) {
+		t.Fatalf("missing expected gated-restore warning: %s", logs.Bytes())
+	}
 }
 
 func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *testing.T) {
+	var logs lockedBuffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
 	proxyClient, proxyServer := net.Pipe()
 	t.Cleanup(func() {
 		_ = proxyClient.Close()
@@ -1028,11 +1041,23 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 	}()
 	go func() {
 		codec := NewCodec(proxyServer)
-		for i := 0; i < 2; i++ {
+		for remaining := 2; remaining > 0; {
 			msg, err := codec.Read()
 			if err != nil {
 				return
 			}
+			// Readiness also reconciles telemetry independently of port ownership.
+			// Keep the fake alive for both control planes; the ordering assertion
+			// below remains specific to engine ownership and restoration.
+			if msg.Method == "telemetry/configure" {
+				var config struct {
+					Revision uint64 `json:"revision"`
+				}
+				_ = json.Unmarshal(msg.Params, &config)
+				_ = codec.Respond(msg.ID, map[string]uint64{"revision": config.Revision})
+				continue
+			}
+			remaining--
 			order <- msg.Method
 			if msg.Method == "set-port" {
 				var request struct {
@@ -1061,6 +1086,9 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 		if got[i] != want[i] {
 			t.Fatalf("respawn reconciliation order = %v, want %v", got, want)
 		}
+	}
+	if !bytes.Contains(logs.Bytes(), []byte(`level=WARN msg="LM Studio backend port remains unknown; keeping ownership gate closed"`)) {
+		t.Fatalf("missing expected gated-restore warning: %s", logs.Bytes())
 	}
 }
 

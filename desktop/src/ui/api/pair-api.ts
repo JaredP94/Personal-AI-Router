@@ -15,7 +15,13 @@ import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
-import type { TelemetryStatus } from '@/shared/types/telemetry'
+import type {
+    TelemetryConfig,
+    TelemetryConfigRequest,
+    TelemetryPurgeRequest,
+    TelemetryPurgeResult,
+    TelemetryStatus
+} from '@/shared/types/telemetry'
 
 // ---------------------------------------------------------------------------
 // Sub-API interfaces
@@ -25,11 +31,8 @@ export interface ITelemetryApi {
     getStatus(): Promise<TelemetryStatus>
     start(): Promise<TelemetryStatus>
     stop(): Promise<TelemetryStatus>
-    checkUpdate(): Promise<TelemetryStatus>
-    update(): Promise<TelemetryStatus>
-    setEnabled(value: boolean): Promise<{ ok: boolean }>
-    setEndpoint(value: string): Promise<{ ok: boolean }>
-    setRecordPayloads(value: boolean): Promise<{ ok: boolean }>
+    setConfig(config: TelemetryConfigRequest): Promise<TelemetryConfig>
+    purgeStorage(request: TelemetryPurgeRequest): Promise<TelemetryPurgeResult>
 }
 
 export interface IConnectionApi {
@@ -206,11 +209,8 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             getStatus: () => transport.invoke('telemetry:get-status'),
             start: () => transport.invoke('telemetry:start'),
             stop: () => transport.invoke('telemetry:stop'),
-            checkUpdate: () => transport.invoke('telemetry:check-update'),
-            update: () => transport.invoke('telemetry:update'),
-            setEnabled: value => transport.invoke('telemetry:set-enabled', { value }),
-            setEndpoint: value => transport.invoke('telemetry:set-endpoint', { value }),
-            setRecordPayloads: value => transport.invoke('telemetry:set-record-payloads', { value })
+            setConfig: config => transport.invoke('telemetry:set-config', config),
+            purgeStorage: request => transport.invoke('telemetry:purge-storage', request)
         }
     }
 }

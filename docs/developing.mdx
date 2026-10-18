@@ -168,10 +168,12 @@ mirrored desktop log copies, while parsing the original frame for the UI.
 Preserve that boundary for every new log or export path; it is PIN redaction,
 not a general-purpose secret scrubber.
 
-The local-only evaluation exception above is contributor policy, not an enforced
-exporter-transport guarantee. Current proxy providers read startup environment
-configuration, not the saved telemetry UI switches; see
-[Observability](architecture.mdx#observability-and-distributed-tracing).
+Local-only evaluation payload capture requires explicit user consent, enforces
+loopback-only exporter transport, truncates payloads to 16 KB, allowlists headers,
+and records no spans on cluster serving nodes. Proxies start with tracing disabled
+and are configured by the broker from saved settings rather than ambient environment
+variables; see [Observability](architecture.mdx#observability-and-distributed-tracing)
+and [SECURITY.md](../SECURITY.md).
 
 Desktop persists `modularLogLevel`, defaulting to `warn`, and passes it to the
 broker and workers. Current unreleased logging changes preserve structured

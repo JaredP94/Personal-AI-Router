@@ -26,21 +26,6 @@ entirely (avoiding repeated prompts). In the desktop application, navigate to
 guidance on allowing inbound connections when macOS prompts appear so other nodes
 can reach this machine.
 
-## Observability Settings Do Not Yet Configure Proxy Tracing
-
-The desktop switches save settings, but proxies currently configure their tracer
-providers from startup environment variables. Tracing defaults to enabled at
-`localhost:4317`, with prompt/completion capture off. Collector advertisements do
-not automatically select the exporter destination. UI status is not proof of
-what a running proxy exports; use the environment controls documented in
-[Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations) and restart.
-
-The supplied Phoenix configuration publishes UI/ingestion ports without host
-loopback restrictions or configured authentication/TLS. OTLP is plaintext;
-non-denylisted request headers can be exported even when payload recording is
-off. Trace data survives container stop in a named Docker volume. This needs a
-runtime/privacy review before the next release, not just documentation changes.
-
 ## Unified-Memory Systems Report Misleading GPU Memory
 
 On a system where the GPU shares system memory rather than having its own VRAM,

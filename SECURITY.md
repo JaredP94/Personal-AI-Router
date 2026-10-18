@@ -56,9 +56,10 @@ Remove unrelated personal information, prompts, model data, and secrets.
   EAP-NOOB PIN to establish certificate trust. Paired channels include errors
   `:14319`, workloads `:14320`, engine inventory `:14322`, remote engine control
   `:14323`, and promoted proxy ingress.
-- Proxy traces use a separate OTLP collector, normally `localhost:4317`. They
-  are **not** protected by cluster mTLS. The supplied Phoenix container publishes
-  UI/OTLP HTTP `:6006` and OTLP gRPC `:4317`.
+- Proxy traces export to a local loopback OTLP collector (`127.0.0.1:<collectorPort>`,
+  default `4317`). Telemetry export is strictly loopback-only and is not protected by
+  cluster mTLS. The managed Phoenix container publishes UI/OTLP HTTP `127.0.0.1:6006`
+  and OTLP gRPC `127.0.0.1:<collectorPort>`.
 
 The Go services own identity, cryptography, routing, and inter-node transport;
 clients relay commands and render reported state.
@@ -143,48 +144,44 @@ proof that an engine still holds a KV cache. Raw prompt/completion content is no
 stored in that table. Low-entropy input digests remain susceptible to guessing;
 do not log or gossip them.
 
-## OpenTelemetry and Phoenix: Current Limitations
+## OpenTelemetry and Phoenix: Boundaries and Privacy Controls
 
-**The desktop Observability switches currently persist settings, but do not
-reconfigure proxy tracer providers.** Collector advertisements (`otel=4317`) and
-UI status must not be taken as proof of the endpoint or capture mode a running
-proxy uses. Each proxy reads its configuration at startup:
+Tracing and payload capture are governed by per-node settings with strict privacy boundaries:
 
-| Variable | Behavior |
-| --- | --- |
-| `PAIR_TELEMETRY_ENABLED` | `true` or `1` enables tracing; any other nonempty value disables it. Default: **enabled**. |
-| `OTEL_SDK_DISABLED=true` | Disables tracing when `PAIR_TELEMETRY_ENABLED` is unset. |
-| `PAIR_TELEMETRY_ENDPOINT` | Collector override; otherwise `OTEL_EXPORTER_OTLP_ENDPOINT`, then `localhost:4317`. |
-| `PAIR_TELEMETRY_RECORD_PAYLOADS` | `true` or `1` attaches prompt/completion content. Default: **off**. |
-| `OTEL_SERVICE_NAME` | Overrides the proxy's service name. |
-
-Set these in the environment of the process launching PAIR/broker and restart
-its workers. Do not rely on a desktop toggle to disable capture enabled in the
-startup environment. Wiring persisted settings to the running proxies requires
-a separate runtime fix and privacy verification before release.
-
-With payload capture off, spans still contain model/node identifiers, timing,
-HTTP status, token metrics, routing decisions, and **request headers**. A fixed
-sensitive-header denylist redacts `Authorization`, `Proxy-Authorization`,
-`Proxy-Auth`, `Cookie`, `Set-Cookie`, `X-Pair-Pin`, and `X-API-Key`. Other custom header values
-are preserved. This is not general-purpose secret scrubbing. With payload
-capture on, prompt/messages and completion text can contain secrets that are
-**not** removed by header redaction. Enable it only with informed consent and a
-trusted collector/network path. Never put credentials in captured content or
-unrecognized headers.
-
-OTLP gRPC currently uses plaintext transport. The supplied Compose configuration
-publishes `6006:6006` and `4317:4317` without restricting host addresses or
-configuring authentication/TLS, so those ports may be reachable from other
-machines. Protect both ingestion and trace access with firewall rules or a
-separately secured collector. Do not assume that opening `localhost:6006` means
-the service is loopback-only.
-
-Phoenix uses the mutable `arizephoenix/phoenix:latest` image and stores traces in
-a named SQLite data volume. **Stopping the container does not delete traces.**
-Manage retention/deletion separately; application reset/uninstall must not be
-assumed to erase that Docker volume. Normal PAIR system/file logs must never
-contain prompts, completions, PINs, credentials, or key material.
+- **Broker-Managed Configuration and Dynamic Reconciliation**: Proxies do not read
+  `PAIR_TELEMETRY_*` or `OTEL_*` startup environment variables. Proxies start with
+  tracing disabled and are configured dynamically by the broker via `telemetry/configure`.
+  The broker reconciles desired settings into running proxies, preserves the last loaded
+  configuration across settings-worker restarts, and reports applied state and export
+  delivery health. Standalone proxies without a broker do not trace.
+- **Explicit Informed Consent for Payload Capture**: Content capture is disabled by
+  default and cannot be enabled without explicit consent recorded at `payload_consent_version: 1`.
+  Migration from earlier settings resets tracing and capture to off and clears consent.
+- **Local-Only Boundary and Trace Context Stripping**: Content capture is local-only.
+  Serving nodes record nothing for peer-originated requests, and incoming W3C trace context
+  headers (`traceparent`, `tracestate`) are stripped before forwarding to local or remote
+  backends so no distributed trace context crosses node boundaries.
+- **Strict Attribute and Payload Truncation**: When payload capture is disabled, only
+  model/node metadata, timing, HTTP route/status, and allowlisted headers (`Content-Type`
+  and `Content-Length`) are recorded. Other request headers are omitted entirely. When
+  payload capture is explicitly consented and enabled, prompt and completion strings are
+  truncated to 16 KB UTF-8 (`pair.gen_ai.prompt.truncated`).
+- **Loopback-Only Exporter Transport**: The OTLP exporter dialer is pinned strictly to
+  `127.0.0.1:<collectorPort>`, preventing spans from being directed to external or
+  remote endpoints.
+- **Managed, Pinned Phoenix Deployment**: Phoenix is managed by the broker from an
+  embedded Compose template (`project nvpair-telemetry`, container `nvpair-phoenix`),
+  pinned to release tag `version-20.23.0` and manifest digest
+  `sha256:c542e7de1dc1fdd0f938de337d44ebefa7266e91391eed6e7978523d7f6e1f2f`. Both
+  published ports (`6006` and `<collectorPort>`) bind exclusively to `127.0.0.1`.
+- **Trace Storage and Scoped Purge**: Traces are stored in Docker volume
+  `nvpair-phoenix-data`. Stopping the container retains trace data. The broker provides
+  on-device storage inspection and `telemetry/purge-storage` (requiring
+  `{"confirm": "delete-traces"}`) to safely remove volumes labeled
+  `com.docker.compose.volume=nvpair-phoenix-data` without force-removing containers
+  or pruning other Docker data.
+- **Never Log Secrets**: Standard system log sinks (`slog`, `applog`, stderr, file logs)
+  never contain prompts, completions, PINs, credentials, or key material.
 
 ## macOS Distribution and Privileged Helper
 

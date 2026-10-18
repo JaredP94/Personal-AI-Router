@@ -32,14 +32,14 @@ func TestToDirectoryNode(t *testing.T) {
 	if !n.Trusted {
 		t.Error("Trusted should reflect the caller-supplied flag")
 	}
-	if !n.HasService(noderec.ServiceNodeInfo) || !n.HasService(noderec.ServiceOllama) || !n.HasService(noderec.ServiceOTel) {
+	if !n.HasService(noderec.ServiceNodeInfo) || !n.HasService(noderec.ServiceOllama) {
 		t.Errorf("services wrong: %+v", n.Services)
 	}
 	if n.Services[noderec.ServiceOllama].Port != 11434 {
 		t.Errorf("ol port = %d", n.Services[noderec.ServiceOllama].Port)
 	}
-	if n.Services[noderec.ServiceOTel].Port != 4317 {
-		t.Errorf("otel port = %d", n.Services[noderec.ServiceOTel].Port)
+	if n.HasService("otel") {
+		t.Error("older peer collector advertisement must not enter the directory")
 	}
 }
 

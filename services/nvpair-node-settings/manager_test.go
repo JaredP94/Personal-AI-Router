@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -372,8 +373,8 @@ func TestSetClusterAutoSyncEmitsConnectionAutoSyncNotification(t *testing.T) {
 }
 
 // TestNoPushSettersDoNotEmit pins down the scoping of the
-// notification side: only the cluster-id and cluster-auto-sync
-// setters fire pushes. Touching force-ports or cluster-friendly-name
+// connection notification side: only cluster-id and cluster-auto-sync
+// setters fire connection pushes. Touching force-ports or cluster-friendly-name
 // must not produce a connection/* frame, because those settings have
 // no live-connection consumers.
 func TestNoPushSettersDoNotEmit(t *testing.T) {
@@ -383,15 +384,6 @@ func TestNoPushSettersDoNotEmit(t *testing.T) {
 	assertNoNotification(t, rw)
 
 	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-cluster-friendly-name", map[string]string{"value": "anything"})
-	assertNoNotification(t, rw)
-
-	_ = callAndDecode[map[string]bool](t, m, rw, 3, "settings/set-telemetry-enabled", map[string]bool{"value": false})
-	assertNoNotification(t, rw)
-
-	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-telemetry-endpoint", map[string]string{"value": "custom:4317"})
-	assertNoNotification(t, rw)
-
-	_ = callAndDecode[map[string]bool](t, m, rw, 5, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
 	assertNoNotification(t, rw)
 }
 
@@ -484,275 +476,378 @@ func TestForcePortsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTelemetrySettingsDefaults verifies that fresh instances and partial files
-// load the expected product defaults: TelemetryEnabled=true,
-// TelemetryEndpoint="localhost:4317", TelemetryRecordPayloads=false.
-func TestTelemetrySettingsDefaults(t *testing.T) {
+// telemetryConfigResult mirrors the public wire shape, independently of the
+// production snapshot type so missing or misspelled fields fail assertions.
+type telemetryConfigResult struct {
+	Revision              int  `json:"revision"`
+	Enabled               bool `json:"enabled"`
+	CollectorPort         int  `json:"collectorPort"`
+	RecordPayloads        bool `json:"recordPayloads"`
+	PayloadConsentVersion int  `json:"payloadConsentVersion"`
+	PayloadPolicyVersion  int  `json:"payloadPolicyVersion"`
+}
+
+func TestTelemetryMigrationDropsImplicitConsent(t *testing.T) {
+	for _, schema := range []string{"", `"schema_version":1,`, `"schema_version":0,`, `"schema_version":-1,`} {
+		t.Run(schema, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.json")
+			fixture := `{` + schema + `
+				"force_ports":false,"cluster_auto_sync":true,
+				"cluster_id":"test-cluster","cluster_friendly_name":"Test cluster",
+				"telemetry_enabled":true,"telemetry_record_payloads":true,
+				"telemetry_endpoint":"remote.invalid:4317",
+				"telemetry_collector_port":1234,"telemetry_revision":99,
+				"telemetry_payload_consent_version":1}`
+			if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			rw := newCaptureRW()
+			m, err := NewManager(NewCodec(rw), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Inspect disk before any setter: migration must persist immediately.
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var disk map[string]any
+			if err := json.Unmarshal(data, &disk); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]any{
+				"schema_version": float64(2), "telemetry_revision": float64(1),
+				"telemetry_enabled": false, "telemetry_record_payloads": false,
+				"telemetry_payload_consent_version": float64(0), "telemetry_collector_port": float64(4317),
+				"force_ports": false, "cluster_auto_sync": true,
+				"cluster_id": "test-cluster", "cluster_friendly_name": "Test cluster",
+			} {
+				if disk[key] != want {
+					t.Errorf("disk[%q] = %v, want %v", key, disk[key], want)
+				}
+			}
+			if _, ok := disk["telemetry_endpoint"]; ok {
+				t.Error("removed endpoint survived migration")
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Errorf("mode = %o, want 600", info.Mode().Perm())
+			}
+			got := callAndDecode[telemetryConfigResult](t, m, rw, 1, "settings/get-telemetry-config", nil)
+			if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); got != want {
+				t.Fatalf("migrated config = %+v, want %+v", got, want)
+			}
+			assertNoNotification(t, rw)
+		})
+	}
+}
+
+func TestTelemetryDefaultsOff(t *testing.T) {
 	m, rw, _ := newTestManager(t)
-
-	gotEnabled := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-telemetry-enabled", nil)
-	if gotEnabled["value"] != true {
-		t.Fatalf("default telemetry-enabled = %v, want true", gotEnabled["value"])
+	got := callAndDecode[telemetryConfigResult](t, m, rw, 1, "settings/get-telemetry-config", nil)
+	if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); got != want {
+		t.Fatalf("default config = %+v, want %+v", got, want)
 	}
-
-	gotEndpoint := callAndDecode[map[string]string](t, m, rw, 2, "settings/get-telemetry-endpoint", nil)
-	if gotEndpoint["value"] != "localhost:4317" {
-		t.Fatalf("default telemetry-endpoint = %q, want %q", gotEndpoint["value"], "localhost:4317")
-	}
-
-	gotPayloads := callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-telemetry-record-payloads", nil)
-	if gotPayloads["value"] != false {
-		t.Fatalf("default telemetry-record-payloads = %v, want false", gotPayloads["value"])
-	}
-
-	// Verify partial settings file (omitting telemetry keys) takes product defaults.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"force_ports": false}`), 0o600); err != nil {
-		t.Fatalf("write partial settings: %v", err)
-	}
-	rw2 := newCaptureRW()
-	m2, err := NewManager(NewCodec(rw2), path)
-	if err != nil {
-		t.Fatalf("NewManager with partial file: %v", err)
-	}
-
-	gotEnabled = callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-telemetry-enabled", nil)
-	if gotEnabled["value"] != true {
-		t.Fatalf("partial settings: telemetry-enabled = %v, want true", gotEnabled["value"])
-	}
-	gotEndpoint = callAndDecode[map[string]string](t, m2, rw2, 5, "settings/get-telemetry-endpoint", nil)
-	if gotEndpoint["value"] != "localhost:4317" {
-		t.Fatalf("partial settings: telemetry-endpoint = %q, want %q", gotEndpoint["value"], "localhost:4317")
-	}
-	gotPayloads = callAndDecode[map[string]bool](t, m2, rw2, 6, "settings/get-telemetry-record-payloads", nil)
-	if gotPayloads["value"] != false {
-		t.Fatalf("partial settings: telemetry-record-payloads = %v, want false", gotPayloads["value"])
-	}
+	assertNoNotification(t, rw)
 }
 
-// TestTelemetrySettingsRoundTrip verifies get and set round-trips for
-// telemetry-enabled, telemetry-endpoint, and telemetry-record-payloads.
-func TestTelemetrySettingsRoundTrip(t *testing.T) {
+func TestSetTelemetryConfigBumpsRevisionAndNotifies(t *testing.T) {
 	m, rw, path := newTestManager(t)
-
-	// --- TelemetryEnabled ---
-	gotEnabled := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-telemetry-enabled", nil)
-	if gotEnabled["value"] != true {
-		t.Fatalf("default telemetry-enabled = %v, want true", gotEnabled["value"])
+	// Each setting contributes to change detection; include both port boundaries.
+	steps := []struct {
+		params string
+		want   telemetryConfigResult
+	}{
+		{`{"enabled":true,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`,
+			telemetryConfigResult{2, true, 4317, false, 0, 1}},
+		{`{"enabled":true,"collectorPort":1,"recordPayloads":false,"payloadConsentVersion":0}`,
+			telemetryConfigResult{3, true, 1, false, 0, 1}},
+		{`{"enabled":true,"collectorPort":65535,"recordPayloads":false,"payloadConsentVersion":0}`,
+			telemetryConfigResult{4, true, 65535, false, 0, 1}},
+		{`{"enabled":true,"collectorPort":65535,"recordPayloads":false,"payloadConsentVersion":1}`,
+			telemetryConfigResult{5, true, 65535, false, 1, 1}},
+		{`{"enabled":true,"collectorPort":65535,"recordPayloads":true,"payloadConsentVersion":1}`,
+			telemetryConfigResult{6, true, 65535, true, 1, 1}},
 	}
-	ok := callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-telemetry-enabled", map[string]bool{"value": false})
-	if !ok["ok"] {
-		t.Fatalf("set telemetry-enabled false result = %+v", ok)
+	for i, step := range steps {
+		m.handleMessage(requestMessageRaw(i+1, "settings/set-telemetry-config", json.RawMessage(step.params)))
+		got := decodeResult[telemetryConfigResult](t, readCaptureFrame(t, rw))
+		if got != step.want {
+			t.Fatalf("step %d result = %+v, want %+v", i, got, step.want)
+		}
+		n := expectNotification(t, rw, "settings/telemetry-changed")
+		var pushed telemetryConfigResult
+		if err := json.Unmarshal(n.Params, &pushed); err != nil {
+			t.Fatal(err)
+		}
+		if pushed != step.want {
+			t.Fatalf("step %d notification = %+v, want %+v", i, pushed, step.want)
+		}
+		assertNoNotification(t, rw)
+		fetched := callAndDecode[telemetryConfigResult](t, m, rw, 20+i, "settings/get-telemetry-config", nil)
+		if fetched != step.want {
+			t.Fatalf("step %d getter = %+v, want %+v", i, fetched, step.want)
+		}
+		// Reload schema 2 after every write: do not migrate away explicit consent.
+		reloadRW := newCaptureRW()
+		reloaded, err := NewManager(NewCodec(reloadRW), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		persisted := callAndDecode[telemetryConfigResult](t, reloaded, reloadRW, 1, "settings/get-telemetry-config", nil)
+		if persisted != step.want {
+			t.Fatalf("step %d reload = %+v, want %+v", i, persisted, step.want)
+		}
 	}
-	gotEnabled = callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-telemetry-enabled", nil)
-	if gotEnabled["value"] != false {
-		t.Fatalf("after set false, telemetry-enabled = %v, want false", gotEnabled["value"])
-	}
-	ok = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-telemetry-enabled", map[string]bool{"value": true})
-	if !ok["ok"] {
-		t.Fatalf("set telemetry-enabled true result = %+v", ok)
-	}
-	gotEnabled = callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-telemetry-enabled", nil)
-	if gotEnabled["value"] != true {
-		t.Fatalf("after set true, telemetry-enabled = %v, want true", gotEnabled["value"])
-	}
-
-	// --- TelemetryEndpoint ---
-	gotEndpoint := callAndDecode[map[string]string](t, m, rw, 6, "settings/get-telemetry-endpoint", nil)
-	if gotEndpoint["value"] != "localhost:4317" {
-		t.Fatalf("default telemetry-endpoint = %q, want localhost:4317", gotEndpoint["value"])
-	}
-	ok = callAndDecode[map[string]bool](t, m, rw, 7, "settings/set-telemetry-endpoint", map[string]string{"value": "collector.internal:4317"})
-	if !ok["ok"] {
-		t.Fatalf("set telemetry-endpoint result = %+v", ok)
-	}
-	gotEndpoint = callAndDecode[map[string]string](t, m, rw, 8, "settings/get-telemetry-endpoint", nil)
-	if gotEndpoint["value"] != "collector.internal:4317" {
-		t.Fatalf("after set, telemetry-endpoint = %q, want collector.internal:4317", gotEndpoint["value"])
-	}
-	ok = callAndDecode[map[string]bool](t, m, rw, 9, "settings/set-telemetry-endpoint", map[string]string{"value": ""})
-	if !ok["ok"] {
-		t.Fatalf("set telemetry-endpoint empty result = %+v", ok)
-	}
-	gotEndpoint = callAndDecode[map[string]string](t, m, rw, 10, "settings/get-telemetry-endpoint", nil)
-	if gotEndpoint["value"] != "" {
-		t.Fatalf("after set empty, telemetry-endpoint = %q, want empty", gotEndpoint["value"])
-	}
-
-	// --- TelemetryRecordPayloads ---
-	gotPayloads := callAndDecode[map[string]bool](t, m, rw, 11, "settings/get-telemetry-record-payloads", nil)
-	if gotPayloads["value"] != false {
-		t.Fatalf("default telemetry-record-payloads = %v, want false", gotPayloads["value"])
-	}
-	ok = callAndDecode[map[string]bool](t, m, rw, 12, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
-	if !ok["ok"] {
-		t.Fatalf("set telemetry-record-payloads true result = %+v", ok)
-	}
-	gotPayloads = callAndDecode[map[string]bool](t, m, rw, 13, "settings/get-telemetry-record-payloads", nil)
-	if gotPayloads["value"] != true {
-		t.Fatalf("after set true, telemetry-record-payloads = %v, want true", gotPayloads["value"])
-	}
-	ok = callAndDecode[map[string]bool](t, m, rw, 14, "settings/set-telemetry-record-payloads", map[string]bool{"value": false})
-	if !ok["ok"] {
-		t.Fatalf("set telemetry-record-payloads false result = %+v", ok)
-	}
-	gotPayloads = callAndDecode[map[string]bool](t, m, rw, 15, "settings/get-telemetry-record-payloads", nil)
-	if gotPayloads["value"] != false {
-		t.Fatalf("after set false, telemetry-record-payloads = %v, want false", gotPayloads["value"])
-	}
-
-	// Verify persistence across reload
-	rw2 := newCaptureRW()
-	m2, err := NewManager(NewCodec(rw2), path)
-	if err != nil {
-		t.Fatalf("reload manager: %v", err)
-	}
-	gotEnabled = callAndDecode[map[string]bool](t, m2, rw2, 16, "settings/get-telemetry-enabled", nil)
-	if gotEnabled["value"] != true {
-		t.Fatalf("reloaded telemetry-enabled = %v, want true", gotEnabled["value"])
-	}
-	gotEndpoint = callAndDecode[map[string]string](t, m2, rw2, 17, "settings/get-telemetry-endpoint", nil)
-	if gotEndpoint["value"] != "" {
-		t.Fatalf("reloaded telemetry-endpoint = %q, want empty", gotEndpoint["value"])
-	}
-	gotPayloads = callAndDecode[map[string]bool](t, m2, rw2, 18, "settings/get-telemetry-record-payloads", nil)
-	if gotPayloads["value"] != false {
-		t.Fatalf("reloaded telemetry-record-payloads = %v, want false", gotPayloads["value"])
-	}
-}
-
-// TestTelemetrySettingsPersistenceRoundTrip verifies that non-default telemetry
-// values are persisted to disk and survive across fresh Manager instances.
-func TestTelemetrySettingsPersistenceRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-
-	rw1 := newCaptureRW()
-	m1, err := NewManager(NewCodec(rw1), path)
-	if err != nil {
-		t.Fatalf("NewManager (first): %v", err)
-	}
-
-	_ = callAndDecode[map[string]bool](t, m1, rw1, 1, "settings/set-telemetry-enabled", map[string]bool{"value": false})
-	_ = callAndDecode[map[string]bool](t, m1, rw1, 2, "settings/set-telemetry-endpoint", map[string]string{"value": "192.168.1.50:4317"})
-	_ = callAndDecode[map[string]bool](t, m1, rw1, 3, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
-
-	// Inspect the raw file on disk.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read settings.json: %v", err)
+		t.Fatal(err)
 	}
-	var onDisk Settings
-	if err := json.Unmarshal(data, &onDisk); err != nil {
-		t.Fatalf("unmarshal settings.json: %v\nraw: %s", err, data)
+	var disk map[string]any
+	if err := json.Unmarshal(data, &disk); err != nil {
+		t.Fatal(err)
 	}
-	if onDisk.TelemetryEnabled != false {
-		t.Errorf("on-disk TelemetryEnabled = %v, want false", onDisk.TelemetryEnabled)
+	for key, want := range map[string]any{
+		"schema_version": float64(2), "telemetry_revision": float64(6),
+		"telemetry_enabled": true, "telemetry_record_payloads": true,
+		"telemetry_payload_consent_version": float64(1), "telemetry_collector_port": float64(65535),
+	} {
+		if disk[key] != want {
+			t.Errorf("disk[%q] = %v, want %v", key, disk[key], want)
+		}
 	}
-	if onDisk.TelemetryEndpoint != "192.168.1.50:4317" {
-		t.Errorf("on-disk TelemetryEndpoint = %q, want 192.168.1.50:4317", onDisk.TelemetryEndpoint)
-	}
-	if onDisk.TelemetryRecordPayloads != true {
-		t.Errorf("on-disk TelemetryRecordPayloads = %v, want true", onDisk.TelemetryRecordPayloads)
-	}
-
-	// Second instance reloads the file.
-	rw2 := newCaptureRW()
-	m2, err := NewManager(NewCodec(rw2), path)
-	if err != nil {
-		t.Fatalf("NewManager (second): %v", err)
-	}
-
-	enabled := callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-telemetry-enabled", nil)
-	if enabled["value"] != false {
-		t.Fatalf("reloaded telemetry-enabled = %v, want false", enabled["value"])
-	}
-	endpoint := callAndDecode[map[string]string](t, m2, rw2, 5, "settings/get-telemetry-endpoint", nil)
-	if endpoint["value"] != "192.168.1.50:4317" {
-		t.Fatalf("reloaded telemetry-endpoint = %q, want 192.168.1.50:4317", endpoint["value"])
-	}
-	payloads := callAndDecode[map[string]bool](t, m2, rw2, 6, "settings/get-telemetry-record-payloads", nil)
-	if payloads["value"] != true {
-		t.Fatalf("reloaded telemetry-record-payloads = %v, want true", payloads["value"])
+	if _, ok := disk["telemetry_endpoint"]; ok {
+		t.Error("removed endpoint persisted")
 	}
 }
 
-// TestTelemetryValidationRejectsWrongTypeAndMissingValue verifies that invalid
-// params produce -32602 JSON-RPC errors.
-func TestTelemetryValidationRejectsWrongTypeAndMissingValue(t *testing.T) {
-	m, rw, _ := newTestManager(t)
-
-	// telemetry-enabled: wrong type (string)
-	m.handleMessage(requestMessageRaw(1, "settings/set-telemetry-enabled",
-		json.RawMessage(`{"value":"false"}`)))
-	resp := readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type telemetry-enabled error = %+v", resp.Error)
+func TestSetTelemetryConfigUnchangedIsSilent(t *testing.T) {
+	m, rw, path := newTestManager(t)
+	// If the unchanged path attempts a write, this blocker makes it fail.
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
 	}
-
-	// telemetry-enabled: missing value
-	m.handleMessage(requestMessageRaw(2, "settings/set-telemetry-enabled",
-		json.RawMessage(`{}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("missing-value telemetry-enabled error = %+v", resp.Error)
+	got := callAndDecode[telemetryConfigResult](t, m, rw, 1, "settings/set-telemetry-config",
+		json.RawMessage(`{"enabled":false,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`))
+	if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); got != want {
+		t.Fatalf("unchanged result = %+v, want %+v", got, want)
 	}
+	assertNoNotification(t, rw)
+}
 
-	// telemetry-enabled: null value
-	m.handleMessage(requestMessageRaw(3, "settings/set-telemetry-enabled",
-		json.RawMessage(`{"value":null}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("null telemetry-enabled error = %+v", resp.Error)
+func TestPayloadCaptureRequiresConsent(t *testing.T) {
+	for _, consent := range []int{0, 2, -1} {
+		t.Run(fmt.Sprint(consent), func(t *testing.T) {
+			m, rw, _ := newTestManager(t)
+			err := callExpectError(t, m, rw, 1, "settings/set-telemetry-config",
+				map[string]any{"enabled": true, "collectorPort": 4317, "recordPayloads": true, "payloadConsentVersion": consent}, -32602)
+			if err.Message != "payload capture requires consent to policy version 1" {
+				t.Fatalf("message = %q", err.Message)
+			}
+			assertNoNotification(t, rw)
+			got := callAndDecode[telemetryConfigResult](t, m, rw, 2, "settings/get-telemetry-config", nil)
+			if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); got != want {
+				t.Fatalf("rejected consent changed state: %+v", got)
+			}
+		})
 	}
+}
 
-	// telemetry-endpoint: wrong type (number)
-	m.handleMessage(requestMessageRaw(4, "settings/set-telemetry-endpoint",
-		json.RawMessage(`{"value":4317}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type telemetry-endpoint error = %+v", resp.Error)
+func TestTelemetryConfigValidation(t *testing.T) {
+	cases := []string{
+		`null`, `{}`, `[]`,
+		`{"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"recordPayloads":false}`,
+		`{"enabled":null,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":null,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"recordPayloads":null,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":null}`,
+		`{"enabled":"true","collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":"4317","recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"recordPayloads":"false","payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":"1"}`,
+		`{"enabled":false,"collectorPort":4317.5,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":0,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":-1,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":65536,"recordPayloads":false,"payloadConsentVersion":0}`,
+		`{"enabled":false,"collectorPort":4317,"recordPayloads":true,"payloadConsentVersion":1}`,
 	}
-
-	// telemetry-endpoint: missing value
-	m.handleMessage(requestMessageRaw(5, "settings/set-telemetry-endpoint",
-		json.RawMessage(`{}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("missing-value telemetry-endpoint error = %+v", resp.Error)
+	for _, params := range cases {
+		t.Run(params, func(t *testing.T) {
+			m, rw, path := newTestManager(t)
+			callExpectError(t, m, rw, 1, "settings/set-telemetry-config", json.RawMessage(params), -32602)
+			assertNoNotification(t, rw)
+			got := callAndDecode[telemetryConfigResult](t, m, rw, 2, "settings/get-telemetry-config", nil)
+			if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); got != want {
+				t.Fatalf("invalid params changed state: %+v", got)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("invalid params wrote settings file: %v", err)
+			}
+		})
 	}
+}
 
-	// telemetry-endpoint: null value
-	m.handleMessage(requestMessageRaw(6, "settings/set-telemetry-endpoint",
-		json.RawMessage(`{"value":null}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("null telemetry-endpoint error = %+v", resp.Error)
+func TestTelemetryConfigSaveFailureDoesNotCommitOrNotify(t *testing.T) {
+	m, rw, path := newTestManager(t)
+	want := telemetryConfigResult{Revision: 2, Enabled: true, CollectorPort: 4317, PayloadPolicyVersion: 1}
+	seed := callAndDecode[telemetryConfigResult](t, m, rw, 1, "settings/set-telemetry-config",
+		json.RawMessage(`{"enabled":true,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`))
+	if seed != want {
+		t.Fatalf("seed = %+v, want %+v", seed, want)
 	}
-
-	// telemetry-record-payloads: wrong type (string)
-	m.handleMessage(requestMessageRaw(7, "settings/set-telemetry-record-payloads",
-		json.RawMessage(`{"value":"true"}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("wrong-type telemetry-record-payloads error = %+v", resp.Error)
+	expectNotification(t, rw, "settings/telemetry-changed")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// telemetry-record-payloads: missing value
-	m.handleMessage(requestMessageRaw(8, "settings/set-telemetry-record-payloads",
-		json.RawMessage(`{}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("missing-value telemetry-record-payloads error = %+v", resp.Error)
+	// A directory in the temp-file slot fails even when tests run as root.
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
 	}
+	callExpectError(t, m, rw, 2, "settings/set-telemetry-config",
+		json.RawMessage(`{"enabled":true,"collectorPort":4317,"recordPayloads":true,"payloadConsentVersion":1}`), -32603)
+	got := callAndDecode[telemetryConfigResult](t, m, rw, 3, "settings/get-telemetry-config", nil)
+	if got != want {
+		t.Fatalf("save failure changed state: %+v, want %+v", got, want)
+	}
+	assertNoNotification(t, rw)
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed save changed the persisted settings")
+	}
+	reloadRW := newCaptureRW()
+	reloaded, err := NewManager(NewCodec(reloadRW), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := callAndDecode[telemetryConfigResult](t, reloaded, reloadRW, 1, "settings/get-telemetry-config", nil); got != want {
+		t.Fatalf("restart after failed save = %+v, want %+v", got, want)
+	}
+}
 
-	// telemetry-record-payloads: null value
-	m.handleMessage(requestMessageRaw(9, "settings/set-telemetry-record-payloads",
-		json.RawMessage(`{"value":null}`)))
-	resp = readCaptureFrame(t, rw)
-	if resp.Error == nil || resp.Error.Code != -32602 {
-		t.Fatalf("null telemetry-record-payloads error = %+v", resp.Error)
+func TestSaveSettingsPreparesPermissionsBeforeRename(t *testing.T) {
+	m, _, path := newTestManager(t)
+	// A directory at the destination forces rename to fail. Keep a hard link
+	// to the stale temp inode to inspect its mode after failure cleanup.
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	witness := path + ".witness"
+	if err := os.Link(tmp, witness); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveSettings(defaultSettings()); err == nil || !strings.Contains(err.Error(), "rename ") {
+		t.Fatalf("expected rename failure, got %v", err)
+	}
+	info, err := os.Stat(witness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("temp mode before failed rename = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("failed rename left temp file: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("failed rename replaced destination: %v", err)
+	}
+}
+
+func TestSetTelemetryConfigConcurrentChangesStayRevisioned(t *testing.T) {
+	m, rw, path := newTestManager(t)
+	const count = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			m.handleMessage(requestMessage(i+1, "settings/set-telemetry-config",
+				map[string]any{"enabled": true, "collectorPort": 5000 + i, "recordPayloads": false, "payloadConsentVersion": 0}))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	var last telemetryConfigResult
+	ports := make(map[int]bool)
+	for i := range count {
+		last = decodeResult[telemetryConfigResult](t, readCaptureFrame(t, rw))
+		if last.Revision != i+2 || !last.Enabled || ports[last.CollectorPort] {
+			t.Fatalf("lost or unordered update: %+v", last)
+		}
+		ports[last.CollectorPort] = true
+		n := expectNotification(t, rw, "settings/telemetry-changed")
+		var pushed telemetryConfigResult
+		if err := json.Unmarshal(n.Params, &pushed); err != nil {
+			t.Fatal(err)
+		}
+		if pushed != last {
+			t.Fatalf("notification = %+v, want %+v", pushed, last)
+		}
+	}
+	if got := callAndDecode[telemetryConfigResult](t, m, rw, count+1, "settings/get-telemetry-config", nil); got != last {
+		t.Fatalf("memory = %+v, want %+v", got, last)
+	}
+	reloadRW := newCaptureRW()
+	reloaded, err := NewManager(NewCodec(reloadRW), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := callAndDecode[telemetryConfigResult](t, reloaded, reloadRW, 1, "settings/get-telemetry-config", nil); got != last {
+		t.Fatalf("disk = %+v, want %+v", got, last)
+	}
+}
+
+func TestTelemetryMigrationSaveFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	seed := []byte(`{"telemetry_enabled":true,"telemetry_record_payloads":true}`)
+	if err := os.WriteFile(path, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewManager(NewCodec(newCaptureRW()), path); err == nil {
+		t.Fatal("migration must report failed immediate persistence")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(seed) {
+		t.Fatalf("failed migration changed disk: %s", got)
+	}
+}
+
+func TestRemovedTelemetryMethodsAreUnknown(t *testing.T) {
+	for _, method := range []string{
+		"settings/get-telemetry-enabled", "settings/set-telemetry-enabled",
+		"settings/get-telemetry-endpoint", "settings/set-telemetry-endpoint",
+		"settings/get-telemetry-record-payloads", "settings/set-telemetry-record-payloads",
+	} {
+		t.Run(method, func(t *testing.T) {
+			m, rw, _ := newTestManager(t)
+			callExpectError(t, m, rw, 1, method, map[string]any{"value": true}, -32601)
+			assertNoNotification(t, rw)
+		})
 	}
 }
 
@@ -838,9 +933,6 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 2, "settings/set-cluster-id", map[string]string{"value": "cluster-abc"})
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 3, "settings/set-cluster-friendly-name", map[string]string{"value": "Lab 3 desks"})
 	_ = callAndDecode[map[string]bool](t, m1, rw1, 4, "settings/set-force-ports", map[string]bool{"value": true})
-	_ = callAndDecode[map[string]bool](t, m1, rw1, 5, "settings/set-telemetry-enabled", map[string]bool{"value": false})
-	_ = callAndDecode[map[string]bool](t, m1, rw1, 6, "settings/set-telemetry-endpoint", map[string]string{"value": "remote-collector:4317"})
-	_ = callAndDecode[map[string]bool](t, m1, rw1, 7, "settings/set-telemetry-record-payloads", map[string]bool{"value": true})
 
 	// A second Manager pointed at the same file must see everything
 	// the first one wrote — proves load() correctly hydrates settings.
@@ -865,18 +957,6 @@ func TestPersistenceRoundTripAcrossManagerInstances(t *testing.T) {
 	ports := callAndDecode[map[string]bool](t, m2, rw2, 4, "settings/get-force-ports", nil)
 	if ports["value"] != true {
 		t.Fatalf("force-ports lost: %v", ports["value"])
-	}
-	te := callAndDecode[map[string]bool](t, m2, rw2, 5, "settings/get-telemetry-enabled", nil)
-	if te["value"] != false {
-		t.Fatalf("telemetry-enabled lost: %v", te["value"])
-	}
-	tep := callAndDecode[map[string]string](t, m2, rw2, 6, "settings/get-telemetry-endpoint", nil)
-	if tep["value"] != "remote-collector:4317" {
-		t.Fatalf("telemetry-endpoint lost: %q", tep["value"])
-	}
-	trp := callAndDecode[map[string]bool](t, m2, rw2, 7, "settings/get-telemetry-record-payloads", nil)
-	if trp["value"] != true {
-		t.Fatalf("telemetry-record-payloads lost: %v", trp["value"])
 	}
 }
 
@@ -974,17 +1054,9 @@ func TestLoadMalformedFileRenamesAsideAndStartsWithDefaults(t *testing.T) {
 	if fp["value"] != true {
 		t.Errorf("expected default force-ports to be true, got %v", fp["value"])
 	}
-	te := callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-telemetry-enabled", nil)
-	if te["value"] != true {
-		t.Errorf("expected default telemetry-enabled to be true, got %v", te["value"])
-	}
-	tep := callAndDecode[map[string]string](t, m, rw, 4, "settings/get-telemetry-endpoint", nil)
-	if tep["value"] != "localhost:4317" {
-		t.Errorf("expected default telemetry-endpoint to be localhost:4317, got %q", tep["value"])
-	}
-	trp := callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-telemetry-record-payloads", nil)
-	if trp["value"] != false {
-		t.Errorf("expected default telemetry-record-payloads to be false, got %v", trp["value"])
+	telemetry := callAndDecode[telemetryConfigResult](t, m, rw, 3, "settings/get-telemetry-config", nil)
+	if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); telemetry != want {
+		t.Errorf("corrupt-file telemetry defaults = %+v, want %+v", telemetry, want)
 	}
 
 	// The corrupt file got renamed aside with a .corrupt-<ts>

@@ -42,7 +42,13 @@ import type {
     ClusterNode,
     Invite
 } from '@/shared/types/cluster'
-import type { TelemetryStatus } from '@/shared/types/telemetry'
+import type {
+    TelemetryConfig,
+    TelemetryConfigRequest,
+    TelemetryPurgeRequest,
+    TelemetryPurgeResult,
+    TelemetryStatus
+} from '@/shared/types/telemetry'
 
 // -----------------------------------------------------------------------------
 // Invoke channels — (request, response) pairs
@@ -109,11 +115,8 @@ export interface WsInvokeChannelMap {
     'telemetry:get-status': { request: void; response: TelemetryStatus }
     'telemetry:start': { request: void; response: TelemetryStatus }
     'telemetry:stop': { request: void; response: TelemetryStatus }
-    'telemetry:check-update': { request: void; response: TelemetryStatus }
-    'telemetry:update': { request: void; response: TelemetryStatus }
-    'telemetry:set-enabled': { request: { value: boolean }; response: { ok: boolean } }
-    'telemetry:set-endpoint': { request: { value: string }; response: { ok: boolean } }
-    'telemetry:set-record-payloads': { request: { value: boolean }; response: { ok: boolean } }
+    'telemetry:set-config': { request: TelemetryConfigRequest; response: TelemetryConfig }
+    'telemetry:purge-storage': { request: TelemetryPurgeRequest; response: TelemetryPurgeResult }
 }
 
 export type WsInvokeChannel = keyof WsInvokeChannelMap

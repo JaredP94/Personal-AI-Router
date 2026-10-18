@@ -40,10 +40,33 @@ func TestEngineModels(t *testing.T) {
 	}
 }
 
+// TestUnknownOtelKeyIgnored catches an older peer's collector advertisement
+// leaking into discovery services or being re-emitted in TXT.
+func TestUnknownOtelKeyIgnored(t *testing.T) {
+	got := ParseTXT([]string{
+		"v=1", "uuid=host-old", "cluster-uuid=clu", "ip=192.168.1.10",
+		"ni=14318", "otel=4317", "ol=11434",
+	})
+	want := NodeRecord{
+		SchemaVersion: "1",
+		HostUUID:      "host-old",
+		ClusterUUID:   "clu",
+		IP:            "192.168.1.10",
+		Services:      map[ServiceKey]int{ServiceNodeInfo: 14318, ServiceOllama: 11434},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("older peer record = %+v, want %+v (otel ignored)", got, want)
+	}
+	wantTXT := []string{"v=1", "uuid=host-old", "cluster-uuid=clu", "ip=192.168.1.10", "ni=14318", "ol=11434"}
+	if txt := got.TXT(); !reflect.DeepEqual(txt, wantTXT) {
+		t.Errorf("re-emitted TXT = %v, want %v", txt, wantTXT)
+	}
+}
+
 func TestParseTXT(t *testing.T) {
 	txt := []string{
 		"v=1", "uuid=host-abc", "cluster-uuid=clu-xyz", "ip=192.168.1.10",
-		"ni=14318", "ol=11434", "er=14319", "wl=14320", "cl=14321", "em=14322", "otel=4317",
+		"ni=14318", "ol=11434", "er=14319", "wl=14320", "cl=14321", "em=14322",
 		"unknown=ignored", "bad=notaport",
 	}
 	r := ParseTXT(txt)
@@ -61,9 +84,6 @@ func TestParseTXT(t *testing.T) {
 	}
 	if p, ok := r.Port(ServiceEngineManager); !ok || p != 14322 {
 		t.Errorf("em port = %d,%v want 14322,true", p, ok)
-	}
-	if p, ok := r.Port(ServiceOTel); !ok || p != 4317 {
-		t.Errorf("otel port = %d,%v want 4317,true", p, ok)
 	}
 	if _, ok := r.Port(ServiceLMStudio); ok {
 		t.Error("lm should be absent")

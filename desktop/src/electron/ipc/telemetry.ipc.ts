@@ -6,22 +6,14 @@ import {
     handleTelemetryGetStatus,
     handleTelemetryStart,
     handleTelemetryStop,
-    handleTelemetryCheckUpdate,
-    handleTelemetryUpdate,
-    handleTelemetrySetEnabled,
-    handleTelemetrySetEndpoint,
-    handleTelemetrySetRecordPayloads
+    handleTelemetrySetConfig,
+    handleTelemetryPurgeStorage
 } from '@/electron/service-bridge/empty-handlers'
 
 export function registerTelemetryIpc(): void {
     safeHandle('telemetry:get-status', () => handleTelemetryGetStatus())
     safeHandle('telemetry:start', () => handleTelemetryStart())
     safeHandle('telemetry:stop', () => handleTelemetryStop())
-    safeHandle('telemetry:check-update', () => handleTelemetryCheckUpdate())
-    safeHandle('telemetry:update', () => handleTelemetryUpdate())
-    safeHandle('telemetry:set-enabled', (_event, payload) => handleTelemetrySetEnabled(payload))
-    safeHandle('telemetry:set-endpoint', (_event, payload) => handleTelemetrySetEndpoint(payload))
-    safeHandle('telemetry:set-record-payloads', (_event, payload) =>
-        handleTelemetrySetRecordPayloads(payload)
-    )
+    safeHandle('telemetry:set-config', (_event, payload) => handleTelemetrySetConfig(payload))
+    safeHandle('telemetry:purge-storage', (_event, payload) => handleTelemetryPurgeStorage(payload))
 }

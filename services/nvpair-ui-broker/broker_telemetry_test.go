@@ -6,30 +6,36 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net"
-	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
 type mockDockerRunner struct {
-	mu            sync.Mutex
-	state         string
-	inspectErr    error
-	upCalled      bool
-	stopCalled    bool
-	pullCalled    bool
-	composeFile   string
-	version       string
-	imageID       string
-	latestVer     string
-	latestImageID string
-	latestDigest  string
+	mu          sync.Mutex
+	state       string
+	inspectErr  error
+	upCalled    bool
+	stopCalled  bool
+	composeFile string
+	details     *dockerContainerDetails
+	removed     []string
+	removeErr   error
+	events      []string
+
+	volumeLabels    map[string]string
+	volumeBytes     map[string]int64
+	users           map[string][]string
+	listErr         error
+	sizesErr        error
+	usersErr        error
+	volumeRemoveErr error
+	stopErr         error
+	removedVolumes  []string
+	storageTimeout  time.Duration
+	stopTimeout     time.Duration
 }
 
 func (m *mockDockerRunner) setState(state string) {
@@ -50,42 +56,22 @@ func (m *mockDockerRunner) composeStopCalled() bool {
 	return m.stopCalled
 }
 
-func (m *mockDockerRunner) composePullCalled() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.pullCalled
-}
-
-func (m *mockDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.state, m.inspectErr
-}
-
 func (m *mockDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.details != nil {
+		return *m.details, m.inspectErr
+	}
 	return dockerContainerDetails{
-		State:   m.state,
-		ImageID: m.imageID,
-		Version: m.version,
+		State: m.state,
 	}, m.inspectErr
-}
-
-func (m *mockDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return dockerImageDetails{
-		ImageID: m.latestImageID,
-		Version: m.latestVer,
-		Digest:  m.latestDigest,
-	}, nil
 }
 
 func (m *mockDockerRunner) composeUp(ctx context.Context, composeFile string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.upCalled = true
+	m.events = append(m.events, "up")
 	m.composeFile = composeFile
 	return nil
 }
@@ -94,16 +80,12 @@ func (m *mockDockerRunner) composeStop(ctx context.Context, composeFile string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopCalled = true
+	m.events = append(m.events, "stop")
 	m.composeFile = composeFile
-	return nil
-}
-
-func (m *mockDockerRunner) composePull(ctx context.Context, composeFile string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pullCalled = true
-	m.composeFile = composeFile
-	return nil
+	if deadline, ok := ctx.Deadline(); ok {
+		m.stopTimeout = time.Until(deadline)
+	}
+	return m.stopErr
 }
 
 func TestTelemetryGetStatus(t *testing.T) {
@@ -120,12 +102,8 @@ func TestTelemetryGetStatus(t *testing.T) {
 				return
 			}
 			switch msg.Method {
-			case "settings/get-telemetry-enabled":
-				_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": true})
-			case "settings/get-telemetry-endpoint":
-				_ = settingsCodec.Respond(msg.ID, map[string]string{"value": "127.0.0.1:4317"})
-			case "settings/get-telemetry-record-payloads":
-				_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": false})
+			case "settings/get-telemetry-config":
+				_ = settingsCodec.Respond(msg.ID, telemetryDesiredConfig{Revision: 1, Enabled: true, CollectorPort: 4317, PayloadPolicyVersion: 1})
 			default:
 				_ = settingsCodec.Respond(msg.ID, map[string]any{})
 			}
@@ -143,6 +121,7 @@ func TestTelemetryGetStatus(t *testing.T) {
 		},
 	}
 	b.setSettings(settingsWorker)
+	b.loadTelemetryConfig(settingsWorker)
 
 	id := json.RawMessage(`1`)
 	go b.handleMessage(&Message{
@@ -164,11 +143,11 @@ func TestTelemetryGetStatus(t *testing.T) {
 	if !status.Enabled {
 		t.Errorf("expected Enabled=true, got false")
 	}
-	if status.Endpoint != "127.0.0.1:4317" {
-		t.Errorf("expected Endpoint=127.0.0.1:4317, got %s", status.Endpoint)
+	if status.CollectorPort != 4317 {
+		t.Errorf("expected CollectorPort=4317, got %d", status.CollectorPort)
 	}
-	if status.UIURL != "http://localhost:6006" {
-		t.Errorf("expected UIURL=http://localhost:6006, got %s", status.UIURL)
+	if status.UIURL != "http://127.0.0.1:6006" {
+		t.Errorf("expected UIURL=http://127.0.0.1:6006, got %s", status.UIURL)
 	}
 	if status.RecordPayloads {
 		t.Errorf("expected RecordPayloads=false, got true")
@@ -186,17 +165,12 @@ func TestTelemetryStartAndStop(t *testing.T) {
 	defer brokerConn.Close()
 	defer clientConn.Close()
 
-	tempDir := t.TempDir()
-	fakeCompose := filepath.Join(tempDir, "docker-compose.telemetry.yml")
-	if err := os.WriteFile(fakeCompose, []byte("services: {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	isolateTelemetryData(t)
 
 	mockDocker := &mockDockerRunner{state: "running"}
 	b := &Broker{
-		codec:                NewCodec(brokerConn),
-		dockerRunner:         mockDocker,
-		telemetryComposePath: fakeCompose,
+		codec:        NewCodec(brokerConn),
+		dockerRunner: mockDocker,
 		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
 			c1, c2 := net.Pipe()
 			_ = c2.Close()
@@ -244,29 +218,6 @@ func TestTelemetryStartAndStop(t *testing.T) {
 	}
 }
 
-func TestDeriveUIURL(t *testing.T) {
-	cases := []struct {
-		endpoint string
-		expected string
-	}{
-		{"localhost:4317", "http://localhost:6006"},
-		{"127.0.0.1:4317", "http://localhost:6006"},
-		{"192.168.1.50:4317", "http://192.168.1.50:6006"},
-		{"[::1]:4317", "http://localhost:6006"},
-		{"2001:db8::1:4317", "http://[2001:db8::1]:6006"},
-		{"[2001:db8::1]:4317", "http://[2001:db8::1]:6006"},
-		{"http://192.168.1.50:4317", "http://192.168.1.50:6006"},
-		{"", "http://localhost:6006"},
-	}
-
-	for _, tc := range cases {
-		got := deriveUIURL(tc.endpoint)
-		if got != tc.expected {
-			t.Errorf("deriveUIURL(%q) = %q, want %q", tc.endpoint, got, tc.expected)
-		}
-	}
-}
-
 func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 	brokerConn, clientConn := net.Pipe()
 	defer brokerConn.Close()
@@ -304,27 +255,19 @@ func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 	if status.CollectorReachable {
 		t.Errorf("expected CollectorReachable=false, got true")
 	}
-	if !status.Enabled {
-		t.Errorf("expected default Enabled=true, got false")
+	if status.Enabled || status.Revision != 0 {
+		t.Errorf("expected missing settings to be disabled at revision 0, got %+v", status)
 	}
 }
 
 type errorDockerRunner struct {
+	mockDockerRunner
 	upErr   error
 	stopErr error
-	pullErr error
-}
-
-func (e *errorDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
-	return "stopped", nil
 }
 
 func (e *errorDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
 	return dockerContainerDetails{State: "stopped"}, nil
-}
-
-func (e *errorDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
-	return dockerImageDetails{}, nil
 }
 
 func (e *errorDockerRunner) composeUp(ctx context.Context, composeFile string) error {
@@ -335,29 +278,22 @@ func (e *errorDockerRunner) composeStop(ctx context.Context, composeFile string)
 	return e.stopErr
 }
 
-func (e *errorDockerRunner) composePull(ctx context.Context, composeFile string) error {
-	return e.pullErr
-}
+func (e *errorDockerRunner) removeContainer(context.Context, string) error { return nil }
 
 func TestTelemetryStartAndStopErrors(t *testing.T) {
 	brokerConn, clientConn := net.Pipe()
 	defer brokerConn.Close()
 	defer clientConn.Close()
 
-	tempDir := t.TempDir()
-	fakeCompose := filepath.Join(tempDir, "docker-compose.telemetry.yml")
-	if err := os.WriteFile(fakeCompose, []byte("services: {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	isolateTelemetryData(t)
 
 	errDocker := &errorDockerRunner{
 		upErr:   os.ErrPermission,
 		stopErr: os.ErrPermission,
 	}
 	b := &Broker{
-		codec:                NewCodec(brokerConn),
-		dockerRunner:         errDocker,
-		telemetryComposePath: fakeCompose,
+		codec:        NewCodec(brokerConn),
+		dockerRunner: errDocker,
 	}
 
 	// Test composeUp error
@@ -391,65 +327,8 @@ func TestTelemetryStartAndStopErrors(t *testing.T) {
 	}
 }
 
-func TestResolveComposeFilePath(t *testing.T) {
-	tempDir := t.TempDir()
-	composePath := filepath.Join(tempDir, "docker-compose.telemetry.yml")
-	if err := os.WriteFile(composePath, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Explicit path
-	resolved, err := resolveComposeFilePath(composePath)
-	if err != nil {
-		t.Fatalf("expected success with explicit path: %v", err)
-	}
-	if resolved != composePath {
-		t.Errorf("resolved = %s, want %s", resolved, composePath)
-	}
-
-	// 2. Env variable
-	t.Setenv("NVPAIR_TELEMETRY_COMPOSE_PATH", composePath)
-	resolvedEnv, err := resolveComposeFilePath("")
-	if err != nil {
-		t.Fatalf("expected success with env var: %v", err)
-	}
-	if resolvedEnv != composePath {
-		t.Errorf("resolvedEnv = %s, want %s", resolvedEnv, composePath)
-	}
-
-	// 3. Non-existent path returns error when nothing matches
-	t.Setenv("NVPAIR_TELEMETRY_COMPOSE_PATH", filepath.Join(tempDir, "nonexistent.yml"))
-	_, err = resolveComposeFilePath(filepath.Join(tempDir, "also-nonexistent.yml"))
-	if err == nil {
-		t.Fatalf("expected error for non-existent path")
-	}
-}
-
-func TestResolveComposeFilePath_FallbackProvisioning(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Chdir(tempHome)
-	t.Setenv("HOME", tempHome)
-	t.Setenv("LOCALAPPDATA", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", tempHome)
-	t.Setenv("NVPAIR_TELEMETRY_COMPOSE_PATH", "")
-
-	// When customPath is empty, and candidates next to exe/cwd do not exist,
-	// resolveComposeFilePath should provision and return the default compose file in appdir.
-	resolved, err := resolveComposeFilePath("")
-	if err != nil {
-		t.Fatalf("expected fallback provisioning to succeed, got: %v", err)
-	}
-
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		t.Fatalf("failed to read provisioned compose file: %v", err)
-	}
-	if !strings.Contains(string(data), "arizephoenix/phoenix:latest") {
-		t.Errorf("expected provisioned compose file to contain arizephoenix/phoenix:latest, got: %s", string(data))
-	}
-}
-
 type slowDockerRunner struct {
+	mockDockerRunner
 	mu             sync.Mutex
 	composeUpDelay time.Duration
 	state          string
@@ -461,16 +340,8 @@ func (s *slowDockerRunner) stateSnapshot() string {
 	return s.state
 }
 
-func (s *slowDockerRunner) inspect(ctx context.Context, containerName string) (string, error) {
-	return s.stateSnapshot(), nil
-}
-
 func (s *slowDockerRunner) inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error) {
 	return dockerContainerDetails{State: s.stateSnapshot()}, nil
-}
-
-func (s *slowDockerRunner) inspectImage(ctx context.Context, imageName string) (dockerImageDetails, error) {
-	return dockerImageDetails{}, nil
 }
 
 func (s *slowDockerRunner) composeUp(ctx context.Context, composeFile string) error {
@@ -492,20 +363,14 @@ func (s *slowDockerRunner) composeStop(ctx context.Context, composeFile string) 
 	return nil
 }
 
-func (s *slowDockerRunner) composePull(ctx context.Context, composeFile string) error {
-	return nil
-}
+func (s *slowDockerRunner) removeContainer(context.Context, string) error { return nil }
 
 func TestTelemetryStart_SlowPullBackgrounding(t *testing.T) {
 	brokerConn, clientConn := net.Pipe()
 	defer brokerConn.Close()
 	defer clientConn.Close()
 
-	tempDir := t.TempDir()
-	fakeCompose := filepath.Join(tempDir, "docker-compose.telemetry.yml")
-	if err := os.WriteFile(fakeCompose, []byte("services: {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	isolateTelemetryData(t)
 
 	// composeUp takes 2.2 seconds, which exceeds the 1.5s quick wait
 	slowRunner := &slowDockerRunner{
@@ -514,9 +379,8 @@ func TestTelemetryStart_SlowPullBackgrounding(t *testing.T) {
 	}
 
 	b := &Broker{
-		codec:                NewCodec(brokerConn),
-		dockerRunner:         slowRunner,
-		telemetryComposePath: fakeCompose,
+		codec:        NewCodec(brokerConn),
+		dockerRunner: slowRunner,
 		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
 			if slowRunner.stateSnapshot() == "running" {
 				c1, c2 := net.Pipe()
@@ -572,120 +436,4 @@ func TestTelemetryStart_SlowPullBackgrounding(t *testing.T) {
 	if finalStatus.ContainerState != "running" {
 		t.Errorf("expected final ContainerState='running', got %q", finalStatus.ContainerState)
 	}
-}
-
-func TestTelemetryCheckUpdate(t *testing.T) {
-	brokerConn, clientConn := net.Pipe()
-	defer brokerConn.Close()
-	defer clientConn.Close()
-
-	mockDocker := &mockDockerRunner{
-		state:         "running",
-		imageID:       "sha256:oldimage123",
-		version:       "arize-phoenix-v20.16.0",
-		latestImageID: "sha256:newimage456",
-		latestVer:     "arize-phoenix-v20.19.0",
-	}
-
-	b := &Broker{
-		codec:        NewCodec(brokerConn),
-		dockerRunner: mockDocker,
-		telemetryHTTPClient: &http.Client{
-			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				body := `{"name":"latest","digest":"sha256:newimage456","tag_last_pushed":"2026-10-01T23:05:00Z"}`
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(strings.NewReader(body)),
-					Header:     make(http.Header),
-				}, nil
-			}),
-		},
-		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
-			c1, c2 := net.Pipe()
-			_ = c2.Close()
-			return c1, nil
-		},
-	}
-
-	id := json.RawMessage(`1`)
-	go b.handleMessage(&Message{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "telemetry/check-update",
-	})
-
-	resp, err := NewCodec(clientConn).Read()
-	if err != nil {
-		t.Fatalf("failed to read response: %v", err)
-	}
-	if resp.Error != nil {
-		t.Fatalf("unexpected error on telemetry/check-update: %v", resp.Error)
-	}
-
-	var status TelemetryStatusResult
-	if err := json.Unmarshal(resp.Result, &status); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-
-	if !status.UpdateAvailable {
-		t.Errorf("expected UpdateAvailable=true, got false")
-	}
-	if status.CurrentVersion != "v20.16.0" {
-		t.Errorf("expected CurrentVersion=v20.16.0, got %q", status.CurrentVersion)
-	}
-	if status.LatestVersion != "v20.19.0" {
-		t.Errorf("expected LatestVersion=v20.19.0, got %q", status.LatestVersion)
-	}
-}
-
-func TestTelemetryUpdate(t *testing.T) {
-	brokerConn, clientConn := net.Pipe()
-	defer brokerConn.Close()
-	defer clientConn.Close()
-
-	tempDir := t.TempDir()
-	fakeCompose := filepath.Join(tempDir, "docker-compose.telemetry.yml")
-	if err := os.WriteFile(fakeCompose, []byte("services: {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	mockDocker := &mockDockerRunner{state: "running"}
-	b := &Broker{
-		codec:                NewCodec(brokerConn),
-		dockerRunner:         mockDocker,
-		telemetryComposePath: fakeCompose,
-		dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
-			c1, c2 := net.Pipe()
-			_ = c2.Close()
-			return c1, nil
-		},
-	}
-
-	id := json.RawMessage(`2`)
-	go b.handleMessage(&Message{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "telemetry/update",
-	})
-
-	resp, err := NewCodec(clientConn).Read()
-	if err != nil {
-		t.Fatalf("failed to read response: %v", err)
-	}
-	if resp.Error != nil {
-		t.Fatalf("unexpected error on telemetry/update: %v", resp.Error)
-	}
-
-	if !mockDocker.composePullCalled() {
-		t.Errorf("expected composePull to be called")
-	}
-	if !mockDocker.composeUpCalled() {
-		t.Errorf("expected composeUp to be called")
-	}
-}
-
-type roundTripFunc func(req *http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
 }
