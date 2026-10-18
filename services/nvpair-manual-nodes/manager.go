@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nvpair-shared/applog"
@@ -34,8 +36,9 @@ import (
 var Version = "dev"
 
 const (
-	probeInterval = 10 * time.Second
-	probeTimeout  = 3 * time.Second
+	probeInterval         = 10 * time.Second
+	probeTimeout          = 3 * time.Second
+	telemetryProbeTimeout = 1500 * time.Millisecond
 
 	// probeFailThreshold is the number of CONSECUTIVE probes (at
 	// probeInterval = 10s, so 30 s of unreachability) where neither
@@ -221,6 +224,13 @@ type Manager struct {
 	client    *http.Client
 	tlsClient *http.Client
 
+	telemetryClient       *http.Client
+	telemetryTLSClient    *http.Client
+	telemetryPeerPool     *clustertrust.PeerClientPool
+	telemetryAnyClient    *http.Client
+	telemetryAnyTransport *http.Transport
+	telemetryAnySelfDER   []byte
+
 	// mesh is non-nil when this node is clustered (--cluster-dir): a TLS manual
 	// node is probed over cluster mTLS (presenting our leaf, accepting any
 	// currently-pinned server cert) since a clustered peer's node-info is
@@ -252,6 +262,63 @@ func (m *Manager) getTelemetryInterval(nodeKey string) time.Duration {
 	return telemetryIntervalForNode(nodeKey)
 }
 
+func (m *Manager) getTelemetryClient() *http.Client {
+	if m.telemetryClient != nil {
+		return m.telemetryClient
+	}
+	return m.client
+}
+
+func (m *Manager) getTelemetryTLSClient() *http.Client {
+	if m.telemetryTLSClient != nil {
+		return m.telemetryTLSClient
+	}
+	return m.tlsClient
+}
+
+func (m *Manager) getTelemetryTLSConfigAnyClient() *http.Client {
+	if m.mesh == nil || !m.mesh.Clustered() {
+		return nil
+	}
+	cfg, ok := m.mesh.ClientTLSConfigAny()
+	if !ok || len(cfg.Certificates) == 0 || len(cfg.Certificates[0].Certificate) == 0 {
+		return nil
+	}
+	selfDER := cfg.Certificates[0].Certificate[0]
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.telemetryAnyClient != nil && bytes.Equal(m.telemetryAnySelfDER, selfDER) {
+		return m.telemetryAnyClient
+	}
+	if m.telemetryAnyTransport != nil {
+		m.telemetryAnyTransport.CloseIdleConnections()
+	}
+	tr := telemetryTransport(cfg)
+	m.telemetryAnyTransport = tr
+	m.telemetryAnyClient = &http.Client{Timeout: telemetryProbeTimeout, Transport: tr}
+	m.telemetryAnySelfDER = bytes.Clone(selfDER)
+	return m.telemetryAnyClient
+}
+
+func (m *Manager) closeIdleTelemetry() {
+	m.mu.Lock()
+	if m.telemetryAnyTransport != nil {
+		m.telemetryAnyTransport.CloseIdleConnections()
+	}
+	m.mu.Unlock()
+	if m.telemetryPeerPool != nil {
+		m.telemetryPeerPool.CloseIdle()
+	}
+	if m.telemetryClient != nil {
+		m.telemetryClient.CloseIdleConnections()
+	}
+	if m.telemetryTLSClient != nil {
+		m.telemetryTLSClient.CloseIdleConnections()
+	}
+}
+
 func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh, clusterDir ...string) (*Manager, error) {
 	tlsClient, err := buildTLSClient(tlsOpts, probeTimeout)
 	if err != nil {
@@ -259,6 +326,17 @@ func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh,
 	}
 	if tlsClient == nil {
 		tlsClient = &http.Client{Timeout: probeTimeout, Transport: noKeepAliveTransport()}
+	}
+	telemTLSClient, err := buildTelemetryTLSClient(tlsOpts, telemetryProbeTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("build telemetry TLS client: %w", err)
+	}
+	if telemTLSClient == nil {
+		telemTLSClient = &http.Client{Timeout: telemetryProbeTimeout, Transport: telemetryTransport(&tls.Config{MinVersion: tls.VersionTLS12})}
+	}
+	var peerPool *clustertrust.PeerClientPool
+	if mesh != nil {
+		peerPool = clustertrust.NewPeerClientPool(mesh, telemetryProbeTimeout)
 	}
 	var cDir string
 	if len(clusterDir) > 0 {
@@ -275,9 +353,12 @@ func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh,
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
 		},
-		tlsClient:  tlsClient,
-		clusterDir: cDir,
-		nodes:      make(map[string]*trackedNode),
+		tlsClient:          tlsClient,
+		telemetryClient:    &http.Client{Timeout: telemetryProbeTimeout, Transport: telemetryTransport(nil)},
+		telemetryTLSClient: telemTLSClient,
+		telemetryPeerPool:  peerPool,
+		clusterDir:         cDir,
+		nodes:              make(map[string]*trackedNode),
 	}, nil
 }
 
@@ -291,22 +372,36 @@ func noKeepAliveTransport() *http.Transport {
 	return &http.Transport{DisableKeepAlives: true}
 }
 
+func telemetryTransport(tlsCfg *tls.Config) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig:     tlsCfg,
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
 func (m *Manager) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	m.mu.Lock()
-	m.cancel = cancel
-	m.ctx = ctx
-	m.mu.Unlock()
-	defer cancel()
+	go func() {
+		select {
+		case <-ctx.Done():
+			m.cancel()
+		case <-m.ctx.Done():
+		}
+	}()
+	defer func() {
+		m.cancel()
+		m.closeIdleTelemetry()
+	}()
 
 	if err := m.codec.Notify("ready", ReadyParams{Version: Version}); err != nil {
 		return fmt.Errorf("failed to send ready notification: %w", err)
 	}
 
 	m.syncClusterMembers()
-	go m.probeLoop(ctx)
+	go m.probeLoop(m.ctx)
 
-	return m.readLoop(ctx)
+	return m.readLoop(m.ctx)
 }
 
 func (m *Manager) probeLoop(ctx context.Context) {
@@ -1027,13 +1122,13 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 }
 
 func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
-	return m.probeNodeInfoWithPoll(client, scheme, addr, port, "foreground")
+	return m.probeNodeInfoWithPoll(m.ctx, client, scheme, addr, port, "foreground")
 }
 
-func (m *Manager) probeNodeInfoWithPoll(client *http.Client, scheme, addr string, port int, poll string) (bool, NodeInfoResponse) {
+func (m *Manager) probeNodeInfoWithPoll(ctx context.Context, client *http.Client, scheme, addr string, port int, poll string) (bool, NodeInfoResponse) {
 	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
 	start := time.Now()
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, NodeInfoResponse{}
 	}
@@ -1060,6 +1155,7 @@ func (m *Manager) probeNodeInfoWithPoll(client *http.Client, scheme, addr string
 			"duration_ms", time.Since(start).Milliseconds())
 		return false, NodeInfoResponse{}
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	slog.Debug("manual probe node-info up",
 		"addr", addr, "port", port, "scheme", scheme, "gpus", len(result.GPUs),
 		"has_cpu", result.CPU != nil, "has_memory", result.Memory != nil,
@@ -1086,12 +1182,19 @@ func (m *Manager) runTelemetryLoop(ctx context.Context, id string, entry ManualE
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	var inFlight atomic.Bool
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.probeNodeTelemetry(ctx, id, entry)
+			if !inFlight.CompareAndSwap(false, true) {
+				continue
+			}
+			go func() {
+				defer inFlight.Store(false)
+				m.probeNodeTelemetry(ctx, id, entry)
+			}()
 		}
 	}
 }
@@ -1109,26 +1212,44 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 	addr := entry.Address
 	scheme := "http"
 	nodeInfoPort := 14318
-	probeClient := m.client
+	probeClient := m.getTelemetryClient()
+	clusterUUID := tn.status.ClusterUUID
+	if clusterUUID == "" && m.mesh != nil && tn.status.HostUUID != "" && m.mesh.HasPin(tn.status.HostUUID) {
+		clusterUUID = tn.status.HostUUID
+	}
 	if entry.TLSPort > 0 {
 		scheme = "https"
 		nodeInfoPort = entry.TLSPort
-		probeClient = m.tlsClient
-		m.mesh.Refresh()
-		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
-			probeClient = &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
+		probeClient = m.getTelemetryTLSClient()
+		if m.mesh != nil && m.mesh.Clustered() {
+			m.mesh.Refresh()
+			if clusterUUID != "" && m.telemetryPeerPool != nil {
+				if client, ok := m.telemetryPeerPool.Client(clusterUUID); ok {
+					probeClient = client
+				}
+			} else if anyClient := m.getTelemetryTLSConfigAnyClient(); anyClient != nil {
+				probeClient = anyClient
+			}
 		}
 	}
 	m.mu.RUnlock()
 
-	nodeInfoUp, info := m.probeNodeInfoWithPoll(probeClient, scheme, addr, nodeInfoPort, "scheduling")
+	nodeInfoUp, info := m.probeNodeInfoWithPoll(ctx, probeClient, scheme, addr, nodeInfoPort, "scheduling")
 	nodeInfoReceived := m.clockNow()
-	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() {
+	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() && ctx.Err() == nil {
 		m.mesh.Refresh()
-		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
-			tlsClient := &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
+		var tlsClient *http.Client
+		if clusterUUID != "" && m.telemetryPeerPool != nil {
+			if client, ok := m.telemetryPeerPool.Client(clusterUUID); ok {
+				tlsClient = client
+			}
+		}
+		if tlsClient == nil {
+			tlsClient = m.getTelemetryTLSConfigAnyClient()
+		}
+		if tlsClient != nil {
 			for _, port := range []int{14319, 14318} {
-				if up, tlsInfo := m.probeNodeInfoWithPoll(tlsClient, "https", addr, port, "scheduling"); up {
+				if up, tlsInfo := m.probeNodeInfoWithPoll(ctx, tlsClient, "https", addr, port, "scheduling"); up {
 					nodeInfoUp = true
 					info = tlsInfo
 					nodeInfoReceived = m.clockNow()
@@ -1147,6 +1268,12 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 	if !exists {
 		m.mu.Unlock()
 		return
+	}
+	if info.ClusterUUID != nil && *info.ClusterUUID != "" && tn.status.ClusterUUID == "" {
+		tn.status.ClusterUUID = *info.ClusterUUID
+	}
+	if tn.status.ClusterUUID == "" && m.mesh != nil && info.HostUUID != "" && m.mesh.HasPin(info.HostUUID) {
+		tn.status.ClusterUUID = info.HostUUID
 	}
 	if info.HostUUID != "" && tn.status.HostUUID == "" {
 		tn.status.HostUUID = info.HostUUID

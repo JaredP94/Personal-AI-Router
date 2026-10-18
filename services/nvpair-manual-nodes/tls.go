@@ -80,3 +80,37 @@ func buildTLSClient(o tlsClientOptions, timeout time.Duration) (*http.Client, er
 		Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true},
 	}, nil
 }
+
+func buildTelemetryTLSClient(o tlsClientOptions, timeout time.Duration) (*http.Client, error) {
+	if o.CertPath == "" && o.KeyPath == "" && o.CABundlePath == "" {
+		return nil, nil
+	}
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	if o.CABundlePath != "" {
+		caPEM, err := os.ReadFile(o.CABundlePath)
+		if err != nil {
+			return nil, fmt.Errorf("read CA bundle: %w", err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("CA bundle %s contains no PEM certificates", o.CABundlePath)
+		}
+		cfg.RootCAs = pool
+	}
+	if o.CertPath != "" {
+		cert, err := tls.LoadX509KeyPair(o.CertPath, o.KeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("load client cert/key: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: telemetryTransport(cfg),
+	}, nil
+}

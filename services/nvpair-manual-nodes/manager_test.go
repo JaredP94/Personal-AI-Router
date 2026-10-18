@@ -13,10 +13,13 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +87,8 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 	rt := newFakeRoundTripper()
 	m.client = &http.Client{Transport: rt, Timeout: time.Second}
 	m.tlsClient = &http.Client{Transport: rt, Timeout: time.Second}
+	m.telemetryClient = &http.Client{Transport: rt, Timeout: time.Second}
+	m.telemetryTLSClient = &http.Client{Transport: rt, Timeout: time.Second}
 	return m, rw, rt
 }
 
@@ -1347,4 +1352,151 @@ func TestNodeTelemetryLoopStopsOnRemove(t *testing.T) {
 	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
 	assertNoCaptureMethod(t, rw, "node/telemetry")
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestTelemetryLoopReusesKeepAliveConnections(t *testing.T) {
+	var newConns atomic.Int32
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/node-info" {
+			w.Header().Set("Content-Type", "application/json")
+			info := sampleInfo()
+			info.HostUUID = "peer-uuid"
+			info.TelemetryValid = true
+			_ = json.NewEncoder(w).Encode(info)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	ts.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	ts.StartTLS()
+	defer ts.Close()
+
+	host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rw := newCaptureRW()
+	m, err := NewManager(NewCodec(rw), tlsClientOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Route 10s topology probes to a dummy roundtripper so only telemetry connects to ts
+	dummy := newFakeRoundTripper()
+	m.client = &http.Client{Transport: dummy}
+	m.tlsClient = &http.Client{Transport: dummy}
+
+	// Configure telemetryTLSClient with the test server's TLS config and keep-alives enabled
+	tlsTransport := telemetryTransport(ts.Client().Transport.(*http.Transport).TLSClientConfig)
+	m.telemetryTLSClient = &http.Client{
+		Timeout:   telemetryProbeTimeout,
+		Transport: tlsTransport,
+	}
+
+	m.telemetryInterval = func(_ string) time.Duration {
+		return 10 * time.Millisecond
+	}
+
+	m.addNode(ManualEntry{Address: host, TLSPort: port, Name: "test-node"})
+
+	// Collect several node/telemetry frames across ticks
+	for i := 0; i < 4; i++ {
+		_ = readCaptureUntil(t, rw, methodIs("node/telemetry"))
+	}
+
+	if !m.removeNode("test-node") {
+		t.Fatal("failed to remove node")
+	}
+
+	// With keep-alive connection reuse, only 1 connection is dialed
+	if got := newConns.Load(); got != 1 {
+		t.Fatalf("expected 1 connection created across multiple telemetry ticks, got %d", got)
+	}
+}
+
+func TestTelemetryTimeoutBelowInterval(t *testing.T) {
+	rw := newCaptureRW()
+	m, err := NewManager(NewCodec(rw), tlsClientOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.telemetryClient.Timeout != 1500*time.Millisecond {
+		t.Errorf("telemetryClient timeout = %v, want 1.5s", m.telemetryClient.Timeout)
+	}
+	if m.telemetryTLSClient.Timeout != 1500*time.Millisecond {
+		t.Errorf("telemetryTLSClient timeout = %v, want 1.5s", m.telemetryTLSClient.Timeout)
+	}
+	minInterval := 2*time.Second - 250*time.Millisecond
+	if m.telemetryClient.Timeout >= minInterval {
+		t.Errorf("telemetryClient timeout %v is not strictly below min interval %v", m.telemetryClient.Timeout, minInterval)
+	}
+}
+
+func TestTelemetryCancellationOnRemovalAbortsInFlightRequest(t *testing.T) {
+	m, rw, _ := newTestManager()
+	m.telemetryInterval = func(_ string) time.Duration {
+		return 5 * time.Millisecond
+	}
+
+	inFlight := make(chan struct{})
+	reqAborted := make(chan struct{})
+
+	m.telemetryClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(req.URL.Path, "/v1/node-info") {
+				select {
+				case <-inFlight:
+				default:
+					close(inFlight)
+				}
+				<-req.Context().Done()
+				select {
+				case <-reqAborted:
+				default:
+					close(reqAborted)
+				}
+				return nil, req.Context().Err()
+			}
+			return httpJSON(http.StatusOK, `{}`)
+		}),
+	}
+
+	m.addNode(ManualEntry{Address: "slow.local", Name: "slow-node"})
+
+	// Wait until the request is in-flight
+	select {
+	case <-inFlight:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for telemetry request to enter in-flight")
+	}
+
+	// Removing the node must cancel its context and abort the in-flight request immediately
+	if !m.removeNode("slow-node") {
+		t.Fatal("failed to remove slow-node")
+	}
+
+	select {
+	case <-reqAborted:
+		// In-flight request was aborted immediately by context cancellation
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("in-flight telemetry request was not aborted on node removal")
+	}
+
+	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
+}
+
 

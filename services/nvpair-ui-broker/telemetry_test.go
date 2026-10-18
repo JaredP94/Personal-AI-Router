@@ -274,6 +274,28 @@ func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
 	if len(snapAfter) != 1 {
 		t.Fatalf("unknown node telemetry was not dropped: %+v", snapAfter)
 	}
+
+	// Verify mismatched hostUuid is dropped
+	mismatchedParams := manualNodeTelemetryParams{
+		ID:                "manual-node-1",
+		HostUUID:          "different-uuid-999",
+		GPUUtilizationPct: 99,
+		TelemetryValid:    true,
+	}
+	rawMismatched, _ := json.Marshal(mismatchedParams)
+	b.forwardManualNodesNotification("node/telemetry", rawMismatched)
+
+	snapMismatched := b.telemetry.Snapshot(time.Now())
+	if len(snapMismatched) != 1 || snapMismatched[0].HostUUID != "node-uuid-1" || snapMismatched[0].GPUUtilizationPct != 88 {
+		t.Fatalf("mismatched hostUuid telemetry was not dropped: %+v", snapMismatched)
+	}
+
+	// Verify removal cleans up what was ingested leaving no cached telemetry
+	b.removeManualNode("manual-node-1")
+	snapRemoved := b.telemetry.Snapshot(time.Now())
+	if len(snapRemoved) != 0 {
+		t.Fatalf("removal left cached telemetry: %+v", snapRemoved)
+	}
 }
 
 

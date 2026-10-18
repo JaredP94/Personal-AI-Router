@@ -91,12 +91,12 @@ func (b *Broker) ingestManualNodeTelemetry(t manualNodeTelemetryParams) {
 		slog.Debug("dropping telemetry for unknown manual node", "id", t.ID)
 		return
 	}
-	hostUUID := t.HostUUID
-	if hostUUID == "" {
-		hostUUID = key
+	if t.HostUUID != "" && t.HostUUID != key {
+		slog.Debug("dropping telemetry with mismatched hostUuid", "id", t.ID, "payloadHostUuid", t.HostUUID, "registeredKey", key)
+		return
 	}
 	b.ingestTelemetryAt(sourceManual, noderec.NodeTelemetry{
-		HostUUID:          hostUUID,
+		HostUUID:          key,
 		GPUUtilizationPct: t.GPUUtilizationPct,
 		TelemetryValid:    t.TelemetryValid,
 		MSSince:           t.MSSince,
