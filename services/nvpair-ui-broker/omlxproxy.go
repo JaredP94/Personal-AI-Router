@@ -78,6 +78,9 @@ func (b *Broker) spawnOMLXProxy() (supervisedHandle, error) {
 		return nil, err
 	}
 	b.setOMLXProxy(pp)
+	if ready, _ := pp.Status(); ready {
+		go b.reconcileTelemetry()
+	}
 	b.omlxProxyPublishedGeneration.Store(generation)
 	if ready, port := pp.Status(); ready && port > 0 {
 		go b.reconcileOMLXProxyPortOnReadyForGeneration(generation, port)
@@ -116,6 +119,7 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 		return
 	}
 	if method == "ready" {
+		go b.reconcileTelemetry()
 		var rp proxyReadyParams
 		if err := json.Unmarshal(params, &rp); err == nil && rp.Port > 0 {
 			b.forwardErrorsClear(subprocessCrashedID("omlx-proxy"))

@@ -80,6 +80,9 @@ func (b *Broker) spawnLMStudioProxy() (supervisedHandle, error) {
 		return nil, err
 	}
 	b.setLMStudioProxy(pp)
+	if ready, _ := pp.Status(); ready {
+		go b.reconcileTelemetry()
+	}
 	b.lmstudioProxyPublishedGeneration.Store(generation)
 	// A fast child can announce ready before its handle is published. Replay
 	// reconciliation after publication; the gate's sync.Once makes this safe
@@ -136,6 +139,7 @@ func (b *Broker) forwardLMStudioProxyNotificationForGeneration(generation uint64
 		return
 	}
 	if method == "ready" {
+		go b.reconcileTelemetry()
 		var rp proxyReadyParams
 		if err := json.Unmarshal(params, &rp); err == nil && rp.Port > 0 {
 			go b.reconcileLMStudioProxyPortOnReadyForGeneration(generation, rp.Port)

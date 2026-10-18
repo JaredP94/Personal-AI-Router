@@ -543,18 +543,37 @@ Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim an
 
 #### `settings/<method>` (generic relay)
 
-Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`, `settings/get-telemetry-enabled`, `settings/set-telemetry-enabled`, `settings/get-telemetry-endpoint`, `settings/set-telemetry-endpoint`, `settings/get-telemetry-record-payloads`, `settings/set-telemetry-record-payloads`. Error `-32000 "node-settings not available"` when no settings worker is supervised.
+Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`, `settings/get-telemetry-config`, `settings/set-telemetry-config`. Error `-32000 "node-settings not available"` when no settings worker is supervised.
 
 #### `telemetry/get-status`
 
-Returns `{ "enabled": bool, "endpoint": string, "uiUrl": string, "recordPayloads": bool, "containerState": string, "collectorReachable": bool, "currentVersion"?: string, "updateAvailable": bool, "latestVersion"?: string }`. Queries saved telemetry settings, probes the Docker container state of `nvpair-phoenix`, checks image update status, and tests TCP connectivity to the configured OTLP endpoint.
+Returns the desired telemetry snapshot (`revision`, `enabled`, `collectorPort`,
+`recordPayloads`, `payloadConsentVersion`, `payloadPolicyVersion`) plus:
 
-**This reports settings and connectivity, not the effective proxy tracer
-configuration.** Proxies currently initialize from startup `PAIR_TELEMETRY_*` /
-OTel environment variables (default enabled, `localhost:4317`, payloads off).
-Persisted settings and mDNS advertisements do not reconfigure their providers.
-See [Security](../../SECURITY.md#opentelemetry-and-phoenix-current-limitations)
-for plaintext transport, header capture, Compose exposure, and retention risks.
+- `workers`: one entry for each of `proxy`, `lmstudio-proxy`, and `omlx-proxy`,
+  with `name`, `appliedRevision`, `state` (`applied`, `pending`, `failed`, or
+  `unavailable`), `error`, `lastExportOk`, `lastExportError`, and
+  `lastExportErrorAt`. Delivery health comes from `telemetry/status` (2-second
+  timeout per ready worker); unavailable health values are null.
+- `containerState`, `collectorReachable`, `uiUrl` (always
+  `http://127.0.0.1:6006`), and `imageVersion`. The collector TCP probe targets
+  `127.0.0.1:<collectorPort>`.
+- `bindingsLoopbackOnly`, `managedConfig`, and `storage` are currently null,
+  pending managed-collector and retention support.
+
+The broker loads `settings/get-telemetry-config` whenever settings announces ready,
+including restarts, and consumes/forwards `settings/telemetry-changed` snapshots.
+With no settings worker the desired policy is disabled at revision 0, port 4317,
+with no payload recording or consent. Proxies start disabled; after every proxy
+ready and desired change, serialized `telemetry/configure` requests (5-second
+timeout each) apply the latest desired policy. Failed application is reported
+separately from desired state. A proxy that already accepted a higher revision
+will reject the revision-0 policy after settings disappears; it reports failed
+reconciliation until settings recovers rather than claiming disablement.
+
+Status no longer includes `endpoint`, `currentVersion`, `updateAvailable`, or
+`latestVersion`, and reading status does not initiate an image update check.
+Collector compose/update operations remain separate from proxy tracing policy.
 
 #### `telemetry/check-update`
 

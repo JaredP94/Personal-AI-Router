@@ -1028,11 +1028,23 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 	}()
 	go func() {
 		codec := NewCodec(proxyServer)
-		for i := 0; i < 2; i++ {
+		for remaining := 2; remaining > 0; {
 			msg, err := codec.Read()
 			if err != nil {
 				return
 			}
+			// Readiness also reconciles telemetry independently of port ownership.
+			// Keep the fake alive for both control planes; the ordering assertion
+			// below remains specific to engine ownership and restoration.
+			if msg.Method == "telemetry/configure" {
+				var config struct {
+					Revision uint64 `json:"revision"`
+				}
+				_ = json.Unmarshal(msg.Params, &config)
+				_ = codec.Respond(msg.ID, map[string]uint64{"revision": config.Revision})
+				continue
+			}
+			remaining--
 			order <- msg.Method
 			if msg.Method == "set-port" {
 				var request struct {

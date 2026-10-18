@@ -120,12 +120,8 @@ func TestTelemetryGetStatus(t *testing.T) {
 				return
 			}
 			switch msg.Method {
-			case "settings/get-telemetry-enabled":
-				_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": true})
-			case "settings/get-telemetry-endpoint":
-				_ = settingsCodec.Respond(msg.ID, map[string]string{"value": "127.0.0.1:4317"})
-			case "settings/get-telemetry-record-payloads":
-				_ = settingsCodec.Respond(msg.ID, map[string]bool{"value": false})
+			case "settings/get-telemetry-config":
+				_ = settingsCodec.Respond(msg.ID, telemetryDesiredConfig{Revision: 1, Enabled: true, CollectorPort: 4317, PayloadPolicyVersion: 1})
 			default:
 				_ = settingsCodec.Respond(msg.ID, map[string]any{})
 			}
@@ -143,6 +139,7 @@ func TestTelemetryGetStatus(t *testing.T) {
 		},
 	}
 	b.setSettings(settingsWorker)
+	b.loadTelemetryConfig(settingsWorker)
 
 	id := json.RawMessage(`1`)
 	go b.handleMessage(&Message{
@@ -164,11 +161,11 @@ func TestTelemetryGetStatus(t *testing.T) {
 	if !status.Enabled {
 		t.Errorf("expected Enabled=true, got false")
 	}
-	if status.Endpoint != "127.0.0.1:4317" {
-		t.Errorf("expected Endpoint=127.0.0.1:4317, got %s", status.Endpoint)
+	if status.CollectorPort != 4317 {
+		t.Errorf("expected CollectorPort=4317, got %d", status.CollectorPort)
 	}
-	if status.UIURL != "http://localhost:6006" {
-		t.Errorf("expected UIURL=http://localhost:6006, got %s", status.UIURL)
+	if status.UIURL != "http://127.0.0.1:6006" {
+		t.Errorf("expected UIURL=http://127.0.0.1:6006, got %s", status.UIURL)
 	}
 	if status.RecordPayloads {
 		t.Errorf("expected RecordPayloads=false, got true")
@@ -244,29 +241,6 @@ func TestTelemetryStartAndStop(t *testing.T) {
 	}
 }
 
-func TestDeriveUIURL(t *testing.T) {
-	cases := []struct {
-		endpoint string
-		expected string
-	}{
-		{"localhost:4317", "http://localhost:6006"},
-		{"127.0.0.1:4317", "http://localhost:6006"},
-		{"192.168.1.50:4317", "http://192.168.1.50:6006"},
-		{"[::1]:4317", "http://localhost:6006"},
-		{"2001:db8::1:4317", "http://[2001:db8::1]:6006"},
-		{"[2001:db8::1]:4317", "http://[2001:db8::1]:6006"},
-		{"http://192.168.1.50:4317", "http://192.168.1.50:6006"},
-		{"", "http://localhost:6006"},
-	}
-
-	for _, tc := range cases {
-		got := deriveUIURL(tc.endpoint)
-		if got != tc.expected {
-			t.Errorf("deriveUIURL(%q) = %q, want %q", tc.endpoint, got, tc.expected)
-		}
-	}
-}
-
 func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 	brokerConn, clientConn := net.Pipe()
 	defer brokerConn.Close()
@@ -304,8 +278,8 @@ func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 	if status.CollectorReachable {
 		t.Errorf("expected CollectorReachable=false, got true")
 	}
-	if !status.Enabled {
-		t.Errorf("expected default Enabled=true, got false")
+	if status.Enabled || status.Revision != 0 {
+		t.Errorf("expected missing settings to be disabled at revision 0, got %+v", status)
 	}
 }
 
@@ -627,14 +601,13 @@ func TestTelemetryCheckUpdate(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	if !status.UpdateAvailable {
-		t.Errorf("expected UpdateAvailable=true, got false")
+	if status.ImageVersion != "v20.16.0" {
+		t.Errorf("expected ImageVersion=v20.16.0, got %q", status.ImageVersion)
 	}
-	if status.CurrentVersion != "v20.16.0" {
-		t.Errorf("expected CurrentVersion=v20.16.0, got %q", status.CurrentVersion)
-	}
-	if status.LatestVersion != "v20.19.0" {
-		t.Errorf("expected LatestVersion=v20.19.0, got %q", status.LatestVersion)
+	b.telemetryUpdateMu.Lock()
+	defer b.telemetryUpdateMu.Unlock()
+	if !b.telemetryUpdateAvail || b.telemetryLatestVer != "arize-phoenix-v20.19.0" {
+		t.Errorf("update cache = %t, %q", b.telemetryUpdateAvail, b.telemetryLatestVer)
 	}
 }
 

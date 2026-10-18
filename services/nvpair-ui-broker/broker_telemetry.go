@@ -50,15 +50,15 @@ volumes:
 // TelemetryStatusResult reports the runtime state of the local Arize Phoenix collector
 // and current telemetry configuration.
 type TelemetryStatusResult struct {
-	Enabled            bool   `json:"enabled"`
-	Endpoint           string `json:"endpoint"`
-	UIURL              string `json:"uiUrl"`
-	RecordPayloads     bool   `json:"recordPayloads"`
-	ContainerState     string `json:"containerState"`
-	CollectorReachable bool   `json:"collectorReachable"`
-	CurrentVersion     string `json:"currentVersion,omitempty"`
-	UpdateAvailable    bool   `json:"updateAvailable"`
-	LatestVersion      string `json:"latestVersion,omitempty"`
+	telemetryDesiredConfig
+	Workers              []workerTelemetryState `json:"workers"`
+	ContainerState       string                 `json:"containerState"`
+	CollectorReachable   bool                   `json:"collectorReachable"`
+	UIURL                string                 `json:"uiUrl"`
+	ImageVersion         string                 `json:"imageVersion"`
+	BindingsLoopbackOnly *bool                  `json:"bindingsLoopbackOnly"`
+	ManagedConfig        json.RawMessage        `json:"managedConfig"`
+	Storage              json.RawMessage        `json:"storage"`
 }
 
 type dockerContainerDetails struct {
@@ -291,37 +291,6 @@ func resolveComposeFilePath(customPath string) (string, error) {
 	return "", fmt.Errorf("docker-compose.telemetry.yml not found")
 }
 
-func deriveUIURL(endpoint string) string {
-	if endpoint == "" {
-		return "http://localhost:6006"
-	}
-	clean := endpoint
-	clean = strings.TrimPrefix(clean, "http://")
-	clean = strings.TrimPrefix(clean, "https://")
-
-	host, _, err := net.SplitHostPort(clean)
-	if err != nil {
-		if lastColon := strings.LastIndex(clean, ":"); lastColon != -1 && strings.Count(clean, ":") > 1 {
-			candidateHost := clean[:lastColon]
-			candidatePort := clean[lastColon+1:]
-			if _, pErr := strconv.Atoi(candidatePort); pErr == nil {
-				host = candidateHost
-			} else {
-				host = clean
-			}
-		} else {
-			host = clean
-		}
-	}
-	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
-		return "http://localhost:6006"
-	}
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
-	}
-	return fmt.Sprintf("http://%s:6006", host)
-}
-
 func (b *Broker) probeCollector(endpoint string, timeout time.Duration) bool {
 	if endpoint == "" {
 		return false
@@ -338,31 +307,11 @@ func (b *Broker) probeCollector(endpoint string, timeout time.Duration) bool {
 	return true
 }
 
-func getBoolSettingValue(ctx context.Context, settings *rpcWorker, method string) *bool {
-	result, rpcErr, err := settings.Call(ctx, method, nil)
-	if err != nil || rpcErr != nil {
-		return nil
-	}
-	var r struct {
-		Value bool `json:"value"`
-	}
-	if err := json.Unmarshal(result, &r); err != nil {
-		return nil
-	}
-	return &r.Value
-}
-
 func (b *Broker) getTelemetryEndpointSetting() string {
-	settings := b.getSettings()
-	if settings == nil {
-		return "localhost:4317"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if ep := getSettingValue(ctx, settings, "settings/get-telemetry-endpoint"); ep != "" {
-		return ep
-	}
-	return "localhost:4317"
+	b.telemetryConfigMu.Lock()
+	desired := b.desiredTelemetryLocked()
+	b.telemetryConfigMu.Unlock()
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(desired.CollectorPort))
 }
 
 func cleanPhoenixVersion(v string) string {
@@ -459,70 +408,31 @@ func (b *Broker) checkTelemetryUpdate(ctx context.Context, force bool) (updateAv
 }
 
 func (b *Broker) getTelemetryStatus(ctx context.Context) TelemetryStatusResult {
-	settings := b.getSettings()
-
-	enabled := true
-	endpoint := "localhost:4317"
-	recordPayloads := false
-
-	if settings != nil {
-		sCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-
-		if v := getBoolSettingValue(sCtx, settings, "settings/get-telemetry-enabled"); v != nil {
-			enabled = *v
-		}
-		if ep := getSettingValue(sCtx, settings, "settings/get-telemetry-endpoint"); ep != "" {
-			endpoint = ep
-		}
-		if v := getBoolSettingValue(sCtx, settings, "settings/get-telemetry-record-payloads"); v != nil {
-			recordPayloads = *v
-		}
-	}
+	desired, workers, proxies := b.telemetrySnapshot()
+	b.queryTelemetryHealth(ctx, workers, proxies)
 
 	containerState := "docker_unavailable"
-	var currentVersion string
+	var imageVersion string
 	runner := b.getDockerRunner()
 	iCtx, iCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer iCancel()
 	if details, err := runner.inspectDetails(iCtx, "nvpair-phoenix"); err == nil {
 		containerState = details.State
-		currentVersion = cleanPhoenixVersion(details.Version)
+		imageVersion = cleanPhoenixVersion(details.Version)
 	}
-
 	if b.telemetryUpdating.Load() {
 		containerState = "updating"
 	} else if b.telemetryStarting.Load() && containerState != "running" {
 		containerState = "starting"
 	}
-
-	reachable := b.probeCollector(endpoint, 500*time.Millisecond)
-
-	b.telemetryUpdateMu.Lock()
-	lastCheck := b.telemetryLastCheck
-	updateAvail := b.telemetryUpdateAvail
-	latestVer := b.telemetryLatestVer
-	b.telemetryUpdateMu.Unlock()
-
-	// If container is present and update status hasn't been checked yet, check non-blocking
-	if containerState != "docker_unavailable" && containerState != "not_found" && lastCheck.IsZero() {
-		go func() {
-			cCtx, cCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cCancel()
-			b.checkTelemetryUpdate(cCtx, false)
-		}()
-	}
-
+	endpoint := net.JoinHostPort("127.0.0.1", strconv.Itoa(desired.CollectorPort))
 	return TelemetryStatusResult{
-		Enabled:            enabled,
-		Endpoint:           endpoint,
-		UIURL:              deriveUIURL(endpoint),
-		RecordPayloads:     recordPayloads,
-		ContainerState:     containerState,
-		CollectorReachable: reachable,
-		CurrentVersion:     currentVersion,
-		UpdateAvailable:    updateAvail,
-		LatestVersion:      cleanPhoenixVersion(latestVer),
+		telemetryDesiredConfig: desired,
+		Workers:                workers,
+		ContainerState:         containerState,
+		CollectorReachable:     b.probeCollector(endpoint, 500*time.Millisecond),
+		UIURL:                  "http://127.0.0.1:6006",
+		ImageVersion:           imageVersion,
 	}
 }
 
@@ -825,4 +735,3 @@ func (b *Broker) handleTelemetryStop(msg *Message) {
 		log.Printf("failed to respond to telemetry/stop: %v", err)
 	}
 }
-

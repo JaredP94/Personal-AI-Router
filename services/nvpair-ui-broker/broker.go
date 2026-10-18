@@ -178,6 +178,11 @@ type Broker struct {
 	clusterDir            string
 	telemetryComposePath  string
 	dockerRunner          dockerRunner
+	telemetryConfigMu     sync.Mutex
+	telemetryReconcileMu  sync.Mutex
+	telemetryDesired      telemetryDesiredConfig
+	telemetryGeneration   uint64
+	telemetryApplications [3]telemetryApplication
 	telemetryMu           sync.Mutex
 	telemetryStarting     atomic.Bool
 	telemetryCancelStart  context.CancelFunc
@@ -581,9 +586,18 @@ func (b *Broker) getManualNodes() *rpcWorker {
 }
 
 func (b *Broker) setSettings(w *rpcWorker) {
+	b.telemetryConfigMu.Lock()
 	b.workersMu.Lock()
 	b.settings = w
 	b.workersMu.Unlock()
+	if w == nil {
+		b.telemetryDesired = telemetryDesiredConfig{}
+		b.telemetryGeneration++
+	}
+	b.telemetryConfigMu.Unlock()
+	if w == nil {
+		go b.reconcileTelemetry()
+	}
 }
 
 func (b *Broker) getSettings() *rpcWorker {
@@ -708,6 +722,9 @@ func (b *Broker) spawnProxy() (supervisedHandle, error) {
 		return nil, err
 	}
 	b.setProxy(pp)
+	if ready, _ := pp.Status(); ready {
+		go b.reconcileTelemetry()
+	}
 	// The child can emit ready before startProxy returns and before setProxy
 	// publishes the handle. Recover that narrow race after publication; the
 	// pending backend port is consumed atomically, so a concurrent notification
@@ -883,11 +900,19 @@ func (b *Broker) spawnManualNodes() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnSettings() (supervisedHandle, error) {
-	w, err := startRPCWorker("settings", b.settingsPath, b.logLevelArgs(), b.forwardSettingsNotification)
+	// Gate early notifications until the new handle has been published. The
+	// reader must remain free for the subsequent settings/config round-trip.
+	published := make(chan struct{})
+	var w *rpcWorker
+	w, err := startRPCWorker("settings", b.settingsPath, b.logLevelArgs(), func(method string, params json.RawMessage) {
+		<-published
+		b.forwardSettingsNotificationForWorker(w, method, params)
+	})
 	if err != nil {
 		return nil, err
 	}
 	b.setSettings(w)
+	close(published)
 	slog.Info("settings started", "path", b.settingsPath, "pid", w.cmd.Process.Pid)
 	return w, nil
 }
@@ -1464,6 +1489,41 @@ func (b *Broker) clearManualNodesState() {
 }
 
 func (b *Broker) forwardSettingsNotification(method string, params json.RawMessage) {
+	b.forwardSettingsNotificationForWorker(b.getSettings(), method, params)
+}
+
+func (b *Broker) forwardSettingsNotificationForWorker(w *rpcWorker, method string, params json.RawMessage) {
+	if w == nil || b.getSettings() != w {
+		return
+	}
+	if method == "ready" {
+		go b.loadTelemetryConfig(w)
+		return
+	}
+	if method == "settings/telemetry-changed" {
+		var config telemetryDesiredConfig
+		if err := json.Unmarshal(params, &config); err != nil || config.CollectorPort < 1 || config.CollectorPort > 65535 {
+			return
+		}
+		b.telemetryConfigMu.Lock()
+		b.workersMu.Lock()
+		current := b.settings == w
+		if current {
+			b.cacheDesiredTelemetryLocked(config)
+		}
+		b.workersMu.Unlock()
+		b.telemetryConfigMu.Unlock()
+		if !current {
+			return
+		}
+		go b.reconcileTelemetry()
+		if b.codec != nil {
+			if err := b.codec.Notify(method, params); err != nil {
+				slog.Warn("forward settings notification failed", "method", method, "err", err)
+			}
+		}
+		return
+	}
 	if b.dispatchErrorsNotif("settings", method, params) {
 		return
 	}
@@ -2147,6 +2207,7 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 		// A restarted proxy comes up with no priority list; re-push the cached
 		// one so scheduler-driven ordering survives a proxy respawn.
 		go b.repushPriority("ollama")
+		go b.reconcileTelemetry()
 	}
 	b.proxyMu.Lock()
 	subscribed := b.proxySubscribed
