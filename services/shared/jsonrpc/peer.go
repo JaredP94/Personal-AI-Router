@@ -40,18 +40,25 @@ type Peer struct {
 	mu      sync.Mutex
 	pending map[int64]chan *Message
 	closed  bool
+	// Tail of the relay write queue; responses never hold up later writes.
+	relayWriteDone <-chan struct{}
 
-	closeOnce sync.Once
-	closedCh  chan struct{}
+	closeOnce    sync.Once
+	closedCh     chan struct{}
+	relayCtx     context.Context
+	cancelRelays context.CancelFunc
 }
 
 // NewPeer wraps a Codec with a Peer. Call Serve (usually in a goroutine) to run
 // the read pump.
 func NewPeer(codec *Codec) *Peer {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Peer{
-		codec:    codec,
-		pending:  make(map[int64]chan *Message),
-		closedCh: make(chan struct{}),
+		relayCtx:     ctx,
+		cancelRelays: cancel,
+		codec:        codec,
+		pending:      make(map[int64]chan *Message),
+		closedCh:     make(chan struct{}),
 	}
 }
 
@@ -128,21 +135,55 @@ func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) 
 // RelayRequest sends an id-bearing request and invokes respond when the
 // response arrives (or the peer closes), with NO built-in timeout — for
 // long-running relays (e.g. engine install / model pull that report progress
-// via push events). respond runs on a dedicated goroutine. Returns an error
-// only if the request couldn't be written at all.
+// via push events). Both writing and responding run off the caller's loop.
+// Relay writes retain submission order. Returns an error only if the peer is
+// already closed; accepted requests report write failures through respond.
+// Close cancels queued writes and fails pending relays; the transport owner
+// must close the writer to release any in-flight frame (as with Call).
 func (p *Peer) RelayRequest(method string, params json.RawMessage, respond func(result json.RawMessage, rpcErr *RPCError, err error)) error {
 	ch, id, err := p.register()
 	if err != nil {
 		return err
 	}
 
-	if err := p.writeRequest(context.Background(), id, method, params); err != nil {
-		p.clearPending(id)
-		return err
-	}
+	// Reserve queue position synchronously: simply launching write goroutines
+	// would let later engine commands overtake earlier ones at the codec lock.
+	p.mu.Lock()
+	previous := p.relayWriteDone
+	done := make(chan struct{})
+	p.relayWriteDone = done
+	p.mu.Unlock()
+	params = bytes.Clone(params)
+	ctx := p.relayCtx
+	written := make(chan error, 1)
+	go func() {
+		defer close(done)
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-ctx.Done():
+				return
+			}
+		}
+		written <- p.writeRequest(ctx, id, method, params)
+	}()
 
 	go func() {
 		defer p.clearPending(id)
+		select {
+		case <-p.closedCh:
+			respond(nil, nil, ErrPeerClosed)
+			return
+		case err := <-written:
+			if ctx.Err() != nil {
+				respond(nil, nil, ErrPeerClosed)
+				return
+			}
+			if err != nil {
+				respond(nil, nil, err)
+				return
+			}
+		}
 		select {
 		case <-p.closedCh:
 			respond(nil, nil, ErrPeerClosed)
@@ -200,6 +241,7 @@ func (p *Peer) Close() {
 		p.closed = true
 		p.mu.Unlock()
 		close(p.closedCh)
+		p.cancelRelays()
 	})
 }
 
