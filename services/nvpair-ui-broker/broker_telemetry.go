@@ -139,6 +139,7 @@ type dockerContainerDetails struct {
 type dockerRunner interface {
 	inspectDetails(ctx context.Context, containerName string) (dockerContainerDetails, error)
 	removeContainer(ctx context.Context, containerName string) error
+	removeStoppedContainer(ctx context.Context, containerName string) error
 	composeUp(ctx context.Context, composeFile string) error
 	composeStop(ctx context.Context, composeFile string) error
 	listVolumes(ctx context.Context, labelFilter string) ([]dockerVolume, error)
@@ -215,13 +216,24 @@ func (r *defaultDockerRunner) inspectDetails(ctx context.Context, containerName 
 	}, nil
 }
 
-// Force removal stops only this named container. No -v: trace volumes survive.
+// Force removal is only for foreign-project replacement. No -v: trace volumes survive.
 func (r *defaultDockerRunner) removeContainer(ctx context.Context, containerName string) error {
 	cmd := exec.CommandContext(ctx, r.getDockerPath(), "rm", "-f", containerName)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("remove container failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// Non-force removal lets Docker reject a container restarted since the users snapshot.
+func (r *defaultDockerRunner) removeStoppedContainer(ctx context.Context, containerName string) error {
+	cmd := exec.CommandContext(ctx, r.getDockerPath(), "rm", containerName)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("remove stopped container failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -489,8 +501,8 @@ func purgeTraceVolume(ctx context.Context, runner dockerRunner, name string) err
 		}
 	}
 	if removePhoenix {
-		if err := runner.removeContainer(ctx, "nvpair-phoenix"); err != nil {
-			return err
+		if err := runner.removeStoppedContainer(ctx, "nvpair-phoenix"); err != nil {
+			return fmt.Errorf("container %q is in use or cannot be removed: %w", "nvpair-phoenix", err)
 		}
 	}
 	return runner.removeVolume(ctx, name)

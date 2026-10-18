@@ -57,6 +57,14 @@ func (m *mockDockerRunner) volumeUsers(ctx context.Context, name string) ([]stri
 	return m.users[name], m.usersErr
 }
 
+func (m *mockDockerRunner) removeStoppedContainer(ctx context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removed = append(m.removed, name)
+	m.events = append(m.events, "remove-stopped")
+	return m.removeErr
+}
+
 func (m *mockDockerRunner) removeVolume(ctx context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -229,7 +237,7 @@ func TestTelemetryPurgeScopedToTraceVolumes(t *testing.T) {
 		t.Errorf("stop timeout = %v, want <= 20s", runner.stopTimeout)
 	}
 	events := strings.Join(runner.events, ",")
-	if !strings.HasPrefix(events, "stop,list,users:nvpair-phoenix-data,remove,volume-rm:nvpair-phoenix-data,users:old-project_nvpair-phoenix-data,volume-rm:old-project_nvpair-phoenix-data,") || strings.Contains(events, "prune") {
+	if !strings.HasPrefix(events, "stop,list,users:nvpair-phoenix-data,remove-stopped,volume-rm:nvpair-phoenix-data,users:old-project_nvpair-phoenix-data,volume-rm:old-project_nvpair-phoenix-data,") || strings.Contains(events, "prune") {
 		t.Errorf("unsafe operation order: %s", events)
 	}
 }
@@ -274,6 +282,89 @@ func TestTelemetryPurgeRefusesUnsafeVolumes(t *testing.T) {
 			for _, name := range runner.removed {
 				if name != "nvpair-phoenix" {
 					t.Errorf("removed foreign container %s", name)
+				}
+			}
+		})
+	}
+}
+
+// A restarted container must make Docker refuse removal rather than allowing
+// purge to force-stop it; the refusal must leave the volume intact.
+func TestTelemetryPurgeStoppedContainerRemoval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	for _, refuse := range []bool{false, true} {
+		name := "stopped"
+		if refuse {
+			name = "restarted-before-removal"
+		}
+		t.Run(name, func(t *testing.T) {
+			isolateTelemetryData(t)
+			dir := t.TempDir()
+			docker := filepath.Join(dir, "docker")
+			capture := filepath.Join(dir, "removal-args")
+			removed := filepath.Join(dir, "volume-removed")
+			t.Setenv("DOCKER_TEST_ARGS", capture)
+			t.Setenv("DOCKER_TEST_REMOVED", removed)
+			t.Setenv("DOCKER_TEST_REFUSE", "0")
+			if refuse {
+				t.Setenv("DOCKER_TEST_REFUSE", "1")
+			}
+			script := `#!/bin/sh
+case "$1:$2" in
+  compose:-p) exit 0 ;;
+  volume:ls)
+    if [ ! -f "$DOCKER_TEST_REMOVED" ]; then
+      printf '%s\n' '{"Name":"trace"}'
+    fi ;;
+  system:df) printf '%s\n' '{"Volumes":[{"Name":"trace","Size":"64B"}]}' ;;
+  ps:-a) printf '%s\n' 'nvpair-phoenix|exited' ;;
+  rm:*)
+    printf '%s\n' "$@" > "$DOCKER_TEST_ARGS"
+    if [ "$2" != "-f" ] && [ "$DOCKER_TEST_REFUSE" = "1" ]; then
+      printf '%s\n' 'container is running' >&2
+      exit 1
+    fi ;;
+  volume:rm) printf '%s\n' removed > "$DOCKER_TEST_REMOVED" ;;
+  *) exit 1 ;;
+esac
+`
+			if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			b := &Broker{dockerRunner: &defaultDockerRunner{dockerPath: docker}}
+			response := storageRPC(t, b, "telemetry/purge-storage", `{"confirm":"delete-traces"}`)
+			if response.Error != nil {
+				t.Fatal(response.Error)
+			}
+			var result purgeWire
+			if err := json.Unmarshal(response.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			args, err := os.ReadFile(capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(args) != "rm\nnvpair-phoenix\n" {
+				t.Errorf("purge must never force removal or remove container volumes: argv = %q", args)
+			}
+			if refuse {
+				if len(result.Removed) != 0 || len(result.Refused) != 1 || result.Refused[0].Name != "trace" || !strings.Contains(result.Refused[0].Reason, "in use") {
+					t.Errorf("restarted container must yield an in-use refusal: %+v", result)
+				}
+				if _, err := os.Stat(removed); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("must not attempt volume removal after container refusal: %v", err)
+				}
+				if result.Storage.Bytes == nil || *result.Storage.Bytes != 64 || len(result.Storage.Volumes) != 1 || result.Storage.Volumes[0].Name != "trace" {
+					t.Errorf("refused volume must remain in storage: %+v", result.Storage)
+				}
+			} else {
+				if !reflect.DeepEqual(result.Removed, []string{"trace"}) || len(result.Refused) != 0 {
+					t.Errorf("stopped container should allow volume removal: %+v", result)
+				}
+				if result.Storage.Bytes == nil || *result.Storage.Bytes != 0 {
+					t.Errorf("removed volume must leave no storage: %+v", result.Storage)
 				}
 			}
 		})
