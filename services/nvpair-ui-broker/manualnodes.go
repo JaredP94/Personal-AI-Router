@@ -58,6 +58,15 @@ type manualNodeStatusEntry struct {
 	receivedAt time.Time
 }
 
+type manualNodeTelemetryParams struct {
+	ID                string `json:"id"`
+	HostUUID          string `json:"hostUuid,omitempty"`
+	GPUUtilizationPct uint32 `json:"gpuUtilizationPct"`
+	TelemetryValid    bool   `json:"telemetryValid"`
+	MSSince           int64  `json:"msSince"`
+	SampleSeq         uint64 `json:"sampleSeq,omitempty"`
+}
+
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
 	var utilization uint32
 	for i := range status.GPUs {
@@ -72,6 +81,27 @@ func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeT
 		MSSince:           status.MSSince,
 		SampleSeq:         status.SampleSeq,
 	}
+}
+
+func (b *Broker) ingestManualNodeTelemetry(t manualNodeTelemetryParams) {
+	b.manualMu.Lock()
+	key, ok := b.manualNodeKeys[t.ID]
+	b.manualMu.Unlock()
+	if !ok {
+		slog.Debug("dropping telemetry for unknown manual node", "id", t.ID)
+		return
+	}
+	hostUUID := t.HostUUID
+	if hostUUID == "" {
+		hostUUID = key
+	}
+	b.ingestTelemetryAt(sourceManual, noderec.NodeTelemetry{
+		HostUUID:          hostUUID,
+		GPUUtilizationPct: t.GPUUtilizationPct,
+		TelemetryValid:    t.TelemetryValid,
+		MSSince:           t.MSSince,
+		SampleSeq:         t.SampleSeq,
+	}, time.Now())
 }
 
 // manualToEnriched projects a manual node's status onto the EnrichedNode

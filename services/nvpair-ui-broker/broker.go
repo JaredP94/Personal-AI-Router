@@ -1305,6 +1305,17 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 		}
 		b.removeManualNode(s.ID)
 		slog.Debug("manual node event", "event", method, "id", s.ID)
+	case "node/telemetry":
+		var t manualNodeTelemetryParams
+		if err := json.Unmarshal(params, &t); err != nil {
+			slog.Warn("manual-nodes emitted invalid telemetry payload", "err", err)
+			return
+		}
+		if t.ID == "" {
+			slog.Warn("manual-nodes telemetry payload missing id")
+			return
+		}
+		b.ingestManualNodeTelemetry(t)
 	case "ready":
 		slog.Info("manual-nodes reported ready", "params", string(params))
 	default:
@@ -1340,7 +1351,6 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	en := manualToEnriched(canonical.status)
 	b.annotateManualTrust(&en, canonical.status)
 	b.store.Upsert(en, sourceManual)
-	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
 	if b.relayDir != nil {
 		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(canonical.status, key))
 	}
@@ -1394,7 +1404,6 @@ func (b *Broker) reprojectOrRelease(key string) {
 			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeUpdated, b.manualToDirectoryNode(survivor.status, key))
 		}
 		b.bridgeManualNode(survivor.status, key)
-		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
 		return
 	}
 	if b.store.Remove(key, sourceManual) && b.relayDir != nil {

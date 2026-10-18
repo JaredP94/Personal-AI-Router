@@ -1222,3 +1222,129 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 		t.Fatalf("write request: %v", err)
 	}
 }
+
+func TestTelemetryIntervalForNodeDeterministicAndBounded(t *testing.T) {
+	if got := telemetryIntervalForNode(""); got != 2*time.Second {
+		t.Fatalf("empty key interval = %v, want 2s", got)
+	}
+	first := telemetryIntervalForNode("manual:node-a")
+	if again := telemetryIntervalForNode("manual:node-a"); again != first {
+		t.Fatalf("node interval changed: %v vs %v", first, again)
+	}
+	minInterval := 2*time.Second - 250*time.Millisecond
+	maxInterval := 2*time.Second + 250*time.Millisecond
+	if first < minInterval || first > maxInterval {
+		t.Fatalf("node interval %v out of bounds [%v, %v]", first, minInterval, maxInterval)
+	}
+	second := telemetryIntervalForNode("manual:node-b")
+	if second == first {
+		t.Fatalf("distinct keys produced identical interval: %v", first)
+	}
+}
+
+func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T) {
+	m, rw, rt := newTestManager()
+	m.telemetryInterval = func(_ string) time.Duration {
+		return 10 * time.Millisecond
+	}
+
+	info := sampleInfo()
+	info.HostUUID = "peer-uuid-1"
+	info.TelemetryValid = true
+	info.MSSince = 120
+	info.SampleSeq = 42
+	info.GPUs = []GPUInfo{
+		{Name: "GPU 0", UtilizationPercent: 10},
+		{Name: "GPU 1", UtilizationPercent: 77},
+	}
+
+	var pollHeader string
+	rt.set(http.MethodGet, net.JoinHostPort("reachable.local", "14318"), "/v1/node-info", func(req *http.Request) (*http.Response, error) {
+		pollHeader = req.Header.Get("X-NVPAIR-Poll")
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+	rt.set(http.MethodGet, net.JoinHostPort("reachable.local", "11434"), "/", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{}`)
+	})
+	rt.set(http.MethodGet, net.JoinHostPort("reachable.local", "11434"), "/api/tags", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"models":[]}`)
+	})
+
+	m.addNode(ManualEntry{Address: "reachable.local", Name: "reachable-node"})
+
+	msg := readCaptureUntil(t, rw, methodIs("node/telemetry"))
+	var telem NodeTelemetryNotification
+	if err := json.Unmarshal(msg.Params, &telem); err != nil {
+		t.Fatalf("unmarshal node/telemetry params: %v", err)
+	}
+	if telem.ID != "reachable-node" {
+		t.Errorf("expected ID = reachable-node, got %q", telem.ID)
+	}
+	if telem.HostUUID != "peer-uuid-1" {
+		t.Errorf("expected HostUUID = peer-uuid-1, got %q", telem.HostUUID)
+	}
+	if telem.GPUUtilizationPct != 77 {
+		t.Errorf("expected GPUUtilizationPct = 77, got %d", telem.GPUUtilizationPct)
+	}
+	if !telem.TelemetryValid {
+		t.Errorf("expected TelemetryValid = true")
+	}
+	if telem.MSSince < 120 {
+		t.Errorf("expected MSSince >= 120, got %d", telem.MSSince)
+	}
+	if telem.SampleSeq != 42 {
+		t.Errorf("expected SampleSeq = 42, got %d", telem.SampleSeq)
+	}
+	if pollHeader != "scheduling" {
+		t.Errorf("expected X-NVPAIR-Poll = scheduling, got %q", pollHeader)
+	}
+
+	// Remove reachable node and drain frames so its loop stops
+	if !m.removeNode("reachable-node") {
+		t.Fatal("failed to remove reachable-node")
+	}
+	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
+
+	// Now verify an unreachable node emits NO node/telemetry
+	rt.set(http.MethodGet, net.JoinHostPort("unreachable.local", "14318"), "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})
+	rt.set(http.MethodGet, net.JoinHostPort("unreachable.local", "11434"), "/", func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})
+
+	m.addNode(ManualEntry{Address: "unreachable.local", Name: "unreachable-node"})
+	assertNoCaptureMethod(t, rw, "node/telemetry")
+}
+
+func TestNodeTelemetryLoopStopsOnRemove(t *testing.T) {
+	m, rw, rt := newTestManager()
+	m.telemetryInterval = func(_ string) time.Duration {
+		return 10 * time.Millisecond
+	}
+
+	info := sampleInfo()
+	info.HostUUID = "peer-uuid-1"
+	rt.set(http.MethodGet, net.JoinHostPort("node.local", "14318"), "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+	rt.set(http.MethodGet, net.JoinHostPort("node.local", "11434"), "/", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{}`)
+	})
+	rt.set(http.MethodGet, net.JoinHostPort("node.local", "11434"), "/api/tags", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"models":[]}`)
+	})
+
+	m.addNode(ManualEntry{Address: "node.local", Name: "node-1"})
+	_ = readCaptureUntil(t, rw, methodIs("node/telemetry"))
+
+	if !m.removeNode("node-1") {
+		t.Fatal("failed to remove node")
+	}
+
+	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
+	assertNoCaptureMethod(t, rw, "node/telemetry")
+}
+

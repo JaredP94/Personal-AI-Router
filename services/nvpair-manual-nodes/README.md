@@ -67,10 +67,30 @@ Each node is probed for inference engines: Ollama on its default `:11434` (`GET 
 
 ### `node/updated`
 
-Emitted when a periodic probe detects a change (service going up/down, models,
-GPU values, telemetry validity, or sample age changed). `telemetryValid` and
-`msSince` preserve node-info's distinction between an idle 0% sample and missing
-telemetry so the broker can feed manual nodes into the same scheduler cache.
+Emitted when a periodic 10-second probe detects a topology change (service going up/down, models,
+or GPU inventory changed). Topology updates keep engine inventory and topology in sync; scheduling telemetry
+is delivered separately via `node/telemetry`.
+
+### `node/telemetry`
+
+Emitted on a per-node cadence (~2 s ± 250 ms jitter) for reachable manual nodes to deliver compact scheduling telemetry to the supervising broker.
+
+```json
+{
+  "jsonrpc":"2.0",
+  "method":"node/telemetry",
+  "params":{
+    "id":"manual:10.0.1.50",
+    "hostUuid":"stable-node-uuid",
+    "gpuUtilizationPct":37,
+    "telemetryValid":true,
+    "msSince":120,
+    "sampleSeq":42
+  }
+}
+```
+
+Unreachable nodes emit no telemetry notification. Unlike `node/updated`, this notification is internal to scheduler feeding and does not mutate discovery state or emit topology changes.
 
 ### `node/removed`
 

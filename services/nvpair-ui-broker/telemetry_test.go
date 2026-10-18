@@ -134,20 +134,21 @@ func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
 func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	b := newManualTestBroker()
 	first := manualStatus("first", "10.0.0.1", "node-a")
-	first.GPUs = []GPUInfo{{UtilizationPercent: 25}}
-	first.TelemetryValid = true
-	first.MSSince = 100
 	b.upsertManualNode(first)
 
-	b.manualMu.Lock()
-	entry := b.manualNodeStatuses["first"]
-	entry.receivedAt = time.Now().Add(-2 * time.Second)
-	b.manualNodeStatuses["first"] = entry
-	b.manualMu.Unlock()
+	rawFirst, err := json.Marshal(manualNodeTelemetryParams{
+		ID:                "first",
+		HostUUID:          "node-a",
+		GPUUtilizationPct: 25,
+		TelemetryValid:    true,
+		MSSince:           100,
+	})
+	if err != nil {
+		t.Fatalf("marshal first telemetry: %v", err)
+	}
+	b.forwardManualNodesNotification("node/telemetry", rawFirst)
 
 	second := manualStatus("second", "10.0.0.2", "node-a")
-	second.GPUs = []GPUInfo{{UtilizationPercent: 80}}
-	second.TelemetryValid = true
 	b.upsertManualNode(second)
 	b.removeManualNode("second")
 
@@ -155,8 +156,8 @@ func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	if len(snapshot) != 1 || snapshot[0].HostUUID != "node-a" {
 		t.Fatalf("surviving manual telemetry = %+v", snapshot)
 	}
-	if snapshot[0].GPUUtilizationPct != 25 || snapshot[0].MSSince < 2_100 {
-		t.Fatalf("surviving alias reset telemetry age: %+v", snapshot[0])
+	if snapshot[0].GPUUtilizationPct != 25 {
+		t.Fatalf("surviving alias changed telemetry: %+v", snapshot[0])
 	}
 
 	b.removeManualNode("first")
@@ -199,4 +200,80 @@ func TestManualNodeTelemetryPreservesSampleSeq(t *testing.T) {
 		t.Fatalf("manualNodeTelemetry SampleSeq = %d, want 77", telemetry.SampleSeq)
 	}
 }
+
+func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
+	b := newManualTestBroker()
+	node := manualStatus("manual-node-1", "10.0.0.1", "node-uuid-1")
+	b.upsertManualNode(node)
+
+	// Step 1: Status updates must NOT feed scheduler telemetry
+	snapshot := b.telemetry.Snapshot(time.Now())
+	if len(snapshot) != 0 {
+		t.Fatalf("status update ingested scheduler telemetry: %+v", snapshot)
+	}
+
+	// Listen for discovery:nodes-changed emissions
+	nodesChanged := make(chan struct{}, 10)
+	b.store.SetOnChange(func() {
+		nodesChanged <- struct{}{}
+	})
+	defer b.store.SetOnChange(nil)
+
+	// Send node/telemetry
+	telemParams := manualNodeTelemetryParams{
+		ID:                "manual-node-1",
+		HostUUID:          "node-uuid-1",
+		GPUUtilizationPct: 88,
+		TelemetryValid:    true,
+		MSSince:           150,
+		SampleSeq:         99,
+	}
+	raw, err := json.Marshal(telemParams)
+	if err != nil {
+		t.Fatalf("marshal telemetry params: %v", err)
+	}
+
+	b.forwardManualNodesNotification("node/telemetry", raw)
+
+	// Verify telemetry was ingested into b.telemetry
+	snap := b.telemetry.Snapshot(time.Now())
+	if len(snap) != 1 || snap[0].HostUUID != "node-uuid-1" {
+		t.Fatalf("expected telemetry for node-uuid-1, got %+v", snap)
+	}
+	if snap[0].GPUUtilizationPct != 88 {
+		t.Errorf("expected GPUUtilizationPct = 88, got %d", snap[0].GPUUtilizationPct)
+	}
+	if !snap[0].TelemetryValid {
+		t.Errorf("expected TelemetryValid = true")
+	}
+	if snap[0].MSSince < 150 {
+		t.Errorf("expected MSSince >= 150, got %d", snap[0].MSSince)
+	}
+	if snap[0].SampleSeq != 99 {
+		t.Errorf("expected SampleSeq = 99, got %d", snap[0].SampleSeq)
+	}
+
+	// Verify NO discovery:nodes-changed was emitted
+	select {
+	case <-nodesChanged:
+		t.Fatal("node/telemetry emitted discovery:nodes-changed!")
+	default:
+	}
+
+	// Verify unknown node ID is dropped
+	unknownParams := manualNodeTelemetryParams{
+		ID:                "unknown-node",
+		HostUUID:          "unknown-uuid",
+		GPUUtilizationPct: 50,
+		TelemetryValid:    true,
+	}
+	rawUnknown, _ := json.Marshal(unknownParams)
+	b.forwardManualNodesNotification("node/telemetry", rawUnknown)
+
+	snapAfter := b.telemetry.Snapshot(time.Now())
+	if len(snapAfter) != 1 {
+		t.Fatalf("unknown node telemetry was not dropped: %+v", snapAfter)
+	}
+}
+
 

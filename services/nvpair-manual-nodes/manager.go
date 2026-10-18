@@ -49,7 +49,33 @@ const (
 	// would defeat ack-until-reemit. A subsequent successful probe
 	// resets the counter; the next failure cycle is its own event.
 	probeFailThreshold = 3
+
+	telemetryRefreshInterval = 2 * time.Second
+	telemetryRefreshJitter   = 250 * time.Millisecond
 )
+
+type NodeTelemetryNotification struct {
+	ID                string `json:"id"`
+	HostUUID          string `json:"hostUuid,omitempty"`
+	GPUUtilizationPct uint32 `json:"gpuUtilizationPct"`
+	TelemetryValid    bool   `json:"telemetryValid"`
+	MSSince           int64  `json:"msSince"`
+	SampleSeq         uint64 `json:"sampleSeq,omitempty"`
+}
+
+func telemetryIntervalForNode(nodeKey string) time.Duration {
+	if nodeKey == "" {
+		return telemetryRefreshInterval
+	}
+	hash := uint32(2166136261)
+	for i := 0; i < len(nodeKey); i++ {
+		hash ^= uint32(nodeKey[i])
+		hash *= 16777619
+	}
+	windowMillis := int64(2*telemetryRefreshJitter/time.Millisecond) + 1
+	offsetMillis := int64(hash%uint32(windowMillis)) - windowMillis/2
+	return telemetryRefreshInterval + time.Duration(offsetMillis)*time.Millisecond
+}
 
 type GPUInfo struct {
 	Name               string `json:"name"`
@@ -166,6 +192,8 @@ type trackedNode struct {
 	// probeFailThreshold so a single transient failure doesn't
 	// generate UI noise.
 	consecutiveFails int
+
+	cancelTelemetry context.CancelFunc
 }
 
 type clusterMemberEntry struct {
@@ -178,6 +206,7 @@ type clusterMemberEntry struct {
 
 type Manager struct {
 	codec  *Codec
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	// client is the plain-HTTP probe client (Ollama on :11434 and
@@ -203,6 +232,8 @@ type Manager struct {
 
 	now func() time.Time
 
+	telemetryInterval func(nodeKey string) time.Duration
+
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
 }
@@ -212,6 +243,13 @@ func (m *Manager) clockNow() time.Time {
 		return m.now()
 	}
 	return time.Now()
+}
+
+func (m *Manager) getTelemetryInterval(nodeKey string) time.Duration {
+	if m.telemetryInterval != nil {
+		return m.telemetryInterval(nodeKey)
+	}
+	return telemetryIntervalForNode(nodeKey)
 }
 
 func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh, clusterDir ...string) (*Manager, error) {
@@ -226,10 +264,13 @@ func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh,
 	if len(clusterDir) > 0 {
 		cDir = clusterDir[0]
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		codec: codec,
-		mesh:  mesh,
-		now:   time.Now,
+		codec:  codec,
+		ctx:    ctx,
+		cancel: cancel,
+		mesh:   mesh,
+		now:    time.Now,
 		client: &http.Client{
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
@@ -252,7 +293,10 @@ func noKeepAliveTransport() *http.Transport {
 
 func (m *Manager) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	m.mu.Lock()
 	m.cancel = cancel
+	m.ctx = ctx
+	m.mu.Unlock()
 	defer cancel()
 
 	if err := m.codec.Notify("ready", ReadyParams{Version: Version}); err != nil {
@@ -365,6 +409,9 @@ func (m *Manager) syncClusterMembers() {
 	}
 
 	for _, id := range toRemove {
+		if tn, ok := m.nodes[id]; ok && tn.cancelTelemetry != nil {
+			tn.cancelTelemetry()
+		}
 		delete(m.nodes, id)
 	}
 
@@ -399,11 +446,13 @@ func (m *Manager) syncClusterMembers() {
 			OllamaPort:   11434,
 			NodeInfoPort: 14318,
 		}
-		m.nodes[id] = &trackedNode{
+		tn := &trackedNode{
 			entry:       entry,
 			status:      status,
 			fromCluster: true,
 		}
+		m.nodes[id] = tn
+		m.startTelemetryLoopLocked(id, tn)
 		toProbe = append(toProbe, entry)
 	}
 	m.mu.Unlock()
@@ -978,14 +1027,17 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 }
 
 func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
+	return m.probeNodeInfoWithPoll(client, scheme, addr, port, "foreground")
+}
+
+func (m *Manager) probeNodeInfoWithPoll(client *http.Client, scheme, addr string, port int, poll string) (bool, NodeInfoResponse) {
 	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/node-info"
 	start := time.Now()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return false, NodeInfoResponse{}
 	}
-	// Scheduling telemetry must retain active sampling while the cadence/freshness design remains unresolved.
-	req.Header.Set("X-NVPAIR-Poll", "foreground")
+	req.Header.Set("X-NVPAIR-Poll", poll)
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("manual probe node-info failed",
@@ -1013,6 +1065,133 @@ func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port i
 		"has_cpu", result.CPU != nil, "has_memory", result.Memory != nil,
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, result
+}
+
+func (m *Manager) startTelemetryLoopLocked(id string, tn *trackedNode) {
+	if tn.cancelTelemetry != nil {
+		tn.cancelTelemetry()
+	}
+	base := m.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	tn.cancelTelemetry = cancel
+	interval := m.getTelemetryInterval(id)
+	entry := tn.entry
+	go m.runTelemetryLoop(ctx, id, entry, interval)
+}
+
+func (m *Manager) runTelemetryLoop(ctx context.Context, id string, entry ManualEntry, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.probeNodeTelemetry(ctx, id, entry)
+		}
+	}
+}
+
+func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry ManualEntry) {
+	if ctx.Err() != nil {
+		return
+	}
+	m.mu.RLock()
+	tn, exists := m.nodes[id]
+	if !exists {
+		m.mu.RUnlock()
+		return
+	}
+	addr := entry.Address
+	scheme := "http"
+	nodeInfoPort := 14318
+	probeClient := m.client
+	if entry.TLSPort > 0 {
+		scheme = "https"
+		nodeInfoPort = entry.TLSPort
+		probeClient = m.tlsClient
+		m.mesh.Refresh()
+		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
+			probeClient = &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
+		}
+	}
+	m.mu.RUnlock()
+
+	nodeInfoUp, info := m.probeNodeInfoWithPoll(probeClient, scheme, addr, nodeInfoPort, "scheduling")
+	nodeInfoReceived := m.clockNow()
+	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() {
+		m.mesh.Refresh()
+		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
+			tlsClient := &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
+			for _, port := range []int{14319, 14318} {
+				if up, tlsInfo := m.probeNodeInfoWithPoll(tlsClient, "https", addr, port, "scheduling"); up {
+					nodeInfoUp = true
+					info = tlsInfo
+					nodeInfoReceived = m.clockNow()
+					break
+				}
+			}
+		}
+	}
+
+	if !nodeInfoUp || ctx.Err() != nil {
+		return
+	}
+
+	m.mu.Lock()
+	tn, exists = m.nodes[id]
+	if !exists {
+		m.mu.Unlock()
+		return
+	}
+	if info.HostUUID != "" && tn.status.HostUUID == "" {
+		tn.status.HostUUID = info.HostUUID
+	}
+	hostUUID := info.HostUUID
+	if hostUUID == "" {
+		hostUUID = tn.status.HostUUID
+	}
+	m.mu.Unlock()
+
+	var msSince int64
+	if info.TelemetryValid {
+		age := info.MSSince
+		if age < 0 {
+			age = 0
+		}
+		elapsed := m.clockNow().Sub(nodeInfoReceived).Milliseconds()
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		if age > 0 && elapsed > math.MaxInt64-age {
+			msSince = math.MaxInt64
+		} else {
+			msSince = age + elapsed
+		}
+		if msSince < info.MSSince {
+			msSince = info.MSSince
+		}
+	}
+
+	var utilization uint32
+	for i := range info.GPUs {
+		if info.GPUs[i].UtilizationPercent > utilization {
+			utilization = info.GPUs[i].UtilizationPercent
+		}
+	}
+
+	_ = m.codec.Notify("node/telemetry", NodeTelemetryNotification{
+		ID:                id,
+		HostUUID:          hostUUID,
+		GPUUtilizationPct: utilization,
+		TelemetryValid:    info.TelemetryValid,
+		MSSince:           msSince,
+		SampleSeq:         info.SampleSeq,
+	})
 }
 
 func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
@@ -1045,11 +1224,19 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 			if status.ClusterUUID == "" && tn.status.ClusterUUID != "" {
 				status.ClusterUUID = tn.status.ClusterUUID
 			}
+			if tn.cancelTelemetry != nil {
+				tn.cancelTelemetry()
+			}
 			delete(m.nodes, existingID)
 			supersededClusterIDs = append(supersededClusterIDs, existingID)
 		}
 	}
-	m.nodes[id] = &trackedNode{entry: entry, status: status}
+	if existing, ok := m.nodes[id]; ok && existing.cancelTelemetry != nil {
+		existing.cancelTelemetry()
+	}
+	tn := &trackedNode{entry: entry, status: status}
+	m.nodes[id] = tn
+	m.startTelemetryLoopLocked(id, tn)
 	m.mu.Unlock()
 
 	for _, oldID := range supersededClusterIDs {
@@ -1065,9 +1252,9 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 			m.mu.RUnlock()
 			return
 		}
-		status = tn.status
+		discStatus := tn.status
 		m.mu.RUnlock()
-		m.codec.Notify("node/discovered", status)
+		m.codec.Notify("node/discovered", discStatus)
 	}()
 
 	return status
@@ -1075,8 +1262,11 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 
 func (m *Manager) removeNode(id string) bool {
 	m.mu.Lock()
-	_, exists := m.nodes[id]
+	tn, exists := m.nodes[id]
 	if exists {
+		if tn.cancelTelemetry != nil {
+			tn.cancelTelemetry()
+		}
 		delete(m.nodes, id)
 		m.lastMembersMtime = time.Time{}
 	}
