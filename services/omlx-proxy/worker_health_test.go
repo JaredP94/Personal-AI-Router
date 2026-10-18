@@ -6,6 +6,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
+	"net"
+	"strings"
 	"testing"
 )
 
@@ -32,5 +36,39 @@ func TestWorkerHealth(t *testing.T) {
 				t.Fatalf("worker/health result = %s, error = %v; want {\"ok\":true}", response.Result, response.Error)
 			}
 		})
+	}
+}
+
+// TestWorkerHealthWriteError catches a failed response being silently discarded.
+// The diagnostic must be emitted inline without request or response payloads.
+func TestWorkerHealthWriteError(t *testing.T) {
+	var diagnostics bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&diagnostics, nil)))
+	defer slog.SetDefault(previous)
+
+	local, remote := net.Pipe()
+	defer local.Close()
+	if err := remote.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := &Proxy{codec: NewCodec(local)}
+	id := json.RawMessage(`"private-health-id"`)
+	msg := &Message{
+		JSONRPC: "2.0", ID: &id, Method: "worker/health",
+		Params: json.RawMessage(`{"private":"health-params"}`),
+	}
+	p.handleMessage(msg)
+
+	output := diagnostics.String()
+	if !strings.Contains(output, "level=ERROR") ||
+		!strings.Contains(output, "worker/health") ||
+		!strings.Contains(output, io.ErrClosedPipe.Error()) {
+		t.Fatalf("health write error was not surfaced inline: %q", output)
+	}
+	for _, payload := range []string{"private-health-id", "health-params", `"ok"`} {
+		if strings.Contains(output, payload) {
+			t.Fatalf("health diagnostic contains payload %q: %s", payload, output)
+		}
 	}
 }

@@ -292,7 +292,9 @@ func (m *Manager) handleMessage(msg *Message) {
 	switch {
 	case msg.Method == workerhealth.Method:
 		if msg.IsRequest() {
-			m.codec.Respond(msg.ID, workerhealth.OK())
+			if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+				slog.Error("failed to respond to worker/health", "err", err)
+			}
 		}
 
 	case msg.Method == noderec.NotifyNodes:

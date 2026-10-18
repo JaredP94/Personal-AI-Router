@@ -2125,7 +2125,9 @@ func (p *Proxy) handleMessage(msg *Message) {
 
 	switch msg.Method {
 	case workerhealth.Method:
-		p.codec.Respond(msg.ID, workerhealth.OK())
+		if err := p.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
 
 	case "telemetry/configure":
 		p.handleTelemetryConfigure(msg)

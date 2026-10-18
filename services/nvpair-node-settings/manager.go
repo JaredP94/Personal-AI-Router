@@ -409,7 +409,9 @@ func (m *Manager) handleMessage(msg *Message) {
 
 	switch msg.Method {
 	case workerhealth.Method:
-		m.codec.Respond(msg.ID, workerhealth.OK())
+		if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
 
 	case "settings/get-force-ports":
 		m.mu.RLock()

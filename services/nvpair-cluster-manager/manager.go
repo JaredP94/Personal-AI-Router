@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -417,7 +418,9 @@ func (m *Manager) handleMessage(msg *Message) {
 
 	switch msg.Method {
 	case workerhealth.Method:
-		m.codec.Respond(msg.ID, workerhealth.OK())
+		if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
 
 	case "cluster:get-node-id":
 		m.handleGetNodeID(msg)

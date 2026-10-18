@@ -150,7 +150,9 @@ func (s *Scanner) handleMessage(msg *Message) {
 
 	switch msg.Method {
 	case workerhealth.Method:
-		s.codec.Respond(msg.ID, workerhealth.OK())
+		if err := s.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
 
 	case "shutdown":
 		if err := s.codec.Respond(msg.ID, nil); err != nil {
