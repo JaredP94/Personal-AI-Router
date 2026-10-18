@@ -3,22 +3,21 @@
 
 package telemetry
 
-import "time"
+import "errors"
 
-type Config struct {
-	Enabled        bool          `json:"enabled"`
-	Endpoint       string        `json:"endpoint"`
-	ServiceName    string        `json:"service_name"`
-	RecordPayloads bool          `json:"record_payloads"`
-	BatchTimeout   time.Duration `json:"batch_timeout"`
+// Settings is the broker-authorized tracing policy. The destination is always loopback.
+type Settings struct {
+	Enabled        bool
+	CollectorPort  int
+	RecordPayloads bool
 }
 
-func DefaultConfig(serviceName string) Config {
-	return Config{
-		Enabled:        true,
-		Endpoint:       "localhost:4317",
-		ServiceName:    serviceName,
-		RecordPayloads: false,
-		BatchTimeout:   time.Second,
+func ValidateSettings(s Settings) error {
+	if s.CollectorPort < 1 || s.CollectorPort > 65535 {
+		return errors.New("collector port must be between 1 and 65535")
 	}
+	if s.RecordPayloads && !s.Enabled {
+		return errors.New("payload recording requires telemetry to be enabled")
+	}
+	return nil
 }
