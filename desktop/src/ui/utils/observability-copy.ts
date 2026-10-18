@@ -67,3 +67,38 @@ export function formatTelemetryStorage(storage: TelemetryStorage | null | undefi
     }
     return formatted
 }
+
+export function scheduleTelemetryPolling(
+    getStatus: () => Promise<TelemetryStatus>,
+    onStatus: (status: TelemetryStatus) => void,
+    onError?: (err: unknown) => void,
+    interval: number = 4000
+): () => void {
+    let unmounted = false
+    let loaded = false
+
+    const poll = async () => {
+        if (unmounted) return
+        try {
+            const nextStatus = await getStatus()
+            if (!unmounted) {
+                loaded = true
+                onStatus(nextStatus)
+            }
+        } catch (err) {
+            if (!unmounted && !loaded && onError) {
+                onError(err)
+            }
+        }
+    }
+
+    void poll()
+    const intervalId = setInterval(() => {
+        void poll()
+    }, interval)
+
+    return () => {
+        unmounted = true
+        clearInterval(intervalId)
+    }
+}

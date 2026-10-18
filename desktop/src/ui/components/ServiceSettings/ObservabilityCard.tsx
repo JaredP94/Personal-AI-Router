@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Badge, Button, Flex, Stack, Switch, Text, TextInput } from '@nvidia/foundations-react-core'
 import type { TelemetryConfigRequest, TelemetryStatus } from '@/shared/types/telemetry'
 import {
@@ -18,7 +18,8 @@ import {
     formatTelemetryStorage,
     isCollectorPortValid,
     observabilityCopy,
-    observabilityWarnings
+    observabilityWarnings,
+    scheduleTelemetryPolling
 } from '@/ui/utils/observability-copy'
 
 export default function ObservabilityCard() {
@@ -43,34 +44,25 @@ export default function ObservabilityCard() {
         }
     }, [])
 
-    useEffect(() => {
-        let unmounted = false
-        const interval = status?.containerState === 'starting' ? 1500 : 4000
+    const statusLoadedRef = useRef(false)
+    const cadence = status?.containerState === 'starting' ? 1500 : 4000
 
-        const poll = async () => {
-            if (unmounted || !window.pairApi?.telemetry) return
-            try {
-                const nextStatus = await window.pairApi.telemetry.getStatus()
-                if (!unmounted) {
-                    setStatus(nextStatus)
-                }
-            } catch (err) {
-                if (!unmounted && status === null) {
+    useEffect(() => {
+        if (!window.pairApi?.telemetry) return
+        return scheduleTelemetryPolling(
+            () => window.pairApi.telemetry.getStatus(),
+            nextStatus => {
+                statusLoadedRef.current = true
+                setStatus(nextStatus)
+            },
+            err => {
+                if (!statusLoadedRef.current) {
                     setError(getErrorString(err))
                 }
-            }
-        }
-
-        void poll()
-        const intervalId = setInterval(() => {
-            void poll()
-        }, interval)
-
-        return () => {
-            unmounted = true
-            clearInterval(intervalId)
-        }
-    }, [status?.containerState, status])
+            },
+            cadence
+        )
+    }, [cadence])
 
     useEffect(() => {
         if (!portEdited && status?.collectorPort != null) {
