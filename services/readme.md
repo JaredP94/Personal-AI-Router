@@ -201,20 +201,20 @@ entries to its log file only at `debug`; stderr alone does not mean warning.
 
 ### Inference tracing
 
-Proxy OpenTelemetry providers read startup environment variables:
-`PAIR_TELEMETRY_ENABLED`, `PAIR_TELEMETRY_ENDPOINT`, and
-`PAIR_TELEMETRY_RECORD_PAYLOADS` (with the OTel alternatives documented in each
-proxy's `telemetry.go`). Defaults are enabled, `localhost:4317`, and payloads
-false. Saved UI telemetry settings currently do not configure live providers;
-collectors are not advertised through discovery, and older peers' `otel` TXT
-keys are ignored.
-Export is plaintext OTLP, not cluster mTLS. Phoenix's Compose ports `6006` and
-`4317` are not loopback-restricted and have no configured authentication/TLS;
-stopping the container retains its named-volume data. Fixed-header redaction is
-not general secret scrubbing. Local-only, explicitly opted-in evaluation capture
-is contributor policy, not an enforced transport restriction. See
+Proxy OpenTelemetry tracing is configured dynamically by `nvpair-ui-broker` via
+`telemetry/configure`. Proxies start with tracing disabled and do not inspect
+ambient environment variables (`PAIR_TELEMETRY_*`, `OTEL_*`). Settings are stored
+in `nvpair-node-settings` under schema 2 with monotonic revision tracking, and
+payload capture requires explicit user consent (`payload_consent_version: 1`).
+Export is strictly loopback-only (`127.0.0.1:<collectorPort>`, default 4317), not
+cluster mTLS. Arize Phoenix is managed by the broker from an embedded Compose
+template, publishing only `127.0.0.1:6006` and `127.0.0.1:<collectorPort>`. Serving
+nodes record no spans for peer requests, trace context headers are stripped across
+nodes, request headers are allowlisted to `Content-Type` and `Content-Length`, and
+captured payloads are truncated to 16 KB UTF-8. Trace volumes (`nvpair-phoenix-data`)
+can be purged via `telemetry/purge-storage` (`{confirm: "delete-traces"}`). See
 [Observability](../docs/architecture.mdx#observability-and-distributed-tracing)
-and [SECURITY.md](../SECURITY.md) before enabling payload capture.
+and [SECURITY.md](../SECURITY.md) for details.
 
 ## Testing
 

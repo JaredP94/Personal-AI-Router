@@ -580,8 +580,9 @@ A default installation listens on these ports:
 
 The broker negotiates the oMLX fallback from `1236` upward, excluding reserved
 ports including `1234` and `1235`. Consult reported proxy status for its actual
-endpoint rather than assuming a fixed port. Phoenix's Compose mappings are not
-loopback-restricted; see [Observability](#observability-and-distributed-tracing).
+endpoint rather than assuming a fixed port. Phoenix's published ports are strictly
+loopback-only (`127.0.0.1:6006` and `127.0.0.1:<collectorPort>`); see
+[Observability](#observability-and-distributed-tracing).
 
 The `143xx` listeners are the peer surfaces from
 [Node-to-Node Communication](#node-to-node-communication). Their numbers are
@@ -708,70 +709,74 @@ to the peer's real UUID as soon as that node reports it.
 
 ## Observability and Distributed Tracing
 
-PAIR includes built-in OpenTelemetry (OTel) distributed tracing and Arize Phoenix
-observability. Every proxy (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`)
-instruments inference requests, scheduler routing decisions, and engine dispatch
-operations.
+PAIR includes built-in OpenTelemetry (OTel) tracing and Arize Phoenix observability.
+Every proxy (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`) instruments local inference
+requests, scheduler routing decisions, and engine dispatch operations.
 
-### Distributed Tracing Topology
+### Local-Only Tracing Topology
 
-With providers explicitly configured to export to the same collector, propagated
-trace context can correlate cross-node hops:
+Tracing is strictly local to each node. Exporters dial loopback only (`127.0.0.1:<collectorPort>`,
+default 4317). Serving nodes record no spans for peer-originated requests, and W3C trace context
+headers are stripped before forwarding so no trace context crosses node boundaries:
 
 ```mermaid
 flowchart LR
     Client["Client / Agent"] -->|"HTTP /api/chat"| ProxyA["Proxy (Node A)"]
-    ProxyA -->|"W3C traceparent"| IngressB["Ingress (Node B)"]
-    IngressB -->|"Local forward"| EngineB["Engine (Node B)"]
-    ProxyA -.->|"OTLP gRPC :4317"| Phoenix["Arize Phoenix (Docker)"]
-    IngressB -.->|"OTLP gRPC :4317"| Phoenix
+    ProxyA -->|"Local forward"| EngineA["Local Engine (Node A)"]
+    ProxyA -->|"cluster mTLS (trace context stripped)"| IngressB["Ingress (Node B)"]
+    IngressB -->|"Local forward (no spans recorded)"| EngineB["Engine (Node B)"]
+    ProxyA -.->|"OTLP gRPC 127.0.0.1:4317"| Phoenix["Arize Phoenix (Docker)"]
 ```
 
-- **Optional Container:** The broker can operate a local Phoenix Docker Compose
-  container (`http://localhost:6006`, OTLP gRPC `:4317`). This requires Docker
-  with Compose support, independently of the Go service build.
-- **W3C TraceContext Propagation:** When Node A dispatches an inference request to
-  Node B, it injects standard W3C `traceparent` HTTP headers into the outgoing
-  request. Node B's cluster ingress extracts the trace context, linking both hops
-  into a unified distributed trace.
-- **No Collector Advertisement:** Collectors are local-only and are not
-  registered with the scanner or advertised through mDNS. An older peer's
-  `otel` TXT key is ignored rather than exposed as a discoverable service.
-- **Batched Export:** Providers batch spans so collector availability is not
-  intended to block inference. Instrumentation and buffering still have costs;
-  this is not a zero-overhead or measured zero-latency-impact guarantee.
+- **Managed Container:** The broker manages a local Phoenix container from an embedded
+  Compose template (`project nvpair-telemetry`, container `nvpair-phoenix`), pinned to
+  `arizephoenix/phoenix:version-20.23.0@sha256:c542e7de1dc1fdd0f938de337d44ebefa7266e91391eed6e7978523d7f6e1f2f`.
+  Both web UI (`127.0.0.1:6006`) and OTLP gRPC (`127.0.0.1:<collectorPort>`) bind
+  strictly to loopback.
+- **Trace Context Stripping:** When a proxy forwards a request to an engine or cluster peer,
+  it strips all W3C trace context headers (`traceparent`, `tracestate`). Ingress handlers on
+  peer nodes do not extract trace context or record cluster ingress spans.
+- **No Collector Advertisement:** Collectors are strictly local and are not advertised via
+  mDNS or discovery records.
+- **Batched Export & Delivery Health:** Tracer providers batch spans in memory. The broker
+  polls proxy export delivery health (`lastExportOk`, `lastExportError`, `lastExportErrorAt`)
+  via `telemetry/status` and reports health directly to clients.
+
+### Settings Configuration & Dynamic Reconciliation
+
+Proxy telemetry is configured exclusively through the broker:
+
+- **Revisioned Settings (Schema 2):** Settings are stored in `settings.json` under
+  `schema_version: 2` with monotonic `telemetry_revision` numbers. Proxies start with
+  tracing disabled and do not inspect `PAIR_TELEMETRY_*` or `OTEL_*` environment variables.
+- **Dynamic Broker Reconciliation:** When settings change (via `settings/set-telemetry-config`
+  or loaded at startup), the broker reconciles desired state into each running proxy via
+  serialized `telemetry/configure` requests. If the settings worker becomes unavailable,
+  the broker retains the last loaded desired configuration so proxy restarts preserve the
+  user's persisted choice.
+- **Delivery and Apply Status:** `telemetry/get-status` reports desired configuration
+  alongside per-proxy applied revisions, worker states (`applied`, `pending`, `failed`, or
+  `unavailable`), and exporter health.
 
 ### Dual-Mode Payload Control & Privacy
 
-Proxy providers read configuration at startup from `PAIR_TELEMETRY_ENABLED`,
-`PAIR_TELEMETRY_ENDPOINT`, and `PAIR_TELEMETRY_RECORD_PAYLOADS`. Defaults are
-**enabled**, **`localhost:4317`**, and **payload capture false**. Endpoint fallback
-is `OTEL_EXPORTER_OTLP_ENDPOINT`; `OTEL_SDK_DISABLED=true` disables the SDK when
-no PAIR enabled override is set. See each proxy's `telemetry.go` for precedence.
+Tracing operates under strict privacy and consent controls:
 
-The UI persists telemetry settings and broker status reports them, but those
-settings currently do **not** configure live proxy providers. Do not treat the
-UI switch or endpoint field as an effective exporter/privacy control. Changing
-startup environment requires starting new provider processes.
-
-With payload capture false, instrumentation omits explicit prompt/completion
-attributes while recording metadata and request headers. With
-`PAIR_TELEMETRY_RECORD_PAYLOADS=true` (or `1`), it can attach prompt and completion
-content. Contributor policy permits this only with explicit user opt-in for
-local evaluation; that local-only rule is **not an enforced endpoint restriction**.
-Export uses plaintext OTLP gRPC, not cluster mTLS, even for a configured remote
-collector.
-
-Header capture redacts a fixed case-insensitive list (`Authorization`, `Cookie`,
-`Set-Cookie`, `X-Pair-Pin`, `X-API-Key`, `Proxy-Auth`, `Proxy-Authorization`). This
-is not general secret scrubbing of arbitrary headers, prompt content, or every
-log sink. Keep credentials, PINs, and keys out of all capture paths.
-
-The supplied Compose file publishes `6006:6006` and `4317:4317` without loopback
-restriction or configured authentication/TLS. Phoenix stores traces in the
-`nvpair-phoenix-data` named volume; stopping the container does not erase it.
-Do not assume telemetry stays local or disappears on stop. See
-[SECURITY.md](../SECURITY.md) for deployment boundaries and data-handling details.
+- **Explicit Informed Consent:** Content capture defaults to off and requires explicit user
+  consent conforming to policy version 1 (`payload_consent_version: 1`). Migration from earlier
+  settings resets tracing and capture to off and clears consent.
+- **Header Allowlisting:** Only `Content-Type` and `Content-Length` request headers are
+  captured as span attributes. All other custom or authentication headers are omitted entirely.
+- **Payload Truncation:** When payload capture is explicitly consented, prompt and
+  completion text are truncated to 16 KB UTF-8 (`pair.gen_ai.prompt.truncated`).
+- **Trace Storage & Scoped Purge:** Phoenix stores traces in named Docker volume
+  `nvpair-phoenix-data`. The broker measures volume sizes for status reporting and provides
+  `telemetry/purge-storage` (requiring confirmation string `"delete-traces"`). Purge safely
+  stops the managed Compose project, deletes only volumes labeled
+  `com.docker.compose.volume=nvpair-phoenix-data`, and never force-removes containers or
+  prunes unrelated Docker data.
+- **Log Sinks Never Contain Secrets:** System log sinks (`slog`, `applog`, stderr, file logs)
+  never record prompts, completions, PINs, or credentials.
 
 ## Trust Boundaries
 

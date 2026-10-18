@@ -55,23 +55,28 @@ Historical performance observations and the final-artifact profiling gate are in
 
 ### Effective Tracing and Privacy Controls
 
-**Runtime work is still required.** The UI persists enabled/endpoint/payload
-settings, but proxy providers read startup environment variables. Defaults are
-tracing enabled, `localhost:4317`, payload capture off. Collector advertisements
-do not select exporter destinations. Decide and implement the effective
-configuration contract, then test UI → broker → proxies end to end, including
-restart, disabled tracing, payload opt-in/off, and actual collector destination.
+**Implemented on this branch (pending release testing).**
 
-The supplied Phoenix configuration exposes ports `6006` and `4317` without
-loopback host restrictions or configured authentication/TLS; export is plaintext.
-Decide the secured deployment/remote-collector policy. Verify header/content
-capture and named-volume retention/deletion. A documentation warning does not
-implement these privacy controls. See [Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations).
-
-Source anchors: each proxy's `telemetry.go`, `services/shared/telemetry/`,
-`services/nvpair-node-settings/manager.go`,
-`services/nvpair-ui-broker/broker_telemetry.go`, and
-`docker-compose.telemetry.yml`.
+- **Dynamic Broker Configuration:** Proxies start with tracing disabled and do not
+  read ambient environment variables (`PAIR_TELEMETRY_*`, `OTEL_*`). Settings are
+  persisted in `nvpair-node-settings` (schema 2) and reconciled by the broker dynamically
+  via `telemetry/configure`.
+- **Explicit Informed Consent:** Content capture defaults to off and requires explicit user
+  consent (`payload_consent_version: 1`). Migration resets tracing and capture to off.
+- **Strict Local Boundaries:** Tracing is local-only; serving nodes record no spans for
+  peer-originated requests, W3C trace context is stripped before forwarding, request headers
+  are allowlisted strictly to `Content-Type` and `Content-Length`, and captured payloads
+  are truncated to 16 KB UTF-8. Exporters dial loopback `127.0.0.1:<collectorPort>`.
+- **Managed, Loopback-Only Phoenix:** Phoenix is managed by the broker from an embedded
+  template pinned to digest `sha256:c542e7de1dc1fdd0f938de337d44ebefa7266e91391eed6e7978523d7f6e1f2f`,
+  binding exclusively to `127.0.0.1:6006` and `127.0.0.1:<collectorPort>`. The in-app update
+  feature and custom compose paths have been removed.
+- **Trace Storage Measurement & Scoped Purge:** Trace volume storage is reported in the
+  desktop UI and can be purged via `telemetry/purge-storage` (`{confirm: "delete-traces"}`),
+  safely clearing only `nvpair-phoenix-data` volumes without force-removing containers or
+  pruning foreign Docker resources.
+- **No Collector Advertisement:** The `otel=4317` TXT advertisement was removed from discovery.
+  See [Security](../SECURITY.md#opentelemetry-and-phoenix-boundaries-and-privacy-controls).
 
 ### Scheduling Telemetry and Idle Sampling
 

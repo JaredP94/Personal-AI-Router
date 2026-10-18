@@ -172,8 +172,9 @@ Documentation corrections are not runtime fixes or artifact certification.
   NVIDIA-certified distribution. Public packaging does not grant NVIDIA signing
   credentials, notarization, or privileged-helper approval. Downloading with
   `curl` grants none of these either.
-- Local-only, explicitly opted-in evaluation payload capture is contributor
-  policy, not an enforced exporter-transport guarantee. See
+- Local-only evaluation payload capture requires explicit user consent,
+  enforces loopback-only exporter transport, truncates payloads to 16 KB, allowlists
+  headers, and records no spans on cluster serving nodes. See
   [Architecture](docs/architecture.mdx#observability-and-distributed-tracing)
   and [SECURITY.md](SECURITY.md) before changing telemetry.
 

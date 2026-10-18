@@ -126,12 +126,13 @@ workers matched. Epoch changes drive per-domain snapshot hydration, not sequence
 Broker heartbeats every 15 seconds support a 45-second inbound-silence deadline
 and frontend-owned recovery. This is not per-worker hang detection.
 
-Telemetry settings persist through `settings/*`, but currently do not configure
-proxy tracer providers. The proxies initialize from startup environment variables,
-defaulting to enabled export to `localhost:4317` with payload capture off. Collector
-advertisements/status do not prove the endpoint or capture mode in use. See
-[Security](../../SECURITY.md#opentelemetry-and-phoenix-current-limitations) for
-the environment controls, header capture, plaintext export, and Phoenix exposure.
+Telemetry configuration is managed by `nvpair-node-settings` (`settings/get-telemetry-config`)
+and reconciled into proxies dynamically by `nvpair-ui-broker` via `telemetry/configure`.
+Proxies start with tracing disabled; environment variables (`PAIR_TELEMETRY_*`, `OTEL_*`)
+are not evaluated. Tracing is strictly local, exporters dial `127.0.0.1:<collectorPort>`,
+serving nodes record no peer spans, and no trace context crosses nodes. See
+[Security](../../SECURITY.md#opentelemetry-and-phoenix-boundaries-and-privacy-controls) for
+consent policies, loopback-only Arize Phoenix deployment, and trace storage purge.
 
 ## Current domain routing
 

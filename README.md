@@ -60,8 +60,8 @@ This project exists as a forward-looking extension that introduces practical fea
    - Adapts the desktop in-app updates card on macOS to provide 1-click update command copying and direct GitHub release navigation.
 
 6. **Arize Phoenix & OpenTelemetry Observability**
-   - Built-in OpenTelemetry distributed tracing (`traceparent` W3C context propagation across multi-node cluster hops) and one-click Arize Phoenix Docker container lifecycle management (`http://localhost:6006`, OTLP gRPC `:4317`) directly from **Settings → Service**.
-   - Records streaming TTFT, token metrics, and routing decisions; supports collector advertisement and Phoenix image update checks. **Current limitation:** proxy tracing uses startup environment configuration (enabled by default, `localhost:4317`, payload capture off), not the persisted UI switches or advertised collector selection. OTLP is plaintext, other request headers can be captured despite payload capture being off, and the supplied container exposes its ports beyond loopback. See [Security](SECURITY.md) before use.
+   - Built-in OpenTelemetry tracing with local Arize Phoenix Docker Compose lifecycle management (`http://127.0.0.1:6006`, OTLP gRPC `127.0.0.1:<collectorPort>`) from **Settings → Service**.
+   - Broker-reconciled tracing configuration with explicit payload consent (`payload_consent_version: 1`), loopback-only export, header allowlisting (`Content-Type`, `Content-Length`), 16 KB payload truncation, on-device volume storage reporting, and confirmed trace purge (`telemetry/purge-storage`). Serving nodes record no spans for peer requests, and no trace context crosses nodes. See [Security](SECURITY.md) for details.
 
 7. **Relay Protocol v2, Session Recovery & Live Menu Bar Activity**
    - Relay v2 JSON-RPC 2.0 notification envelopes (`epoch`, `seq`; `protocol: 2` in broker epoch/resync payloads) with automatic per-domain state resynchronization (`broker:epoch`, `broker:resync`), 15-second heartbeat liveness monitoring with 45-second frontend-owned silence reconnects, and service-authoritative routing metrics (`metrics/get`, `metrics/routing-update`).
