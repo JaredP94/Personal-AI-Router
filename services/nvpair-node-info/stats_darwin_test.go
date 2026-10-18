@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -197,8 +198,9 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 
 func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	started := make(chan struct{})
+	var startOnce sync.Once
 	readGPU := func(ctx context.Context) (darwinGPUReading, error) {
-		close(started)
+		startOnce.Do(func() { close(started) })
 		<-ctx.Done()
 		return darwinGPUReading{}, ctx.Err()
 	}
@@ -300,6 +302,43 @@ func TestDarwinCollectorAdaptiveGPUInterval(t *testing.T) {
 	wokenReads := gpuReads.Load()
 	if wokenReads <= idleReads {
 		t.Fatalf("expected Snapshot() to wake collector from idle: idleReads=%d, wokenReads=%d", idleReads, wokenReads)
+	}
+}
+
+func TestDarwinCollectorSampleSeqIncrementsOnUsableSampleAndPreservesOnRead(t *testing.T) {
+	reading := darwinGPUReading{
+		inventory:          []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
+		stats:              map[string]gpuStat{"ioreg:2a": {UtilizationPct: 50}},
+		utilizationSamples: 1,
+	}
+	c := &statsCollector{
+		readGPU: func(context.Context) (darwinGPUReading, error) {
+			return reading, nil
+		},
+	}
+	c.latest.Store(&statsSnapshot{})
+
+	c.collectGPU(context.Background())
+	snap1 := c.Snapshot()
+	if snap1.GPUSampleSeq != 1 {
+		t.Fatalf("first GPUSampleSeq = %d, want 1", snap1.GPUSampleSeq)
+	}
+
+	// Repeated reads without new collection return the exact same sampleSeq
+	snap1Again := c.Snapshot()
+	if snap1Again.GPUSampleSeq != 1 {
+		t.Fatalf("repeated Snapshot() GPUSampleSeq = %d, want 1", snap1Again.GPUSampleSeq)
+	}
+	peek := c.PeekSnapshot()
+	if peek.GPUSampleSeq != 1 {
+		t.Fatalf("PeekSnapshot() GPUSampleSeq = %d, want 1", peek.GPUSampleSeq)
+	}
+
+	// Next collection increments
+	c.collectGPU(context.Background())
+	snap2 := c.Snapshot()
+	if snap2.GPUSampleSeq != 2 {
+		t.Fatalf("second GPUSampleSeq = %d, want 2", snap2.GPUSampleSeq)
 	}
 }
 

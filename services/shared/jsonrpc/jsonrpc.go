@@ -163,8 +163,12 @@ func (c *Codec) Read() (*Message, error) {
 		}
 		return nil, io.EOF
 	}
+	line := c.scanner.Bytes()
+	if err := checkCanonical(line); err != nil {
+		return nil, err
+	}
 	var msg Message
-	if err := json.Unmarshal(c.scanner.Bytes(), &msg); err != nil {
+	if err := json.Unmarshal(line, &msg); err != nil {
 		return nil, &DecodeError{fmt.Errorf("invalid JSON-RPC message: %w", err)}
 	}
 	if msg.JSONRPC != "2.0" {

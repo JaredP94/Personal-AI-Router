@@ -14,15 +14,20 @@ corrected `0.7.0-rc.2` candidate and must not be presented as a certified
 benchmark: raw samples, power state, and complete build identities were not
 retained.
 
-**Round 3 includes one change that was later reverted.** It let the scanner and
-manual-node scheduling polls (and headerless remote polls) read cached GPU
-snapshots so `nvpair-node-info` could drop its macOS `ioreg` sampling from every
-2 seconds to every 10 seconds. Review found this could leave the scheduler with
-stale GPU readings, so scheduling polls now keep foreground sampling. Rows marked
-**†** are dominated by that reverted change; the candidate is expected to sit
-closer to Round 2 on those rows, but that has not been measured. Unmarked Round 3
-improvements come from changes the candidate keeps (network-event monitoring,
-trust-pin caching, warning deduplication, TLS-aware probing).
+**Unattended idle backoff is restored behind scheduling leases and must be re-profiled.**
+An earlier Round 3 attempt let scheduling polls read cached GPU snapshots without
+coordination, which risked exceeding the scheduler's 10-second freshness budget and was
+reverted. That unattended idle backoff has now been architecturally restored:
+`nvpair-node-info` uses explicit `X-NVPAIR-Poll` leases (`foreground`, `scheduling`,
+`background`) and broker demand signaling (`stats/set-demand`), relaxing sampling to
+10 seconds when idle while keeping scheduler decision-point freshness proven <= 8.5 seconds.
+In addition, `nvpair-manual-nodes` delivers scheduling telemetry every ~2 seconds
+separately from 10-second topology probes. Because this coordinated implementation was
+completed after the historical profiling rounds, rows marked **†** (dominated by the
+earlier prototype) cannot be taken as measurements of the current code. The candidate must
+be re-profiled on final release artifacts before publishing quantitative performance claims.
+Unmarked Round 3 improvements come from changes the candidate keeps (network-event
+monitoring, trust-pin caching, warning deduplication, TLS-aware probing).
 
 ## Three-Round Development Comparison
 
@@ -64,15 +69,15 @@ child is listed separately.
 | `omlx-proxy` interrupt wakeups | 58.2/s | 52.0/s | 26.8/s | −54.0% |
 | Logical disk writes | 44.8 KB/s | 0 in sample | 0 in sample | none observed |
 
-With the Overview open, GPU sampling is foreground in every round, so the reverted
-change does not apply to this table.
+With the Overview open, GPU sampling is foreground in every round, so idle
+sampling backoff does not apply to this table.
 
 ### Reading These Numbers
 
 - Wakeups and avoided I/O are energy-related indicators, not watts or battery
   runtime. The kernel billed-energy counter's units and attribution were not
   validated; treat its −96% as directional only, and note it is dominated by the
-  reverted sampling change.
+  historical sampling experiment.
 - "0 in sample" means no writes during that window, not a zero-I/O guarantee.
   Real warnings and debug-level logging still write.
 - Remaining idle activity is intentional: two-second trust-directory checks in
@@ -91,7 +96,7 @@ change does not apply to this table.
 | Repeated rejection-warning deduplication | Recurrent warning writes from unchanged legacy-peer probes | Included after Round 2; no standalone measured saving claimed |
 | Filtered macOS kernel network events | Routing-cache-miss traffic and periodic socket-timeout wakeups | Source/tests and historical Round 3 observations; corrected-build profile pending |
 | Validated trust-pin byte caching | Repeated JSON/PEM/X.509 parsing of unchanged pins | Trust/race coverage; periodic directory/file reads remain |
-| Explicit background UI reads and Linux internal peek | Display/internal reads need not renew interactive sampling activity | Scheduler consumers remain foreground; **no unattended 10-second sampling claim** |
+| Lease-driven GPU sampling and restored idle backoff | Reduces unattended GPU collection while strictly preserving scheduler freshness budget | Restored behind `X-NVPAIR-Poll` leases and separate ~2 s manual telemetry; must be re-profiled |
 
 The historical aggregate changes cannot be allocated precisely to individual
 fixes. Intentional discovery, trust refresh, telemetry delivery, and supervision

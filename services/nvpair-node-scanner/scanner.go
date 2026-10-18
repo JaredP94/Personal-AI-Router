@@ -39,6 +39,7 @@ type NodeInfoResponse struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
 	// HostUUID is the identity the node itself reports (nvpair-node-info's
 	// hostUuid). It is not enrichment data — it is what lets the liveness probe
 	// tell "this node still answers" from "some other node now answers at this

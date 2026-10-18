@@ -307,6 +307,7 @@ type Broker struct {
 	// goroutines (via emitWorkloadEvent) and the scanner-event goroutine (via
 	// failWorkloadsForNode); it is internally synchronized.
 	workloads *workloadstore.Store
+	lastLocalDemand atomic.Bool
 
 	// engineMu guards engineSubscribed. The engine:<event> stream is
 	// opt-in like proxy's: forwardEngineNotification (engine-manager reader
@@ -677,6 +678,7 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info but holds no cluster dir to read it from, so this push is the
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
+	b.pushDemandToNodeInfoOnStart()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
@@ -1199,6 +1201,34 @@ func (b *Broker) pushClusterIdentityToNodeInfo() {
 	}
 }
 
+// pushDemandToNodeInfoOnStart re-asserts the current local execution demand to
+// a newly spawned or restarted node-info child.
+func (b *Broker) pushDemandToNodeInfoOnStart() {
+	active := b.workloads.ActiveScheduledOn(b.nodeID) > 0
+	b.lastLocalDemand.Store(active)
+	b.pushDemandToNodeInfo(active)
+}
+
+// recomputeDemand evaluates whether any active workload is scheduled on this node,
+// and pushes an update to node-info if the local execution demand changed.
+func (b *Broker) recomputeDemand() {
+	active := b.workloads.ActiveScheduledOn(b.nodeID) > 0
+	if b.lastLocalDemand.Swap(active) == active {
+		return
+	}
+	b.pushDemandToNodeInfo(active)
+}
+
+func (b *Broker) pushDemandToNodeInfo(active bool) {
+	np := b.getNodeInfo()
+	if np == nil {
+		return
+	}
+	if err := np.SetDemand(active); err != nil {
+		slog.Warn("failed to push demand to node-info", "err", err)
+	}
+}
+
 // forwardEngineNotification / forwardManualNodesNotification /
 // forwardSettingsNotification are the per-worker notification hooks. For
 // now they only demux errors:report / errors:clear into the nvpair-errors
@@ -1305,6 +1335,17 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 		}
 		b.removeManualNode(s.ID)
 		slog.Debug("manual node event", "event", method, "id", s.ID)
+	case "node/telemetry":
+		var t manualNodeTelemetryParams
+		if err := json.Unmarshal(params, &t); err != nil {
+			slog.Warn("manual-nodes emitted invalid telemetry payload", "err", err)
+			return
+		}
+		if t.ID == "" {
+			slog.Warn("manual-nodes telemetry payload missing id")
+			return
+		}
+		b.ingestManualNodeTelemetry(t)
 	case "ready":
 		slog.Info("manual-nodes reported ready", "params", string(params))
 	default:
@@ -1340,7 +1381,6 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	en := manualToEnriched(canonical.status)
 	b.annotateManualTrust(&en, canonical.status)
 	b.store.Upsert(en, sourceManual)
-	b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(s, key), receivedAt)
 	if b.relayDir != nil {
 		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeDiscovered, b.manualToDirectoryNode(canonical.status, key))
 	}
@@ -1394,7 +1434,6 @@ func (b *Broker) reprojectOrRelease(key string) {
 			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeUpdated, b.manualToDirectoryNode(survivor.status, key))
 		}
 		b.bridgeManualNode(survivor.status, key)
-		b.ingestTelemetryAt(sourceManual, manualNodeTelemetry(survivor.status, key), survivor.receivedAt)
 		return
 	}
 	if b.store.Remove(key, sourceManual) && b.relayDir != nil {
@@ -2595,6 +2634,7 @@ func (b *Broker) emitWorkloadEventProvenance(method string, params json.RawMessa
 	if !b.applyWorkloadEvent(method, params, inferred, unchangedSince) {
 		return
 	}
+	b.recomputeDemand()
 
 	// The scheduler is fanned every real transition (independent of the
 	// external client's opt-in) so it can keep its own catalog.

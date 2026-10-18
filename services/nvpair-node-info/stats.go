@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-const (
-	// statsIdleThreshold is how long since the last Snapshot() call before
-	// the GPU telemetry collector transitions to idle sampling.
-	statsIdleThreshold = 6 * time.Second
-
-	// statsIdleInterval is the relaxed sampling cadence when no client is
-	// reading node-info, reducing CPU and energy consumption.
-	statsIdleInterval = 10 * time.Second
-)
 
 // gpuStat is the per-adapter dynamic state the service layers on top of the
 // static detectGPUs() output. Both fields are zero when the underlying OS
@@ -51,6 +42,7 @@ type statsSnapshot struct {
 	// collected. Failed collection attempts retain the previous timestamp so
 	// consumers can distinguish stale telemetry from freshly sampled data.
 	GPUSampledAt time.Time
+	GPUSampleSeq uint64
 	CPUUtilPct   uint32
 	MemUsedBytes uint64
 }
@@ -63,10 +55,14 @@ func applyGPUStats(previous statsSnapshot, next *statsSnapshot, sampled map[stri
 	if sampledAt.IsZero() && !previous.GPUSampledAt.IsZero() {
 		next.GPU = previous.GPU
 		next.GPUSampledAt = previous.GPUSampledAt
+		next.GPUSampleSeq = previous.GPUSampleSeq
 		return
 	}
 	next.GPU = sampled
 	next.GPUSampledAt = sampledAt
+	if !sampledAt.IsZero() {
+		next.GPUSampleSeq = previous.GPUSampleSeq + 1
+	}
 }
 
 // parseEngineInstance pulls the adapter-LUID key and the engine-type tag

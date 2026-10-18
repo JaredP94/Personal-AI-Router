@@ -104,14 +104,18 @@ The broker does not expose rich node telemetry over JSON-RPC. Electron therefore
 polls each healthy discovered node's advertised `/v1/node-info` endpoint every
 two seconds with a visible UI or every 30 seconds when hidden/minimized, merging
 CPU, memory, GPU, and VRAM data into `metrics:update`. Consecutive failures back
-off to a 30-second cap and reset on success. Explicit background UI polls use
-cached snapshots without renewing interactive GPU-sampling activity. Scheduling
-consumers deliberately retain foreground sampling; a hidden UI alone therefore
-does not guarantee the idle GPU cadence.
+off to a 30-second cap and reset on success. Local hardware GPU sampling is
+lease-driven via `X-NVPAIR-Poll` request headers (`foreground`, `scheduling`,
+`background`) and broker demand signaling (`stats/set-demand`), relaxing from
+2-second interactive sampling to 5-second scheduling sampling and 10-second idle
+sampling on macOS and Linux (Windows retains its native 1-second collector).
+1-second collection timeouts and proven <= 8.5-second decision-point age strictly
+preserve the scheduler's 10-second freshness budget.
 Those renderer snapshots are display-only. Independently, the backend scanner
 samples a compact maximum-GPU utilization value on the same healthy cadence,
 with the same capped failure backoff, and sends it through the broker to the
-scheduler.
+scheduler. Separately, manual nodes deliver `node/telemetry` every ~2 seconds with
+honest sample age, decoupled from 10-second topology probes.
 
 All other service control flows through broker JSON-RPC. Engine proxy HTTP is
 reserved for inference clients.
@@ -119,12 +123,17 @@ reserved for inference clients.
 ### Relay recovery and observability boundaries
 
 Relay protocol v2 requires stamped notifications (`epoch`, `seq`) and unstamped
-requests/responses. Broker epoch/resync payloads report `protocol: 2`. Go codecs
-terminate on envelope mismatches; the desktop parser currently extracts stamps
-without enforcing those invariants on every inbound frame. Keep clients and
-workers matched. Epoch changes drive per-domain snapshot hydration, not sequence-gap polling.
-Broker heartbeats every 15 seconds support a 45-second inbound-silence deadline
-and frontend-owned recovery. This is not per-worker hang detection.
+requests/responses. Broker epoch/resync payloads report `protocol: 2`. Both Go codecs
+and the desktop parser enforce canonical envelope structure: duplicate and case-variant
+reserved members are rejected as recoverable decode errors (tested against
+`services/shared/jsonrpc/testdata/envelope-conformance.jsonl`). Desktop decodes
+`seq` losslessly as `bigint`. Malformed frames are dropped without resetting the
+45-second inbound-silence deadline. On an envelope protocol mismatch, desktop
+fails pending calls, terminates the subprocess, and reports a supervisor crash
+with `{ protocolMismatch: true }` without reconnecting. The legacy `broker:epoch`
+params fallback has been removed. Epoch changes drive per-domain snapshot hydration,
+not sequence-gap polling. Broker heartbeats every 15 seconds support a 45-second
+inbound-silence deadline and frontend-owned recovery. This is not per-worker hang detection.
 
 Telemetry configuration is managed by `nvpair-node-settings` (`settings/get-telemetry-config`)
 and reconciled into proxies dynamically by `nvpair-ui-broker` via `telemetry/configure`.

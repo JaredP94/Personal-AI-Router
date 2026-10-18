@@ -156,11 +156,24 @@ stdio and it is not a cluster transport. Facts about other nodes arrive through
 the peer services described next, then surface as notifications on this path.
 
 The JSON-RPC 2.0 transport uses **relay protocol v2**. Every notification carries
-an `epoch` and `seq` envelope; requests and responses carry neither.
-`broker:resync` returns the epoch and `protocol: 2`, and `broker:epoch` announces
-them. Go codecs treat envelope mismatches as terminal rather than negotiating
-an older protocol. `seq` starts afresh per connection; sequence gaps or
-regressions do not trigger snapshot polling.
+an `epoch` (sender process UUID) and `seq` (per-connection counter) envelope;
+requests and responses carry neither. `broker:resync` returns the epoch and
+`protocol: 2`, and `broker:epoch` announces them. Both Go codecs and desktop
+TypeScript enforce this canonical envelope structure and treat envelope mismatches
+as terminal rather than negotiating an older protocol. Reserved members (`jsonrpc`,
+`id`, `method`, `params`, `result`, `error`, `epoch`, `seq`) must not appear with
+duplicate keys or case variants; such framing violations are recoverable decode
+errors, tested against the shared corpus
+`services/shared/jsonrpc/testdata/envelope-conformance.jsonl`.
+
+Desktop decodes `seq` losslessly as `bigint` (avoiding IEEE-754 precision loss
+past 2^53 - 1) and drops malformed frames without resetting the 45-second silence
+deadline. On an envelope protocol mismatch (missing or wrong-typed stamps on a
+notification, or stamps present on a request or response), desktop terminates the
+broker session cleanly, fails all pending calls, reports a crash with
+`{ protocolMismatch: true }`, and does not reconnect. The legacy `broker:epoch`
+params fallback has been removed completely. `seq` starts afresh per connection;
+sequence gaps or regressions do not trigger snapshot polling.
 
 On an epoch change, desktop rehydrates per-domain snapshots: discovery,
 membership/identity, engines and models, errors, workloads, proxy status, and
@@ -266,18 +279,35 @@ Electron polls every discovered node's `/v1/node-info` directly because that
 detail is richer than the broker's control surface exposes. Healthy-node polling
 runs every two seconds with a visible UI, or every 30 seconds when all windows
 are hidden/minimized; failures use capped backoff. This is the one place Electron
-makes service-data HTTP calls of its own. Separately, the backend scanner samples
-compact maximum-GPU utilization for scheduling at roughly two seconds with jitter
-and capped failure backoff. The broker relays it straight to the job scheduler;
-routing never depends on renderer metrics.
+makes service-data HTTP calls of its own.
 
-Current unreleased changes let explicitly background UI requests peek at cached
-snapshots without renewing GPU-sampling activity. Scheduler consumers (scanner
-and manual nodes) intentionally remain foreground readers to preserve the
-10-second sample-freshness contract. Closing the UI therefore does not by itself
-guarantee idle hardware sampling. Coordinated collection/delivery budgets are
-still required before enabling unattended sampler backoff. Polling, mDNS loops,
-and the two-second trust refresh remain; stale samples remain distinguishable.
+Local hardware GPU and CPU telemetry is lease-driven via `X-NVPAIR-Poll` request
+headers:
+- `foreground` (visible UI or local active workload) renews the interactive lease,
+  sampling every 2 seconds.
+- `scheduling` (discovery scanner and manual node telemetry) renews the scheduling
+  lease, sampling every 5 seconds.
+- `background` (minimized UI or internal queries) peeks the latest cached snapshot
+  without waking the hardware collector or renewing any lease.
+- When no lease is active and no active local workloads exist, sampling relaxes to
+  an idle cadence of 10 seconds on macOS and Linux. Windows remains on its native
+  1-second PDH collector loop.
+
+The broker coordinates local demand by pushing `stats/set-demand` notifications
+with `localExecution: bool` to `nvpair-node-info` over stdin whenever local
+workloads are queued, active, or complete. A 1-second collection timeout bounds
+sampling latency. At the scheduler's decision point, sample age across all lease
+transitions is mathematically and empirically proven <= 8.5 seconds, strictly
+within the scheduler's 10-second freshness budget. Each sample carries a monotonic
+`sampleSeq` counter; repeated observations carrying an identical sequence number
+do not re-weight the scheduler's EWMA.
+
+Separately, `nvpair-manual-nodes` delivers compact scheduling telemetry via
+`node/telemetry` notifications every ~2 seconds (± 250 ms jitter) over persistent
+HTTP connections with honest age accounting (including network probe latency and
+collection age), decoupled from the slower 10-second node topology and model probes.
+The broker relays telemetry straight to the job scheduler; routing never depends
+on renderer metrics.
 
 ## Inference Data Flow
 

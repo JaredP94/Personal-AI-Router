@@ -497,3 +497,28 @@ func TestParseIncoming(t *testing.T) {
 		t.Fatal("invalid JSON should not parse")
 	}
 }
+
+func TestActiveScheduledOnCountsExecutorNotOrigin(t *testing.T) {
+	s := New()
+
+	// Workload 1: Origin "nodeA", ScheduledOn "self", running -> counts for self
+	s.Apply(mkIn("1", "nodeA", "running", "self", 100))
+	// Workload 2: Origin "self", ScheduledOn "self", running -> counts for self
+	s.Apply(mkIn("2", "self", "running", "self", 100))
+	// Workload 3: Origin "self", ScheduledOn "nodeB", running -> counts for nodeB, NOT self
+	s.Apply(mkIn("3", "self", "running", "nodeB", 100))
+	// Workload 4: Origin "nodeA", ScheduledOn "self", completed (terminal) -> does NOT count
+	s.Apply(mkIn("4", "nodeA", "completed", "self", 100))
+	// Workload 5: Origin "nodeA", ScheduledOn "self", failed (terminal) -> does NOT count
+	s.Apply(mkIn("5", "nodeA", "failed", "self", 100))
+
+	if got := s.ActiveScheduledOn("self"); got != 2 {
+		t.Fatalf("ActiveScheduledOn(self) = %d, want 2 (only non-terminal workloads executing on self)", got)
+	}
+	if got := s.ActiveScheduledOn("nodeB"); got != 1 {
+		t.Fatalf("ActiveScheduledOn(nodeB) = %d, want 1", got)
+	}
+	if got := s.ActiveScheduledOn("nodeA"); got != 0 {
+		t.Fatalf("ActiveScheduledOn(nodeA) = %d, want 0 (origin only, none scheduled on nodeA)", got)
+	}
+}

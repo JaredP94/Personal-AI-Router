@@ -12,7 +12,7 @@ A Go service that exposes this machine's hardware inventory (GPUs, CPU, physical
 Two surfaces:
 
 - **HTTP(S)** — serves the node inventory at `/v1/node-info`. Plaintext HTTP on `:14318` by default; optional HTTPS (with optional mTLS) on `:14319` when a cert/key pair is supplied.
-- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `nodeinfo:set-cluster-identity`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
+- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `nodeinfo:set-cluster-identity`, `stats/set-demand`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
 
 It does **not** advertise itself over mDNS. Discovery is centralized in the `nvpair-node-scanner` daemon: the broker registers this service's `ni` port with the daemon, which carries it on the node's one `_nvpair-node` record and fetches `/v1/node-info` over plain HTTP to enrich each node.
 
@@ -84,6 +84,14 @@ Field notes:
 - `clusterUuid` exists so a peer can learn this node's membership without its mDNS record. Membership otherwise travels only as the `cluster-uuid=` TXT key, which a consumer reads once per record *change*; a consumer that misses that change keeps the previous value indefinitely, and one still holding a departed node's principal will suppress the invite that would bring it back.
 - All dynamic fields and the `cpu` / `memory` objects use `omitempty`: a value the service couldn't read is dropped from the JSON entirely rather than reported as a misleading literal zero. A genuinely idle CPU renders the same as "unknown" — that ambiguity is intentional and benign.
 - `vram_bytes` is reported through DXGI on Windows, `nvidia-smi` on Linux, and IORegistry on macOS. On a unified-memory NVIDIA GPU such as DGX Spark, Linux uses total physical system memory for `vram_bytes` and the independently sampled system-memory usage for `vram_used_bytes`. On Apple Silicon, `vram_bytes` is total physical unified memory and `vram_used_bytes` is the GPU driver's mapped allocation (`Alloc system memory`), not whole-system RAM usage or the momentarily active subset.
+- Telemetry sampling cadence is lease-driven via the `X-NVPAIR-Poll` request header:
+  - `foreground` (visible UI) renews the **interactive** lease (2 s interval);
+  - `scheduling` (scanner, manual nodes) renews the **scheduling** lease (5 s interval);
+  - `background` renews nothing and peeks the latest snapshot without waking the collector;
+  - missing or unknown headers behave as `foreground`.
+  - When neither lease is active and `localExecution` is false, sampling relaxes to idle (10 s interval).
+  - Leases have a 6 s TTL (`LeaseTTL`). Any renewal that raises the sampling mode wakes the collector immediately.
+- The parent broker pushes `stats/set-demand` with `{"localExecution": bool}` over stdin on start and on workload change. When `localExecution` is true (at least one active non-terminal workload is scheduled on this node), sampling stays in interactive mode (2 s) regardless of incoming poll headers.
 
 ## Discovery
 

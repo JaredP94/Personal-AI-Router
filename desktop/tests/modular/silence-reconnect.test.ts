@@ -152,4 +152,32 @@ describe('silence reconnect owner', () => {
         await vi.advanceTimersByTimeAsync(MODULAR_STARTUP_READY_TIMEOUT_MS * 2)
         expect(timedOut).toHaveBeenCalledTimes(1)
     })
+
+    it('reports a crash on protocol-mismatch without attempting a reconnect or consuming silenceRetryAvailable', async () => {
+        const broker = attach()
+        supervisor['isReady'] = true
+        supervisor['brokerReady'] = true
+        const crashed = vi.fn()
+        const reconnecting = vi.fn()
+        supervisor.setOnBrokerCrash(crashed)
+        supervisor.setOnBrokerReconnecting(reconnecting)
+
+        broker.emit('protocol-mismatch', {
+            source: 'broker',
+            reason: 'notification without epoch/seq (method "echo")'
+        })
+        await flush()
+
+        expect(crashed).toHaveBeenCalledTimes(1)
+        expect(crashed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                code: null,
+                reason: expect.stringContaining('notification without epoch/seq')
+            })
+        )
+        expect(reconnecting).not.toHaveBeenCalled()
+        expect(supervisor.start).not.toHaveBeenCalled()
+        expect(supervisor['silenceRetryAvailable']).toBe(true)
+        expect(supervisor['stopProcesses']).toHaveBeenCalledTimes(1)
+    })
 })

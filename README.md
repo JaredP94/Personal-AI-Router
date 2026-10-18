@@ -68,7 +68,7 @@ This project exists as a forward-looking extension that introduces practical fea
    - Dynamic monochrome template menu bar / system tray icon displaying live active job counts and 30-second failure alerts (`!`).
 
 8. **Idle Energy & Wakeup Optimizations (Unreleased)**
-   - Explicit hidden-UI polls can read cached node-info snapshots. Scheduling consumers retain foreground GPU sampling to preserve the 10-second freshness contract; unattended sampler backoff is deferred pending coordinated collection/delivery timing. Filtered macOS network events, unchanged trust-pin caching, reduced notification churn, and debug-only verbose file logging reduce background work. These changes are not in the published `0.7.0-rc.1` candidate.
+   - Lease-driven GPU sampling (`X-NVPAIR-Poll: foreground/scheduling/background`) and broker demand signaling (`stats/set-demand`) restore unattended idle backoff (10 s) while strictly preserving the scheduler's 10-second freshness budget (proven <= 8.5 s at decision point); manual nodes deliver scheduling telemetry every ~2 s separately from 10 s topology probes. Filtered macOS network events, unchanged trust-pin caching, reduced notification churn, and debug-only verbose file logging reduce background work. These changes are not in the published `0.7.0-rc.1` candidate.
 
 ## What is supported
 

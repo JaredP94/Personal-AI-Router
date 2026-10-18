@@ -27,6 +27,7 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 		},
 		TelemetryValid: true,
 		MSSince:        137,
+		SampleSeq:      42,
 		HostUUID:       "node-a",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -67,6 +68,9 @@ func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 	}
 	if got.MSSince < 137 || got.MSSince >= 3_500 {
 		t.Fatalf("age = %d, want node age plus bounded fetch time", got.MSSince)
+	}
+	if got.SampleSeq != 42 {
+		t.Fatalf("sampleSeq = %d, want 42", got.SampleSeq)
 	}
 }
 

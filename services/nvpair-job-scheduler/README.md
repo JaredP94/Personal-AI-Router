@@ -42,7 +42,7 @@ The broker forwards these notifications:
 | `discovery:nodes-changed` | Replaces the eligible node set |
 | `workloads:upsert` | Adds or updates a workload in the catalog |
 | `workloads:remove` | Drops a workload from the catalog |
-| `scheduler:telemetry` | Updates one node's maximum GPU utilization and sample age |
+| `scheduler:telemetry` | Updates one node's maximum GPU utilization, sample age, and sample sequence |
 
 A workload counts as pending when its state is `queued` or `running`. Pending
 work is attributed to the node in its `scheduledOn` field; work that has not been
@@ -53,8 +53,9 @@ placed yet counts toward no node.
 Fresh maximum-GPU utilization is smoothed with an EWMA (`alpha = 0.35`) and
 mapped to pressure units: 0 below 40%, 1 from 40–69%, 2 from 70–84%, and 3 at
 85% or above. Downward transitions use 35%, 65%, and 80% thresholds to avoid
-rank thrash. Invalid, missing, or older-than-10-second telemetry contributes a
-neutral pressure of 1.
+rank thrash. Repeated observations carrying an identical non-zero `sampleSeq`
+do not re-weight the EWMA. Invalid, missing, or older-than-10-second telemetry
+contributes a neutral pressure of 1.
 
 Nodes are sorted by `pending + gpuPressure`, then lower GPU pressure, then
 stable node ID. Pending counts include **both** engines together, so Ollama load

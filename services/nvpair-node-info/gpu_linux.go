@@ -78,6 +78,10 @@ func detectGPUsGHW() []GPUInfo {
 func nvidiaSmiCSV(fields string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), nvidiaSmiTimeout)
 	defer cancel()
+	return nvidiaSmiCSVContext(ctx, fields)
+}
+
+func nvidiaSmiCSVContext(ctx context.Context, fields string) (string, error) {
 	out, err := exec.CommandContext(ctx, "nvidia-smi",
 		"--query-gpu="+fields,
 		"--format=csv,noheader,nounits").Output()

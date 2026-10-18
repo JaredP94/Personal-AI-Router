@@ -6,6 +6,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"os"
@@ -75,9 +77,10 @@ type statsCollector struct {
 	// re-spawn (and re-warn about) a missing binary every tick.
 	nvidiaUnavailable atomic.Bool
 
-	lastSnapshot  atomic.Int64
+	policy        *SamplingPolicy
 	lastGPUSample time.Time
 
+	wake     chan struct{}
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
@@ -92,8 +95,14 @@ func startStatsCollector() *statsCollector {
 	c := &statsCollector{
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
+		wake: make(chan struct{}, 1),
 	}
-	c.lastSnapshot.Store(time.Now().UnixNano())
+	c.policy = NewSamplingPolicy(func() {
+		select {
+		case c.wake <- struct{}{}:
+		default:
+		}
+	})
 	c.latest.Store(initialMemorySnapshot(readMemoryUsed))
 	// Prime the CPU baseline so the first tick produces a real delta rather
 	// than a spurious reading (with no previous sample, util reports 0).
@@ -122,6 +131,8 @@ func (c *statsCollector) run() {
 		select {
 		case <-c.stop:
 			return
+		case <-c.wake:
+			c.latest.Store(c.decodeSnapshot())
 		case <-ticker.C:
 			c.latest.Store(c.decodeSnapshot())
 		}
@@ -147,9 +158,14 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	gpu := make(map[string]gpuStat)
 	sampledAt := time.Time{}
-	lastRead := c.lastSnapshot.Load()
-	isIdle := lastRead != 0 && time.Since(time.Unix(0, lastRead)) > statsIdleThreshold
-	if !isIdle || time.Since(c.lastGPUSample) >= statsIdleInterval {
+	now := time.Now()
+	var interval time.Duration
+	if c.policy != nil {
+		interval = c.policy.Interval(now)
+	} else {
+		interval = statsTickInterval
+	}
+	if c.lastGPUSample.IsZero() || time.Since(c.lastGPUSample) >= interval {
 		if c.decodeGPU(gpu) {
 			sampledAt = time.Now()
 			c.lastGPUSample = sampledAt
@@ -167,11 +183,15 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 	if c.nvidiaUnavailable.Load() {
 		return false
 	}
-	csv, err := nvidiaSmiCSV("uuid,utilization.gpu,memory.used")
+	ctx, cancel := context.WithTimeout(context.Background(), CollectionTimeout)
+	defer cancel()
+	csv, err := nvidiaSmiCSVContext(ctx, "uuid,utilization.gpu,memory.used")
 	if err != nil {
-		if c.nvidiaUnavailable.CompareAndSwap(false, true) {
-			slog.Warn("nvidia-smi unavailable; GPU utilization / dedicated VRAM-used will not be reported",
-				"err", err)
+		if !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			if c.nvidiaUnavailable.CompareAndSwap(false, true) {
+				slog.Warn("nvidia-smi unavailable; GPU utilization / dedicated VRAM-used will not be reported",
+					"err", err)
+			}
 		}
 		return false
 	}
@@ -183,8 +203,7 @@ func (c *statsCollector) decodeGPU(out map[string]gpuStat) bool {
 }
 
 // PeekSnapshot returns the latest published statsSnapshot without updating
-// lastSnapshot, so background polls and internal ticks do not reset the idle
-// GPU collection threshold.
+// lease state, so background polls and internal ticks do not renew sampling leases.
 func (c *statsCollector) PeekSnapshot() statsSnapshot {
 	p := c.latest.Load()
 	if p == nil {
@@ -193,12 +212,27 @@ func (c *statsCollector) PeekSnapshot() statsSnapshot {
 	return *p
 }
 
-// Snapshot returns the latest published statsSnapshot. Safe for concurrent
-// callers — the value is immutable post-publish. Returns a zero-value
-// snapshot before the first tick, so callers need no nil checks.
+// Snapshot returns the latest published statsSnapshot and renews the interactive lease.
 func (c *statsCollector) Snapshot() statsSnapshot {
-	c.lastSnapshot.Store(time.Now().UnixNano())
+	if c.policy != nil {
+		c.policy.RenewInteractive(time.Now())
+	}
 	return c.PeekSnapshot()
+}
+
+// SnapshotScheduling returns the latest published statsSnapshot and renews the scheduling lease.
+func (c *statsCollector) SnapshotScheduling() statsSnapshot {
+	if c.policy != nil {
+		c.policy.RenewScheduling(time.Now())
+	}
+	return c.PeekSnapshot()
+}
+
+// SetLocalExecution sets local workload demand.
+func (c *statsCollector) SetLocalExecution(active bool) {
+	if c.policy != nil {
+		c.policy.SetLocalExecution(active, time.Now())
+	}
 }
 
 // Stop signals the tick goroutine to exit and waits for it. Safe to call any

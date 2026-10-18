@@ -177,6 +177,7 @@
 | `errors:report` | notification (we consume) | ✅ yes |
 | `node/discovered` | notification (we consume) | ✅ yes |
 | `node/removed` | notification (we consume) | ✅ yes |
+| `node/telemetry` | notification (we consume) | ➖ ignored |
 | `node/updated` | notification (we consume) | ✅ yes |
 | `ready` | notification (we consume) | ✅ yes |
 | `node/add` | request (we call) | ✅ yes |
@@ -266,6 +267,7 @@
 | `node/discovered` | request (we call) | ✅ yes |
 | `node/remove` | request (we call) | ✅ yes |
 | `node/removed` | request (we call) | ✅ yes |
+| `node/telemetry` | request (we call) | ➖ ignored |
 | `node/updated` | request (we call) | ✅ yes |
 | `nodes/list` | request (we call) | ✅ yes |
 | `proxy:get-status` | request (we call) | ⚠️ not called |

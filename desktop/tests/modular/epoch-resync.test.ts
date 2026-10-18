@@ -389,7 +389,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'heartbeat',
             params: {},
             epoch: 'epoch-1',
-            seq: 1
+            seq: 1n
         })
 
         expect(bridgeEpoch()).toBe('epoch-1')
@@ -404,7 +404,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'broker:epoch',
             params: { epoch: 'epoch-same', protocol: 2 },
             epoch: 'epoch-same',
-            seq: 1
+            seq: 1n
         })
         await flushMicrotasks()
         expect(calls).toEqual(EXPECTED_RESYNC_CALLS)
@@ -415,7 +415,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'heartbeat',
             params: {},
             epoch: 'epoch-same',
-            seq: 2
+            seq: 2n
         })
         await flushMicrotasks()
 
@@ -429,7 +429,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'heartbeat',
             params: {},
             epoch: 'epoch-gap',
-            seq: 1
+            seq: 1n
         })
         await flushMicrotasks()
         calls.length = 0
@@ -439,7 +439,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'errors:update',
             params: [{ id: 'err-gap-50', message: 'gap error', timestamp: 100, severity: 'error' }],
             epoch: 'epoch-gap',
-            seq: 50
+            seq: 50n
         })
         await flushMicrotasks()
 
@@ -457,7 +457,7 @@ describe('broker epoch tracking and resync', () => {
                 { id: 'err-lower-2', message: 'lower seq error', timestamp: 101, severity: 'error' }
             ],
             epoch: 'epoch-gap',
-            seq: 2
+            seq: 2n
         })
         await flushMicrotasks()
 
@@ -515,7 +515,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'cluster:invite-received',
             params: invite(),
             epoch: 'epoch-before-restart',
-            seq: 1
+            seq: 1n
         })
         await flushMicrotasks()
         expect(state.getPendingInvites()).toHaveLength(1)
@@ -557,7 +557,7 @@ describe('broker epoch tracking and resync', () => {
             method: 'broker:epoch',
             params: { epoch: 'epoch-after-restart', protocol: 2 },
             epoch: 'epoch-after-restart',
-            seq: 1
+            seq: 1n
         })
         await flushMicrotasks()
 

@@ -137,6 +137,7 @@ const BINARY_EXTENSIONS = new Set([
 
 const SKIPPED_EXTENSIONS = new Map([
     ['.json', 'JSON has no comment syntax'],
+    ['.jsonl', 'JSON Lines has no comment syntax'],
     ['.webmanifest', 'JSON has no comment syntax'],
     ['.mod', 'maintained by the Go toolchain'],
     ['.sum', 'maintained by the Go toolchain'],

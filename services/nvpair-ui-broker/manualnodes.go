@@ -40,6 +40,7 @@ type manualNodeStatus struct {
 	Memory         *MemoryInfo `json:"memory"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
 	// HostUUID is the remote's stable per-host identity, learned from its
 	// node-info /v1/node-info. It lets a manual node key by the same permanent
 	// identity as mDNS-discovered nodes (and dedup with itself when the same
@@ -57,6 +58,15 @@ type manualNodeStatusEntry struct {
 	receivedAt time.Time
 }
 
+type manualNodeTelemetryParams struct {
+	ID                string `json:"id"`
+	HostUUID          string `json:"hostUuid,omitempty"`
+	GPUUtilizationPct uint32 `json:"gpuUtilizationPct"`
+	TelemetryValid    bool   `json:"telemetryValid"`
+	MSSince           int64  `json:"msSince"`
+	SampleSeq         uint64 `json:"sampleSeq,omitempty"`
+}
+
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
 	var utilization uint32
 	for i := range status.GPUs {
@@ -69,7 +79,29 @@ func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeT
 		GPUUtilizationPct: utilization,
 		TelemetryValid:    status.TelemetryValid,
 		MSSince:           status.MSSince,
+		SampleSeq:         status.SampleSeq,
 	}
+}
+
+func (b *Broker) ingestManualNodeTelemetry(t manualNodeTelemetryParams) {
+	b.manualMu.Lock()
+	key, ok := b.manualNodeKeys[t.ID]
+	b.manualMu.Unlock()
+	if !ok {
+		slog.Debug("dropping telemetry for unknown manual node", "id", t.ID)
+		return
+	}
+	if t.HostUUID != "" && t.HostUUID != key {
+		slog.Debug("dropping telemetry with mismatched hostUuid", "id", t.ID, "payloadHostUuid", t.HostUUID, "registeredKey", key)
+		return
+	}
+	b.ingestTelemetryAt(sourceManual, noderec.NodeTelemetry{
+		HostUUID:          key,
+		GPUUtilizationPct: t.GPUUtilizationPct,
+		TelemetryValid:    t.TelemetryValid,
+		MSSince:           t.MSSince,
+		SampleSeq:         t.SampleSeq,
+	}, time.Now())
 }
 
 // manualToEnriched projects a manual node's status onto the EnrichedNode

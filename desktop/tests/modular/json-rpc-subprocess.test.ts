@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
+    JsonRpcProtocolMismatchError,
     JsonRpcResponseError,
     JsonRpcSubprocess,
     type JsonValue
 } from '@/electron/service-bridge/json-rpc-subprocess'
+import { decodeRelayFrame } from '@/electron/service-bridge/relay-envelope'
 
 const FAKE_RPC = `
 const readline = require('readline').createInterface({ input: process.stdin })
@@ -31,11 +33,12 @@ readline.on('line', () => process.exit(0))
 // than infer it.
 const FAKE_ECHO = `
 const readline = require('readline').createInterface({ input: process.stdin })
+let echoSeq = 0
 readline.on('line', line => {
   const frame = JSON.parse(line)
   // Every frame comes back as an echo notification; a request is additionally
   // answered so a caller waiting on it is not left hanging.
-  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'echo', params: frame }) + '\\n')
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'echo', params: frame, epoch: 'fake-echo-epoch', seq: ++echoSeq }) + '\\n')
   if (frame.id !== undefined) {
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: null }) + '\\n')
   }
@@ -179,6 +182,7 @@ describe('JsonRpcSubprocess.notify', () => {
     it('parses epoch and seq off inbound notifications and adopts the peer epoch for subsequent notify() calls', async () => {
         const peerScript = `
 const readline = require('readline').createInterface({ input: process.stdin })
+let echoSeq = 0
 readline.on('line', line => {
   const frame = JSON.parse(line)
   if (frame.method === 'trigger-peer-epoch') {
@@ -191,7 +195,7 @@ readline.on('line', line => {
     }) + '\\n')
     return
   }
-  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'echo', params: frame }) + '\\n')
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'echo', params: frame, epoch: 'fake-peer-epoch', seq: ++echoSeq }) + '\\n')
 })
 `
         const rpc = new JsonRpcSubprocess('fake', process.execPath)
@@ -215,9 +219,9 @@ readline.on('line', line => {
             const peerHeartbeat = new Promise<{
                 method: string
                 epoch?: string
-                seq?: number
+                seq?: bigint
             }>(resolve => {
-                const onNote = (note: { method: string; epoch?: string; seq?: number }): void => {
+                const onNote = (note: { method: string; epoch?: string; seq?: bigint }): void => {
                     if (note.method === 'heartbeat') {
                         rpc.off('notification', onNote)
                         resolve(note)
@@ -228,7 +232,7 @@ readline.on('line', line => {
             await rpc.notify('trigger-peer-epoch')
             const heartbeatNote = await peerHeartbeat
             expect(heartbeatNote.epoch).toBe('broker-epoch-v2')
-            expect(heartbeatNote.seq).toBe(7)
+            expect(heartbeatNote.seq).toBe(7n)
 
             const secondEcho = new Promise<Record<string, JsonValue>>(resolve => {
                 const onNote = (note: { method: string; params?: JsonValue }): void => {
@@ -243,6 +247,122 @@ readline.on('line', line => {
             const afterFrame = await secondEcho
             expect(afterFrame.epoch).toBe('broker-epoch-v2')
             expect(afterFrame.seq).toBe(3)
+        } finally {
+            await rpc.stop()
+        }
+    })
+})
+
+describe('inbound frame decoding and silence deadline', () => {
+    it('does not reset the silence deadline on a malformed frame', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const rpc = new JsonRpcSubprocess('fake', process.execPath)
+        const expired = vi.fn()
+        rpc.on('unresponsive', expired)
+        const childScript = `
+const readline = require('readline').createInterface({ input: process.stdin })
+readline.on('line', () => {
+  process.stdout.write(JSON.stringify({ not: 'valid json-rpc' }) + '\\n')
+})
+`
+        rpc.start(['-e', childScript])
+        try {
+            const malformedLogged = new Promise<void>(resolve => {
+                rpc.on('log', entry => {
+                    if (entry.text.includes('valid json-rpc')) resolve()
+                })
+            })
+            await vi.advanceTimersByTimeAsync(30_000)
+            await rpc.notify('trigger')
+            await malformedLogged
+            await vi.advanceTimersByTimeAsync(16_000)
+            expect(expired).toHaveBeenCalledTimes(1)
+        } finally {
+            vi.useRealTimers()
+            await rpc.stop()
+        }
+    })
+})
+
+describe('protocol mismatch handling', () => {
+    it('rejects pending calls with JsonRpcProtocolMismatchError, emits protocol-mismatch once, and stops delivery', async () => {
+        const mismatchScript = `
+const readline = require('readline').createInterface({ input: process.stdin })
+readline.on('line', line => {
+  const frame = JSON.parse(line)
+  if (frame.method === 'trigger-mismatch') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'unstamped' }) + '\\n')
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'subsequent', epoch: 'e', seq: 1 }) + '\\n')
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'second-mismatch' }) + '\\n')
+  }
+})
+`
+        const rpc = new JsonRpcSubprocess('fake', process.execPath)
+        const mismatchEvents: { source: string; reason: string }[] = []
+        rpc.on('protocol-mismatch', event => mismatchEvents.push(event))
+        const notifications: string[] = []
+        rpc.on('notification', note => notifications.push(note.method))
+
+        rpc.start(['-e', mismatchScript])
+        try {
+            const pendingCall = rpc.call('held', undefined, null)
+            const rejected = expect(pendingCall).rejects.toThrow(JsonRpcProtocolMismatchError)
+
+            await rpc.notify('trigger-mismatch')
+            await rejected
+
+            expect(mismatchEvents).toHaveLength(1)
+            expect(mismatchEvents[0]?.source).toBe('fake')
+            expect(mismatchEvents[0]?.reason).toContain('notification without epoch/seq')
+
+            expect(notifications).not.toContain('subsequent')
+            expect(notifications).not.toContain('second-mismatch')
+
+            await expect(rpc.notify('after-mismatch')).rejects.toThrow()
+        } finally {
+            await rpc.stop()
+        }
+    })
+})
+
+describe('large seq round-trip through notify', () => {
+    it('losslessly round-trips large seq values through notify without precision loss', async () => {
+        const echoRawScript = `
+const readline = require('readline').createInterface({ input: process.stdin })
+readline.on('line', line => {
+  process.stdout.write(JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'echo-raw',
+    params: { raw: line },
+    epoch: 'fake-epoch',
+    seq: 1
+  }) + '\\n')
+})
+`
+        const rpc = new JsonRpcSubprocess('fake', process.execPath)
+        rpc.start(['-e', echoRawScript])
+        try {
+            const largeSeq = 18446744073709551600n
+            rpc['notificationSeq'] = largeSeq
+
+            const received = new Promise<string>(resolve => {
+                rpc.on('notification', note => {
+                    if (note.method === 'echo-raw' && isJsonObject(note.params)) {
+                        resolve(String(note.params['raw']))
+                    }
+                })
+            })
+
+            await rpc.notify('test-large-seq')
+            const rawWireLine = await received
+
+            expect(rawWireLine).toContain('"seq":18446744073709551601')
+
+            const decoded = decodeRelayFrame(rawWireLine)
+            expect(decoded.kind).toBe('message')
+            if (decoded.kind === 'message') {
+                expect(decoded.seq).toBe(18446744073709551601n)
+            }
         } finally {
             await rpc.stop()
         }

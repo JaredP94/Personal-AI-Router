@@ -73,6 +73,14 @@ func (n *nodeInfoProcess) SetClusterIdentity(clusterUUID string) error {
 	return n.codec.Notify(noderec.MethodSetClusterIdentity, noderec.ClusterIdentityParams{ClusterUUID: clusterUUID})
 }
 
+// SetDemand tells node-info whether local workload execution is active,
+// so it can adjust its GPU telemetry sampling policy.
+func (n *nodeInfoProcess) SetDemand(localExecution bool) error {
+	n.stdinMu.Lock()
+	defer n.stdinMu.Unlock()
+	return n.codec.Notify(noderec.MethodSetDemand, noderec.DemandParams{LocalExecution: localExecution})
+}
+
 // Done implements supervisedHandle: the returned channel closes once the
 // node-info process has exited (cmd.Wait returned).
 func (n *nodeInfoProcess) Done() <-chan struct{} { return n.done }

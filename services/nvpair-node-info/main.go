@@ -77,6 +77,7 @@ type NodeInfoResponse struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
 	// HostUUID is this node's stable per-host identity (the same value the
 	// node-scanner advertises as uuid= and the cluster uses as nodeUuid). It lets
 	// a consumer that reaches this node only over HTTP — notably a user-added
@@ -147,6 +148,20 @@ func handleClusterIdentity(msg applog.StdinMessage, identity *clusterIdentity) {
 	slog.Info("cluster identity updated", "clustered", params.ClusterUUID != "")
 }
 
+// handleDemand applies a MethodSetDemand ("stats/set-demand") notification.
+func handleDemand(msg applog.StdinMessage, collector *statsCollector) {
+	if msg.Method != noderec.MethodSetDemand {
+		return
+	}
+	var params noderec.DemandParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		slog.Warn("ignoring malformed stats/set-demand push", "err", err)
+		return
+	}
+	collector.SetLocalExecution(params.LocalExecution)
+	slog.Info("stats demand updated", "localExecution", params.LocalExecution)
+}
+
 // detectGPUs lives in gpu_windows.go (DXGI), gpu_linux.go (nvidia-smi with a
 // ghw fallback), gpu_darwin.go (IORegistry), and gpu_other.go (ghw fallback).
 // detectCPU lives in cpu_detect.go; memory detection is split so macOS can use
@@ -188,11 +203,12 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 		}
 	}
 
-	telemetryValid, msSince := telemetryStatus(snap.GPUSampledAt, now)
+	telemetryValid, msSince, sampleSeq := telemetryStatus(snap.GPUSampledAt, snap.GPUSampleSeq, now)
 	resp := NodeInfoResponse{
 		GPUs:           outGPUs,
 		TelemetryValid: telemetryValid,
 		MSSince:        msSince,
+		SampleSeq:      sampleSeq,
 		HostUUID:       hostUUID,
 		ClusterUUID:    clusterUUID,
 	}
@@ -211,15 +227,15 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 	return body
 }
 
-func telemetryStatus(sampledAt, now time.Time) (bool, int64) {
+func telemetryStatus(sampledAt time.Time, seq uint64, now time.Time) (bool, int64, uint64) {
 	if sampledAt.IsZero() {
-		return false, 0
+		return false, 0, 0
 	}
 	age := now.Sub(sampledAt)
 	if age < 0 {
 		age = 0
 	}
-	return true, age.Milliseconds()
+	return true, age.Milliseconds(), seq
 }
 
 func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
@@ -275,7 +291,7 @@ func isBackgroundNodeInfoPoll(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	return r.Header.Get("X-NVPAIR-Poll") == "background"
+	return parsePollIntent(r.Header.Get("X-NVPAIR-Poll")) == PollIntentBackground
 }
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -417,9 +433,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func(r *http.Request) []byte {
 		var snap statsSnapshot
-		if isBackgroundNodeInfoPoll(r) {
+		intent := parsePollIntent(r.Header.Get("X-NVPAIR-Poll"))
+		switch intent {
+		case PollIntentBackground:
 			snap = collector.PeekSnapshot()
-		} else {
+		case PollIntentScheduling:
+			snap = collector.SnapshotScheduling()
+		default: // PollIntentForeground
 			snap = collector.Snapshot()
 		}
 		return buildResponse(gpus, cpu, memTotal, snap, hostUUID, clusterPrincipal())
@@ -562,6 +582,7 @@ func main() {
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)
+		handleDemand(msg, collector)
 	}, func() {
 		log.Print("stdin closed, shutting down")
 		cancel()

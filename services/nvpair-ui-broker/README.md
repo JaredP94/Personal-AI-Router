@@ -152,8 +152,11 @@ DecodeError is recoverable; envelope mismatch is terminal with a metadata-only
 protocol-mismatch diagnostic. Worker reader termination closes its owned control
 pipe, so EOF reaches the child and normal supervision observes its exit.
 Separate HTTP/mTLS cluster payloads are not stdio envelopes. Desktop TypeScript
-is the explicit observe-only inbound exception: it observes stamps and adopts
-the peer epoch, but does not reject missing stamps.
+enforces the same canonical envelope rules as Go: duplicate or case-variant
+reserved members are recoverable decode errors, and envelope mismatches (missing
+or wrong-typed stamps on notifications, or stamped requests/responses) terminate
+the session cleanly, fail pending calls, and report a supervisor crash without
+reconnecting.
 
 ```json
 {"jsonrpc":"2.0","method":"app:ready","params":{"version":"dev"},"epoch":"27b5b4b2-15c3-4ccc-8938-51c985159020","seq":1}
@@ -645,7 +648,7 @@ report an error even when deletion succeeded.
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 
-Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls? }`) registers a user-added node and probes it; `node/remove` (`{ id }`) drops it; `nodes/list` returns the tracked manual nodes. Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. A `nvpair-manual-nodes` restart loses the in-memory entries because neither that worker nor the broker persists an authoritative copy, so clients must re-add manual nodes after a restart. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
+Relayed to `nvpair-manual-nodes`. `node/add` (`{ address, name?, tls_port?, mtls? }`) registers a user-added node and probes it; `node/remove` (`{ id }`) drops it; `nodes/list` returns the tracked manual nodes. Manually added nodes also surface in the shared `discovery:get-nodes` / `discovery:nodes-changed` snapshot — the broker merges `nvpair-manual-nodes`' `node/discovered|updated|removed` into the same store the scanner feeds. Separately from 10-second topology probes, `nvpair-manual-nodes` runs a 2 s ± 250 ms telemetry loop emitting internal `node/telemetry` frames (`id`, `hostUuid`, `gpuUtilizationPct`, `telemetryValid`, `msSince`, `sampleSeq`) for reachable nodes; the broker ingests these observations into its scheduling telemetry cache without modifying discovery state or proxy bindings. A `nvpair-manual-nodes` restart loses the in-memory entries because neither that worker nor the broker persists an authoritative copy, so clients must re-add manual nodes after a restart. Error `-32000 "manual-nodes not available"` when no manual-nodes worker is supervised.
 
 **Manual → proxy bridge.** When the broker supervises both `nvpair-manual-nodes` and a proxy, it also bridges a manual node whose engine is reachable into that proxy via `node/add-manual` (host/port from the node's per-engine status), so inference can route to it through `proxy:node/select` / `lmstudio-proxy:node/select` / `omlx-proxy:node/select` just like a relay-discovered node. This is per-engine: a node whose `ollama_*` status is up is bridged into `ollama-proxy` (host/port from `ollama_port`), one whose `lmstudio_*` status is up into `lmstudio-proxy` (from `lmstudio_port`), and one whose `omlx_*` status is up into `omlx-proxy` (from `omlx_port` or default `:1236`) — a node running multiple engines is bridged into each. Manual nodes are by definition the ones that never appear via the daemon's `_nvpair-node` discovery, so this explicit add is what makes them routable. The bridge tracks reachability: an engine that goes down (or a node that is removed, or whose prober crashes) is pulled back out with `node/remove-manual`. A proxy that isn't supervised → that leg is a no-op; manual nodes still appear in the discovery snapshot as before.
 

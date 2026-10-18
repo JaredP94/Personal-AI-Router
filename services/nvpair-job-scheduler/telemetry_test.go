@@ -95,6 +95,88 @@ func TestApplyTelemetrySmoothsUtilizationBeforeChangingPressure(t *testing.T) {
 	}
 }
 
+func TestRepeatedSampleAddsNoWeight(t *testing.T) {
+	manager := NewManager(NewCodec(nopRW{}), time.Second)
+	now := time.Unix(1_700_000_000, 0)
+	sample := noderec.NodeTelemetry{
+		HostUUID:          "node-a",
+		TelemetryValid:    true,
+		GPUUtilizationPct: 0,
+		SampleSeq:         1,
+	}
+	manager.applyTelemetryAt(sample, now)
+
+	sample.GPUUtilizationPct = 100
+	sample.SampleSeq = 2
+	manager.applyTelemetryAt(sample, now.Add(time.Second))
+
+	manager.mu.Lock()
+	singleUpdateEWMA := manager.telemetry["node-a"].ewma
+	manager.mu.Unlock()
+	if math.Abs(singleUpdateEWMA-35.0) > 0.001 {
+		t.Fatalf("EWMA after first 100%% sample = %.3f, want 35.0", singleUpdateEWMA)
+	}
+
+	// Repeated sample with same SampleSeq: EWMA must NOT update, but freshness bookkeeping must update.
+	manager.applyTelemetryAt(sample, now.Add(2*time.Second))
+
+	manager.mu.Lock()
+	state := manager.telemetry["node-a"]
+	manager.mu.Unlock()
+	if math.Abs(state.ewma-singleUpdateEWMA) > 0.001 {
+		t.Fatalf("EWMA after repeated sampleSeq = %.3f, want %.3f (no weight added)", state.ewma, singleUpdateEWMA)
+	}
+	if state.receivedAt != now.Add(2*time.Second) {
+		t.Fatalf("freshness bookkeeping did not update: receivedAt = %v, want %v", state.receivedAt, now.Add(2*time.Second))
+	}
+}
+
+func TestNewSampleSameValueStillWeighs(t *testing.T) {
+	manager := NewManager(NewCodec(nopRW{}), time.Second)
+	now := time.Unix(1_700_000_000, 0)
+	sample := noderec.NodeTelemetry{
+		HostUUID:          "node-a",
+		TelemetryValid:    true,
+		GPUUtilizationPct: 0,
+		SampleSeq:         1,
+	}
+	manager.applyTelemetryAt(sample, now)
+
+	sample.GPUUtilizationPct = 100
+	sample.SampleSeq = 2
+	manager.applyTelemetryAt(sample, now.Add(time.Second))
+
+	// New sample with different SampleSeq but same 100% utilization: must update EWMA.
+	sample.SampleSeq = 3
+	manager.applyTelemetryAt(sample, now.Add(2*time.Second))
+
+	manager.mu.Lock()
+	newEWMA := manager.telemetry["node-a"].ewma
+	manager.mu.Unlock()
+	expected := 0.35*100.0 + 0.65*35.0 // 57.75
+	if math.Abs(newEWMA-expected) > 0.001 {
+		t.Fatalf("EWMA after new sampleSeq = %.3f, want %.3f", newEWMA, expected)
+	}
+
+	// Also verify that SampleSeq 0 (older peers) still weighs on every fresh arrival.
+	sampleOlder := noderec.NodeTelemetry{
+		HostUUID:          "node-b",
+		TelemetryValid:    true,
+		GPUUtilizationPct: 0,
+		SampleSeq:         0,
+	}
+	manager.applyTelemetryAt(sampleOlder, now)
+	sampleOlder.GPUUtilizationPct = 100
+	manager.applyTelemetryAt(sampleOlder, now.Add(time.Second))
+	manager.applyTelemetryAt(sampleOlder, now.Add(2*time.Second))
+	manager.mu.Lock()
+	olderEWMA := manager.telemetry["node-b"].ewma
+	manager.mu.Unlock()
+	if math.Abs(olderEWMA-expected) > 0.001 {
+		t.Fatalf("older peer with sampleSeq 0 EWMA = %.3f, want %.3f", olderEWMA, expected)
+	}
+}
+
 func TestTelemetryFreshnessUnknownAndRecovery(t *testing.T) {
 	manager := NewManager(NewCodec(nopRW{}), time.Second)
 	now := time.Unix(1_700_000_000, 0)
