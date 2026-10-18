@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Docker Hub lookup: 2026-10-18; stable tag version-20.23.0.
+# Manifest-list digest: sha256:c542e7de1dc1fdd0f938de337d44ebefa7266e91391eed6e7978523d7f6e1f2f
+services:
+  phoenix:
+    image: arizephoenix/phoenix:{{.ImageVersion}}@sha256:c542e7de1dc1fdd0f938de337d44ebefa7266e91391eed6e7978523d7f6e1f2f
+    container_name: nvpair-phoenix
+    restart: unless-stopped
+    labels:
+      nvpair.managed: "true"
+      nvpair.managed-config: "{{.ManagedConfig}}"
+    ports:
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:{{.CollectorPort}}:4317"
+    environment:
+      - PHOENIX_PORT=6006
+      - PHOENIX_GRPC_PORT=4317
+      - PHOENIX_SQL_DATABASE_URL=sqlite:////data/phoenix.db
+    volumes:
+      - nvpair-phoenix-data:/data
+
+volumes:
+  nvpair-phoenix-data:
+    name: nvpair-phoenix-data
+    driver: local
+    labels:
+      nvpair.managed: "true"

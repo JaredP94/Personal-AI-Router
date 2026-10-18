@@ -558,8 +558,14 @@ Returns the desired telemetry snapshot (`revision`, `enabled`, `collectorPort`,
 - `containerState`, `collectorReachable`, `uiUrl` (always
   `http://127.0.0.1:6006`), and `imageVersion`. The collector TCP probe targets
   `127.0.0.1:<collectorPort>`.
-- `bindingsLoopbackOnly`, `managedConfig`, and `storage` are currently null,
-  pending managed-collector and retention support.
+- `bindingsLoopbackOnly`: true only when every `HostConfig.PortBindings`
+  binding has `HostIp` equal to `127.0.0.1`; null with no container.
+- `managedConfig`: `current` when the running container's `nvpair.managed-config`
+  label matches the canonical rendered configuration hash, `outdated` otherwise,
+  or `missing` with no container. The canonical SHA-256 is computed with the
+  managed-config label value empty, then inserted into the final render.
+- `imageVersion`: the pinned Phoenix release tag (`version-20.23.0`).
+- `storage` remains null pending retention support.
 
 The broker loads `settings/get-telemetry-config` whenever settings announces ready,
 including restarts, and consumes/forwards `settings/telemetry-changed` snapshots.
@@ -575,23 +581,33 @@ policy. Failed application is reported separately from desired state.
 
 Status no longer includes `endpoint`, `currentVersion`, `updateAvailable`, or
 `latestVersion`, and reading status does not initiate an image update check.
-Collector compose/update operations remain separate from proxy tracing policy.
-
-#### `telemetry/check-update`
-
-Queries Docker Hub and local image cache for newer Arize Phoenix images, updates cached version availability, and returns the updated `TelemetryStatusResult`.
-
-#### `telemetry/update`
-
-Pulls the latest Arize Phoenix Docker image via `docker compose pull`, recreates the container via `docker compose up -d`, verifies collector reachability, and returns the updated `TelemetryStatusResult`.
+Collector lifecycle operations remain separate from proxy tracing policy.
+`telemetry/check-update` and `telemetry/update` have been removed (error `-32601`).
+Phoenix updates now ship as reviewed, pinned images with PAIR releases.
 
 #### `telemetry/start`
 
-Launches the Arize Phoenix Docker container via `docker compose -f docker-compose.telemetry.yml up -d`, polls the OTLP collector port up to 10 seconds until accepting connections, and returns the updated `TelemetryStatusResult`.
+Renders the broker's embedded Compose template to
+`<appdir>/telemetry/phoenix-compose.yml` (0644) and runs
+`docker compose -p nvpair-telemetry -f <that file> up -d`. No custom Compose
+path or environment override is supported. The image is release-tagged and
+manifest-digest pinned. Only `127.0.0.1:6006:6006` (UI/HTTP) and
+`127.0.0.1:<collectorPort>:4317` (gRPC) are published. The named data volume is
+`nvpair-phoenix-data`; both container and volume carry `nvpair.managed=true`.
+
+If `nvpair-phoenix` belongs to a different Compose project (or none), only that
+container is force-stopped and removed before startup; no volumes or other
+containers are removed. After a quick start the broker probes reachability for
+up to 2 seconds. Startup taking over 1.5 seconds returns `starting` and continues
+in the background, probing for up to 45 seconds after Compose completes.
+Returns the updated `TelemetryStatusResult`.
 
 #### `telemetry/stop`
 
-Stops the Arize Phoenix Docker container via `docker compose -f docker-compose.telemetry.yml stop` and returns the updated `TelemetryStatusResult`. Its named trace-data volume is retained; this is not trace deletion or proxy tracing disablement.
+Stops the managed Arize Phoenix container via
+`docker compose -p nvpair-telemetry -f <appdir>/telemetry/phoenix-compose.yml stop`
+and returns the updated `TelemetryStatusResult`. Its named trace-data volume is
+retained; this is not trace deletion or proxy tracing disablement.
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 

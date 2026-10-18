@@ -12,7 +12,6 @@ import (
 	"log"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,7 +175,6 @@ type Broker struct {
 	clusterMgrPath        string
 	schedulerPath         string
 	clusterDir            string
-	telemetryComposePath  string
 	dockerRunner          dockerRunner
 	telemetryConfigMu     sync.Mutex
 	telemetryReconcileMu  sync.Mutex
@@ -186,13 +184,6 @@ type Broker struct {
 	telemetryMu           sync.Mutex
 	telemetryStarting     atomic.Bool
 	telemetryCancelStart  context.CancelFunc
-	telemetryUpdateMu     sync.Mutex
-	telemetryLastCheck    time.Time
-	telemetryUpdateAvail  bool
-	telemetryLatestVer    string
-	telemetryUpdating     atomic.Bool
-	telemetryCancelUpdate context.CancelFunc
-	telemetryHTTPClient   *http.Client
 	dialTimeout           func(network, address string, timeout time.Duration) (net.Conn, error)
 	mesh                  *clustertrust.Mesh
 	// Managed-port state is prepared before proxy startup and read by the proxy
@@ -383,8 +374,6 @@ type workerPaths struct {
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
 	clusterDir string
-	// telemetryComposePath is the explicit path to docker-compose.telemetry.yml.
-	telemetryComposePath string
 	// closeTransport closes the client connection that backs codec. Serve uses it
 	// during shutdown to unblock a heartbeat write that is stuck in the codec's
 	// writer while the client is no longer reading.
@@ -410,35 +399,34 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	return &Broker{
-		codec:                codec,
-		closeTransport:       paths.closeTransport,
-		startedAt:            time.Now(),
-		heartbeatInterval:    jsonrpc.HeartbeatInterval,
-		nodeID:               nodeID,
-		scannerPath:          paths.scanner,
-		nodeInfoPath:         paths.nodeInfo,
-		proxyPath:            paths.proxy,
-		lmstudioProxyPath:    paths.lmstudioProxy,
-		omlxProxyPath:        paths.omlxProxy,
-		workloadMgrPath:      paths.workloadMgr,
-		errorsPath:           paths.errors,
-		engineMgrPath:        paths.engineMgr,
-		manualNodesPath:      paths.manualNodes,
-		settingsPath:         paths.settings,
-		clusterMgrPath:       paths.clusterMgr,
-		schedulerPath:        paths.scheduler,
-		clusterDir:           paths.clusterDir,
-		telemetryComposePath: paths.telemetryComposePath,
-		mesh:                 clustertrust.Open(paths.clusterDir),
-		store:                newDiscoveryStore(),
-		telemetry:            newTelemetryCache(),
-		relayDir:             relay.NewDirectory(),
-		regCache:             relay.NewRegistrationCache(),
-		manualNodeKeys:       make(map[string]string),
-		manualNodeStatuses:   make(map[string]manualNodeStatusEntry),
-		workloads:            workloadstore.New(),
-		ollamaPortReady:      make(chan struct{}),
-		lmstudioPortReady:    make(chan struct{}),
+		codec:              codec,
+		closeTransport:     paths.closeTransport,
+		startedAt:          time.Now(),
+		heartbeatInterval:  jsonrpc.HeartbeatInterval,
+		nodeID:             nodeID,
+		scannerPath:        paths.scanner,
+		nodeInfoPath:       paths.nodeInfo,
+		proxyPath:          paths.proxy,
+		lmstudioProxyPath:  paths.lmstudioProxy,
+		omlxProxyPath:      paths.omlxProxy,
+		workloadMgrPath:    paths.workloadMgr,
+		errorsPath:         paths.errors,
+		engineMgrPath:      paths.engineMgr,
+		manualNodesPath:    paths.manualNodes,
+		settingsPath:       paths.settings,
+		clusterMgrPath:     paths.clusterMgr,
+		schedulerPath:      paths.scheduler,
+		clusterDir:         paths.clusterDir,
+		mesh:               clustertrust.Open(paths.clusterDir),
+		store:              newDiscoveryStore(),
+		telemetry:          newTelemetryCache(),
+		relayDir:           relay.NewDirectory(),
+		regCache:           relay.NewRegistrationCache(),
+		manualNodeKeys:     make(map[string]string),
+		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
+		workloads:          workloadstore.New(),
+		ollamaPortReady:    make(chan struct{}),
+		lmstudioPortReady:  make(chan struct{}),
 	}
 }
 
@@ -3186,12 +3174,6 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "telemetry/get-status":
 		go b.handleTelemetryGetStatus(msg)
-
-	case "telemetry/check-update":
-		go b.handleTelemetryCheckUpdate(msg)
-
-	case "telemetry/update":
-		go b.handleTelemetryUpdate(msg)
 
 	case "telemetry/start":
 		go b.handleTelemetryStart(msg)

@@ -218,7 +218,7 @@ func TestLateOldReconcileCannotOverwriteNewer(t *testing.T) {
 }
 
 func TestStatusReportsDesiredAndEffective(t *testing.T) {
-	b := &Broker{dockerRunner: &mockDockerRunner{state: "running", version: "arize-phoenix-v20.16.0"}, dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
+	b := &Broker{dockerRunner: &mockDockerRunner{state: "running"}, dialTimeout: func(network, address string, timeout time.Duration) (net.Conn, error) {
 		if network != "tcp" || address != "127.0.0.1:54317" {
 			t.Errorf("probe target = %s %s", network, address)
 		}
@@ -243,7 +243,7 @@ func TestStatusReportsDesiredAndEffective(t *testing.T) {
 	}
 	var got map[string]json.RawMessage
 	json.Unmarshal(raw, &got)
-	want := map[string]string{"revision": "12", "enabled": "true", "collectorPort": "54317", "recordPayloads": "true", "payloadConsentVersion": "1", "payloadPolicyVersion": "1", "containerState": `"running"`, "collectorReachable": "true", "uiUrl": `"http://127.0.0.1:6006"`, "imageVersion": `"v20.16.0"`, "bindingsLoopbackOnly": "null", "managedConfig": "null", "storage": "null"}
+	want := map[string]string{"revision": "12", "enabled": "true", "collectorPort": "54317", "recordPayloads": "true", "payloadConsentVersion": "1", "payloadPolicyVersion": "1", "containerState": `"running"`, "collectorReachable": "true", "uiUrl": `"http://127.0.0.1:6006"`, "imageVersion": `"version-20.23.0"`, "bindingsLoopbackOnly": "true", "managedConfig": `"outdated"`, "storage": "null"}
 	if len(got) != len(want)+1 {
 		t.Errorf("unexpected status keys: %s", raw)
 	}
