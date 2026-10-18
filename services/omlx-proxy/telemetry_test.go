@@ -28,13 +28,18 @@ func (d dummyReadWriteCloser) Close() error { return nil }
 
 func setupTestProxyWithTelemetry(t *testing.T, recordPayloads bool) (*Proxy, *tracetest.InMemoryExporter) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OMLX_API_KEY", "")
 	exporter := tracetest.NewInMemoryExporter()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-
-	cfg := telemetry.DefaultConfig("nvpair-omlx-proxy-test")
-	cfg.RecordPayloads = recordPayloads
-	tel := telemetry.NewTestProvider(tp, cfg)
+	tel := telemetry.NewManager("nvpair-omlx-proxy-test", func(context.Context, string) (sdktrace.SpanExporter, error) {
+		return exporter, nil
+	})
+	t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
+	if _, err := tel.Apply(context.Background(), 1, telemetry.Settings{
+		Enabled: true, CollectorPort: 4317, RecordPayloads: recordPayloads,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	var inBuf, outBuf bytes.Buffer
 	rwc := dummyReadWriteCloser{Reader: &inBuf, Writer: &outBuf}
@@ -46,9 +51,7 @@ func setupTestProxyWithTelemetry(t *testing.T, recordPayloads bool) (*Proxy, *tr
 }
 
 func TestOMLXProxyTelemetrySpans(t *testing.T) {
-	var capturedTraceparent string
 	mockEngine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedTraceparent = r.Header.Get("traceparent")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 
@@ -83,10 +86,7 @@ func TestOMLXProxyTelemetrySpans(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if capturedTraceparent == "" {
-		t.Errorf("expected outgoing request to engine to have W3C traceparent injected")
-	}
-
+	flushTelemetry(t, p)
 	spans := exporter.GetSpans()
 	if len(spans) < 3 {
 		t.Fatalf("expected at least 3 spans (schedule, dispatch, inference), got %d", len(spans))
@@ -115,11 +115,8 @@ func TestOMLXProxyTelemetrySpans(t *testing.T) {
 	if rootAttrs["http.response.status_code"] != int64(200) {
 		t.Errorf("expected http.response.status_code = 200, got %v", rootAttrs["http.response.status_code"])
 	}
-	if rootAttrs["http.request.header.authorization"] != "[REDACTED]" {
-		t.Errorf("expected authorization header to be [REDACTED], got %v", rootAttrs["http.request.header.authorization"])
-	}
-	if rootAttrs["http.request.header.x-custom-client"] != "open-webui" {
-		t.Errorf("expected custom header preserved, got %v", rootAttrs["http.request.header.x-custom-client"])
+	if rootAttrs["http.request.header.content-type"] != "application/json" {
+		t.Errorf("expected allowlisted content-type, got %v", rootAttrs["http.request.header.content-type"])
 	}
 	if _, hasPrompt := rootAttrs["gen_ai.prompt"]; hasPrompt {
 		t.Errorf("expected gen_ai.prompt to be omitted when RecordPayloads=false")
@@ -177,6 +174,7 @@ func TestOMLXProxyPayloadCaptureEnabled(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 
+	flushTelemetry(t, p)
 	spans := exporter.GetSpans()
 	spanMap := make(map[string]tracetest.SpanStub)
 	for _, s := range spans {
@@ -227,6 +225,7 @@ func TestOMLXProxyCandidateFailureTelemetry(t *testing.T) {
 		t.Fatalf("expected failover to succeed with 200, got %d", rec.Code)
 	}
 
+	flushTelemetry(t, p)
 	spans := exporter.GetSpans()
 	var dispatchSpans []tracetest.SpanStub
 	for _, s := range spans {

@@ -5,40 +5,82 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"nvpair-shared/telemetry"
 )
 
-func defaultTelemetryConfig() telemetry.Config {
-	cfg := telemetry.DefaultConfig("nvpair-lmstudio-proxy")
-	if ep := os.Getenv("PAIR_TELEMETRY_ENDPOINT"); ep != "" {
-		cfg.Endpoint = ep
-	} else if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
-		cfg.Endpoint = ep
+// The broker is the only source of tracing consent. Require every policy field
+// so missing/null values cannot silently become an accepted policy revision.
+func (p *Proxy) handleTelemetryConfigure(msg *Message) {
+	var params struct {
+		Revision       *uint64 `json:"revision"`
+		Enabled        *bool   `json:"enabled"`
+		CollectorPort  *int    `json:"collectorPort"`
+		RecordPayloads *bool   `json:"recordPayloads"`
 	}
-	if v := os.Getenv("PAIR_TELEMETRY_ENABLED"); v != "" {
-		cfg.Enabled = v == "true" || v == "1"
-	} else if os.Getenv("OTEL_SDK_DISABLED") == "true" {
-		cfg.Enabled = false
+	if err := json.Unmarshal(msg.Params, &params); err != nil || params.Revision == nil || params.Enabled == nil || params.CollectorPort == nil || params.RecordPayloads == nil {
+		p.codec.RespondError(msg.ID, -32602, "expected revision, enabled, collectorPort and recordPayloads")
+		return
 	}
-	if v := os.Getenv("PAIR_TELEMETRY_RECORD_PAYLOADS"); v != "" {
-		cfg.RecordPayloads = v == "true" || v == "1"
+	settings := telemetry.Settings{Enabled: *params.Enabled, CollectorPort: *params.CollectorPort, RecordPayloads: *params.RecordPayloads}
+	if err := telemetry.ValidateSettings(settings); err != nil {
+		p.codec.RespondError(msg.ID, -32602, err.Error())
+		return
 	}
-	if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
-		cfg.ServiceName = name
+	revision, err := p.telemetry.Apply(context.Background(), *params.Revision, settings)
+	if err != nil {
+		p.codec.RespondError(msg.ID, -32000, "failed to configure telemetry")
+		return
 	}
-	return cfg
+	p.codec.Respond(msg.ID, struct {
+		Revision uint64 `json:"revision"`
+	}{Revision: revision})
+}
+
+func (p *Proxy) handleTelemetryStatus(msg *Message) {
+	status := p.telemetry.Status()
+	var lastError *string
+	if status.LastExportError != "" {
+		lastError = &status.LastExportError
+	}
+	p.codec.Respond(msg.ID, struct {
+		Revision          uint64  `json:"revision"`
+		Enabled           bool    `json:"enabled"`
+		LastExportOK      *string `json:"lastExportOk"`
+		LastExportError   *string `json:"lastExportError"`
+		LastExportErrorAt *string `json:"lastExportErrorAt"`
+	}{status.Revision, status.Enabled, telemetryTimestamp(status.LastExportOK), lastError, telemetryTimestamp(status.LastExportErrorAt)})
+}
+
+func telemetryTimestamp(t time.Time) *string {
+	if t.IsZero() {
+		return nil
+	}
+	value := t.UTC().Format(time.RFC3339)
+	return &value
+}
+
+func metadataAttribute(key, value string) attribute.KeyValue {
+	value, _ = telemetry.TruncateUTF8(value, 256)
+	return attribute.String(key, value)
+}
+
+// ReverseProxy otherwise copies the original client headers even without an
+// injector. Context from local clients must never cross an engine/peer boundary.
+func stripTraceContext(header http.Header) {
+	header.Del("traceparent")
+	header.Del("tracestate")
+	header.Del("baggage")
 }
 
 func isStreamingRequest(path string, bodyBytes []byte) bool {
@@ -97,43 +139,27 @@ func isLocalHost(hostPort string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func recordRequestHeaders(span trace.Span, header http.Header) {
-	if span == nil || !span.IsRecording() || len(header) == 0 {
-		return
-	}
-	redacted := telemetry.RedactHeaders(header)
-	for k, v := range redacted {
-		span.SetAttributes(attribute.String("http.request.header."+strings.ToLower(k), v))
-	}
-}
-
-func (p *Proxy) tracer() trace.Tracer {
-	if p != nil && p.telemetry != nil {
-		return p.telemetry.Tracer()
-	}
-	return otel.GetTracerProvider().Tracer("nvpair-lmstudio-proxy")
-}
-
 type telemetryBodyReader struct {
 	io.ReadCloser
-	span           trace.Span
-	start          time.Time
-	recordPayloads bool
-	firstReadOnce  sync.Once
-	closeOnce      sync.Once
-	lineBuf        []byte
-	completionBuf  strings.Builder
-	promptTokens   int
-	outputTokens   int
-	responseModel  string
+	span                trace.Span
+	start               time.Time
+	session             *telemetry.Session
+	completionTruncated bool
+	firstReadOnce       sync.Once
+	closeOnce           sync.Once
+	lineBuf             []byte
+	completionBuf       strings.Builder
+	promptTokens        int
+	outputTokens        int
+	responseModel       string
 }
 
-func newTelemetryBodyReader(body io.ReadCloser, span trace.Span, start time.Time, recordPayloads bool) *telemetryBodyReader {
+func newTelemetryBodyReader(body io.ReadCloser, span trace.Span, start time.Time, session *telemetry.Session) *telemetryBodyReader {
 	return &telemetryBodyReader{
-		ReadCloser:     body,
-		span:           span,
-		start:          start,
-		recordPayloads: recordPayloads,
+		ReadCloser: body,
+		span:       span,
+		start:      start,
+		session:    session,
 	}
 }
 
@@ -163,12 +189,13 @@ func (r *telemetryBodyReader) recordFirstToken() {
 	})
 }
 
-const (
-	maxTelemetryLineBytes      = 4 << 20  // 4 MiB max line buffer for large non-streaming frames
-	maxRecordedCompletionBytes = 64 << 10 // 64 KiB cap for recorded completion payload
-)
+const maxTelemetryLineBytes = 4 << 20 // 4 MiB max line buffer for large non-streaming frames
 
 func (r *telemetryBodyReader) observe(chunk []byte) {
+	if !r.session.RecordPayloads() {
+		r.completionBuf.Reset()
+		r.completionTruncated = false
+	}
 	r.lineBuf = append(r.lineBuf, chunk...)
 	for {
 		end := bytes.IndexByte(r.lineBuf, '\n')
@@ -227,7 +254,7 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 		return
 	}
 	if chunk.Model != "" && r.responseModel == "" {
-		r.responseModel = chunk.Model
+		r.responseModel, _ = telemetry.TruncateUTF8(chunk.Model, 256)
 	}
 	if chunk.PromptEvalCount > 0 {
 		r.promptTokens = chunk.PromptEvalCount
@@ -243,7 +270,7 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 			r.outputTokens = chunk.Usage.CompletionTokens
 		}
 	}
-	if r.recordPayloads && r.completionBuf.Len() < maxRecordedCompletionBytes {
+	if r.session.RecordPayloads() && !r.completionTruncated {
 		var toAppend string
 		if chunk.Response != "" {
 			toAppend = chunk.Response
@@ -258,25 +285,18 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 				toAppend = chunk.Choices[0].Text
 			}
 		}
-		if toAppend != "" {
-			if r.completionBuf.Len()+len(toAppend) > maxRecordedCompletionBytes {
-				remain := maxRecordedCompletionBytes - r.completionBuf.Len()
-				if remain > 0 {
-					r.completionBuf.WriteString(toAppend[:remain])
-				}
-				r.completionBuf.WriteString("... [TRUNCATED]")
-			} else {
-				r.completionBuf.WriteString(toAppend)
-			}
-		}
+		part, truncated := telemetry.TruncateUTF8(toAppend, telemetry.MaxPayloadBytes-r.completionBuf.Len())
+		r.completionBuf.WriteString(part)
+		r.completionTruncated = truncated
 	}
 }
 
 func (r *telemetryBodyReader) finalize() {
 	r.closeOnce.Do(func() {
+		defer r.completionBuf.Reset()
 		if r.span != nil && r.span.IsRecording() {
 			if r.responseModel != "" {
-				r.span.SetAttributes(attribute.String("gen_ai.response.model", r.responseModel))
+				r.span.SetAttributes(metadataAttribute("gen_ai.response.model", r.responseModel))
 			}
 			if r.promptTokens > 0 {
 				r.span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", r.promptTokens))
@@ -284,12 +304,15 @@ func (r *telemetryBodyReader) finalize() {
 			if r.outputTokens > 0 {
 				r.span.SetAttributes(attribute.Int("gen_ai.usage.output_tokens", r.outputTokens))
 			}
-			if r.recordPayloads && r.completionBuf.Len() > 0 {
-				comp := r.completionBuf.String()
+			if r.session.RecordPayloads() && r.completionBuf.Len() > 0 {
+				comp, _ := telemetry.TruncateUTF8(r.completionBuf.String(), telemetry.MaxPayloadBytes)
 				r.span.SetAttributes(
 					attribute.String("gen_ai.completion", comp),
 					attribute.String("output.value", comp),
 				)
+				if r.completionTruncated {
+					r.span.SetAttributes(attribute.Bool("gen_ai.completion.truncated", true))
+				}
 			}
 		}
 	})
