@@ -289,6 +289,69 @@ func TestWorkersCrashReason(t *testing.T) {
 	}
 }
 
+// Readiness is not proof of the supervisor's healthy uptime/probe window.
+// Catch proxy ready handlers that bypass onRecovered and clear sticky crashes.
+func TestWorkersProxyReadyDoesNotClearCrashError(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		forward func(*Broker, string, json.RawMessage)
+	}{
+		{"proxy", (*Broker).forwardProxyNotification},
+		{"lmstudio-proxy", (*Broker).forwardLMStudioProxyNotification},
+		{"omlx-proxy", (*Broker).forwardOMLXProxyNotification},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
+			var sink bytes.Buffer
+			b.setErrors(&errorsProcess{peer: NewPeer(NewCodec(writeOnlyReadWriter{&sink}))})
+			var sup *supervisor
+			for _, entry := range b.workerEntries {
+				if entry.status.Name == tc.name {
+					sup = entry.sup
+					break
+				}
+			}
+			if sup == nil {
+				t.Fatal("proxy supervisor not registered")
+			}
+			sup.onCrash(1)
+			var reportMsg Message
+			if err := json.Unmarshal(sink.Bytes(), &reportMsg); err != nil {
+				t.Fatal(err)
+			}
+			var report serviceerrors.ServiceError
+			if err := json.Unmarshal(reportMsg.Params, &report); err != nil {
+				t.Fatal(err)
+			}
+			wantID := "supervisor:subprocess-crashed:" + tc.name
+			if reportMsg.Method != "errors:report" || report.ID != wantID {
+				t.Fatalf("crash report = %+v, params = %+v", reportMsg, report)
+			}
+
+			sink.Reset()
+			tc.forward(b, "ready", json.RawMessage(`{"port":1236}`))
+			if sink.Len() != 0 {
+				t.Fatalf("ready alone changed the crash error: %s", sink.String())
+			}
+
+			// The supervisor invokes this only after healthy uptime and a probe;
+			// its timing policy is covered by the supervisor tests.
+			sup.onRecovered()
+			var clearMsg Message
+			if err := json.Unmarshal(sink.Bytes(), &clearMsg); err != nil {
+				t.Fatal(err)
+			}
+			var clear serviceerrors.ClearParams
+			if err := json.Unmarshal(clearMsg.Params, &clear); err != nil {
+				t.Fatal(err)
+			}
+			if clearMsg.Method != "errors:clear" || clear.ID != wantID || clear.ClearedBy != b.nodeID {
+				t.Fatalf("recovery clear = %+v, params = %+v", clearMsg, clear)
+			}
+		})
+	}
+}
+
 func TestWorkersUnknownRestart(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{&bytes.Buffer{}}), workerPaths{})
 	_, rpcErr := b.restartWorker("not-a-worker")
