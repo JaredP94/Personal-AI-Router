@@ -563,13 +563,15 @@ Returns the desired telemetry snapshot (`revision`, `enabled`, `collectorPort`,
 
 The broker loads `settings/get-telemetry-config` whenever settings announces ready,
 including restarts, and consumes/forwards `settings/telemetry-changed` snapshots.
-With no settings worker the desired policy is disabled at revision 0, port 4317,
-with no payload recording or consent. Proxies start disabled; after every proxy
-ready and desired change, serialized `telemetry/configure` requests (5-second
-timeout each) apply the latest desired policy. Failed application is reported
-separately from desired state. A proxy that already accepted a higher revision
-will reject the revision-0 policy after settings disappears; it reports failed
-reconciliation until settings recovers rather than claiming disablement.
+Until settings has ever loaded, the desired policy is disabled at revision 0,
+port 4317, with no payload recording or consent. If the settings worker becomes
+unavailable after loading, the broker retains the last loaded desired revision
+and all configuration fields (the user's persisted choice). Proxies restarted
+while settings is unavailable receive that retained configuration. When settings
+returns and announces ready, the broker reloads and reconciles as usual.
+Proxies start disabled; after every proxy ready and desired change, serialized
+`telemetry/configure` requests (5-second timeout each) apply the latest desired
+policy. Failed application is reported separately from desired state.
 
 Status no longer includes `endpoint`, `currentVersion`, `updateAvailable`, or
 `latestVersion`, and reading status does not initiate an image update check.

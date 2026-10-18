@@ -56,18 +56,20 @@ func acceptTelemetryConfig(t *testing.T, seen chan<- telemetryDesiredConfig) fun
 			return
 		}
 		var policy struct {
-			Revision       *uint64 `json:"revision"`
-			Enabled        *bool   `json:"enabled"`
-			CollectorPort  *int    `json:"collectorPort"`
-			RecordPayloads *bool   `json:"recordPayloads"`
+			Revision              *uint64 `json:"revision"`
+			Enabled               *bool   `json:"enabled"`
+			CollectorPort         *int    `json:"collectorPort"`
+			RecordPayloads        *bool   `json:"recordPayloads"`
+			PayloadConsentVersion *int    `json:"payloadConsentVersion"`
+			PayloadPolicyVersion  *int    `json:"payloadPolicyVersion"`
 		}
 		err := json.Unmarshal(msg.Params, &policy)
-		if err != nil || policy.Revision == nil || policy.Enabled == nil || policy.CollectorPort == nil || policy.RecordPayloads == nil {
+		if err != nil || policy.Revision == nil || policy.Enabled == nil || policy.CollectorPort == nil || policy.RecordPayloads == nil || policy.PayloadConsentVersion == nil || policy.PayloadPolicyVersion == nil {
 			t.Errorf("invalid configure: %s", msg.Params)
 			codec.RespondError(msg.ID, -32602, "invalid policy")
 			return
 		}
-		seen <- telemetryDesiredConfig{Revision: *policy.Revision, Enabled: *policy.Enabled, CollectorPort: *policy.CollectorPort, RecordPayloads: *policy.RecordPayloads}
+		seen <- telemetryDesiredConfig{Revision: *policy.Revision, Enabled: *policy.Enabled, CollectorPort: *policy.CollectorPort, RecordPayloads: *policy.RecordPayloads, PayloadConsentVersion: *policy.PayloadConsentVersion, PayloadPolicyVersion: *policy.PayloadPolicyVersion}
 		codec.Respond(msg.ID, map[string]uint64{"revision": *policy.Revision})
 	}
 }
@@ -139,11 +141,14 @@ func TestProxyRestartGetsLatestConfig(t *testing.T) {
 
 func TestSettingsMissingKeepsProxiesDisabled(t *testing.T) {
 	b := &Broker{}
+	worker, _ := newTestRPCWorkerPipe(t)
+	b.setSettings(worker)
+	b.setSettings(nil) // A worker existed, but no configuration was ever loaded.
 	seen := make(chan telemetryDesiredConfig, 1)
 	b.setProxy(newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen)))
 	b.reconcileTelemetry()
 	got := receiveTelemetryConfig(t, seen)
-	if got.Revision != 0 || got.Enabled || got.RecordPayloads || got.CollectorPort != 4317 {
+	if got != (telemetryDesiredConfig{CollectorPort: 4317, PayloadPolicyVersion: 1}) {
 		t.Fatalf("missing settings policy = %+v", got)
 	}
 	states := b.telemetryWorkerStates()
@@ -315,12 +320,13 @@ func TestLateSettingsReadAndRetiredWorkerCannotReplaceNewerDesired(t *testing.T)
 	}
 	b.setSettings(nil)
 	config, _, _ = b.telemetrySnapshot()
-	if config.Enabled || config.Revision != 0 || config.RecordPayloads {
+	if config != telemetryConfigFixture(6) {
 		t.Fatalf("settings loss policy = %+v", config)
 	}
+	raw, _ = json.Marshal(telemetryConfigFixture(7))
 	b.forwardSettingsNotificationForWorker(worker, "settings/telemetry-changed", raw)
 	config, _, _ = b.telemetrySnapshot()
-	if config.Revision != 0 {
+	if config != telemetryConfigFixture(6) {
 		t.Fatalf("retired worker changed desired: %+v", config)
 	}
 	replacement, replacementCodec := newTestRPCWorkerPipe(t)
@@ -350,30 +356,56 @@ func TestSettingsNotificationWithoutWorkerCannotEnableTracing(t *testing.T) {
 	b.reconcileTelemetry()
 }
 
-func TestSettingsLossReportsRevisionZeroRejection(t *testing.T) {
-	b := &Broker{}
-	b.cacheDesiredTelemetry(telemetryConfigFixture(9))
-	seen := make(chan telemetryDesiredConfig, 1)
-	b.setProxy(newTelemetryProxyPeer(t, func(codec *Codec, msg *Message) {
-		var desired telemetryDesiredConfig
-		json.Unmarshal(msg.Params, &desired)
-		if desired.Revision == 9 {
-			seen <- desired
-		}
-		// Match the producer's monotonic rule: a lower revision is a no-op
-		// returning the already-effective revision, not a successful disable.
-		codec.Respond(msg.ID, map[string]uint64{"revision": 9})
-	}))
-	b.reconcileTelemetry()
-	receiveTelemetryConfig(t, seen)
-	b.setSettings(nil)
-	b.reconcileTelemetry()
-	desired, workers, _ := b.telemetrySnapshot()
-	if desired.Revision != 0 || desired.Enabled {
-		t.Fatalf("missing settings desired = %+v", desired)
-	}
-	if workers[0].State != "failed" || workers[0].AppliedRevision != 9 || workers[0].Error == "" {
-		t.Fatalf("revision-zero rejection = %+v", workers[0])
+func TestSettingsLossKeepsLastLoadedConfigForRunningAndRestartedProxies(t *testing.T) {
+	for _, name := range []string{"proxy", "lmstudio-proxy", "omlx-proxy"} {
+		t.Run(name, func(t *testing.T) {
+			b := &Broker{}
+			install, notify, index := b.setProxy, b.forwardProxyNotification, 0
+			if name == "lmstudio-proxy" {
+				install, notify, index = b.setLMStudioProxy, b.forwardLMStudioProxyNotification, 1
+			}
+			if name == "omlx-proxy" {
+				install, notify, index = b.setOMLXProxy, b.forwardOMLXProxyNotification, 2
+			}
+			worker, codec := newTestRPCWorkerPipe(t)
+			b.setSettings(worker)
+			go func() {
+				msg, err := codec.Read()
+				if err == nil {
+					if msg.Method != "settings/get-telemetry-config" {
+						t.Errorf("settings method = %q", msg.Method)
+					}
+					codec.Respond(msg.ID, telemetryConfigFixture(9))
+				}
+			}()
+			seen := make(chan telemetryDesiredConfig, 4)
+			install(newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen)))
+			b.loadTelemetryConfig(worker)
+			if got := receiveTelemetryConfig(t, seen); got != telemetryConfigFixture(9) {
+				t.Fatalf("loaded configuration = %+v", got)
+			}
+			b.setSettings(nil)
+			b.reconcileTelemetry()
+			desired, workers, _ := b.telemetrySnapshot()
+			if desired != telemetryConfigFixture(9) {
+				t.Errorf("settings loss changed desired configuration: %+v", desired)
+			}
+			if got := workers[index]; got.State != "applied" || got.AppliedRevision != 9 || got.Error != "" {
+				t.Errorf("running proxy after settings loss = %+v", got)
+			}
+			install(nil)
+			replacement := newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen))
+			replacement.onNotify = notify
+			install(replacement)
+			replacement.handleNotify("ready", json.RawMessage(`{"port":0,"version":"test"}`))
+			if got := receiveTelemetryConfig(t, seen); got != telemetryConfigFixture(9) {
+				t.Fatalf("replacement configuration while settings is down = %+v", got)
+			}
+			b.reconcileTelemetry()
+			if got := b.telemetryWorkerStates()[index]; got.State != "applied" || got.AppliedRevision != 9 || got.Error != "" {
+				t.Fatalf("restarted proxy after settings loss = %+v", got)
+			}
+		})
 	}
 }
 

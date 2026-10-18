@@ -590,10 +590,9 @@ func (b *Broker) setSettings(w *rpcWorker) {
 	b.workersMu.Lock()
 	b.settings = w
 	b.workersMu.Unlock()
-	if w == nil {
-		b.telemetryDesired = telemetryDesiredConfig{}
-		b.telemetryGeneration++
-	}
+	// Worker availability does not change the user's last loaded choice.
+	// Before any settings snapshot is loaded, desiredTelemetryLocked supplies
+	// disabled revision-0 defaults, including while settings is unavailable.
 	b.telemetryConfigMu.Unlock()
 	if w == nil {
 		go b.reconcileTelemetry()
