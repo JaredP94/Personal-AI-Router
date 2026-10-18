@@ -25,7 +25,12 @@ const log = createStructuredLogger('mac-helper')
 
 const CTL_BINARY_NAME = 'nvpair-helper-ctl'
 
-type HelperRegistration = 'enabled' | 'requiresApproval' | 'notRegistered' | 'notFound' | 'unknown'
+export type HelperRegistration =
+    | 'enabled'
+    | 'requiresApproval'
+    | 'notRegistered'
+    | 'notFound'
+    | 'unknown'
 
 interface HelperStatus {
     registration: HelperRegistration
@@ -41,7 +46,7 @@ interface HelperInstallResult {
     error: string | null
 }
 
-interface EnsureConfiguredResult {
+export interface EnsureConfiguredResult {
     supported: boolean
     registration: HelperRegistration
     firewallConfigured: boolean
@@ -174,6 +179,13 @@ async function removeFirewall(): Promise<boolean> {
     return result ? boolField(result, 'ok') : false
 }
 
+async function trust(): Promise<boolean | null> {
+    const result = asObject(await runCtl(['trust'], 8000))
+    if (!result) return null
+    const val = result['trusted']
+    return typeof val === 'boolean' ? val : null
+}
+
 /**
  * Drive the helper to the desired end state in one call (no UI). Registers the
  * daemon if missing, refreshes a stale daemon after an in-place app update
@@ -257,5 +269,6 @@ export const macPrivilege = {
     uninstall,
     configureFirewall,
     removeFirewall,
-    ensureConfigured
+    ensureConfigured,
+    trust
 }

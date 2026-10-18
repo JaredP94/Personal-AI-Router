@@ -25,6 +25,16 @@ import type { TelemetryStatus } from '@/shared/types/telemetry'
 export type IpcResult<T = void> = { success: true; data: T } | { success: false; error: string }
 
 /**
+ * Result mode of the macOS privileged helper / firewall setup flow.
+ */
+export type FirewallSetupMode =
+    | 'automatic'
+    | 'approval-required'
+    | 'manual-unsigned-build'
+    | 'unknown'
+    | 'not-applicable'
+
+/**
  * Lifecycle of the Electron-owned modular service connector.
  *
  * `disconnected` means no broker is running, whether the user stopped it or it
@@ -94,6 +104,7 @@ export interface IpcChannelMap {
     'service:open-log-file': { request: void; response: void }
     'service:open-log-dir': { request: void; response: void }
     'service:get-versions': { request: void; response: ServiceVersions }
+    'service:get-firewall-setup': { request: void; response: FirewallSetupMode }
     'service:open-license': { request: void; response: void }
     'service:open-third-party-licenses': { request: void; response: void }
 

@@ -18,6 +18,8 @@
  * Attribution text is read from the module cache directory reported by
  * `go list -mod=readonly`. Go may use the network to resolve uncached dependencies;
  * readonly mode prevents changes to module manifests during notice generation.
+ * In `--check` mode, GOPROXY=off and GOFLAGS=-mod=readonly ensure no network
+ * downloads occur; an unpopulated cache fails with a message to run make deps-go.
  */
 import { execFile } from 'node:child_process'
 import { readdir, readFile } from 'node:fs/promises'
@@ -73,7 +75,8 @@ function isThirdParty(module: GoModule): boolean {
 async function listModulesForTarget(
     componentDir: string,
     goos: string,
-    goarch: string
+    goarch: string,
+    check = false
 ): Promise<GoModule[]> {
     const template = '{{if .Module}}{{.Module.Path}}\t{{.Module.Version}}\t{{.Module.Dir}}{{end}}'
     let stdout: string
@@ -83,7 +86,13 @@ async function listModulesForTarget(
             ['list', '-mod=readonly', '-deps', '-f', template, '.'],
             {
                 cwd: componentDir,
-                env: { ...process.env, GOOS: goos, GOARCH: goarch, CGO_ENABLED: '0' },
+                env: {
+                    ...process.env,
+                    GOOS: goos,
+                    GOARCH: goarch,
+                    CGO_ENABLED: '0',
+                    ...(check ? { GOPROXY: 'off', GOFLAGS: '-mod=readonly' } : {})
+                },
                 maxBuffer: 32 * 1024 * 1024
             }
         )
@@ -91,9 +100,13 @@ async function listModulesForTarget(
     } catch (err) {
         // A component that cannot resolve for one target must not silently drop
         // its dependencies from the notice file.
-        throw new Error(
-            `go list failed for ${componentDir} (${goos}/${goarch}): ${String(err instanceof Error ? err.message : err)}`
-        )
+        const msg = String(err instanceof Error ? err.message : err)
+        if (check) {
+            throw new Error(
+                `go list failed for ${componentDir} (${goos}/${goarch}): ${msg}\nModule cache may be missing; run 'make deps-go' first.`
+            )
+        }
+        throw new Error(`go list failed for ${componentDir} (${goos}/${goarch}): ${msg}`)
     }
 
     const modules: GoModule[] = []
@@ -135,15 +148,15 @@ function repositoryUrl(modulePath: string): string {
 }
 
 export async function collectGoModuleEntries(
-    servicesDir: string,
-    componentNames: readonly string[]
+    moduleDirs: readonly string[],
+    options?: { check?: boolean }
 ): Promise<LicenseEntry[]> {
     const byKey = new Map<string, GoModule>()
+    const check = options?.check ?? false
 
-    for (const component of componentNames) {
-        const componentDir = join(servicesDir, component)
+    for (const moduleDir of moduleDirs) {
         for (const { goos, goarch } of GO_TARGETS) {
-            for (const module of await listModulesForTarget(componentDir, goos, goarch)) {
+            for (const module of await listModulesForTarget(moduleDir, goos, goarch, check)) {
                 if (!isThirdParty(module)) continue
                 byKey.set(`${module.path}@${module.version}`, module)
             }

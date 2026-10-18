@@ -20,12 +20,15 @@
  *
  * Run:
  *   npm run licenses            writes the notice (invoked on every build)
+ *   npm run licenses:check      verifies the notice is up to date and all attributions resolved
  */
 import { init, type InitOpts, type ModuleInfo, type ModuleInfos } from 'license-checker-rseidelsohn'
+import { readFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pkg from '../package.json' with { type: 'json' }
+import { applyAttribution, loadAttributionManifest } from './attribution-manifest'
 import { collectGoModuleEntries, type LicenseEntry } from './collect-go-licenses'
 import { renderLicenseText } from './render-license-text'
 
@@ -36,6 +39,8 @@ const servicesDir = resolve(repoRoot, '..', 'services')
 const NOTICE_PATH = resolve(repoRoot, '..', 'THIRD_PARTY_NOTICES.md')
 const ELECTRON_DIR = join(repoRoot, 'node_modules/electron')
 const SERVICE_VERSIONS_PATH = join(servicesDir, 'versions.json')
+const MANIFEST_PATH = resolve(repoRoot, 'licenses', 'attribution-manifest.json')
+const TEXTS_DIR = resolve(repoRoot, 'licenses', 'texts')
 
 type Entry = LicenseEntry
 
@@ -201,6 +206,8 @@ async function serviceComponentNames(): Promise<string[]> {
 }
 
 async function main(): Promise<void> {
+    const isCheck = process.argv.includes('--check')
+
     const prod = await runChecker({
         start: repoRoot,
         production: true,
@@ -209,13 +216,68 @@ async function main(): Promise<void> {
     })
 
     const electronEntry = await buildElectronEntry()
-    const goEntries = await collectGoModuleEntries(servicesDir, await serviceComponentNames())
-    const entries = mergeEntries(prod, [electronEntry, ...goEntries])
 
-    await writeFile(NOTICE_PATH, renderMarkdown(entries))
-    console.log(
-        `Wrote ${entries.length} dependencies (${goEntries.length} Go modules) to ${NOTICE_PATH}`
+    const componentNames = await serviceComponentNames()
+    const serviceModuleDirs = componentNames.map(name => join(servicesDir, name))
+    const scriptModuleDirs = [
+        resolve(repoRoot, '..', 'scripts', 'collectlogs'),
+        resolve(repoRoot, '..', 'scripts', 'inference-dispatcher')
+    ]
+    const moduleDirs = [...serviceModuleDirs, ...scriptModuleDirs]
+
+    const goEntries = await collectGoModuleEntries(moduleDirs, { check: isCheck })
+    const scannedEntries = mergeEntries(prod, [electronEntry, ...goEntries])
+
+    const manifest = loadAttributionManifest(MANIFEST_PATH, TEXTS_DIR)
+    const { entries, unresolved } = applyAttribution(scannedEntries, manifest, file =>
+        readFileSync(resolve(TEXTS_DIR, file), 'utf8')
     )
+
+    const rendered = renderMarkdown(entries)
+
+    if (isCheck) {
+        let noticeDiff = false
+        try {
+            const currentNotice = await readFile(NOTICE_PATH, 'utf8')
+            if (currentNotice !== rendered) {
+                noticeDiff = true
+            }
+        } catch {
+            noticeDiff = true
+        }
+
+        if (noticeDiff) {
+            console.error(
+                `Error: ${NOTICE_PATH} is out of date. Run 'npm run licenses' to regenerate.`
+            )
+        }
+
+        if (unresolved.length > 0) {
+            console.error(`Error: Found ${unresolved.length} unresolved attribution(s):`)
+            for (const key of unresolved) {
+                console.error(`  - ${key}`)
+            }
+        }
+
+        if (noticeDiff || unresolved.length > 0) {
+            process.exit(1)
+        }
+
+        console.log(
+            `OK — ${entries.length} dependencies (${goEntries.length} Go modules) attributed in ${NOTICE_PATH}`
+        )
+    } else {
+        await writeFile(NOTICE_PATH, rendered)
+        console.log(
+            `Wrote ${entries.length} dependencies (${goEntries.length} Go modules) to ${NOTICE_PATH}`
+        )
+        if (unresolved.length > 0) {
+            console.warn(`Warning: ${unresolved.length} unresolved attribution(s):`)
+            for (const key of unresolved) {
+                console.warn(`  warning: unresolved attribution for ${key}`)
+            }
+        }
+    }
 }
 
 main().catch((err: unknown) => {

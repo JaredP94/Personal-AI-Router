@@ -28,6 +28,19 @@ audit.
   scope bounded normal quit to the installed bundle rather than global worker
   names. Local `--dmg` files require independent verification. Downloads from
   older releases without `SHA256SUMS` now fail closed.
+- [x] Update standalone service installers: `services/installer_build.sh` stages
+  every component in `services/versions.json` plus `LICENSE` and `THIRD_PARTY_NOTICES.md`
+  and fails on any missing file. `services/installer/nvpair-setup.nsi` now installs
+  `omlx-proxy` with firewall rules and the notices, and its uninstaller removes
+  every rule it adds (including previously orphaned LM Studio proxy rules).
+  The NSIS script was not compiled (no `makensis` on macOS); keep that as an open
+  Windows build check.
+- [x] Handle unsigned macOS builds: `nvpair-helper-ctl trust` checks the host app
+  and tool signatures against helper requirements. When not satisfied, PAIR skips
+  helper registration prompts entirely and displays "Firewall setup: manual"
+  guidance under Settings → Service.
+- [x] Vendored Kaizen CSS integrity: `vendor:kaizen-css` verifies pinned SHA-256
+  digests of downloaded bytes before writing to disk.
 
 Installer tests use mocked commands and a temporary destination. They do not
 certify real mounting, sudo installation, OS consent dialogs, or packaged app
@@ -82,37 +95,50 @@ claiming universal protocol rejection.
 
 ### Private Vulnerability Reporting
 
-GitHub's `repos/JaredP94/Personal-AI-Router/private-vulnerability-reporting` API
-returned `enabled: false` on 2026-10-17. Enable private reporting or publish a
-verified private maintainer contact, then update [Security](../SECURITY.md).
-Repository settings were not changed by this audit. Do not assume NVIDIA PSIRT
-owns reports about fork-only code.
+**Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled
+via the repository API (`gh api -X PUT repos/JaredP94/Personal-AI-Router/private-vulnerability-reporting`,
+confirmed returning `enabled: true`) and documented in [Security](../SECURITY.md).
+Reporters should use the repository's **Security → Report a vulnerability**.
+Remaining owner step: send one benign test report and confirm receipt.
+Do not assume NVIDIA PSIRT owns reports about fork-only code.
 
 ### Attribution Review and Artifact Contents
 
 Regeneration inventories **296 component/version entries**: 240 npm/Electron and
 56 Go. That inventory is not legal completeness approval:
 
-- **23 npm entries use README fallback text.** Obtain/review authoritative
-  attribution for their exact versions; markers in the root notice identify
-  them. Do not invent grants or copyright holders from a license label.
-- `github.com/mattn/go-localereader v0.0.1` still lacks authoritative license
-  text in the module cache and remains explicitly unresolved.
-- Confirm vendored Kaizen CSS terms and Lucide/Feather attribution preservation
-  in built CSS, outside the npm dependency graph.
+- **24 README-fallback/missing-text entries were audited** (23 npm entries and
+  `github.com/mattn/go-localereader@v0.0.1`): resolved with authoritative upstream
+  texts in `desktop/licenses/texts/` and recorded in `desktop/licenses/attribution-manifest.json`
+  (including all 5 entries resolved by controller determination on 2026-10-18).
+- Lucide's attribution is now included in the canonical notice as a reviewed asset entry.
+- Vendored Kaizen CSS verifies pinned SHA-256 digests of downloaded bytes before writing.
+- Standalone installers stage every component and notice: `services/installer_build.sh`
+  stages every component in `services/versions.json` plus `LICENSE` and `THIRD_PARTY_NOTICES.md`
+  and fails on any missing file; `services/installer/nvpair-setup.nsi` installs `omlx-proxy`
+  with firewall rules and the notices, and its uninstaller removes every rule it adds (the
+  LM Studio proxy rules were previously left behind). The NSIS script was not compiled
+  (no `makensis` on macOS) — keep that as an open Windows build check.
 - Inspect final app artifacts for the canonical `LICENSE` and
   `THIRD_PARTY_NOTICES.md` plus Electron's separate `LICENSES.chromium.html`.
-- Reference standalone service installers currently omit the canonical notices;
-  `services/installer_build.sh` and the Windows NSIS inventory also omit
-  `omlx-proxy`. Fix and test those packaging paths before distributing their
-  outputs. They were not changed or built in this documentation pass.
 - Engines and the Phoenix image are separately downloaded software with their
   own terms, not bundled distributions covered by the desktop dependency scan.
 
 The generator now preserves companion Go NOTICE/COPYRIGHT files, safely fences
 embedded Markdown, uses `go list -mod=readonly`, and identifies yaml.v3's combined
-MIT/Apache terms. It still scans installed npm packages: regenerate from a clean,
-lockfile-matched dependency tree before packaging.
+MIT/Apache terms. `npm run licenses:check` (Makefile `make licenses-check`, deliberately
+not part of `make check`) fails on a stale notice or unresolved entries and never
+downloads Go modules (`GOPROXY=off`, `GOFLAGS=-mod=readonly`). It scans installed
+npm packages and compares generated output against `attribution-manifest.json`.
+
+Resolved by controller determination (2026-10-18):
+- `@electron-internal/extract-zip@1.0.4`: Derived from `max-mapper/extract-zip`; resolved with BSD-2-Clause LICENSE from `max-mapper/extract-zip` default-branch HEAD (`d6f095261840e6523f9a4fd84caa645f22ba1078`).
+- `github.com/mattn/go-localereader@v0.0.1`: Tag v0.0.1 README declares MIT; resolved with author's MIT LICENSE added at commit `d92f6c38ec2b974f0d9e3cc3ea57288345cb74bf`.
+- `kaizen-ui-foundations@1.0.0`: Companion stylesheet of `@nvidia/foundations-react-core@1.0.0`; resolved with its Apache-2.0 `LICENSE.md`.
+- `lazy-val@1.0.5`: Package declares MIT; resolved with standard MIT license text from `spdx/license-list-data` tag `v3.29.0` (commit `31ba1a50e5397e00a304dbadc76531740e89ee48`) without filled placeholders.
+- `react-remove-scroll-bar@2.3.8`: Package declares MIT; resolved with author's MIT LICENSE added at commit `7301c160fda44cb8cf2b9fdfde61efad35736196`.
+
+- Caveat: `@nvidia/foundations-react-core 1.0.0 ships a NOTICE.md whose SPDX header reads LicenseRef-NvidiaProprietary while its package.json and LICENSE.md declare Apache-2.0; the notice treats Apache-2.0 as governing. Raise with NVIDIA if this matters for your distribution.`
 
 ## Repeatable Checks
 
@@ -129,12 +155,18 @@ Installer tests require Python 3.9 or newer. From `desktop/`:
 
 ```bash
 npm run licenses
+npm run licenses:check
 npm run lint
 npm run typecheck
 npm run test:unit
 npm run dead-code:check
 npm run service-contracts:check
 ```
+
+`licenses:check` (also callable as `make licenses-check` from the repository root)
+is a release check, deliberately not included in `make check`. It fails on a
+stale notice or any unresolved entry; with all manifest determinations resolved,
+the gate now passes cleanly.
 
 Review the regenerated notice diff; unchanged inputs should reproduce identical
 output. These checks do not replace Go suites, authorized live inference tests,

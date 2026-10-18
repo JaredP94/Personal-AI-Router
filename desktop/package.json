@@ -83,6 +83,7 @@
         "dead-code": "tsx scripts/analyze-dead-code.ts",
         "dead-code:check": "tsx scripts/analyze-dead-code.ts --check",
         "licenses": "tsx scripts/generate-licenses.ts",
+        "licenses:check": "tsx scripts/generate-licenses.ts --check",
         "generate:icons": "tsx scripts/build/generate-app-icons.ts"
     },
     "dependencies": {

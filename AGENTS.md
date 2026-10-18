@@ -70,8 +70,10 @@ npm start
 `services/` separately.
 
 - Checks: `npm run lint`, `npm run typecheck`, `npm run test:unit`,
-  `npm run dead-code:check`, `npm run service-contracts:check`
+  `npm run dead-code:check`, `npm run service-contracts:check`,
+  `npm run licenses:check` (release check)
 - Contract tooling: `npm run service-contracts` / `:write` / `:check`
+- Attribution tooling: `npm run licenses` / `npm run licenses:check`
 
 Use `npm run typecheck` rather than `tsc` directly, because the project has
 split Node and web targets. `dead-code:check` fails on any exported value or
@@ -111,6 +113,9 @@ make test     # desktop unit tests plus go test in every services module
 ```
 
 `make check` does not include `npm run dead-code:check`, so run that as well.
+`make licenses-check` (`cd desktop && npm run licenses:check`) is a release
+check that verifies third-party notices against `attribution-manifest.json`; the
+gate now passes cleanly across all dependencies.
 On Windows, run the underlying npm and `go test` commands directly.
 
 ## Conventions

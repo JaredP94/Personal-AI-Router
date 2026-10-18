@@ -19,6 +19,13 @@ those trust restrictions. Windows/Linux desktop and Intel Mac runtime validation
 remain outstanding for that candidate. See the [release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.1)
 for the exact tested scope; source-platform support is not artifact certification.
 
+`nvpair-helper-ctl trust` checks the host app and the tool against helper code-signing
+requirements; when not satisfied, PAIR skips the helper explanation dialog and registration
+entirely (avoiding repeated prompts). In the desktop application, navigate to
+**Settings → Service** to view the **Firewall setup: manual** card, which provides
+guidance on allowing inbound connections when macOS prompts appear so other nodes
+can reach this machine.
+
 ## Observability Settings Do Not Yet Configure Proxy Tracing
 
 The desktop switches save settings, but proxies currently configure their tracer
