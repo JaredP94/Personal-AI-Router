@@ -9,6 +9,114 @@ import (
 	"testing"
 )
 
+// Dedicated Usage must never be substituted for an adapter's shared usage.
+func TestWindowsSharedAdapterDoesNotUseDedicatedCounter(t *testing.T) {
+	inventory := []GPUInfo{{Name: "Shared GPU", MemoryKind: MemoryShared, VRAMBytes: byteCapacity(16 << 30), statsKey: "shared"}}
+	stats := map[string]gpuStat{"shared": {VRAMUsed: 1 << 30, VRAMUsedValid: true}}
+	response, body := buildResponseDecode(t, inventory, nil, 0, statsSnapshot{GPU: stats})
+	if response.GPUs[0].VRAMUsedBytes != nil {
+		t.Fatalf("missing Shared Usage must stay unknown, not Dedicated Usage: %v", body)
+	}
+}
+
+func TestWindowsMemoryClassificationReachesWire(t *testing.T) {
+	const key = "luid_0x00000000_0x0000abcd_phys_0"
+	zero := uint64(0)
+	cases := []struct {
+		name      string
+		dedicated uint64
+		shared    uint64
+		usage     map[string]int64
+		want      GPUInfo
+	}{
+		{
+			name:      "dedicated 8 GiB plus separate shared 16 GiB",
+			dedicated: 8 << 30, shared: 16 << 30,
+			usage: map[string]int64{key: 3 << 30},
+			want:  GPUInfo{Name: "GPU", MemoryKind: MemoryDedicated, VRAMBytes: byteCapacity(8 << 30), VRAMUsedBytes: byteCapacity(2 << 30), SharedBytes: byteCapacity(16 << 30), SharedUsedBytes: byteCapacity(3 << 30)},
+		},
+		{
+			name:   "zero dedicated uses shared 16 GiB as capacity",
+			shared: 16 << 30, usage: map[string]int64{key: 3 << 30},
+			want: GPUInfo{Name: "GPU", MemoryKind: MemoryShared, VRAMBytes: byteCapacity(16 << 30), VRAMUsedBytes: byteCapacity(3 << 30)},
+		},
+		{
+			name:      "missing Shared Usage on dedicated adapter",
+			dedicated: 8 << 30, shared: 16 << 30,
+			want: GPUInfo{Name: "GPU", MemoryKind: MemoryDedicated, VRAMBytes: byteCapacity(8 << 30), VRAMUsedBytes: byteCapacity(2 << 30), SharedBytes: byteCapacity(16 << 30)},
+		},
+		{
+			name:   "missing Shared Usage on shared adapter",
+			shared: 16 << 30,
+			want:   GPUInfo{Name: "GPU", MemoryKind: MemoryShared, VRAMBytes: byteCapacity(16 << 30)},
+		},
+		{
+			name:      "measured idle shared usage on dedicated adapter",
+			dedicated: 8 << 30, shared: 16 << 30, usage: map[string]int64{key: 0},
+			want: GPUInfo{Name: "GPU", MemoryKind: MemoryDedicated, VRAMBytes: byteCapacity(8 << 30), VRAMUsedBytes: byteCapacity(2 << 30), SharedBytes: byteCapacity(16 << 30), SharedUsedBytes: &zero},
+		},
+		{
+			name:   "measured idle shared usage on shared adapter",
+			shared: 16 << 30, usage: map[string]int64{key: 0},
+			want: GPUInfo{Name: "GPU", MemoryKind: MemoryShared, VRAMBytes: byteCapacity(16 << 30), VRAMUsedBytes: &zero},
+		},
+		{
+			name: "DXGI zero shared budget is known",
+			want: GPUInfo{Name: "GPU", MemoryKind: MemoryShared, VRAMBytes: &zero},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inventory := []GPUInfo{staticGPUFromDXGI("GPU", key, tc.dedicated, tc.shared)}
+			stats, valid := decodeWindowsGPUCounters(map[string]int64{key: 2 << 30}, tc.usage, nil)
+			if valid {
+				t.Fatal("memory-only counters must not establish utilization validity")
+			}
+			response, body := buildResponseDecode(t, inventory, nil, 0, statsSnapshot{GPU: stats})
+			if !reflect.DeepEqual(response.GPUs, []GPUInfo{tc.want}) {
+				t.Fatalf("unexpected memory classification/usage: %+v; wire: %v", response.GPUs[0], body)
+			}
+		})
+	}
+}
+
+func TestWindowsCountersJoinPerLUID(t *testing.T) {
+	const first = "luid_0x00000000_0x0000abcd_phys_0"
+	const second = "luid_0xffffffff_0xdeadbeef_phys_0"
+	got, valid := decodeWindowsGPUCounters(
+		map[string]int64{strings.ToUpper(first): 0, second: 2 << 30, "_Total": 999, "luid_negative": -1},
+		map[string]int64{first: 3 << 30, strings.ToUpper(second): 0, "_Total": 999, "luid_negative": -2},
+		map[string]float64{"pid_1_" + strings.ToUpper(first) + "_eng_0_engtype_3D": 0},
+	)
+	want := map[string]gpuStat{
+		first:  {VRAMUsedValid: true, SharedUsed: 3 << 30, SharedUsedValid: true, UtilizationValid: true},
+		second: {VRAMUsed: 2 << 30, VRAMUsedValid: true, SharedUsedValid: true},
+	}
+	if !valid || !reflect.DeepEqual(got, want) {
+		t.Fatalf("counter joins must preserve per-adapter values and measured zero: got=%+v valid=%v", got, valid)
+	}
+	inventory := []GPUInfo{
+		staticGPUFromDXGI("Dedicated", first, 8<<30, 16<<30),
+		staticGPUFromDXGI("Shared", second, 0, 16<<30),
+	}
+	response, body := buildResponseDecode(t, inventory, nil, 0, statsSnapshot{GPU: got})
+	if *response.GPUs[0].VRAMBytes != 8<<30 || *response.GPUs[0].VRAMUsedBytes != 0 || *response.GPUs[0].SharedUsedBytes != 3<<30 ||
+		*response.GPUs[1].VRAMBytes != 16<<30 || *response.GPUs[1].VRAMUsedBytes != 0 || response.GPUs[1].SharedBytes != nil || response.GPUs[1].UtilizationPercent != nil {
+		t.Fatalf("adapters or memory pools combined: %v", body)
+	}
+}
+
+func TestWindowsSharedCounterWithoutDedicatedCounter(t *testing.T) {
+	const key = "luid_0x00000000_0x0000abcd_phys_0"
+	stats, valid := decodeWindowsGPUCounters(nil, map[string]int64{key: 4 << 30}, nil)
+	inventory := []GPUInfo{staticGPUFromDXGI("GPU", key, 8<<30, 16<<30)}
+	response, body := buildResponseDecode(t, inventory, nil, 0, statsSnapshot{GPU: stats})
+	gpu := response.GPUs[0]
+	if valid || gpu.VRAMUsedBytes != nil || gpu.SharedUsedBytes == nil || *gpu.SharedUsedBytes != 4<<30 {
+		t.Fatalf("shared counter must remain independently available: %v", body)
+	}
+}
+
 func TestMeasuredZeroGPUReadings(t *testing.T) {
 	static, _ := parseNvidiaStatic("idle, Idle, 8192\nunknown, Unknown, 8192")
 	stats, count := parseNvidiaDynamic("idle, 0, 0\nunknown, [N/A], [N/A]")

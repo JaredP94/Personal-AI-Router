@@ -33,6 +33,58 @@ func namesOnlyGPU(name string) GPUInfo {
 	return GPUInfo{Name: name, MemoryKind: MemoryUnavailable}
 }
 
+// staticGPUFromDXGI keeps dedicated capacity separate from the shared-system
+// budget. Only adapters with no dedicated video memory use the shared budget as
+// their primary capacity. A successful DXGI descriptor supplies known values,
+// including zero; DedicatedSystemMemory is deliberately not part of either pool.
+func staticGPUFromDXGI(name, key string, dedicatedBytes, sharedBytes uint64) GPUInfo {
+	gpu := GPUInfo{Name: name, statsKey: key}
+	if dedicatedBytes > 0 {
+		gpu.MemoryKind = MemoryDedicated
+		gpu.VRAMBytes = &dedicatedBytes
+		gpu.SharedBytes = &sharedBytes
+	} else {
+		gpu.MemoryKind = MemoryShared
+		gpu.VRAMBytes = &sharedBytes
+	}
+	return gpu
+}
+
+// decodeWindowsGPUCounters joins independently available PDH counters by LUID.
+// Keep the raw dedicated/shared readings separate here; response assembly selects
+// the primary used-memory reading according to the DXGI classification.
+func decodeWindowsGPUCounters(dedicated, shared map[string]int64, engines map[string]float64) (map[string]gpuStat, bool) {
+	out := make(map[string]gpuStat)
+	for name, value := range dedicated {
+		key := strings.ToLower(name)
+		if value < 0 || !strings.HasPrefix(key, "luid_") {
+			continue
+		}
+		stat := out[key]
+		stat.VRAMUsed = uint64(value)
+		stat.VRAMUsedValid = true
+		out[key] = stat
+	}
+	for name, value := range shared {
+		key := strings.ToLower(name)
+		if value < 0 || !strings.HasPrefix(key, "luid_") {
+			continue
+		}
+		stat := out[key]
+		stat.SharedUsed = uint64(value)
+		stat.SharedUsedValid = true
+		out[key] = stat
+	}
+	utilization := aggregateUtilization(engines)
+	for key, pct := range utilization {
+		stat := out[key]
+		stat.UtilizationPct = pct
+		stat.UtilizationValid = true
+		out[key] = stat
+	}
+	return out, len(utilization) > 0
+}
+
 // isNvidiaSmiNA reports whether an nvidia-smi CSV field is a "not
 // applicable" sentinel rather than a numeric value. UMA platforms such as
 // DGX Spark return [N/A] or [Not Supported] for GPU memory queries.

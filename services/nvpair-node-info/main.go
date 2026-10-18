@@ -201,8 +201,15 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 			gpu.VRAMUsedBytes = &snap.MemUsedBytes
 		}
 		if s, ok := snap.GPU[gpu.statsKey]; ok && gpu.statsKey != "" {
-			if gpu.MemoryKind != MemoryUnavailable && !gpu.usesSystemMemoryUsage && s.VRAMUsedValid {
+			if gpu.MemoryKind == MemoryShared {
+				if s.SharedUsedValid {
+					gpu.VRAMUsedBytes = &s.SharedUsed
+				}
+			} else if gpu.MemoryKind != MemoryUnavailable && !gpu.usesSystemMemoryUsage && s.VRAMUsedValid {
 				gpu.VRAMUsedBytes = &s.VRAMUsed
+			}
+			if gpu.MemoryKind == MemoryDedicated && s.SharedUsedValid {
+				gpu.SharedUsedBytes = &s.SharedUsed
 			}
 			if s.UtilizationValid {
 				gpu.UtilizationPercent = &s.UtilizationPct

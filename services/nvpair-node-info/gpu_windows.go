@@ -17,7 +17,8 @@ import (
 )
 
 // detectGPUs enumerates display adapters via DXGI and reports each adapter's
-// dedicated VRAM. DXGI is the only supported source on Windows because it:
+// dedicated video memory and shared-system-memory budget separately. DXGI is
+// the only supported source on Windows because it:
 //   - is vendor-agnostic (NVIDIA / AMD / Intel / iGPU all enumerate the same way),
 //   - returns a human-readable adapter name in the same struct as the VRAM size
 //     (no second API and no PCI matching needed),
@@ -267,12 +268,9 @@ func detectGPUs() []GPUInfo {
 			continue
 		}
 
-		gpus = append(gpus, GPUInfo{
-			Name:       name,
-			MemoryKind: MemoryDedicated,
-			VRAMBytes:  byteCapacity(uint64(desc.DedicatedVideoMemory)),
-			statsKey:   luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
-		})
+		gpus = append(gpus, staticGPUFromDXGI(name,
+			luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
+			uint64(desc.DedicatedVideoMemory), uint64(desc.SharedSystemMemory)))
 	}
 	return gpus
 }

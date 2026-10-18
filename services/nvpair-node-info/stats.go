@@ -14,6 +14,8 @@ import (
 type gpuStat struct {
 	VRAMUsed         uint64
 	VRAMUsedValid    bool
+	SharedUsed       uint64
+	SharedUsedValid  bool
 	UtilizationPct   uint32
 	UtilizationValid bool
 }
