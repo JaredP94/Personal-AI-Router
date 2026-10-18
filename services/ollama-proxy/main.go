@@ -83,22 +83,16 @@ func main() {
 		log.Printf("restored persisted proxy port %d", persisted)
 	}
 
-	telCfg := defaultTelemetryConfig()
-	tel, err := telemetry.Init(ctx, telCfg)
-	if err != nil {
-		slog.Warn("failed to initialize telemetry", "err", err)
-	}
+	tel := telemetry.NewManager("nvpair-ollama-proxy", telemetry.OTLPExporter)
 
 	codec := NewCodec(transport)
 	disc := NewDiscovery()
 	proxy := NewProxy(codec, disc, effectivePort, tel)
-	if proxy.telemetry != nil {
-		defer func() {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer shutdownCancel()
-			_ = proxy.telemetry.Shutdown(shutdownCtx)
-		}()
-	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		_ = tel.Shutdown(shutdownCtx)
+	}()
 	for _, aliasAddress := range aliasAddresses {
 		if err := proxy.setLoopbackAlias(aliasAddress); err != nil {
 			log.Fatalf("invalid alias address: %v", err)
