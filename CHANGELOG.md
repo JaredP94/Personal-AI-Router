@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regenerated dependency notices, retained companion Go attribution files, fixed embedded Markdown fencing, and replaced the stale services notice with a canonical-root pointer. README-only/missing upstream license text remains flagged for review.
 - Added [next-release readiness follow-ups](docs/release-readiness.mdx), including unwired telemetry settings, collector exposure, private vulnerability reporting, attribution review, and final artifact validation. These are not resolved by documentation changes.
 - Documented the unsigned macOS firewall status card in [Known issues](docs/known-issues.mdx) and added `npm run licenses:check` / `make licenses-check` as a release check in [Developing](docs/developing.mdx) and `AGENTS.md`.
-- Updated [Next Release Readiness](docs/release-readiness.mdx) with completed installer packaging, Kaizen CSS integrity verification, audited attribution (resolving all remaining determinations on 2026-10-18 so `licenses:check` passes), and pending private vulnerability reporting.
+- Updated [Next Release Readiness](docs/release-readiness.mdx) with completed installer packaging, Kaizen CSS integrity verification, audited attribution (resolving all remaining determinations on 2026-10-18 so `licenses:check` passes), and enabled private vulnerability reporting.
+- Documented GitHub private vulnerability reporting channel for the fork in [Security](SECURITY.md) (enabled 2026-10-18).
 
 ## [0.7.0-rc.1] - 2026-10-17
 

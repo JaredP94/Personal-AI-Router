@@ -16,12 +16,9 @@ public issues or pull requests.**
 
 ### This fork
 
-Use GitHub's **Security → Report a vulnerability** when private vulnerability
-reporting is enabled. **As checked on 2026-10-17, it is disabled for this fork.**
-Until a private reporting channel is enabled or published, contact the fork
-maintainer to request one without including vulnerability details in a public
-message. This reporting-channel gap must be resolved before the next release;
-there is currently no verified private fork-reporting address documented here.
+GitHub private vulnerability reporting is enabled for this fork (verified
+2026-10-18 via the repository API). To report a vulnerability affecting this fork,
+use the repository's **Security → Report a vulnerability**.
 
 ### Upstream NVIDIA products
 

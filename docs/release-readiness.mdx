@@ -95,12 +95,12 @@ claiming universal protocol rejection.
 
 ### Private Vulnerability Reporting
 
-**Pending owner action.** GitHub's `repos/JaredP94/Personal-AI-Router/private-vulnerability-reporting` API
-returned `enabled: false` on 2026-10-17. Awaiting the owner's explicit go-ahead to
-enable private reporting in GitHub repository settings or publish a verified private
-maintainer contact, then update [Security](../SECURITY.md).
-Repository settings were not changed by this audit. Do not assume NVIDIA PSIRT
-owns reports about fork-only code.
+**Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled
+via the repository API (`gh api -X PUT repos/JaredP94/Personal-AI-Router/private-vulnerability-reporting`,
+confirmed returning `enabled: true`) and documented in [Security](../SECURITY.md).
+Reporters should use the repository's **Security → Report a vulnerability**.
+Remaining owner step: send one benign test report and confirm receipt.
+Do not assume NVIDIA PSIRT owns reports about fork-only code.
 
 ### Attribution Review and Artifact Contents
 
