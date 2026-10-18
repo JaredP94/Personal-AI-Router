@@ -42,11 +42,15 @@ func OTLPExporter(ctx context.Context, endpoint string) (sdktrace.SpanExporter, 
 	}
 	return otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
+		// Pin the exporter's credential field: environment-derived TLS credentials
+		// otherwise take precedence over WithInsecure and gRPC dial options.
+		otlptracegrpc.WithTLSCredentials(insecure.NewCredentials()),
 		otlptracegrpc.WithHeaders(nil),
 		otlptracegrpc.WithTimeout(shutdownTimeout),
+		// v1.34 only exposes gzip as a valid explicit compressor. Pin it rather
+		// than inherit compression or log an error for an unsupported "none".
+		otlptracegrpc.WithCompressor("gzip"),
 		otlptracegrpc.WithDialOption(
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 				var dialer net.Dialer
 				return dialer.DialContext(ctx, "tcp", endpoint)
