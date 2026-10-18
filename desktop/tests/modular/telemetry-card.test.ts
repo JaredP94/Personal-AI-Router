@@ -7,9 +7,9 @@ import {
     formatTelemetryStorage,
     isCollectorPortValid,
     observabilityCopy,
-    observabilityWarnings,
-    scheduleTelemetryPolling
+    observabilityWarnings
 } from '@/ui/utils/observability-copy'
+import { createTelemetryPoller, type TelemetryPollCadence } from '@/ui/utils/telemetry-poller'
 import {
     getObservabilityBadge,
     getPhoenixDashboardUrl,
@@ -364,152 +364,140 @@ describe('Telemetry input validation and formatting', () => {
     })
 })
 
-describe('Telemetry polling schedule', () => {
-    it('polls status on a fixed cadence (1 + floor(10000/4000) = 3 calls in 10s) without looping on status object identity', async () => {
+describe('Telemetry poller', () => {
+    const defaultIntervals = (cadence: TelemetryPollCadence) =>
+        cadence === 'starting' ? 1500 : 4000
+
+    it('calling setCadence repeatedly with the same cadence performs exactly one immediate fetch, then one per interval', async () => {
         vi.useFakeTimers()
         try {
-            let callCount = 0
-            const fakeGetStatus = vi.fn(async () => {
-                callCount++
-                // Returning a fresh but equal object each time must not add calls
-                return telemetryStatus({ containerState: 'running' })
+            let fetchCount = 0
+            const fakeFetch = vi.fn(async () => {
+                fetchCount++
             })
 
-            let currentCadence = 4000
-            let cleanup: () => void = () => {}
+            const poller = createTelemetryPoller(fakeFetch, defaultIntervals)
 
-            // Proper effect dependency: effect depends only on cadence
-            const mountOrUpdate = (cadence: number) => {
-                cleanup()
-                cleanup = scheduleTelemetryPolling(
-                    fakeGetStatus,
-                    nextStatus => {
-                        const nextCadence = nextStatus.containerState === 'starting' ? 1500 : 4000
-                        if (currentCadence !== nextCadence) {
-                            currentCadence = nextCadence
-                            mountOrUpdate(nextCadence)
-                        }
-                    },
-                    undefined,
-                    cadence
-                )
-            }
+            // Simulating multiple re-renders calling setCadence with the same cadence
+            poller.setCadence('active')
+            poller.setCadence('active')
+            poller.setCadence('active')
 
-            mountOrUpdate(currentCadence)
-
-            // Initial poll on mount at t = 0
             await vi.advanceTimersByTimeAsync(0)
-            expect(callCount).toBe(1)
+            expect(fetchCount).toBe(1)
+            expect(fakeFetch).toHaveBeenCalledTimes(1)
 
-            // Advancing 10s with running container (4000ms cadence):
-            // Exactly 1 initial + floor(10000 / 4000) = 3 calls (t = 0, 4000, 8000)
+            // Over 10 s with 4000 ms cadence: exactly 1 + floor(10000 / 4000) = 3 calls
             await vi.advanceTimersByTimeAsync(10_000)
-            expect(callCount).toBe(3)
-            expect(fakeGetStatus).toHaveBeenCalledTimes(3)
+            expect(fetchCount).toBe(3)
+            expect(fakeFetch).toHaveBeenCalledTimes(3)
 
-            // Cleanup stops all further polling
-            cleanup()
-            await vi.advanceTimersByTimeAsync(10_000)
-            expect(callCount).toBe(3)
+            poller.stop()
         } finally {
             vi.useRealTimers()
         }
     })
 
-    it('uses 1500ms cadence for starting containers and adapts to 4000ms when running', async () => {
+    it('changing cadence fetches once immediately and switches interval', async () => {
         vi.useFakeTimers()
         try {
-            let callCount = 0
-            let state = 'starting'
-            const fakeGetStatus = vi.fn(async () => {
-                callCount++
-                return telemetryStatus({ containerState: state })
+            let fetchCount = 0
+            const fakeFetch = vi.fn(async () => {
+                fetchCount++
             })
 
-            let currentCadence = 1500
-            let cleanup: () => void = () => {}
+            const poller = createTelemetryPoller(fakeFetch, defaultIntervals)
 
-            const mountOrUpdate = (cadence: number) => {
-                cleanup()
-                cleanup = scheduleTelemetryPolling(
-                    fakeGetStatus,
-                    nextStatus => {
-                        const nextCadence = nextStatus.containerState === 'starting' ? 1500 : 4000
-                        if (currentCadence !== nextCadence) {
-                            currentCadence = nextCadence
-                            mountOrUpdate(nextCadence)
-                        }
-                    },
-                    undefined,
-                    cadence
-                )
-            }
-
-            mountOrUpdate(currentCadence)
-
-            // Initial poll (t = 0)
+            poller.setCadence('starting')
             await vi.advanceTimersByTimeAsync(0)
-            expect(callCount).toBe(1)
+            expect(fetchCount).toBe(1)
 
-            // 1500ms interval for starting: after 3000ms, exactly 1 + floor(3000 / 1500) = 3 calls (t = 0, 1500, 3000)
+            // At 1500ms cadence, after 3000ms: 1 + floor(3000 / 1500) = 3 calls
             await vi.advanceTimersByTimeAsync(3_000)
-            expect(callCount).toBe(3)
+            expect(fetchCount).toBe(3)
 
-            // State changes to running
-            state = 'running'
-            // Next tick at t = 4500 (call 4), which detects state transition to running.
-            // On cadence transition (1500 -> 4000), effect remounts and triggers immediate poll (call 5)
-            await vi.advanceTimersByTimeAsync(1_500)
-            expect(callCount).toBe(5)
+            // Switch cadence to 'active' (4000ms)
+            poller.setCadence('active')
+            await vi.advanceTimersByTimeAsync(0)
+            expect(fetchCount).toBe(4)
 
-            // Now cadence is 4000ms. Advancing 3000ms must NOT trigger another poll yet
+            // 3000ms into the 4000ms interval: no new call yet
             await vi.advanceTimersByTimeAsync(3_000)
-            expect(callCount).toBe(5)
+            expect(fetchCount).toBe(4)
 
-            // Advancing 1000ms more (4000ms total since t = 4500) triggers call 6
+            // 1000ms more (4000ms total since switch): tick fires
             await vi.advanceTimersByTimeAsync(1_000)
-            expect(callCount).toBe(6)
+            expect(fetchCount).toBe(5)
 
-            cleanup()
+            poller.stop()
         } finally {
             vi.useRealTimers()
         }
     })
 
-    it('demonstrates that depending on status object identity causes runaway recursion at t=0', async () => {
+    it('stop prevents further fetches', async () => {
         vi.useFakeTimers()
         try {
-            let callCount = 0
-            const fakeGetStatus = vi.fn(async () => {
-                callCount++
-                return telemetryStatus({ containerState: 'running' })
+            let fetchCount = 0
+            const fakeFetch = vi.fn(async () => {
+                fetchCount++
             })
 
-            let cleanup: () => void = () => {}
-            // Buggy effect simulation: re-triggers whenever a new status object reference is received
-            const buggyMountOrUpdate = () => {
-                cleanup()
-                cleanup = scheduleTelemetryPolling(
-                    fakeGetStatus,
-                    _nextStatus => {
-                        // In the buggy implementation, useEffect depended on [status].
-                        // Each new status object deserialization re-triggered the effect immediately.
-                        // We cap at 20 iterations to avoid infinite OOM in test environment.
-                        if (callCount < 20) {
-                            buggyMountOrUpdate()
-                        }
-                    },
-                    undefined,
-                    4000
-                )
-            }
+            const poller = createTelemetryPoller(fakeFetch, defaultIntervals)
 
-            buggyMountOrUpdate()
-            // At t = 0 without advancing any timers, the buggy loop fires 20 times in 0ms
+            poller.setCadence('active')
             await vi.advanceTimersByTimeAsync(0)
-            expect(callCount).toBe(20)
+            expect(fetchCount).toBe(1)
 
-            cleanup()
+            poller.stop()
+
+            await vi.advanceTimersByTimeAsync(20_000)
+            expect(fetchCount).toBe(1)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('an in-flight fetch suppresses overlapping ticks', async () => {
+        vi.useFakeTimers()
+        try {
+            let fetchCount = 0
+            let resolveFetch: () => void = () => {}
+
+            const fakeFetch = vi.fn(async () => {
+                fetchCount++
+                return new Promise<void>(resolve => {
+                    resolveFetch = resolve
+                })
+            })
+
+            const poller = createTelemetryPoller(fakeFetch, () => 1_000)
+
+            poller.setCadence('active')
+            await vi.advanceTimersByTimeAsync(0)
+            expect(fetchCount).toBe(1)
+
+            // Tick 1 at 1000ms: fetch is still in flight, tick should be skipped
+            await vi.advanceTimersByTimeAsync(1_000)
+            expect(fetchCount).toBe(1)
+
+            // Tick 2 at 2000ms: still in flight, skipped
+            await vi.advanceTimersByTimeAsync(1_000)
+            expect(fetchCount).toBe(1)
+
+            // Resolve the in-flight fetch
+            resolveFetch()
+            resolveFetch = () => {}
+            await vi.advanceTimersByTimeAsync(0)
+            expect(fetchCount).toBe(1)
+
+            // Tick 3 at 3000ms: fetch is done, so this tick runs
+            await vi.advanceTimersByTimeAsync(1_000)
+            expect(fetchCount).toBe(2)
+
+            poller.stop()
+            resolveFetch()
+            resolveFetch = () => {}
         } finally {
             vi.useRealTimers()
         }

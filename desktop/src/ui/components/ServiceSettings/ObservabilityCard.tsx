@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge, Button, Flex, Stack, Switch, Text, TextInput } from '@nvidia/foundations-react-core'
 import type { TelemetryConfigRequest, TelemetryStatus } from '@/shared/types/telemetry'
 import {
@@ -18,9 +18,9 @@ import {
     formatTelemetryStorage,
     isCollectorPortValid,
     observabilityCopy,
-    observabilityWarnings,
-    scheduleTelemetryPolling
+    observabilityWarnings
 } from '@/ui/utils/observability-copy'
+import { createTelemetryPoller, type TelemetryPollCadence } from '@/ui/utils/telemetry-poller'
 
 export default function ObservabilityCard() {
     const [status, setStatus] = useState<TelemetryStatus | null>(null)
@@ -33,36 +33,38 @@ export default function ObservabilityCard() {
     const [portInput, setPortInput] = useState<string>('4317')
     const [portEdited, setPortEdited] = useState(false)
 
+    const statusLoadedRef = useRef(false)
+
     const fetchStatus = useCallback(async () => {
         if (!window.pairApi?.telemetry) return
         try {
             const nextStatus = await window.pairApi.telemetry.getStatus()
+            statusLoadedRef.current = true
             setStatus(nextStatus)
         } catch (err) {
-            setError(getErrorString(err))
-            setStatus(null)
+            if (!statusLoadedRef.current) {
+                setError(getErrorString(err))
+            }
         }
     }, [])
 
-    const statusLoadedRef = useRef(false)
-    const cadence = status?.containerState === 'starting' ? 1500 : 4000
+    const cadence: TelemetryPollCadence =
+        status?.containerState === 'starting' ? 'starting' : 'active'
+
+    const poller = useMemo(
+        () => createTelemetryPoller(fetchStatus, c => (c === 'starting' ? 1500 : 4000)),
+        [fetchStatus]
+    )
 
     useEffect(() => {
-        if (!window.pairApi?.telemetry) return
-        return scheduleTelemetryPolling(
-            () => window.pairApi.telemetry.getStatus(),
-            nextStatus => {
-                statusLoadedRef.current = true
-                setStatus(nextStatus)
-            },
-            err => {
-                if (!statusLoadedRef.current) {
-                    setError(getErrorString(err))
-                }
-            },
-            cadence
-        )
-    }, [cadence])
+        poller.setCadence(cadence)
+    }, [poller, cadence])
+
+    useEffect(() => {
+        return () => {
+            poller.stop()
+        }
+    }, [poller])
 
     useEffect(() => {
         if (!portEdited && status?.collectorPort != null) {
