@@ -332,6 +332,9 @@ const (
 	// record keeps its last observed value indefinitely.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
 
+	// MethodSetDemand tells nvpair-node-info whether local workload execution is active.
+	MethodSetDemand = "stats/set-demand"
+
 	// NotifyObservedAddresses is nvpair-node-info -> broker: the local addresses
 	// peers have actually reached this node on, learned from its own accepted
 	// connections.
@@ -402,6 +405,12 @@ type UnregisterParams struct {
 // announced — so the field is always sent.
 type ClusterIdentityParams struct {
 	ClusterUUID string `json:"clusterUuid"`
+}
+
+// DemandParams carries whether local workload execution is active,
+// for MethodSetDemand ("stats/set-demand").
+type DemandParams struct {
+	LocalExecution bool `json:"localExecution"`
 }
 
 // ObservedAddressesParams carries the local addresses remote peers have reached

@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -197,8 +198,9 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 
 func TestDarwinCollectorPublishesSystemStatsWhileGPUBlocks(t *testing.T) {
 	started := make(chan struct{})
+	var startOnce sync.Once
 	readGPU := func(ctx context.Context) (darwinGPUReading, error) {
-		close(started)
+		startOnce.Do(func() { close(started) })
 		<-ctx.Done()
 		return darwinGPUReading{}, ctx.Err()
 	}

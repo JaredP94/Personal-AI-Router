@@ -148,6 +148,20 @@ func handleClusterIdentity(msg applog.StdinMessage, identity *clusterIdentity) {
 	slog.Info("cluster identity updated", "clustered", params.ClusterUUID != "")
 }
 
+// handleDemand applies a MethodSetDemand ("stats/set-demand") notification.
+func handleDemand(msg applog.StdinMessage, collector *statsCollector) {
+	if msg.Method != noderec.MethodSetDemand {
+		return
+	}
+	var params noderec.DemandParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		slog.Warn("ignoring malformed stats/set-demand push", "err", err)
+		return
+	}
+	collector.SetLocalExecution(params.LocalExecution)
+	slog.Info("stats demand updated", "localExecution", params.LocalExecution)
+}
+
 // detectGPUs lives in gpu_windows.go (DXGI), gpu_linux.go (nvidia-smi with a
 // ghw fallback), gpu_darwin.go (IORegistry), and gpu_other.go (ghw fallback).
 // detectCPU lives in cpu_detect.go; memory detection is split so macOS can use
@@ -277,7 +291,7 @@ func isBackgroundNodeInfoPoll(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	return r.Header.Get("X-NVPAIR-Poll") == "background"
+	return parsePollIntent(r.Header.Get("X-NVPAIR-Poll")) == PollIntentBackground
 }
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -419,9 +433,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func(r *http.Request) []byte {
 		var snap statsSnapshot
-		if isBackgroundNodeInfoPoll(r) {
+		intent := parsePollIntent(r.Header.Get("X-NVPAIR-Poll"))
+		switch intent {
+		case PollIntentBackground:
 			snap = collector.PeekSnapshot()
-		} else {
+		case PollIntentScheduling:
+			snap = collector.SnapshotScheduling()
+		default: // PollIntentForeground
 			snap = collector.Snapshot()
 		}
 		return buildResponse(gpus, cpu, memTotal, snap, hostUUID, clusterPrincipal())
@@ -564,6 +582,7 @@ func main() {
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)
+		handleDemand(msg, collector)
 	}, func() {
 		log.Print("stdin closed, shutting down")
 		cancel()

@@ -535,6 +535,12 @@ func (c *statsCollector) Snapshot() statsSnapshot {
 	return c.PeekSnapshot()
 }
 
+func (c *statsCollector) SnapshotScheduling() statsSnapshot {
+	return c.PeekSnapshot()
+}
+
+func (c *statsCollector) SetLocalExecution(active bool) {}
+
 // Stop signals the tick goroutine to exit, waits for it, and closes the
 // PDH query. Safe to call any number of times from any number of
 // goroutines — sync.Once guarantees the shutdown body runs exactly

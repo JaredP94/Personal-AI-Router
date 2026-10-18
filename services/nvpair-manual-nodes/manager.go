@@ -1122,7 +1122,7 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 }
 
 func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
-	return m.probeNodeInfoWithPoll(m.ctx, client, scheme, addr, port, "foreground")
+	return m.probeNodeInfoWithPoll(m.ctx, client, scheme, addr, port, "scheduling")
 }
 
 func (m *Manager) probeNodeInfoWithPoll(ctx context.Context, client *http.Client, scheme, addr string, port int, poll string) (bool, NodeInfoResponse) {

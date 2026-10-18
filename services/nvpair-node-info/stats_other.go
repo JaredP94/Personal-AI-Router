@@ -27,4 +27,8 @@ func (c *statsCollector) PeekSnapshot() statsSnapshot { return statsSnapshot{} }
 
 func (c *statsCollector) Snapshot() statsSnapshot { return statsSnapshot{} }
 
+func (c *statsCollector) SnapshotScheduling() statsSnapshot { return statsSnapshot{} }
+
+func (c *statsCollector) SetLocalExecution(active bool) {}
+
 func (c *statsCollector) Stop() {}

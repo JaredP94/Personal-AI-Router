@@ -307,6 +307,7 @@ type Broker struct {
 	// goroutines (via emitWorkloadEvent) and the scanner-event goroutine (via
 	// failWorkloadsForNode); it is internally synchronized.
 	workloads *workloadstore.Store
+	lastLocalDemand atomic.Bool
 
 	// engineMu guards engineSubscribed. The engine:<event> stream is
 	// opt-in like proxy's: forwardEngineNotification (engine-manager reader
@@ -677,6 +678,7 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// /v1/node-info but holds no cluster dir to read it from, so this push is the
 	// only source. It runs on every spawn, which also covers a supervised restart.
 	b.pushClusterIdentityToNodeInfo()
+	b.pushDemandToNodeInfoOnStart()
 	// Register node-info's service so the daemon advertises ni= on _nvpair-node.
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
@@ -1196,6 +1198,34 @@ func (b *Broker) pushClusterIdentityToNodeInfo() {
 	}
 	if err := np.SetClusterIdentity(b.clusterPrincipal()); err != nil {
 		slog.Warn("failed to push cluster identity to node-info", "err", err)
+	}
+}
+
+// pushDemandToNodeInfoOnStart re-asserts the current local execution demand to
+// a newly spawned or restarted node-info child.
+func (b *Broker) pushDemandToNodeInfoOnStart() {
+	active := b.workloads.ActiveScheduledOn(b.nodeID) > 0
+	b.lastLocalDemand.Store(active)
+	b.pushDemandToNodeInfo(active)
+}
+
+// recomputeDemand evaluates whether any active workload is scheduled on this node,
+// and pushes an update to node-info if the local execution demand changed.
+func (b *Broker) recomputeDemand() {
+	active := b.workloads.ActiveScheduledOn(b.nodeID) > 0
+	if b.lastLocalDemand.Swap(active) == active {
+		return
+	}
+	b.pushDemandToNodeInfo(active)
+}
+
+func (b *Broker) pushDemandToNodeInfo(active bool) {
+	np := b.getNodeInfo()
+	if np == nil {
+		return
+	}
+	if err := np.SetDemand(active); err != nil {
+		slog.Warn("failed to push demand to node-info", "err", err)
 	}
 }
 
@@ -2604,6 +2634,7 @@ func (b *Broker) emitWorkloadEventProvenance(method string, params json.RawMessa
 	if !b.applyWorkloadEvent(method, params, inferred, unchangedSince) {
 		return
 	}
+	b.recomputeDemand()
 
 	// The scheduler is fanned every real transition (independent of the
 	// external client's opt-in) so it can keep its own catalog.

@@ -104,8 +104,8 @@ func TestProbeNodeInfoKeepsSchedulingTelemetryActive(t *testing.T) {
 	if !up || info.HostUUID != "peer-uuid" {
 		t.Fatalf("probeNodeInfo = %v, %+v; want a successful peer response", up, info)
 	}
-	if poll != "foreground" {
-		t.Fatalf("scheduling telemetry poll = %q, want foreground to retain active sampling", poll)
+	if poll != "scheduling" {
+		t.Fatalf("scheduling telemetry poll = %q, want scheduling to retain scheduling sampling lease", poll)
 	}
 }
 

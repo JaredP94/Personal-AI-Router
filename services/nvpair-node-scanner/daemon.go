@@ -1293,8 +1293,8 @@ func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (
 		slog.Debug("node-info request build failed", "ip", ip, "url", url, "err", err)
 		return NodeInfoResponse{}, false
 	}
-	// Scheduling telemetry must retain active sampling while the cadence/freshness design remains unresolved.
-	req.Header.Set("X-NVPAIR-Poll", "foreground")
+	// Scheduling telemetry requests renew the scheduling lease on the target node.
+	req.Header.Set("X-NVPAIR-Poll", "scheduling")
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("node-info fetch failed", "ip", ip, "url", url, "err", err)

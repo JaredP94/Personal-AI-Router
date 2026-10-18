@@ -404,6 +404,21 @@ func (s *Store) ActiveForNode(node string) []Record {
 	return out
 }
 
+// ActiveScheduledOn returns the number of non-terminal records whose executor
+// (ScheduledOn) is node. It counts executing workloads on node regardless of
+// origin, so the broker can determine whether local GPU execution demand exists.
+func (s *Store) ActiveScheduledOn(node string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, r := range s.records {
+		if !r.Terminal && r.ScheduledOn == node {
+			count++
+		}
+	}
+	return count
+}
+
 // StaleForeign returns copies of the non-terminal records whose origin is not
 // selfNode and which that origin has not asserted for at least staleAfter.
 //

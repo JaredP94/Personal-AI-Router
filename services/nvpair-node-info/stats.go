@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-const (
-	// statsIdleThreshold is how long since the last Snapshot() call before
-	// the GPU telemetry collector transitions to idle sampling.
-	statsIdleThreshold = 6 * time.Second
-
-	// statsIdleInterval is the relaxed sampling cadence when no client is
-	// reading node-info, reducing CPU and energy consumption.
-	statsIdleInterval = 10 * time.Second
-)
 
 // gpuStat is the per-adapter dynamic state the service layers on top of the
 // static detectGPUs() output. Both fields are zero when the underlying OS

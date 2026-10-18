@@ -289,3 +289,13 @@ func (b *lockedBuffer) Bytes() []byte {
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf.Bytes()...)
 }
+
+func (b *lockedBuffer) String() string {
+	return string(b.Bytes())
+}
+
+func (b *lockedBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
