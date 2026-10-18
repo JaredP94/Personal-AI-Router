@@ -63,7 +63,7 @@ Windows named pipe, with relay protocol v2 notification envelopes. See
 | `omlx-proxy` | OpenAI-compatible routing proxy for oMLX, with owner-only routing, failover, and cache-affinity hints. |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
-| `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
+| `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s, delivering compact scheduling telemetry every ~2 s. |
 | `nvpair-workload-manager` | Cluster-wide workload relay. |
 | `nvpair-errors` | Service-errors datastore + cross-node sync. |
 | `nvpair-engine-manager` | Config-driven control plane for local inference engines, model inventory, and trusted remote engine operations. |

@@ -80,23 +80,49 @@ Historical performance observations and the final-artifact profiling gate are in
 
 ### Scheduling Telemetry and Idle Sampling
 
-Scheduler consumers retain foreground node-info reads. Letting manual probes
-(10 seconds) read a cached idle GPU sample (also 10 seconds) can exhaust most of
-the scheduler's 10-second freshness budget before the next observation arrives.
-Background reads remain available for explicitly hidden UI polling, but the
-scanner/manual consumers must not enable unattended sampler backoff until
-collection/delivery/freshness timing is coordinated and tested. The earlier
-profiling improvements from scheduler-background sampling must not be reused
-as measurements of this corrected release tree.
+**Implemented on branch release/protocol-sampling (pending release testing).**
+
+- **Lease-Driven Sampling:** Node-info hardware collection uses `X-NVPAIR-Poll`
+  request leases (`foreground`, `scheduling`, `background`) and broker demand
+  signaling (`stats/set-demand`). On macOS and Linux, hardware GPU sampling runs
+  every 2 seconds during interactive UI use or active workload execution, 5 seconds
+  during scheduling demand (when local or remote workloads exist or are queued),
+  and relaxes to 10 seconds when fully idle. Windows retains its native 1-second
+  PDH collector loop.
+- **Freshness Budget Preservation:** Sampling operations use a 1-second collection
+  timeout. Telemetry age at the scheduler's decision point is mathematically and
+  empirically proven <= 8.5 seconds across all valid lease and scheduling modes,
+  strictly preserving the scheduler's 10-second freshness budget.
+- **Sample Identity and Deduplication:** Node-info stamps each hardware reading
+  with a monotonic `sampleSeq` counter, carried across discovery records and
+  broker feeds into `nvpair-job-scheduler`. Repeated observations carrying an
+  identical non-zero `sampleSeq` do not re-weight the EWMA.
+- **Decoupled Manual Node Telemetry Delivery:** `nvpair-manual-nodes` delivers
+  `node/telemetry` notifications every ~2 seconds (± 250 ms jitter) over reused
+  HTTP connections, reporting honest sample age (including probe and sample
+  latency), completely separate from slower 10-second topology and model probes.
 
 ### Desktop Relay Envelope Validation
 
-Go codecs enforce notification `epoch`/`seq` stamps and reject them on
-requests/responses. The desktop `JsonRpcSubprocess.handleStdout()` currently
-extracts optional stamps but does not reject every malformed/missing envelope.
-Keep client and worker versions matched; decide whether the desktop should
-implement the same terminal validation and add regression coverage before
-claiming universal protocol rejection.
+**Implemented on branch release/protocol-sampling (pending release testing).**
+
+- **Canonical Envelope Enforcement:** Desktop's `JsonRpcSubprocess` and
+  `relay-envelope.ts` scanner enforce canonical JSON-RPC 2.0 / relay v2 envelopes.
+  Duplicate and case-variant reserved members (`jsonrpc`, `id`, `method`,
+  `params`, `result`, `error`, `epoch`, `seq`) are rejected as recoverable decode
+  errors, verified against the shared cross-process corpus
+  `services/shared/jsonrpc/testdata/envelope-conformance.jsonl`.
+- **Lossless Sequence Parsing:** Sequence numbers (`seq`) are decoded losslessly
+  as `bigint` without IEEE-754 precision loss for numbers exceeding 2^53 - 1.
+- **Inbound Silence Preservation:** Malformed frames are dropped as decode errors
+  without resetting the 45-second inbound silence reconnect deadline.
+- **Clean Termination on Protocol Mismatch:** Any relay protocol envelope
+  mismatch (missing or wrong-typed stamps on notifications, or unexpected stamps on
+  requests/responses) terminates the broker session cleanly, fails all pending
+  calls, and reports a supervisor crash with `{ protocolMismatch: true }` without
+  attempting an automatic reconnect.
+- **Legacy Fallback Removed:** The legacy `broker:epoch` params fallback for
+  envelope epoch discovery has been completely removed.
 
 ### Private Vulnerability Reporting
 

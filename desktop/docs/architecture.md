@@ -107,12 +107,18 @@ the two process trees compete for the same engines and proxy ports.
 
 `JsonRpcSubprocess` provides newline-delimited JSON-RPC over stdio. Relay protocol
 v2 notifications carry `epoch` and `seq`; requests/responses remain unstamped.
-Broker epoch/resync payloads report `protocol: 2`. Go codecs terminate on envelope
-mismatches; the desktop parser currently reads stamps without enforcing those
-invariants on every inbound frame. Use matched clients and workers. Epoch changes drive per-domain
-snapshot recovery, not sequence-gap polling. A 15-second broker heartbeat and
-45-second inbound-silence deadline support frontend-owned recovery with bounded
-readiness; this is distinct from worker crash supervision or hang detection.
+Broker epoch/resync payloads report `protocol: 2`. Both Go codecs and the desktop
+parser enforce canonical envelope structure: duplicate and case-variant reserved
+members are rejected as recoverable decode errors (verified against
+`services/shared/jsonrpc/testdata/envelope-conformance.jsonl`). Desktop decodes
+`seq` losslessly as `bigint`. Malformed frames are dropped without resetting the
+45-second inbound-silence deadline. On an envelope protocol mismatch, desktop
+fails pending calls, terminates the subprocess, and reports a supervisor crash
+with `{ protocolMismatch: true }` without reconnecting. The legacy `broker:epoch`
+params fallback has been removed. Epoch changes drive per-domain snapshot recovery,
+not sequence-gap polling. A 15-second broker heartbeat and 45-second inbound-silence
+deadline support frontend-owned recovery with bounded readiness; this is distinct
+from worker crash supervision or hang detection.
 
 The supervisor passes worker paths and the configured log level to the broker,
 subscribes to broker relays after `app:ready`, and converts backend responses
@@ -141,11 +147,15 @@ polls healthy local and discovered nodes every two seconds with a visible UI,
 and every 30 seconds when hidden/minimized, because rich telemetry is not part of
 the broker JSON-RPC surface. Consecutive failures back off to a 30-second cap;
 success or an endpoint change restores the visibility-appropriate cadence.
-Explicit background UI polls read cached snapshots without renewing interactive
-GPU-sampling activity. Scanner/manual scheduling consumers retain foreground
-sampling to preserve their freshness contract, so a hidden UI alone does not
-guarantee idle hardware collection. Scanner telemetry remains approximately two
-seconds with jitter/backoff.
+Local hardware GPU sampling uses lease-driven collection via `X-NVPAIR-Poll`
+request headers (`foreground`, `scheduling`, `background`) and broker demand
+signaling (`stats/set-demand`). Sampling runs every 2 seconds during interactive
+UI use or local workload execution, 5 seconds during scheduling demand, and
+relaxes to 10 seconds when fully idle on macOS and Linux (Windows retains its native
+1-second collector). 1-second collection timeouts and proven <= 8.5-second
+decision-point age preserve the scheduler's 10-second freshness budget. Manual
+nodes deliver `node/telemetry` every ~2 seconds with honest sample age, separate
+from 10-second topology probes.
 
 ## State flow
 

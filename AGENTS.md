@@ -47,8 +47,9 @@ change belongs in a Go service instead.
 - Interprocess communication is newline-delimited JSON-RPC 2.0 over stdio
   (optional `--ipc`), using relay protocol v2: notifications carry `epoch` and
   `seq`; requests/responses carry neither. `broker:resync` reports `protocol: 2`.
-  Go readers treat envelope mismatches as terminal. Clients recover domain
-  snapshots on epoch changes, not by polling on sequence gaps.
+  Both Go and desktop readers treat envelope mismatches as terminal
+  (desktop fails pending calls and exits cleanly without reconnecting). Clients
+  recover domain snapshots on epoch changes, not by polling on sequence gaps.
 - The broker emits a heartbeat every 15 seconds. Desktop owns recovery after
   45 seconds of inbound silence; this is not worker-heartbeat monitoring or a
   promise to reconnect automatically after every broker crash.

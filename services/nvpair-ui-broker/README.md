@@ -152,8 +152,11 @@ DecodeError is recoverable; envelope mismatch is terminal with a metadata-only
 protocol-mismatch diagnostic. Worker reader termination closes its owned control
 pipe, so EOF reaches the child and normal supervision observes its exit.
 Separate HTTP/mTLS cluster payloads are not stdio envelopes. Desktop TypeScript
-is the explicit observe-only inbound exception: it observes stamps and adopts
-the peer epoch, but does not reject missing stamps.
+enforces the same canonical envelope rules as Go: duplicate or case-variant
+reserved members are recoverable decode errors, and envelope mismatches (missing
+or wrong-typed stamps on notifications, or stamped requests/responses) terminate
+the session cleanly, fail pending calls, and report a supervisor crash without
+reconnecting.
 
 ```json
 {"jsonrpc":"2.0","method":"app:ready","params":{"version":"dev"},"epoch":"27b5b4b2-15c3-4ccc-8938-51c985159020","seq":1}
