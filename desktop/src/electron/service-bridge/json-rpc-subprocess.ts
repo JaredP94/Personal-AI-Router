@@ -16,7 +16,7 @@ export interface JsonObject {
     [key: string]: JsonValue
 }
 
-interface JsonRpcError {
+export interface JsonRpcError {
     code: number
     message: string
     data?: JsonValue
