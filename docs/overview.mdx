@@ -136,12 +136,13 @@ For the trust boundaries in detail, refer to
   the same services.
 - Visibility into nodes, engines, models, workloads, and service errors.
 - OpenTelemetry inference traces and optional Arize Phoenix collection for
-  latency, Time to First Token (TTFT), and token throughput. Providers read
-  startup environment configuration; defaults are enabled, `localhost:4317`,
-  and no prompt/completion payload capture. Saved telemetry UI settings do not
-  currently configure live proxy providers, and advertised collectors are not
-  automatically selected. See [Observability](architecture.mdx#observability-and-distributed-tracing)
-  for collector exposure, retention, and evaluation-capture limits.
+  latency, Time to First Token (TTFT), and token throughput. Tracing is off by
+  default and configured dynamically by the broker from saved settings, exporting
+  only to this machine's loopback collector (`127.0.0.1:<collectorPort>`). Prompt
+  and completion capture requires explicit user consent, and traces stay strictly
+  on the originating node. See [Security](../SECURITY.md#opentelemetry-and-phoenix-boundaries-and-privacy-controls)
+  and [Observability](architecture.mdx#observability-and-distributed-tracing) for
+  privacy boundaries and storage controls.
 
 ## What PAIR Does Not Do
 
