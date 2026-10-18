@@ -18,6 +18,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
+	"nvpair-shared/workerhealth"
 )
 
 // discoveryInterval is how often we refresh the peer set from the discovery
@@ -289,6 +290,11 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch {
+	case msg.Method == workerhealth.Method:
+		if msg.IsRequest() {
+			m.codec.Respond(msg.ID, workerhealth.OK())
+		}
+
 	case msg.Method == noderec.NotifyNodes:
 		m.applyDiscovery(msg)
 

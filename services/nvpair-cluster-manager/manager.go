@@ -21,6 +21,7 @@ import (
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -415,6 +416,9 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		m.codec.Respond(msg.ID, workerhealth.OK())
+
 	case "cluster:get-node-id":
 		m.handleGetNodeID(msg)
 	case "cluster:set-identity":

@@ -18,6 +18,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -407,6 +408,9 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		m.codec.Respond(msg.ID, workerhealth.OK())
+
 	case "settings/get-force-ports":
 		m.mu.RLock()
 		v := m.settings.ForcePorts

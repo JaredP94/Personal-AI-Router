@@ -9,6 +9,13 @@ A discovery-aware HTTP reverse proxy for oMLX nodes on the local network (Apple 
 
 > **OpenAI API Compatibility.** This proxy shares identical routing, failover, CORS, and node-selection behavior with [`lmstudio-proxy`](../lmstudio-proxy/README.md) and [`ollama-proxy`](../ollama-proxy/README.md). It subscribes to the discovery relay for `om` nodes, forwards the OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), tags workloads `omlx`, and persists its port to `omlx-proxy-port.json`.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Build
 
 ```bash

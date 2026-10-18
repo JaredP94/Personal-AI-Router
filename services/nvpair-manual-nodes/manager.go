@@ -29,6 +29,7 @@ import (
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -1473,6 +1474,9 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		m.codec.Respond(msg.ID, workerhealth.OK())
+
 	case "node/add":
 		var entry ManualEntry
 		if err := json.Unmarshal(msg.Params, &entry); err != nil {

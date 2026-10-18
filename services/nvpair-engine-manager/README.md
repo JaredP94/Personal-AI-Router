@@ -14,6 +14,13 @@ is a JSON manifest, not code.
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Communication
 
 Bidirectional newline-delimited JSON-RPC 2.0 — the same conventions as

@@ -7,6 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 
 A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Communication
 
 Uses bidirectional newline-delimited JSON-RPC 2.0. By default, communication is over stdin/stdout. An alternative IPC transport (Unix domain socket or Windows named pipe) can be specified with `--ipc <path>`.

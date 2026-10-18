@@ -16,6 +16,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -148,6 +149,9 @@ func (s *Scanner) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		s.codec.Respond(msg.ID, workerhealth.OK())
+
 	case "shutdown":
 		if err := s.codec.Respond(msg.ID, nil); err != nil {
 			log.Printf("failed to respond to shutdown: %v", err)
