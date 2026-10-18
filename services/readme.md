@@ -206,7 +206,8 @@ Proxy OpenTelemetry providers read startup environment variables:
 `PAIR_TELEMETRY_RECORD_PAYLOADS` (with the OTel alternatives documented in each
 proxy's `telemetry.go`). Defaults are enabled, `localhost:4317`, and payloads
 false. Saved UI telemetry settings currently do not configure live providers;
-`otel` discovery advertisements are not consumed as exporter selection.
+collectors are not advertised through discovery, and older peers' `otel` TXT
+keys are ignored.
 Export is plaintext OTLP, not cluster mTLS. Phoenix's Compose ports `6006` and
 `4317` are not loopback-restricted and have no configured authentication/TLS;
 stopping the container retains its named-volume data. Fixed-header redaction is

@@ -562,8 +562,8 @@ Do not rely on **Capture Prompt & Completion Text** to change a running
 proxy's capture mode. Set `PAIR_TELEMETRY_RECORD_PAYLOADS=true` only for an
 explicitly authorized local evaluation, in the launching process's environment,
 and restart workers. Endpoint/enabled overrides are likewise startup environment
-settings, documented in Security. Peers need their exporter endpoint configured;
-`otel=4317` advertisement alone does not route their traces.
+settings, documented in Security. Collectors are not advertised through mDNS;
+an older peer's `otel` TXT key is ignored.
 
 The supplied Compose file publishes ports `6006` and `4317` beyond loopback,
 without configured authentication/TLS. Firewall them appropriately. OTLP export

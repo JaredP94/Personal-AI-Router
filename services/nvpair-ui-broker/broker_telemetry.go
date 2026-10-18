@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"nvpair-shared/appdir"
-	"nvpair-shared/noderec"
 )
 
 const phoenixImageVersion = "version-20.23.0"
@@ -528,7 +527,6 @@ func (b *Broker) purgeTelemetryStorage(ctx context.Context) (telemetryPurgeResul
 	if err != nil {
 		return result, fmt.Errorf("cannot stop managed Phoenix: %w", err)
 	}
-	b.unregisterService(noderec.ServiceOTel)
 	listCtx, listCancel := context.WithTimeout(ctx, 10*time.Second)
 	volumes, err := runner.listVolumes(listCtx, traceVolumeLabel)
 	listCancel()
@@ -653,7 +651,6 @@ func (b *Broker) handleTelemetryStart(msg *Message) {
 
 		if reachable {
 			slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
-			b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
 		}
 
 		finalStatus := b.getTelemetryStatus(context.Background())
@@ -692,7 +689,6 @@ func (b *Broker) handleTelemetryStart(msg *Message) {
 
 			if reachable {
 				slog.Info("telemetry collector container started and accepting connections", "composePath", composePath, "endpoint", endpoint)
-				b.registerService(noderec.RegisterParams{Service: noderec.ServiceOTel, Port: 4317})
 			} else {
 				slog.Warn("telemetry collector container started but collector port not responding within deadline", "composePath", composePath, "endpoint", endpoint)
 			}
@@ -734,7 +730,6 @@ func (b *Broker) handleTelemetryStop(msg *Message) {
 		return
 	}
 
-	b.unregisterService(noderec.ServiceOTel)
 	slog.Info("telemetry collector container stopped", "composePath", composePath)
 	status := b.getTelemetryStatus(context.Background())
 	if err := b.codec.Respond(msg.ID, status); err != nil {

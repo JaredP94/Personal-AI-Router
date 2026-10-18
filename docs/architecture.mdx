@@ -605,8 +605,7 @@ The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
 - The ports its sibling services registered: node-info, all three proxies,
-  errors, workloads, cluster manager, engine manager, and any advertised OTel
-  collector
+  errors, workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it — `ip=` for the address the node ranks first, and `ips=` for the whole
   ranked list
@@ -735,10 +734,9 @@ flowchart LR
   Node B, it injects standard W3C `traceparent` HTTP headers into the outgoing
   request. Node B's cluster ingress extracts the trace context, linking both hops
   into a unified distributed trace.
-- **Advertisement, Not Exporter Selection:** When a local collector responds,
-  the broker registers `otel=4317` with the scanner for mDNS advertisement.
-  Proxy providers do not consume those advertisements to choose an exporter.
-  A collector on another node requires explicit startup configuration.
+- **No Collector Advertisement:** Collectors are local-only and are not
+  registered with the scanner or advertised through mDNS. An older peer's
+  `otel` TXT key is ignored rather than exposed as a discoverable service.
 - **Batched Export:** Providers batch spans so collector availability is not
   intended to block inference. Instrumentation and buffering still have costs;
   this is not a zero-overhead or measured zero-latency-impact guarantee.

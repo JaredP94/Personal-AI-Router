@@ -101,16 +101,13 @@ const (
 	// is pin-based mTLS (cluster peers only) because it performs privileged
 	// operations, and it binds only when the node is clustered.
 	ServiceEngineControl ServiceKey = "ec"
-	// ServiceOTel is the OpenTelemetry OTLP gRPC collector endpoint (Arize Phoenix).
-	// Plain TCP / gRPC over LAN (default port 4317).
-	ServiceOTel ServiceKey = "otel"
 )
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
 	ServiceNodeInfo, ServiceOllama, ServiceLMStudio, ServiceOMLX,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl, ServiceOTel,
+	ServiceEngineControl,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).
@@ -181,8 +178,9 @@ func (r NodeRecord) Port(s ServiceKey) (int, bool) {
 	return p, ok
 }
 
-// ParseTXT parses a node record's TXT strings. Unknown keys are ignored;
-// malformed service ports are skipped. It never errors — a partial record is
+// ParseTXT parses a node record's TXT strings. Numeric unknown keys are retained
+// as service ports for forward compatibility, except the retired collector key.
+// Malformed service ports are skipped. It never errors — a partial record is
 // more useful than none.
 func ParseTXT(txt []string) NodeRecord {
 	r := NodeRecord{Services: make(map[ServiceKey]int)}
@@ -200,6 +198,10 @@ func ParseTXT(txt []string) NodeRecord {
 			r.ClusterUUID = val
 		case KeyIP:
 			r.IP = val
+		case "otel":
+			// Collectors are local-only and no longer part of discovery. Ignore
+			// this retired key even when an older peer still advertises it.
+			continue
 		case KeyIPs:
 			// Capped on the way in as well as on the way out. The publisher's cap
 			// binds only a well-behaved publisher, and a single TXT string has

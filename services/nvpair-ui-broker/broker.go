@@ -1955,7 +1955,6 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
 	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseOMLX)
-	go b.runAutoAdvertiseTelemetry(ctx)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
