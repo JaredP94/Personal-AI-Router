@@ -188,6 +188,20 @@ func cmdFirewall(remove: Bool) -> Int32 {
     return ok ? 0 : 1
 }
 
+func cmdTrust() -> Int32 {
+    let hostAppPath = Bundle.main.bundlePath
+    guard verifySignature(path: hostAppPath, requirement: HelperConstants.appCodeSigningRequirement) else {
+        emit(["trusted": false, "reason": "host-unsigned"])
+        return 0
+    }
+    guard verifySelfSignature(requirement: HelperConstants.ctlCodeSigningRequirement) else {
+        emit(["trusted": false, "reason": "ctl-unsigned"])
+        return 0
+    }
+    emit(["trusted": true, "reason": "trusted"])
+    return 0
+}
+
 // MARK: - Argument parsing
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -208,6 +222,8 @@ case "configure-firewall":
     exitCode = cmdFirewall(remove: false)
 case "remove-firewall":
     exitCode = cmdFirewall(remove: true)
+case "trust":
+    exitCode = cmdTrust()
 default:
     emit(["ok": false, "error": "unknown command: \(command)"])
     exitCode = 2

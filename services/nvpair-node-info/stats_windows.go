@@ -518,17 +518,21 @@ func fetchCounterArray(counter uintptr, formatFlag uint32) ([]pdhFmtCounterValue
 	return unsafe.Slice((*pdhFmtCounterValueItemW)(unsafe.Pointer(&buf[0])), itemCount), true
 }
 
+func (c *statsCollector) PeekSnapshot() statsSnapshot {
+	p := c.latest.Load()
+	if p == nil {
+		return statsSnapshot{}
+	}
+	return *p
+}
+
 // Snapshot returns the latest published statsSnapshot. Safe to call
 // concurrently from many HTTP request goroutines — the snapshot value
 // is immutable post-publish. Returns a zero-value snapshot (empty GPU
 // map, zero CPUUtilPct, zero MemUsedBytes) before the first tick
 // completes, so callers don't need nil checks.
 func (c *statsCollector) Snapshot() statsSnapshot {
-	p := c.latest.Load()
-	if p == nil {
-		return statsSnapshot{}
-	}
-	return *p
+	return c.PeekSnapshot()
 }
 
 // Stop signals the tick goroutine to exit, waits for it, and closes the

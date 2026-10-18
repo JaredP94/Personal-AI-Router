@@ -12,6 +12,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **macOS Firewall Setup Status in Service Settings**: Added a "Firewall setup: manual" status card to Service Settings on builds that cannot satisfy helper code-signing requirements, providing clear guidance on allowing incoming network connections when macOS firewall prompts appear.
+- **Attribution Manifest & Release Gate**: Added `desktop/licenses/attribution-manifest.json`, reviewed upstream license texts in `desktop/licenses/texts/`, and `npm run licenses:check` (`make licenses-check`) to verify third-party license notices against manifest digests and fail on stale notices or unresolved entries without downloading Go modules.
+
+### Changed
+- **Explicit Background UI Sampling**: Hidden-window polls can request cached node-info snapshots with `X-NVPAIR-Poll: background` without renewing interactive activity. Scanner/manual scheduling consumers deliberately retain foreground sampling: combining a 10-second sampler, 10-second manual probes, and 10-second scheduler freshness can leave pressure stale. Unattended sampler backoff is deferred until those budgets are coordinated; closing the UI alone does not guarantee 10-second GPU sampling.
+- **macOS Kernel Event Network Monitor**: Replaced `AF_ROUTE` routing-socket monitoring with a filtered `AF_SYSTEM` kernel-event socket managed by Go's `kqueue` netpoller. Shared network monitors, including those in discovery and the three proxies, no longer wake for routing-cache misses or a 200ms socket timeout.
+- **Cluster Trust Certificate Caching**: Cache validated raw bytes for `cluster/trusted/*.json` in `clustertrust.Trust.Reload()` to avoid repeatedly decoding unchanged pins and parsing their X.509 certificates. Trust-directory polling remains in place.
+- **Desktop File Logging**: Gate verbose/debug/silly file writes on the configured `modularLogLevel` being `debug`, and remove duplicate notification logging. Routine remote-engine polling uses verbose logging. This reduces idle log I/O; it does not suppress real warnings or guarantee zero disk writes.
+
+### Fixed
+- **Unsigned macOS Helper Registration Prompts**: `nvpair-helper-ctl trust` checks the running host application and control tool against helper code-signing requirements before prompting; unsigned builds skip the helper explanation dialog and registration attempts entirely instead of repeatedly prompting.
+- **Standalone Service Installer Packaging & Firewall Cleanup**: `services/installer_build.sh` stages every component in `services/versions.json` along with `LICENSE` and `THIRD_PARTY_NOTICES.md`, failing before archive creation if any file is missing or non-executable. The Windows NSIS installer (`nvpair-setup.nsi`) installs `omlx-proxy.exe` with firewall rules, bundles license notices, and removes all firewall rules on uninstall (fixing leaked LM Studio proxy firewall rules).
+- **Kaizen CSS Vendoring Integrity**: `desktop/scripts/vendor-kaizen-ui-foundations-css.ts` validates pinned SHA-256 digests of downloaded CSS bytes before writing to disk, failing closed on digest mismatches.
+- **Dependency Attribution Notices**: Audited 24 dependencies previously using README fallback or missing texts, resolving them with authoritative upstream license files and declared terms, and incorporating Lucide's and Kaizen's attributions directly into the canonical notice.
+- **Cluster Endorsement Broadcast Churn**: Report an endorsement merge as changed only when an endorsement was added successfully, avoiding redundant `cluster:trust-changed` broadcasts on unchanged roster gossip.
+- **Manual & Cluster Node Alias Deduplication**: A manually added alias supersedes a cluster-seeded entry at the same address while retaining cluster identity; removing it restores cluster seeding. The broker keeps a deterministic display alias per canonical node key, but prefers a reachable engine address over metadata-only or failed aliases for operational state, avoiding both name oscillation and suppression of healthy routes.
+- **TLS-Aware Manual Node Probing & Log Deduplication**: Ordered `node-info` and `engine-manager` probes ahead of plaintext engine probes on clustered/TLS nodes in `nvpair-manual-nodes` and deduplicated non-loopback plaintext rejection warnings once per remote IP across `ollama-proxy`, `lmstudio-proxy`, and `omlx-proxy`.
+- **Linux Idle GPU Activity Tracking**: Fixed `nvpair-node-info`'s internal 1-second Linux `decodeSnapshot` loop calling `Snapshot()` instead of `PeekSnapshot()`, which previously prevented Linux nodes from entering the 10-second idle GPU sampling cadence.
+- **macOS Installer Safety**: Validate options and release asset names, require and verify `SHA256SUMS` for downloads before mounting, and validate the exact `PAIR.app` before stopping the installed application. Normal quit is bounded and scoped to the installed bundle; independent TUI/dev services are no longer killed by global names. Older downloads without a checksum manifest fail closed; local DMGs require independent verification.
+
+### Documentation
+- Backfilled the `0.7.0-rc.1` changelog and corrected fork artifact/signing claims, engine capabilities, worker inventory, relay v2 recovery, logging, and telemetry/privacy limitations across user and architecture guides and `AGENTS.md`.
+- Regenerated dependency notices, retained companion Go attribution files, fixed embedded Markdown fencing, and replaced the stale services notice with a canonical-root pointer. README-only/missing upstream license text remains flagged for review.
+- Added [next-release readiness follow-ups](docs/release-readiness.mdx), including unwired telemetry settings, collector exposure, private vulnerability reporting, attribution review, and final artifact validation. These are not resolved by documentation changes.
+- Documented the unsigned macOS firewall status card in [Known issues](docs/known-issues.mdx) and added `npm run licenses:check` / `make licenses-check` as a release check in [Developing](docs/developing.mdx) and `AGENTS.md`.
+- Updated [Next Release Readiness](docs/release-readiness.mdx) with completed installer packaging, Kaizen CSS integrity verification, audited attribution (resolving all remaining determinations on 2026-10-18 so `licenses:check` passes), and enabled private vulnerability reporting.
+- Documented GitHub private vulnerability reporting channel for the fork in [Security](SECURITY.md) (enabled 2026-10-18).
+
+## [0.7.0-rc.1] - 2026-10-17
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork, published
+from `d18e6d2`. GitHub lists it as the regular/latest release for update discovery;
+that channel designation does not make it a production-certified build. Windows,
+Linux desktop, and Intel Mac packages were not published. Privileged-helper
+registration and helper-based firewall setup are unavailable in this unsigned
+candidate. See the [release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.1)
+for validation scope and remaining limitations.
+
+**Upgrade compatibility:** Relay protocol v2 is a breaking stdio contract. Upgrade
+desktop/TUI and bundled service binaries together; do not mix protocol versions.
+Desktop `0.7.0-rc.1` and service product/installer `1.1.0` have independent version
+cycles.
+
+### Added
+- **Relay Protocol v2 (`nvpair-shared/jsonrpc`, `nvpair-ui-broker`, `desktop`, `nvpair-tui`)**: Stamped `epoch` and monotonic `seq` on every stdio notification envelope while keeping requests and responses unstamped; report `protocol: 2` in broker epoch/resync payloads; added `broker:epoch`, `broker:resync`, and 15-second `heartbeat` liveness notifications. Go codecs now terminate incompatible stdio sessions with a protocol-mismatch diagnostic; the desktop parser extracts stamps but does not enforce every inbound envelope invariant.
+- **Session Liveness & Automatic Reconnect Ownership (`desktop`, `nvpair-tui`)**: Added a 45-second inbound-silence detector that expires unresponsive broker sessions and triggers a frontend-owned reconnect with a bounded readiness deadline while preserving shutdown ownership across reconnects.
+- **Service-Authoritative Routing Metrics (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`)**: Moved routing and prefix-cache affinity metric aggregation into the Go proxies (`metrics/get` and `metrics/routing-update`) via `nvpair-shared/routingmetrics` rather than reimplementing metric math in clients.
+
+### Changed
+- **Epoch-Driven State Recovery (`desktop`, `nvpair-tui`)**: Desktop and TUI refresh subscribed state snapshots per domain when the broker announces a new epoch, without sequence-gap polling or repeated healthy-connection resync bursts.
+- **Broker Node-Info Connection Reuse (`nvpair-ui-broker`)**: Reused a single JSON-RPC codec per `nvpair-node-info` connection instead of allocating a new codec on each control push.
+
+### Fixed
+- **TUI Snapshot Recovery Resilience (`nvpair-tui`)**: Applied successful snapshot domains even when optional workers are unavailable, adopted the broker's object-shaped workload snapshot response, and kept notification consumption active if initial connection setup partially fails.
+- **Failed Desktop Startup Cleanup (`desktop`)**: Ensured a failed desktop startup reaps any subprocess instances it created without disturbing a newer concurrent start attempt, and made broker client writes cancellation-aware during teardown.
+
 ## [0.6.0] - 2026-10-04
 
 ### Changed

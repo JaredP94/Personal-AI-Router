@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 interface CssAsset {
     name: string
     url: string
+    sha256: string
     outputPath: string
 }
 
@@ -16,11 +18,13 @@ const assets: CssAsset[] = [
     {
         name: 'base-external.css',
         url: `https://webassets.nvidia.com/kaizen-ui-foundations/${version}/base-external.css`,
+        sha256: 'd8e74d35082a0f5024bfadd7435e4e8b8dfcfaa09c7bcbbb767fc916c75ac5c7',
         outputPath: join(outputDir, 'base-external.css')
     },
     {
         name: 'components.css',
         url: `https://webassets.nvidia.com/kaizen-ui-foundations/${version}/components.css`,
+        sha256: '687cee259883e8952bfc7886cc7200839b10e9a9744a032e397d8f4e9d3ef76b',
         outputPath: join(outputDir, 'components.css')
     }
 ]
@@ -62,25 +66,38 @@ function ensureOfflineCss(css: string, assetName: string): string {
     ].join('\n')
 }
 
-async function fetchText(asset: CssAsset): Promise<string> {
+interface PreparedAsset {
+    asset: CssAsset
+    offlineCss: string
+}
+
+async function prepareAsset(asset: CssAsset): Promise<PreparedAsset> {
     const response = await fetch(asset.url)
     if (!response.ok) {
         throw new Error(`Failed to fetch ${asset.url}: HTTP ${response.status}`)
     }
-    return response.text()
-}
-
-async function vendorAsset(asset: CssAsset): Promise<void> {
-    const css = await fetchText(asset)
+    const buffer = Buffer.from(await response.arrayBuffer())
+    const actualSha256 = createHash('sha256').update(buffer).digest('hex')
+    if (actualSha256 !== asset.sha256.toLowerCase()) {
+        throw new Error(
+            `SHA-256 digest mismatch for ${asset.url}: expected ${asset.sha256}, got ${actualSha256}`
+        )
+    }
+    const css = buffer.toString('utf8')
     const offlineCss = ensureOfflineCss(css, asset.name)
-    await writeFile(asset.outputPath, offlineCss, 'utf8')
-    console.log(`Vendored ${asset.name} (${offlineCss.length} bytes)`)
+    return { asset, offlineCss }
 }
 
 async function main(): Promise<void> {
-    await mkdir(outputDir, { recursive: true })
+    const preparedAssets: PreparedAsset[] = []
     for (const asset of assets) {
-        await vendorAsset(asset)
+        preparedAssets.push(await prepareAsset(asset))
+    }
+
+    await mkdir(outputDir, { recursive: true })
+    for (const { asset, offlineCss } of preparedAssets) {
+        await writeFile(asset.outputPath, offlineCss, 'utf8')
+        console.log(`Vendored ${asset.name} (${offlineCss.length} bytes)`)
     }
 }
 

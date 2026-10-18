@@ -22,7 +22,7 @@ MIN_NODE := 25.5.0
 
 .PHONY: help dev tools deps-go deps-node build build-binaries build-desktop \
 	build-services run check verify lint typecheck contracts headers \
-	headers-fix test test-desktop test-services clean
+	headers-fix test test-desktop test-services clean licenses-check
 
 help: ## List available targets
 	@printf 'Personal AI Router — development targets\n\n'
@@ -106,6 +106,9 @@ typecheck: $(NODE_MODULES) ## Typecheck the desktop node, web, and test projects
 
 contracts: $(NODE_MODULES) ## Check the desktop and services JSON-RPC contract surface
 	cd $(DESKTOP) && npm run service-contracts:check
+
+licenses-check: $(NODE_MODULES) ## Check third-party notice generation and attribution manifest
+	cd $(DESKTOP) && npm run licenses:check
 
 # Covers the whole monorepo, not just desktop, and needs no npm install: the
 # checker is dependency-free so a services-only clone can run it too.

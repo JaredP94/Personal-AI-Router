@@ -243,23 +243,6 @@ func runChecked(_ launchPath: String, _ args: [String]) throws {
     }
 }
 
-func verifySignature(path: String, requirement requirementString: String) -> Bool {
-    let url = URL(fileURLWithPath: path)
-    var staticCode: SecStaticCode?
-    guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
-        let code = staticCode
-    else {
-        return false
-    }
-    var requirement: SecRequirement?
-    guard SecRequirementCreateWithString(requirementString as CFString, [], &requirement)
-        == errSecSuccess, let req = requirement
-    else {
-        return false
-    }
-    return SecStaticCodeCheckValidity(code, [], req) == errSecSuccess
-}
-
 // MARK: - XPC service
 
 final class HelperService: NSObject, PAIRHelperProtocol {

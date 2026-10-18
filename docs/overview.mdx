@@ -35,9 +35,10 @@ These terms have specific meanings in PAIR:
   is no server, controller, or primary node.
 - **Cluster** — the set of nodes you have paired together. A node belongs to at
   most one cluster, and it must leave before it can join another.
-- **Engine** — the local inference server that runs models: Ollama or LM Studio.
-  PAIR can install, start, stop, and update an engine, or adopt one you already
-  run yourself.
+- **Engine** — the local inference server that runs models: Ollama, LM Studio,
+  or oMLX. PAIR manages engine lifecycle or adopts an existing installation.
+  Operations vary by engine: the bundled oMLX manifest supports macOS arm64 and
+  does not provide model pull/delete actions.
 - **Model** — what you prepare on each node. Nodes do not share models, so a
   node can serve a request only for a model it already holds. Preparing the same
   model on several nodes is what makes those nodes interchangeable.
@@ -94,10 +95,12 @@ A node is eligible when it is reachable, is running an engine that can serve the
 request, and that engine's current inventory advertises the requested model.
 Unknown and non-matching inventories are excluded; if no owner is available, the
 proxy returns a local `502`. Among eligible owners, the proxy honors manual
-selection first, then the scheduler's priority order, then a deterministic
-default. The scheduler ranks nodes by total pending work across both engines, and
-each proxy also counts requests it has just dispatched, so a burst of concurrent
-requests spreads out instead of waiting for workload reports to catch up.
+selection first, then a usable prefix-cache affinity hint, then the scheduler's
+priority order, then a deterministic default. The scheduler combines pending
+work across all three engines with smoothed GPU pressure. Each proxy also
+reserves requests it has just dispatched, so local bursts can spread before
+workload reports catch up. An affinity hint is not proof of an engine KV-cache
+hit.
 
 Because routing is a decision rather than a guarantee, use the **Jobs** view to
 confirm where work ran.
@@ -107,8 +110,9 @@ confirm where work ran.
 Discovery is deliberately not a trust decision. Every machine on the network is
 visible. Pairing is the trust decision, and it is explicit and mutual. It
 requires an invitation and a PIN that a person enters. After pairing,
-node-to-node traffic runs over mutual TLS restricted to nodes in the cluster,
-and the cluster refuses a machine that is not a member.
+inference and cluster-control traffic use mutual TLS restricted to members.
+Discovery and host telemetry are separate surfaces; not all node-to-node traffic
+is authenticated or encrypted.
 
 The PIN is a short convenience code for bootstrapping that exchange, not a strong
 authenticator, so pair only over networks and with machines you trust. Local
@@ -121,7 +125,8 @@ For the trust boundaries in detail, refer to
 
 - A local endpoint for compatible AI applications and development tools.
 - LAN discovery plus manually configured nodes.
-- Ollama-compatible and LM Studio/OpenAI-compatible routing proxies.
+- Ollama-compatible routing plus separate OpenAI-compatible proxies for LM Studio
+  and oMLX. oMLX engine management is currently macOS arm64 only.
 - Pairing and cluster membership managed by the background services.
 - Model-aware, workload-informed routing of independent requests.
 - Encrypted routing between machines: a request sent to another node travels over
@@ -130,8 +135,13 @@ For the trust boundaries in detail, refer to
 - A desktop application, plus a terminal interface for headless machines, driving
   the same services.
 - Visibility into nodes, engines, models, workloads, and service errors.
-- Built-in OpenTelemetry distributed tracing and Arize Phoenix observability for
-  inference latency, Time to First Token (TTFT), token throughput, and AI evaluations.
+- OpenTelemetry inference traces and optional Arize Phoenix collection for
+  latency, Time to First Token (TTFT), and token throughput. Providers read
+  startup environment configuration; defaults are enabled, `localhost:4317`,
+  and no prompt/completion payload capture. Saved telemetry UI settings do not
+  currently configure live proxy providers, and advertised collectors are not
+  automatically selected. See [Observability](architecture.mdx#observability-and-distributed-tracing)
+  for collector exposure, retention, and evaluation-capture limits.
 
 ## What PAIR Does Not Do
 
@@ -165,10 +175,10 @@ It stages the generated binaries in `desktop/cli-bin/`.
 
 ### `services/`
 
-The Go tree contains 13 build outputs:
+The Go services tree produces 14 executables: broker + 12 workers + TUI:
 
 - `nvpair-ui-broker`: service entry point, worker supervisor, and JSON-RPC API
-- `ollama-proxy` and `lmstudio-proxy`: compatible inference proxies
+- `ollama-proxy`, `lmstudio-proxy`, and `omlx-proxy`: compatible inference proxies
 - `nvpair-node-scanner` and `nvpair-node-info`: discovery and host telemetry
 - `nvpair-manual-nodes`: user-specified nodes
 - `nvpair-engine-manager`: local engine and model lifecycle
@@ -176,11 +186,15 @@ The Go tree contains 13 build outputs:
 - `nvpair-node-settings`: persisted settings
 - `nvpair-workload-manager`: workload event replication
 - `nvpair-errors`: service error registry and peer synchronization
-- `nvpair-job-scheduler`: node-wide pending-work priority snapshots
+- `nvpair-job-scheduler`: node-wide pending-work and GPU-pressure rankings
 - `nvpair-tui`: standalone terminal interface for headless systems
 
-The broker supervises the worker processes. `nvpair-tui` is different. It is a
-client that starts its own broker, which then starts the workers.
+The broker supervises up to 12 worker processes. Standalone, only the scanner
+is required; missing default auxiliary binaries or initial auxiliary spawn
+failures leave reduced capabilities. Invalid explicit paths are fatal, and
+failed initial spawns are not automatically retried. Desktop also prevalidates
+broker, scanner, Ollama proxy, node-info, and node-settings binaries.
+`nvpair-tui` is a separate client that starts its own broker, not a worker.
 
 ## Next Steps
 

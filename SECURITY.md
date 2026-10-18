@@ -5,140 +5,202 @@ SPDX-License-Identifier: Apache-2.0
 
 # Security
 
-NVIDIA is dedicated to the security and trust of its software products and
-services, including source code repositories managed through its organization.
+This repository is the [JaredP94 fork](https://github.com/JaredP94/Personal-AI-Router)
+of NVIDIA Personal AI Router (PAIR). Upstream NVIDIA security policies do not
+imply NVIDIA support or security certification for fork-specific changes.
 
-**Do not report security vulnerabilities through public GitHub issues or pull
-requests.** If someone discloses a potential vulnerability publicly, maintainers
-may limit public discussion and redirect the reporter to a private channel.
+**Do not disclose vulnerabilities, exploits, credentials, or private data through
+public issues or pull requests.**
 
 ## Report a Vulnerability
 
-Report a potential vulnerability in NVIDIA Personal AI Router (PAIR) or another
-NVIDIA product through one of these channels:
+### This fork
+
+GitHub private vulnerability reporting is enabled for this fork (verified
+2026-10-18 via the repository API). To report a vulnerability affecting this fork,
+use the repository's **Security → Report a vulnerability**.
+
+### Upstream NVIDIA products
+
+For vulnerabilities affecting upstream PAIR or another NVIDIA product:
 
 - Submit the [NVIDIA Vulnerability Disclosure Program form](https://www.nvidia.com/en-us/security/report-vulnerability/).
 - Email [psirt@nvidia.com](mailto:psirt@nvidia.com). For encrypted email, use
   the [NVIDIA public PGP key](https://www.nvidia.com/en-us/security/pgp-key).
-- If private vulnerability reporting is enabled for this repository, open the
-  repository's **Security** tab and select **Report a vulnerability**.
 
-Include the following details in the report:
+NVIDIA PSIRT triages upstream NVIDIA product reports, not necessarily fork-only
+changes. See [NVIDIA Product Security](https://www.nvidia.com/en-us/security/)
+for its policies and disclosure guidance.
 
-- The affected version or commit
-- The vulnerability class
-- Reproduction steps
-- A proof of concept, when available
-- The expected impact
-
-Remove unrelated personal information, credentials, private keys, tokens,
-prompts, and model data from the report.
-
-The NVIDIA Product Security Incident Response Team (PSIRT) triages submitted
-reports. Refer to
-[NVIDIA Product Security](https://www.nvidia.com/en-us/security/) for current
-policies, bulletins, and disclosure information.
+In a private report, include the affected version/commit, vulnerability class,
+reproduction steps, expected impact, and a minimal synthetic proof of concept.
+Remove unrelated personal information, prompts, model data, and secrets.
 
 ## Security Architecture Context
 
-PAIR is a LAN-first, multi-process application:
+- Electron's renderer reaches main through a typed preload bridge. Electron
+  starts only `nvpair-ui-broker`; the terminal client starts its own broker.
+- The broker supervises **12 workers**: scanner, node-info, three engine proxies,
+  engine manager, cluster manager, workload manager, errors, node settings,
+  manual nodes, and job scheduler. Scanner startup is required; others are
+  optional. Workers run under the user's operating-system account.
+- Local control uses newline-delimited JSON-RPC 2.0. Relay protocol v2 stamps
+  notifications with `epoch` and `seq` (`protocol: 2` is in broker epoch/resync
+  payloads); heartbeat/recovery metadata
+  is a liveness contract, not authentication or encryption.
+- Discovery uses mDNS. Node metadata is available on `:14318`. Proxy defaults
+  are Ollama `:11434`, LM Studio `:1234`, and oMLX `:1236`; configured ports may
+  differ. Each proxy accepts loopback HTTP clients and pinned-peer mTLS traffic
+  on the same port.
+- Cluster manager `:14321` accepts pairing/bootstrap traffic and uses a six-digit
+  EAP-NOOB PIN to establish certificate trust. Paired channels include errors
+  `:14319`, workloads `:14320`, engine inventory `:14322`, remote engine control
+  `:14323`, and promoted proxy ingress.
+- Proxy traces use a separate OTLP collector, normally `localhost:4317`. They
+  are **not** protected by cluster mTLS. The supplied Phoenix container publishes
+  UI/OTLP HTTP `:6006` and OTLP gRPC `:4317`.
 
-- Electron renderer code uses a typed preload bridge to reach Electron main.
-- Electron main starts `nvpair-ui-broker` and exchanges newline-delimited
-  JSON-RPC 2.0 over the broker's standard input and output.
-- The broker supervises Go workers and relays their control-plane methods and
-  notifications.
-- Discovery and selected metadata endpoints operate on the local network.
-- Ollama-compatible and OpenAI-compatible local HTTP proxies carry inference
-  traffic and may route a request to another paired node.
-- The cluster manager uses a six-digit PIN to bootstrap trust. Cluster-scoped
-  peer traffic and promoted proxy ingress are designed to use certificates and
-  mutual TLS after pairing.
+The Go services own identity, cryptography, routing, and inter-node transport;
+clients relay commands and render reported state.
 
-The desktop application relays pairing and membership operations. The Go
-services own cryptographic identity, trusted certificates, and inter-node
-transport.
+## Boundaries and Risks
 
-## Documented Risks and Assumptions
+### Local APIs and Proxy Ingress
 
-These statements describe security boundaries visible in the current source.
-They are not claims that every deployment is secure.
+A proxy's substantive plaintext HTTP requests must originate on loopback;
+non-loopback plaintext requests are rejected with `403`. CORS preflight can
+return `204` before that check. The TLS personality requires a pinned peer
+certificate and forwards directly to the local engine without routing onward.
 
-### Inference Endpoints Are Loopback-Only
+Loopback is not user authentication. Other local processes can submit requests.
+CORS defaults are permissive when no origin allowlist is configured; CORS is not
+an authorization boundary. Review browser access before allowing web content to
+reach these endpoints. Broker stdio and optional Unix-socket/named-pipe access
+rely on parent-process and operating-system permissions, not per-message tokens.
 
-A proxy's plaintext personality accepts requests from loopback only. It refuses
-a plaintext request from any other address. The same port also serves a
-mutual-TLS ingress for paired cluster members, and PAIR forwards that traffic to
-the node's own engine rather than routing it onward.
+For oMLX, the proxy and engine manager read `OMLX_API_KEY` or
+`~/.omlx/settings.json` and inject the key for local engine calls when required.
+These readers neither provision the key nor enforce permissions on that file.
+Protect engine settings yourself; the engine manifest `omlx.json` is not a
+credential store.
 
-This is deliberate. A network-reachable plaintext endpoint would make any node an
-open relay for inference to anything that can route to it. Run an application on
-a node and use that node's local endpoint. Exposing an engine to the network
-directly is outside PAIR and is the operator's decision and risk.
+### LAN Metadata and Overlay Addresses
 
-### Local Network Is a Trust-Relevant Boundary
+In the **broker-managed deployment**, `/v1/node-info` serves unauthenticated
+plaintext hardware/utilization metadata even after pairing. Standalone node-info
+with `--cluster-dir` can instead use membership-gated mTLS; do not assume that
+mode is active in the desktop bundle.
 
-PAIR discovers nodes and exposes service metadata on the LAN. Some discovery
-enrichment and node-information traffic can use plain HTTP. Treat an untrusted
-Wi-Fi, shared office network, compromised router, and hostile local process as
-potentially adversarial. Network segmentation and host firewall rules remain
-the operator's responsibility.
+PAIR can advertise/rank Tailscale CGNAT addresses (`100.64.0.0/10`) and use known
+peer address fallbacks. This is not arbitrary tailnet peer enumeration, and
+Tailscale reachability does not grant PAIR trust. Promoted cluster channels
+still require pinned certificates. Pairing/bootstrap and discovery metadata
+have different boundaries from authenticated inference/control traffic.
 
-“Local-first” describes the intended topology. It does not prove that no data
-leaves the machine or LAN. Inference engines, model catalogs, update systems,
-applications, and user configuration may contact external services.
+An untrusted LAN, shared Wi-Fi, hostile local process, or compromised router is
+potentially adversarial. Firewall rules and network segmentation remain the
+operator's responsibility. Do not forward PAIR ports through a public router or
+put an unauthenticated public reverse proxy in front of them.
 
-### Pairing PIN Is a Bootstrap Convenience
+### Pairing Grants Substantial Peer Authority
 
-The six-digit PIN is low entropy. Do not treat it as a durable credential or as
-strong proof of physical presence. Pair only while both devices and the network
-are trusted, compare the displayed context, reject unexpected requests, and
-remove members that are no longer authorized.
+The six-digit PIN is a low-entropy bootstrap convenience, not a durable credential
+or proof of physical presence. Pair only when both devices and the network are
+trusted; reject unexpected requests and remove unauthorized members.
 
-The cluster manager is expected to establish certificate trust after the PIN
-exchange. The PIN does not protect a node before pairing and does not compensate
-for a compromised paired member.
+Trust is transitive through Ed25519 endorsements. A compromised member can
+endorse certificates that peers will pin. Any currently pinned peer can pass the
+remote engine-control gate, including engine installation/start/stop and model
+pull/load/unload/delete operations, without additional per-operation approval
+in those handlers. Proxy mTLS ingress is not restricted to an inference-route
+allowlist: it forwards engine API paths. Pairing is therefore not read-only or
+inference-only access.
 
-### Mutual TLS Has a Limited Scope
+Identities use self-signed Ed25519 leaf certificates; generated private keys are
+written with mode `0600`. TLS authentication uses exact certificate-DER pins,
+not conventional CA, hostname, or certificate-expiry validation. The nominal
+certificate lifetime does not automatically expire trust. Protect the PAIR data
+directory and revoke/remove compromised peers.
 
-Cluster mTLS protects participating cluster channels only when identity and
-certificate material are present and the relevant workers use that transport.
-It does not automatically protect loopback HTTP, plain discovery metadata,
-node-information HTTP, Electron IPC, third-party engine APIs, or traffic outside
-PAIR. Certificate storage and operating-system account protection are part of
-the boundary.
+### Cluster mTLS Does Not Cover Every Channel
 
-### Local APIs and Proxies Can Expose Sensitive Operations
+mTLS protects participating channels only when the relevant worker is configured
+with identity and trust material. It does not automatically protect loopback
+HTTP, discovery, broker-managed node-info HTTP, OTLP export, Electron IPC,
+third-party engine APIs, or traffic outside PAIR.
 
-The broker's stdio, Unix-socket, or named-pipe transport relies on the parent
-process and operating-system endpoint permissions. It has no per-message bearer
-token. PAIR's local HTTP proxies carry prompts, generated content, model names,
-and request metadata. A process that can reach a local endpoint may be able to
-submit inference or observe behavior allowed by that endpoint.
+Engine installation executes downloaded vendor software; checksum verification
+depends on the engine manifest and is not universally required. Catalogs,
+updates, model downloads, Docker image pulls, engines, and applications can
+contact external services. “Local-first” is not a guarantee that data never
+leaves the machine or LAN.
 
-Do not bind local APIs or inference engines to untrusted interfaces, forward
-PAIR ports through a router, or place an unauthenticated public reverse proxy in
-front of them. Review browser access and CORS behavior before allowing web
-content to reach a proxy. Prompts, messages, chunks, and response bodies should
-not be written to logs.
+### Prefix Affinity Is Not Prompt Storage
 
-### Supervised Workers Share the User's Authority
+The proxies keep a bounded in-memory prefix-affinity table of SHA-256 digests and
+node identity (10,000 entries, five-minute idle TTL). It is a routing hint, not
+proof that an engine still holds a KV cache. Raw prompt/completion content is not
+stored in that table. Low-entropy input digests remain susceptible to guessing;
+do not log or gossip them.
 
-The broker starts workers under the current operating-system account. Engine
-installation, model management, local settings, logs, and cluster keys may be
-sensitive. Protect the account and PAIR data directory, and review changes to
-worker paths or packaged binaries before running them.
+## OpenTelemetry and Phoenix: Current Limitations
+
+**The desktop Observability switches currently persist settings, but do not
+reconfigure proxy tracer providers.** Collector advertisements (`otel=4317`) and
+UI status must not be taken as proof of the endpoint or capture mode a running
+proxy uses. Each proxy reads its configuration at startup:
+
+| Variable | Behavior |
+| --- | --- |
+| `PAIR_TELEMETRY_ENABLED` | `true` or `1` enables tracing; any other nonempty value disables it. Default: **enabled**. |
+| `OTEL_SDK_DISABLED=true` | Disables tracing when `PAIR_TELEMETRY_ENABLED` is unset. |
+| `PAIR_TELEMETRY_ENDPOINT` | Collector override; otherwise `OTEL_EXPORTER_OTLP_ENDPOINT`, then `localhost:4317`. |
+| `PAIR_TELEMETRY_RECORD_PAYLOADS` | `true` or `1` attaches prompt/completion content. Default: **off**. |
+| `OTEL_SERVICE_NAME` | Overrides the proxy's service name. |
+
+Set these in the environment of the process launching PAIR/broker and restart
+its workers. Do not rely on a desktop toggle to disable capture enabled in the
+startup environment. Wiring persisted settings to the running proxies requires
+a separate runtime fix and privacy verification before release.
+
+With payload capture off, spans still contain model/node identifiers, timing,
+HTTP status, token metrics, routing decisions, and **request headers**. A fixed
+sensitive-header denylist redacts `Authorization`, `Proxy-Authorization`,
+`Proxy-Auth`, `Cookie`, `Set-Cookie`, `X-Pair-Pin`, and `X-API-Key`. Other custom header values
+are preserved. This is not general-purpose secret scrubbing. With payload
+capture on, prompt/messages and completion text can contain secrets that are
+**not** removed by header redaction. Enable it only with informed consent and a
+trusted collector/network path. Never put credentials in captured content or
+unrecognized headers.
+
+OTLP gRPC currently uses plaintext transport. The supplied Compose configuration
+publishes `6006:6006` and `4317:4317` without restricting host addresses or
+configuring authentication/TLS, so those ports may be reachable from other
+machines. Protect both ingestion and trace access with firewall rules or a
+separately secured collector. Do not assume that opening `localhost:6006` means
+the service is loopback-only.
+
+Phoenix uses the mutable `arizephoenix/phoenix:latest` image and stores traces in
+a named SQLite data volume. **Stopping the container does not delete traces.**
+Manage retention/deletion separately; application reset/uninstall must not be
+assumed to erase that Docker volume. Normal PAIR system/file logs must never
+contain prompts, completions, PINs, credentials, or key material.
+
+## macOS Distribution and Privileged Helper
+
+This fork's published `0.7.0-rc.1` candidate is unsigned and unnotarized, macOS
+arm64 only. The privileged-helper flow requires NVIDIA's Developer ID policy
+(Team ID `6KR3T733EC`); unsigned/ad-hoc fork builds do not satisfy it. Installing
+through `scripts/install-mac.sh`, checking `SHA256SUMS`, or avoiding browser
+quarantine does not provide code signing, notarization, helper registration, or
+automatic firewall setup. Do not bypass helper trust checks or disable
+system-wide macOS protections to make the candidate work.
 
 ## Security-Sensitive Changes
 
-Changes to these areas require focused review and tests:
-
-- Preload and Electron IPC exposure
-- JSON-RPC framing, method routing, and subprocess paths
-- Discovery, node identity, and manual-node handling
-- Pairing, certificates, membership, and member removal
-- Proxy listeners, CORS, routing, and engine port ownership
-- Logging, diagnostics, updates, installers, and privileged helpers
-
-Do not commit credentials, signing material, real cluster keys, private prompts,
-personal data, or proprietary datasets. Use synthetic fixtures.
+Review and test changes to preload/IPC exposure; JSON-RPC framing and process
+ownership; discovery and identity; pairing, endorsements and revocation; proxy
+listeners, CORS and routing; remote engine/model operations; trace configuration,
+attributes and payload gating; logs and exports; downloads, installers, updates
+and privileged helpers. Use synthetic fixtures, not real identities, keys,
+private prompts, or proprietary datasets.

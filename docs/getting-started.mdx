@@ -540,8 +540,15 @@ PAIR includes built-in OpenTelemetry (OTel) distributed tracing and Arize
 Phoenix observability to monitor inference latency, Time to First Token (TTFT),
 token throughput, and cluster scheduling decisions.
 
-Arize Phoenix runs as a **single Docker container per cluster** on one designated
-node. Peer cluster nodes require zero container setup:
+Phoenix can run as one Docker container on a designated host. **Current
+limitation:** the desktop tracing switches persist settings but do not configure
+running proxy tracer providers, and advertised collectors are not automatically
+selected by exporters. Proxy startup defaults are tracing enabled,
+`localhost:4317`, and prompt/completion capture off. Read
+[Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations) before
+starting a collector or enabling capture.
+
+To manage the container:
 
 1. **Designate a host machine** and ensure Docker Desktop or Docker Engine is
    running.
@@ -551,15 +558,29 @@ node. Peer cluster nodes require zero container setup:
    and verify collector connectivity.
 4. Select **Open Dashboard ↗** to open the Phoenix web interface at
    `http://localhost:6006`.
-5. *(Optional)* Toggle **Capture Prompt & Completion Text** if you want to run
-   AI evaluations (hallucination detection, toxicity, QA accuracy) in Phoenix.
-   Auth tokens, credentials, and API keys are always permanently redacted.
+Do not rely on **Capture Prompt & Completion Text** to change a running
+proxy's capture mode. Set `PAIR_TELEMETRY_RECORD_PAYLOADS=true` only for an
+explicitly authorized local evaluation, in the launching process's environment,
+and restart workers. Endpoint/enabled overrides are likewise startup environment
+settings, documented in Security. Peers need their exporter endpoint configured;
+`otel=4317` advertisement alone does not route their traces.
 
-Any peer nodes paired into the cluster automatically discover the central
-collector over mDNS (`otel=4317`) and stream OTLP spans across the LAN.
-Requests routed across nodes automatically link into unified distributed traces.
+The supplied Compose file publishes ports `6006` and `4317` beyond loopback,
+without configured authentication/TLS. Firewall them appropriately. OTLP export
+is plaintext; request headers outside the fixed redaction denylist may contain
+sensitive data even with payload capture off. Captured prompts/completions are
+not generally secret-scrubbed. Stopping Phoenix retains its trace-data volume.
+Distributed context propagation can link routed requests once the participating
+proxies export to the intended collector.
 
 ## Keeping PAIR Up to Date
+
+**Fork candidate caveat:** `0.7.0-rc.1` is an unsigned, unnotarized macOS arm64
+candidate. Update discovery metadata is published, but automatic installation
+through macOS trust/signature checks is not certified. Use the
+[macOS installation instructions](../README.md#download-a-release) and release
+limitations rather than assuming the signed upstream update flow below applies.
+Always upgrade the desktop/TUI and service bundle together for relay protocol v2.
 
 An installed PAIR looks for a newer release shortly after it starts, and every
 six hours while it keeps running. Checking is all it does on its own: PAIR never

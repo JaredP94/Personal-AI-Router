@@ -1,0 +1,173 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# Next Release Readiness
+
+This is the follow-up checklist from the 2026-10-17 documentation/dependency
+notice audit. It describes the current checkout, not a certification of the next
+release. No release was published and no installed app was replaced by this
+audit.
+
+## Documentation and Installer Maintenance
+
+- [x] Backfill `0.7.0-rc.1` in the changelog using its published notes and source;
+  keep later performance changes under **Unreleased**.
+- [x] Separate supported build targets from published assets. The fork's latest
+  release is an unsigned/unnotarized macOS arm64 candidate, even though GitHub
+  marks it regular/latest.
+- [x] Correct process inventory: 14 service executables, 12 supervised workers,
+  and a separate TUI; distinguish standalone/desktop startup requirements.
+- [x] Document relay v2 envelopes, epoch recovery, broker-client silence handling,
+  three-engine behavior, current telemetry configuration, and idle polling.
+- [x] Update contributor/agent guidance and regenerate canonical dependency
+  notices. The stale services notice now points to the root notice.
+- [x] Update the macOS installer: validate arguments, require the release checksum
+  manifest, verify before mounting, validate `PAIR.app` before shutdown, and
+  scope bounded normal quit to the installed bundle rather than global worker
+  names. Local `--dmg` files require independent verification. Downloads from
+  older releases without `SHA256SUMS` now fail closed.
+- [x] Update standalone service installers: `services/installer_build.sh` stages
+  every component in `services/versions.json` plus `LICENSE` and `THIRD_PARTY_NOTICES.md`
+  and fails on any missing file. `services/installer/nvpair-setup.nsi` now installs
+  `omlx-proxy` with firewall rules and the notices, and its uninstaller removes
+  every rule it adds (including previously orphaned LM Studio proxy rules).
+  The NSIS script was not compiled (no `makensis` on macOS); keep that as an open
+  Windows build check.
+- [x] Handle unsigned macOS builds: `nvpair-helper-ctl trust` checks the host app
+  and tool signatures against helper requirements. When not satisfied, PAIR skips
+  helper registration prompts entirely and displays "Firewall setup: manual"
+  guidance under Settings → Service.
+- [x] Vendored Kaizen CSS integrity: `vendor:kaizen-css` verifies pinned SHA-256
+  digests of downloaded bytes before writing to disk.
+
+Installer tests use mocked commands and a temporary destination. They do not
+certify real mounting, sudo installation, OS consent dialogs, or packaged app
+lifecycle. Those require an explicitly authorized artifact test.
+
+## Open Release Decisions
+
+The proposed remedies for every item below are in the
+[remediation design](superpowers/specs/2026-10-17-release-concerns-remediation-design.md).
+Historical performance observations and the final-artifact profiling gate are in
+[Performance and energy](performance-release-summary.mdx).
+
+### Effective Tracing and Privacy Controls
+
+**Runtime work is still required.** The UI persists enabled/endpoint/payload
+settings, but proxy providers read startup environment variables. Defaults are
+tracing enabled, `localhost:4317`, payload capture off. Collector advertisements
+do not select exporter destinations. Decide and implement the effective
+configuration contract, then test UI → broker → proxies end to end, including
+restart, disabled tracing, payload opt-in/off, and actual collector destination.
+
+The supplied Phoenix configuration exposes ports `6006` and `4317` without
+loopback host restrictions or configured authentication/TLS; export is plaintext.
+Decide the secured deployment/remote-collector policy. Verify header/content
+capture and named-volume retention/deletion. A documentation warning does not
+implement these privacy controls. See [Security](../SECURITY.md#opentelemetry-and-phoenix-current-limitations).
+
+Source anchors: each proxy's `telemetry.go`, `services/shared/telemetry/`,
+`services/nvpair-node-settings/manager.go`,
+`services/nvpair-ui-broker/broker_telemetry.go`, and
+`docker-compose.telemetry.yml`.
+
+### Scheduling Telemetry and Idle Sampling
+
+Scheduler consumers retain foreground node-info reads. Letting manual probes
+(10 seconds) read a cached idle GPU sample (also 10 seconds) can exhaust most of
+the scheduler's 10-second freshness budget before the next observation arrives.
+Background reads remain available for explicitly hidden UI polling, but the
+scanner/manual consumers must not enable unattended sampler backoff until
+collection/delivery/freshness timing is coordinated and tested. The earlier
+profiling improvements from scheduler-background sampling must not be reused
+as measurements of this corrected release tree.
+
+### Desktop Relay Envelope Validation
+
+Go codecs enforce notification `epoch`/`seq` stamps and reject them on
+requests/responses. The desktop `JsonRpcSubprocess.handleStdout()` currently
+extracts optional stamps but does not reject every malformed/missing envelope.
+Keep client and worker versions matched; decide whether the desktop should
+implement the same terminal validation and add regression coverage before
+claiming universal protocol rejection.
+
+### Private Vulnerability Reporting
+
+**Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled
+via the repository API (`gh api -X PUT repos/JaredP94/Personal-AI-Router/private-vulnerability-reporting`,
+confirmed returning `enabled: true`) and documented in [Security](../SECURITY.md).
+Reporters should use the repository's **Security → Report a vulnerability**.
+Remaining owner step: send one benign test report and confirm receipt.
+Do not assume NVIDIA PSIRT owns reports about fork-only code.
+
+### Attribution Review and Artifact Contents
+
+Regeneration inventories **296 component/version entries**: 240 npm/Electron and
+56 Go. That inventory is not legal completeness approval:
+
+- **24 README-fallback/missing-text entries were audited** (23 npm entries and
+  `github.com/mattn/go-localereader@v0.0.1`): resolved with authoritative upstream
+  texts in `desktop/licenses/texts/` and recorded in `desktop/licenses/attribution-manifest.json`
+  (including all 5 entries resolved by controller determination on 2026-10-18).
+- Lucide's attribution is now included in the canonical notice as a reviewed asset entry.
+- Vendored Kaizen CSS verifies pinned SHA-256 digests of downloaded bytes before writing.
+- Standalone installers stage every component and notice: `services/installer_build.sh`
+  stages every component in `services/versions.json` plus `LICENSE` and `THIRD_PARTY_NOTICES.md`
+  and fails on any missing file; `services/installer/nvpair-setup.nsi` installs `omlx-proxy`
+  with firewall rules and the notices, and its uninstaller removes every rule it adds (the
+  LM Studio proxy rules were previously left behind). The NSIS script was not compiled
+  (no `makensis` on macOS) — keep that as an open Windows build check.
+- Inspect final app artifacts for the canonical `LICENSE` and
+  `THIRD_PARTY_NOTICES.md` plus Electron's separate `LICENSES.chromium.html`.
+- Engines and the Phoenix image are separately downloaded software with their
+  own terms, not bundled distributions covered by the desktop dependency scan.
+
+The generator now preserves companion Go NOTICE/COPYRIGHT files, safely fences
+embedded Markdown, uses `go list -mod=readonly`, and identifies yaml.v3's combined
+MIT/Apache terms. `npm run licenses:check` (Makefile `make licenses-check`, deliberately
+not part of `make check`) fails on a stale notice or unresolved entries and never
+downloads Go modules (`GOPROXY=off`, `GOFLAGS=-mod=readonly`). It scans installed
+npm packages and compares generated output against `attribution-manifest.json`.
+
+Resolved by controller determination (2026-10-18):
+- `@electron-internal/extract-zip@1.0.4`: Derived from `max-mapper/extract-zip`; resolved with BSD-2-Clause LICENSE from `max-mapper/extract-zip` default-branch HEAD (`d6f095261840e6523f9a4fd84caa645f22ba1078`).
+- `github.com/mattn/go-localereader@v0.0.1`: Tag v0.0.1 README declares MIT; resolved with author's MIT LICENSE added at commit `d92f6c38ec2b974f0d9e3cc3ea57288345cb74bf`.
+- `kaizen-ui-foundations@1.0.0`: Companion stylesheet of `@nvidia/foundations-react-core@1.0.0`; resolved with its Apache-2.0 `LICENSE.md`.
+- `lazy-val@1.0.5`: Package declares MIT; resolved with standard MIT license text from `spdx/license-list-data` tag `v3.29.0` (commit `31ba1a50e5397e00a304dbadc76531740e89ee48`) without filled placeholders.
+- `react-remove-scroll-bar@2.3.8`: Package declares MIT; resolved with author's MIT LICENSE added at commit `7301c160fda44cb8cf2b9fdfde61efad35736196`.
+
+- Caveat: `@nvidia/foundations-react-core 1.0.0 ships a NOTICE.md whose SPDX header reads LicenseRef-NvidiaProprietary while its package.json and LICENSE.md declare Apache-2.0; the notice treats Apache-2.0 as governing. Raise with NVIDIA if this matters for your distribution.`
+
+## Repeatable Checks
+
+From the repository root:
+
+```bash
+node scripts/spdx-headers.mjs
+bash -n scripts/install-mac.sh
+shellcheck scripts/install-mac.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+```
+
+Installer tests require Python 3.9 or newer. From `desktop/`:
+
+```bash
+npm run licenses
+npm run licenses:check
+npm run lint
+npm run typecheck
+npm run test:unit
+npm run dead-code:check
+npm run service-contracts:check
+```
+
+`licenses:check` (also callable as `make licenses-check` from the repository root)
+is a release check, deliberately not included in `make check`. It fails on a
+stale notice or any unresolved entry; with all manifest determinations resolved,
+the gate now passes cleanly.
+
+Review the regenerated notice diff; unchanged inputs should reproduce identical
+output. These checks do not replace Go suites, authorized live inference tests,
+or inspection/lifecycle testing of the final release artifacts.

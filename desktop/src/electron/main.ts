@@ -19,6 +19,7 @@ import { currentPlatform } from '@/shared/utils/platform'
 import { APP_DISPLAY_NAME, APP_EXIT_ARGUMENT, APP_ID } from '@/shared/constants/app'
 import { migrateAppData } from '@/electron/path'
 import { macPrivilege } from '@/electron/services/mac-privilege-service'
+import { runMacHelperSetup } from '@/electron/services/mac-helper-setup'
 
 import { registerAllIpc } from '@/electron/ipc'
 import { destroyConnector, destroyConnectorSync, initializeConnector } from '@/electron/connector'
@@ -152,11 +153,14 @@ if (!gotTheLock || exitRequested) {
     // nvpair-helper-ctl. The first run explains the macOS approval before it appears;
     // subsequent launches reconcile silently (version-aware reinstall).
     async function runMacPrivilegedSetup(): Promise<void> {
-        if (!macPrivilege.isSupported()) return
-        const firstTime = !isMacHelperSetupComplete()
-
-        try {
-            if (firstTime) {
+        await runMacHelperSetup({
+            isSupported: () => macPrivilege.isSupported(),
+            trust: () => macPrivilege.trust(),
+            isSetupComplete: () => isMacHelperSetupComplete(),
+            setSetupComplete: (value: boolean) => setMacHelperSetupComplete(value),
+            ensureConfigured: (forceFirewall: boolean) =>
+                macPrivilege.ensureConfigured(forceFirewall),
+            explainFirstRun: async () => {
                 await dialog.showMessageBox({
                     type: 'info',
                     buttons: ['Continue'],
@@ -164,39 +168,16 @@ if (!gotTheLock || exitRequested) {
                     message: `${APP_DISPLAY_NAME} needs administrator permission to complete setup.`,
                     detail: 'macOS will ask you to approve a background helper that configures the firewall for local AI traffic. You only need to do this once.'
                 })
-            }
-
-            const result = await macPrivilege.ensureConfigured(firstTime)
-            if (!result.supported) return
-
-            if (result.registration === 'requiresApproval') {
-                if (firstTime) {
-                    await dialog.showMessageBox({
-                        type: 'warning',
-                        buttons: ['OK'],
-                        message: `Approve the ${APP_DISPLAY_NAME} helper`,
-                        detail: `Open System Settings > General > Login Items & Extensions, enable the ${APP_DISPLAY_NAME} background item, then relaunch the app to finish setup.`
-                    })
-                }
-                log.info({
-                    sublevel: 'mac-helper',
-                    message: 'Privileged helper requires approval in System Settings'
-                })
-                return
-            }
-
-            if (result.registration === 'enabled' && result.firewallConfigured) {
-                setMacHelperSetupComplete(true)
-                log.info({ sublevel: 'mac-helper', message: 'Privileged helper configured' })
-            } else {
-                log.error({
-                    sublevel: 'mac-helper',
-                    message: `Privileged helper setup incomplete: ${result.registration} ${result.firewallError ?? ''}`
+            },
+            explainApproval: async () => {
+                await dialog.showMessageBox({
+                    type: 'warning',
+                    buttons: ['OK'],
+                    message: `Approve the ${APP_DISPLAY_NAME} helper`,
+                    detail: `Open System Settings > General > Login Items & Extensions, enable the ${APP_DISPLAY_NAME} background item, then relaunch the app to finish setup.`
                 })
             }
-        } catch (err) {
-            log.error({ sublevel: 'mac-helper', message: `Privileged setup error: ${err}` })
-        }
+        })
     }
 
     let isCleaningUp = false

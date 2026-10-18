@@ -5,9 +5,9 @@
  * Collects license information for the Go modules linked into the shipped
  * service binaries.
  *
- * The installer bundles all thirteen Go executables from `../services` as
- * `extraResources`, so their dependencies are redistributed and need attribution
- * in the notice file that ships inside the application.
+ * The desktop installer bundles the Go service components listed in
+ * `services/versions.json` as `extraResources`, so their dependencies need
+ * attribution in the canonical repository-root notice shipped with the app.
  *
  * Module sets are build-tag dependent — `github.com/Microsoft/go-winio` only
  * appears for `GOOS=windows` — so every release target is enumerated and the
@@ -15,9 +15,11 @@
  * legitimately link different versions of the same dependency; those are kept as
  * separate entries.
  *
- * License text is read from the module cache directory that `go list` reports,
- * so this needs the modules downloaded (any successful build satisfies that) but
- * makes no network requests of its own.
+ * Attribution text is read from the module cache directory reported by
+ * `go list -mod=readonly`. Go may use the network to resolve uncached dependencies;
+ * readonly mode prevents changes to module manifests during notice generation.
+ * In `--check` mode, GOPROXY=off and GOFLAGS=-mod=readonly ensure no network
+ * downloads occur; an unpopulated cache fails with a message to run make deps-go.
  */
 import { execFile } from 'node:child_process'
 import { readdir, readFile } from 'node:fs/promises'
@@ -54,7 +56,7 @@ const GO_TARGETS: ReadonlyArray<{ goos: string; goarch: string }> = [
  */
 const FIRST_PARTY_MODULES = new Set(['nvpair-shared', 'eapnoob'])
 
-const LICENSE_FILE_PATTERN = /^(LICEN[SC]E|COPYING|NOTICE)([.-]\w+)?$/i
+const LICENSE_FILE_PATTERN = /^(LICEN[SC]E|COPYING|NOTICE|COPYRIGHT)([.-][\w.-]+)?$/i
 
 interface GoModule {
     path: string
@@ -73,23 +75,38 @@ function isThirdParty(module: GoModule): boolean {
 async function listModulesForTarget(
     componentDir: string,
     goos: string,
-    goarch: string
+    goarch: string,
+    check = false
 ): Promise<GoModule[]> {
     const template = '{{if .Module}}{{.Module.Path}}\t{{.Module.Version}}\t{{.Module.Dir}}{{end}}'
     let stdout: string
     try {
-        const result = await execFileAsync('go', ['list', '-deps', '-f', template, '.'], {
-            cwd: componentDir,
-            env: { ...process.env, GOOS: goos, GOARCH: goarch, CGO_ENABLED: '0' },
-            maxBuffer: 32 * 1024 * 1024
-        })
+        const result = await execFileAsync(
+            'go',
+            ['list', '-mod=readonly', '-deps', '-f', template, '.'],
+            {
+                cwd: componentDir,
+                env: {
+                    ...process.env,
+                    GOOS: goos,
+                    GOARCH: goarch,
+                    CGO_ENABLED: '0',
+                    ...(check ? { GOPROXY: 'off', GOFLAGS: '-mod=readonly' } : {})
+                },
+                maxBuffer: 32 * 1024 * 1024
+            }
+        )
         stdout = result.stdout
     } catch (err) {
         // A component that cannot resolve for one target must not silently drop
         // its dependencies from the notice file.
-        throw new Error(
-            `go list failed for ${componentDir} (${goos}/${goarch}): ${String(err instanceof Error ? err.message : err)}`
-        )
+        const msg = String(err instanceof Error ? err.message : err)
+        if (check) {
+            throw new Error(
+                `go list failed for ${componentDir} (${goos}/${goarch}): ${msg}\nModule cache may be missing; run 'make deps-go' first.`
+            )
+        }
+        throw new Error(`go list failed for ${componentDir} (${goos}/${goarch}): ${msg}`)
     }
 
     const modules: GoModule[] = []
@@ -101,7 +118,7 @@ async function listModulesForTarget(
     return modules
 }
 
-async function readLicenseText(moduleDir: string): Promise<string> {
+export async function readLicenseText(moduleDir: string): Promise<string> {
     let names: string[]
     try {
         names = await readdir(moduleDir)
@@ -109,20 +126,21 @@ async function readLicenseText(moduleDir: string): Promise<string> {
         return ''
     }
 
-    // Prefer a plain LICENSE over NOTICE when a module ships both.
-    const candidates = names
-        .filter(name => LICENSE_FILE_PATTERN.test(name))
-        .sort((a, b) => Number(/^notice/i.test(a)) - Number(/^notice/i.test(b)))
-
+    // Include companion attribution files as well as license grants. Use code-point
+    // filename order so output does not depend on filesystem order or locale.
+    const candidates = names.filter(name => LICENSE_FILE_PATTERN.test(name)).sort()
+    const texts: Array<{ name: string; text: string }> = []
     for (const name of candidates) {
         try {
-            const text = (await readFile(join(moduleDir, name), 'utf8')).trim()
-            if (text) return text
+            const text = await readFile(join(moduleDir, name), 'utf8')
+            if (text.trim()) texts.push({ name, text })
         } catch {
-            /* try the next candidate */
+            /* Skip directories or unreadable candidates; keep other attribution files. */
         }
     }
-    return ''
+    return texts
+        .map(({ name, text }) => (texts.length > 1 ? `--- ${name} ---\n${text}` : text))
+        .join('\n\n')
 }
 
 function repositoryUrl(modulePath: string): string {
@@ -130,15 +148,15 @@ function repositoryUrl(modulePath: string): string {
 }
 
 export async function collectGoModuleEntries(
-    servicesDir: string,
-    componentNames: readonly string[]
+    moduleDirs: readonly string[],
+    options?: { check?: boolean }
 ): Promise<LicenseEntry[]> {
     const byKey = new Map<string, GoModule>()
+    const check = options?.check ?? false
 
-    for (const component of componentNames) {
-        const componentDir = join(servicesDir, component)
+    for (const moduleDir of moduleDirs) {
         for (const { goos, goarch } of GO_TARGETS) {
-            for (const module of await listModulesForTarget(componentDir, goos, goarch)) {
+            for (const module of await listModulesForTarget(moduleDir, goos, goarch, check)) {
                 if (!isThirdParty(module)) continue
                 byKey.set(`${module.path}@${module.version}`, module)
             }
@@ -151,7 +169,12 @@ export async function collectGoModuleEntries(
         entries.push({
             name: module.path,
             version: module.version,
-            license: licenseText ? detectLicenseType(licenseText) : 'Unknown',
+            // yaml.v3 incorporates MIT-licensed libyaml code alongside Apache terms.
+            license: !licenseText
+                ? 'Unknown'
+                : module.path === 'gopkg.in/yaml.v3' && module.version === 'v3.0.1'
+                  ? 'MIT AND Apache-2.0'
+                  : detectLicenseType(licenseText),
             author: null,
             email: null,
             repository: repositoryUrl(module.path),

@@ -73,7 +73,7 @@ cd Personal-AI-Router
 Development requires Node.js 25.5.0 or newer, npm, Go 1.25 or newer, `jq`, and
 Git. Refer to [Building PAIR](docs/building.mdx).
 
-On Linux, the repository-root `Makefile` wraps the commands below:
+On Linux and macOS, the repository-root `Makefile` wraps the commands below:
 
 - `make dev` installs the Go and npm dependencies.
 - `make build` builds the service binaries and desktop bundles.
@@ -100,7 +100,10 @@ npm run lint
 npm run typecheck
 npm test
 npm run service-contracts:check
+npm run dead-code:check
 ```
+
+`make check` does not include `dead-code:check`; run it separately.
 
 Use `npm run format` to apply repository formatting.
 
@@ -196,7 +199,13 @@ Important rules:
 - Backend notifications are authoritative for service state.
 - Each inference request is routed to one eligible node.
 - Pairing, certificates, and inter-node transport are owned by the services.
-- Prompts and generated response bodies must not be logged.
+- Prompts, messages, and generated response bodies must not enter standard
+  system logs (`slog`, `applog`, stderr, or file logs). The sole content-capture
+  exception is telemetry spans sent directly to a local collector for evaluation
+  with explicit user opt-in. Pairing PINs, credentials, and key material remain
+  forbidden in all sinks. This local-only rule is contributor policy, not an
+  enforced exporter-transport guarantee; see [Architecture](docs/architecture.mdx#observability-and-distributed-tracing)
+  and [SECURITY.md](SECURITY.md).
 
 When changing a JSON-RPC method or payload, update its producer, broker relay,
 all consumers, tests, and relevant API documentation together.

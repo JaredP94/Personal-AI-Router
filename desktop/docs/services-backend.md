@@ -23,6 +23,7 @@ broker supervises every worker and relays its control plane.
 | `nvpair-ui-broker`        | Worker supervision and relay                              |
 | `ollama-proxy`            | Ollama-compatible routing proxy with cluster-mTLS ingress |
 | `lmstudio-proxy`          | LM Studio routing proxy with cluster-mTLS ingress         |
+| `omlx-proxy`              | oMLX routing proxy with cluster-mTLS ingress              |
 | `nvpair-node-scanner`     | Discovery and node announcement                           |
 | `nvpair-node-info`        | Node metadata and telemetry                               |
 | `nvpair-manual-nodes`     | User-managed node entries                                 |
@@ -45,7 +46,7 @@ flowchart TB
     Broker["nvpair-ui-broker"]
     Scanner["nvpair-node-scanner"]
     NodeInfo["nvpair-node-info"]
-    Proxies["ollama-proxy / lmstudio-proxy"]
+    Proxies["ollama-proxy / lmstudio-proxy / omlx-proxy"]
     Engines["nvpair-engine-manager"]
     Cluster["nvpair-cluster-manager"]
     Settings["nvpair-node-settings"]
@@ -90,7 +91,7 @@ engine, workload, cluster, and error relays. The bridge then emits renderer push
 events from backend notifications.
 
 Connector readiness follows the broker contract: `app:ready` establishes the
-service connection, while Ollama and LM Studio proxy readiness remains an
+service connection, while Ollama, LM Studio, and oMLX proxy readiness remains an
 asynchronous capability signal. Personal AI Router waits up to the canonical
 startup deadline in `src/shared/constants/modular-runtime.ts` for
 `app:ready`; an outright failure or stalled broker startup is surfaced in
@@ -101,8 +102,12 @@ later, the connector transitions to connected without spawning a second broker.
 
 The broker does not expose rich node telemetry over JSON-RPC. Electron therefore
 polls each healthy discovered node's advertised `/v1/node-info` endpoint every
-two seconds and merges CPU, memory, GPU, and VRAM data into `metrics:update`;
-consecutive failures back off to a 30-second cap and reset on success.
+two seconds with a visible UI or every 30 seconds when hidden/minimized, merging
+CPU, memory, GPU, and VRAM data into `metrics:update`. Consecutive failures back
+off to a 30-second cap and reset on success. Explicit background UI polls use
+cached snapshots without renewing interactive GPU-sampling activity. Scheduling
+consumers deliberately retain foreground sampling; a hidden UI alone therefore
+does not guarantee the idle GPU cadence.
 Those renderer snapshots are display-only. Independently, the backend scanner
 samples a compact maximum-GPU utilization value on the same healthy cadence,
 with the same capped failure backoff, and sends it through the broker to the
@@ -111,13 +116,30 @@ scheduler.
 All other service control flows through broker JSON-RPC. Engine proxy HTTP is
 reserved for inference clients.
 
+### Relay recovery and observability boundaries
+
+Relay protocol v2 requires stamped notifications (`epoch`, `seq`) and unstamped
+requests/responses. Broker epoch/resync payloads report `protocol: 2`. Go codecs
+terminate on envelope mismatches; the desktop parser currently extracts stamps
+without enforcing those invariants on every inbound frame. Keep clients and
+workers matched. Epoch changes drive per-domain snapshot hydration, not sequence-gap polling.
+Broker heartbeats every 15 seconds support a 45-second inbound-silence deadline
+and frontend-owned recovery. This is not per-worker hang detection.
+
+Telemetry settings persist through `settings/*`, but currently do not configure
+proxy tracer providers. The proxies initialize from startup environment variables,
+defaulting to enabled export to `localhost:4317` with payload capture off. Collector
+advertisements/status do not prove the endpoint or capture mode in use. See
+[Security](../../SECURITY.md#opentelemetry-and-phoenix-current-limitations) for
+the environment controls, header capture, plaintext export, and Phoenix exposure.
+
 ## Current domain routing
 
 | Backend notification                                 | Personal AI Router handling                                                                                                     | Renderer push                                             |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `proxy:ready` / `lmstudio-proxy:ready`               | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `proxy:ready` / `lmstudio-proxy:ready` / `omlx-proxy:ready`               | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:install-progress` / `engine:remote-progress` | Update operation progress                                                                                                       | engine progress pushes                                    |
@@ -128,7 +150,7 @@ reserved for inference clients.
 | `nodes:changed`                                      | Replace membership snapshot                                                                                                     | `nodes:changed`                                           |
 | `workloads:upsert` / `workloads:remove`              | Update workload catalog                                                                                                         | workload pushes                                           |
 
-`nvpair-job-scheduler` combines queued and running work across both engines with
+`nvpair-job-scheduler` combines queued and running work across all three engines with
 a smoothed 0–3 pressure from the busiest GPU. Invalid, missing, or
 older-than-10-second telemetry receives neutral pressure. It emits
 `schedule:priority` with order, pending count, and pressure; the broker applies

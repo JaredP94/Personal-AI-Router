@@ -12,7 +12,7 @@ the broker from the same installation directory. The broker is the parent
 process and canonical backend entry point: it supervises the worker subprocesses
 on the UI's behalf, speaking JSON-RPC over stdio.
 
-The broker supervises **eleven** worker subprocesses, so a client gets the whole
+The broker supervises **twelve** worker subprocesses, so a client gets the whole
 backend behind one endpoint. Each is spawned at startup and relayed under its own
 namespace:
 
@@ -22,6 +22,7 @@ namespace:
 | `nvpair-node-info` | Local GPU / CPU / memory inventory over HTTP at `/v1/node-info` | — (HTTP only) |
 | `ollama-proxy` | Ollama-compatible inference proxy and router | `proxy:*` |
 | `lmstudio-proxy` | The LM Studio counterpart, supervised identically | `lmstudio-proxy:*` |
+| `omlx-proxy` | OpenAI-compatible oMLX proxy; broker-negotiated listen port | `omlx-proxy:*` |
 | `nvpair-engine-manager` | Local engine and model control plane; also serves `GET /v1/models` to peers | `engine:*` |
 | `nvpair-cluster-manager` | Node identity, trusted-node store, PIN pairing | `cluster:*`, `nodes:*` |
 | `nvpair-workload-manager` | Cluster workload relay between this node and peers | `workloads:*` |
@@ -30,16 +31,19 @@ namespace:
 | `nvpair-node-settings` | Typed per-node settings store | `settings/*` |
 | `nvpair-manual-nodes` | User-added nodes, merged into the discovery snapshot | `node/*`, `nodes/list` |
 
-Only the scanner is required. Every other worker is optional: a missing binary
-leaves the broker running without that capability rather than failing to start.
+For the standalone broker, scanner resolution/initial spawn is required. A
+missing default binary or failed initial spawn for another worker permits degraded
+operation; that failed initial spawn is not automatically retried. An invalid
+**explicit** worker path is fatal. Desktop additionally validates the presence of
+broker, scanner, Ollama proxy, node-info, and node-settings before startup.
 The [worker subprocesses](#worker-subprocesses) section covers each one's link,
 lifecycle, and relay rules.
 
-Two responsibilities live in the broker itself rather than in a worker:
+These responsibilities live in the broker itself rather than in a worker:
 
-- **Engine advertising.** The broker polls local Ollama and LM Studio every 5 s
-  and registers each running engine's port (`ol` / `lm`) with the discovery
-  daemon, so both are carried in this host's single `_nvpair-node` record. The
+- **Engine advertising.** The broker polls local Ollama, LM Studio, and oMLX
+  availability and registers each running engine's port (`ol` / `lm` / `om`)
+  with discovery, carrying all three in this host's single `_nvpair-node` record. The
   model list is not part of that record — it is served over HTTP by
   `nvpair-engine-manager` on the `em` service and fetched by a peer's daemon
   during discovery enrichment.
@@ -70,6 +74,7 @@ Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other
 | `--node-info-path <path>` | `./nvpair-node-info[.exe]` in the CWD | Explicit path to the `nvpair-node-info` binary the broker should spawn. When omitted and no default sibling exists, the broker runs without the local inventory server (non-fatal); when set to an invalid path, the broker exits with an error |
 | `--proxy-path <path>` | `./ollama-proxy[.exe]` in the CWD | Explicit path to the `ollama-proxy` binary the broker spawns for the local Ollama reverse proxy. Same optional semantics as `--node-info-path`: an absent default sibling means no local proxy (non-fatal); an invalid explicit path exits with an error |
 | `--lmstudio-proxy-path <path>` | `./lmstudio-proxy[.exe]` in the CWD | Explicit path to the `lmstudio-proxy` binary the broker spawns for the local LM Studio reverse proxy. Same optional semantics as `--proxy-path` |
+| `--omlx-proxy-path <path>` | `./omlx-proxy[.exe]` in the CWD | Explicit path to the oMLX proxy. Same optional semantics as `--proxy-path`; its port is negotiated to avoid LM Studio/reservation collisions. |
 | `--workload-manager-path <path>` | `./nvpair-workload-manager[.exe]` in the CWD | Explicit path to the `nvpair-workload-manager` binary the broker spawns for the cluster workload relay. Same optional semantics as `--node-info-path`: an absent default sibling means no workload relay (non-fatal); an invalid explicit path exits with an error |
 | `--errors-path <path>` | `./nvpair-errors[.exe]` in the CWD | Explicit path to the `nvpair-errors` binary the broker spawns (with `--peer-sync`) for the service-error pipeline. Same optional semantics as `--node-info-path`: an absent default sibling means the error pipeline is disabled — producers' errors are dropped (non-fatal); an invalid explicit path exits with an error |
 | `--engine-manager-path <path>` | `./nvpair-engine-manager[.exe]` in the CWD | Explicit path to the `nvpair-engine-manager` binary the broker spawns for engine management. Same optional semantics as `--node-info-path` |
@@ -85,9 +90,14 @@ Logs go to **stderr** (shared `applog` format, same as every other NVPAIR binary
 
 ## Worker subprocesses
 
-On startup — **before** emitting `app:ready` — the broker spawns the scanner and (when available) node-info, ollama-proxy, the workload-manager, and the cluster-manager as child processes over stdio. The proxy is spawned up front but doesn't gate `app:ready` — it announces its listen port asynchronously (see below). None of the auxiliary workers gate `app:ready`.
+On startup, the broker attempts to spawn the scanner and all available workers
+listed above over stdio before emitting `app:ready`. Scanner initial spawn is
+fatal; auxiliary workers do not gate `app:ready` on readiness. The proxies announce
+their bound ports asynchronously. oMLX's standalone default is `1234`; the broker
+can move it to a free fallback starting at `1236` when LM Studio reserves `1234`.
+Use the reported port, not a hardcoded endpoint.
 
-**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm` from the engine poller) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
+**`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`om` from the engine pollers) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
 
 **`nvpair-node-info`** is spawned next. It's a server, not an event source: it stands up the local `/v1/node-info` HTTP endpoint (GPU/CPU/memory inventory). It does not advertise itself — the broker registers its `ni` port with the scanner daemon, which carries it in the node record, and a peer's daemon fetches `/v1/node-info` over plain HTTP to enrich the node. The broker doesn't read anything back from node-info's stdout (drained and discarded). Spawning it is **optional**: if the binary can't be resolved (and no `--node-info-path` override was given) the broker logs a warning and continues serving discovery without it.
 
@@ -111,15 +121,15 @@ Two classes of proxy notification are **not** re-emitted under the `proxy:` name
 
 **`nvpair-workload-manager`** is the cluster workload relay, and it's the only worker the broker talks to **bidirectionally over a notification-only link** (no id-bearing request/response). It supervises it the same optional, non-fatal way as node-info / proxy: a missing default sibling (and no `--workload-manager-path`) just means no cluster workload relay. The broker plays the workload **broker** role between the proxy and the manager:
 
-- **Outbound (proxy -> broker -> manager -> peers).** When either proxy emits a `workload:started` / `workload:completed` / `workload:errored`, the broker stamps the local stable `hostUuid` onto `params.workloadInfo.originatedFrom`, applies the transition to its authoritative workload store, and fans the accepted update to the scheduler before forwarding the original lifecycle frame to the manager. The manager broadcasts it to peer nodes. With no manager supervised the event still updates local scheduling and subscribed clients, but is not broadcast.
+- **Outbound (proxy -> broker -> manager -> peers).** When any proxy emits a `workload:started` / `workload:completed` / `workload:errored`, the broker stamps the local stable `hostUuid` onto `params.workloadInfo.originatedFrom`, applies the transition to its authoritative workload store, and fans the accepted update to the scheduler before forwarding the original lifecycle frame to the manager. The manager broadcasts it to peer nodes. With no manager supervised the event still updates local scheduling and subscribed clients, but is not broadcast.
 - **Inbound (peers -> manager -> broker).** The manager translates peer-origin lifecycle events into `workloads:upsert` and peer-origin removals into `workloads:remove` on stdout. The broker applies each accepted transition to the same store, fans it to the scheduler, and relays it to clients subscribed via `workloads:subscribe`.
 - **Local echo.** Local-origin proxy workloads are also emitted to the same `workloads:*` client stream (lifecycle translated to `workloads:upsert`), so a subscribed client sees a coherent cluster-wide view — its own workloads alongside peers'.
 
-**`nvpair-job-scheduler`** consumes the accepted workload stream, compact GPU telemetry, and discovery snapshot. It smooths fresh utilization into pressure 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples, and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is node-wide across Ollama and LM Studio because both normally contend for the same resources. Each engine-specific `schedule:priority` carries `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure changes. The broker caches, generation-orders, and replays the full `{nodes,ranks}` snapshot to the matching proxy, where a newly delivered snapshot resets optimistic reservation deltas. On scheduler spawn/restart the broker replays active workloads and telemetry before discovery, then resumes all three live feeds.
+**`nvpair-job-scheduler`** consumes the accepted workload stream, compact GPU telemetry, and discovery snapshot. It smooths fresh utilization into pressure 0–3, uses neutral pressure 1 for invalid/missing/older-than-10-second samples, and orders by `pending + gpuPressure`, then pressure, then stable UUID. Load is node-wide across Ollama, LM Studio, and oMLX because all contend for the same resources. Each engine-specific `schedule:priority` carries `{engine,nodes,ranks}` and refreshes when order, pending counts, or pressure changes. The broker caches, generation-orders, and replays the full `{nodes,ranks}` snapshot to the matching proxy, where a newly delivered snapshot resets optimistic reservation deltas. On scheduler spawn/restart the broker replays active workloads and telemetry before discovery, then resumes all three live feeds.
 
 `schedule:priority` and `node/set-priority` are internal worker contracts: the broker does not expose either notification to its connected client.
 
-**`nvpair-cluster-manager`** owns the node's stable cryptographic identity (a self-generated UUID + Ed25519 self-signed certificate), the trusted-node store, and the EAP-NOOB PIN-based pairing flow that bootstraps mTLS trust between machines. Like ollama-proxy it's a full bidirectional JSON-RPC peer, and like the rest it's supervised **optionally and non-fatally**: a missing default sibling (and no `--cluster-manager-path`) just means the broker runs without cluster pairing. The broker is a **generic relay** for it in both directions: any `cluster:*` or `nodes:*` request a client sends is forwarded verbatim and the response (result or JSON-RPC error) is relayed straight back, and every notification the manager pushes is forwarded to the client unchanged. Unlike the proxy stream these events are not opt-in — they're low-volume, important pairing/membership pushes (`cluster:invite-received`, `cluster:identity-changed`, `nodes:changed`, ...), so they always flow. `errors:report` / `errors:clear` are the one exception: like the proxy's, they target `nvpair-errors` (which the broker doesn't supervise) and are dropped. Because pairing calls drive multi-round-trip inter-node network exchanges, the relay's per-call timeout is more generous (30 s) than the proxy's local control-plane timeout.
+**`nvpair-cluster-manager`** owns the node's stable cryptographic identity (a self-generated UUID + Ed25519 self-signed certificate), the trusted-node store, and the EAP-NOOB PIN-based pairing flow that bootstraps mTLS trust between machines. Like ollama-proxy it's a full bidirectional JSON-RPC peer, and like the rest it's supervised **optionally and non-fatally**: a missing default sibling (and no `--cluster-manager-path`) just means the broker runs without cluster pairing. The broker is a **generic relay** for it in both directions: any `cluster:*` or `nodes:*` request a client sends is forwarded verbatim and the response (result or JSON-RPC error) is relayed straight back, and every notification the manager pushes is forwarded to the client unchanged. Unlike the proxy stream these events are not opt-in — they're low-volume, important pairing/membership pushes (`cluster:invite-received`, `cluster:identity-changed`, `nodes:changed`, ...), so they always flow. `errors:report` / `errors:clear` are the one exception: like the proxy's, they are routed into the supervised `nvpair-errors` pipeline rather than directly forwarded to the client. Because pairing calls drive multi-round-trip inter-node network exchanges, the relay's per-call timeout is more generous (30 s) than the proxy's local control-plane timeout.
 
 Shared lifecycle for all workers:
 
@@ -537,7 +547,14 @@ Any `settings/*` request is forwarded to `nvpair-node-settings` and its response
 
 #### `telemetry/get-status`
 
-Returns `{ "enabled": bool, "endpoint": string, "uiUrl": string, "recordPayloads": bool, "containerState": string, "collectorReachable": bool, "currentVersion"?: string, "updateAvailable": bool, "latestVersion"?: string }`. Queries current telemetry settings, probes the Docker container state of `nvpair-phoenix`, checks image update status, and tests TCP connectivity to the OTLP gRPC endpoint.
+Returns `{ "enabled": bool, "endpoint": string, "uiUrl": string, "recordPayloads": bool, "containerState": string, "collectorReachable": bool, "currentVersion"?: string, "updateAvailable": bool, "latestVersion"?: string }`. Queries saved telemetry settings, probes the Docker container state of `nvpair-phoenix`, checks image update status, and tests TCP connectivity to the configured OTLP endpoint.
+
+**This reports settings and connectivity, not the effective proxy tracer
+configuration.** Proxies currently initialize from startup `PAIR_TELEMETRY_*` /
+OTel environment variables (default enabled, `localhost:4317`, payloads off).
+Persisted settings and mDNS advertisements do not reconfigure their providers.
+See [Security](../../SECURITY.md#opentelemetry-and-phoenix-current-limitations)
+for plaintext transport, header capture, Compose exposure, and retention risks.
 
 #### `telemetry/check-update`
 
@@ -553,7 +570,7 @@ Launches the Arize Phoenix Docker container via `docker compose -f docker-compos
 
 #### `telemetry/stop`
 
-Stops the Arize Phoenix Docker container via `docker compose -f docker-compose.telemetry.yml stop` and returns the updated `TelemetryStatusResult`.
+Stops the Arize Phoenix Docker container via `docker compose -f docker-compose.telemetry.yml stop` and returns the updated `TelemetryStatusResult`. Its named trace-data volume is retained; this is not trace deletion or proxy tracing disablement.
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 

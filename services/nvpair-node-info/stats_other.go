@@ -23,6 +23,8 @@ type statsCollector struct{}
 
 func startStatsCollector() *statsCollector { return &statsCollector{} }
 
+func (c *statsCollector) PeekSnapshot() statsSnapshot { return statsSnapshot{} }
+
 func (c *statsCollector) Snapshot() statsSnapshot { return statsSnapshot{} }
 
 func (c *statsCollector) Stop() {}

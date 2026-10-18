@@ -11,9 +11,10 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may be running [Ollama](https://ollama.com/), LM Studio, both,
-or neither, and its model inventory is fetched over HTTP from its engine-manager
-rather than crammed into mDNS TXT records, which are too small to carry it.
+discovery. A node may run [Ollama](https://ollama.com/), LM Studio, oMLX, any
+supported combination, or none. Model inventory is fetched from engine-manager
+rather than crammed into mDNS TXT records. The bundled oMLX engine manifest
+supports macOS arm64 only and has no model pull/delete actions.
 
 Locally, each node exposes compatibility proxies — Ollama-compatible and
 OpenAI-compatible — so an unmodified client on that machine can reach any capable
@@ -27,6 +28,12 @@ can serve that loopback-only address from the same router when it is free —
 `localhost` is claimed on IPv4 and IPv6 together, and remote or HTTPS targets are
 never intercepted.
 
+The oMLX proxy defaults to `1234` standalone. Under the broker, when LM Studio
+occupies or reserves `1234`, oMLX is assigned a free fallback starting at `1236`,
+excluding reserved ports. Use reported proxy status rather than assuming its
+endpoint. Model inventory is served on `14322`; node-info on `14318` serves
+hardware, utilization, and identity telemetry, not the model list.
+
 PAIR ships a graphical UI alongside these services. The UI launches
 **`nvpair-ui-broker`** from the same directory; the broker orchestrates the
 workers and exposes a newline-delimited JSON-RPC 2.0 API over stdio (or a Unix
@@ -35,13 +42,25 @@ see the [root README](../README.md#what-is-supported).
 
 ## Architecture
 
-This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is the thirteenth: a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
+This tree builds 14 service executables: `nvpair-ui-broker`, 12 supervised
+workers, and `nvpair-tui`. The broker attempts to start available workers at
+startup. Standalone, only the scanner is required; missing default auxiliary
+binaries and initial auxiliary spawn failures are non-fatal. Invalid explicit
+worker paths are fatal. Failed initial spawns are not automatically retried;
+crash supervision applies after a successful start. Desktop also prevalidates
+broker, scanner, Ollama proxy, node-info, and node-settings binaries.
+
+`nvpair-tui` launches and supervises its own broker instead of being supervised.
+Processes use newline-delimited JSON-RPC 2.0 over stdio or optional Unix socket /
+Windows named pipe, with relay protocol v2 notification envelopes. See
+[Control Flow](../docs/architecture.mdx#control-flow).
 
 | Binary | Role |
 | --- | --- |
 | `nvpair-ui-broker` | Parent service and JSON-RPC API surface used by the bundled UI and other clients. Supervises workers, relays consolidated discovery, and coordinates routing and scheduling. |
 | `ollama-proxy` | Ollama-compatible HTTP reverse proxy. Routes only to advertised model owners, with owner failover and scheduler priorities. |
 | `lmstudio-proxy` | LM Studio counterpart to `ollama-proxy`, forwarding OpenAI-compatible inference routes with equivalent owner-only routing and failover behavior. |
+| `omlx-proxy` | OpenAI-compatible routing proxy for oMLX, with owner-only routing, failover, and cache-affinity hints. |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
 | `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s. |
@@ -59,7 +78,7 @@ The mDNS responder is our own rather than the host's, because Windows ships none
 
 The broker feeds every accepted local or peer workload transition plus compact
 GPU telemetry to the scheduler. Queued and running work is counted by destination
-node across Ollama and LM Studio together. Fresh maximum-GPU utilization is
+node across Ollama, LM Studio, and oMLX together. Fresh maximum-GPU utilization is
 smoothed into pressure 0–3; missing or stale telemetry is neutral. Rankings use
 `pending + gpuPressure`, and each proxy adds local reservations before choosing,
 so bursts spread without waiting for workload feedback.
@@ -70,6 +89,7 @@ so bursts spread without waiting for workload feedback.
 nvpair-ui-broker/        Parent service / JSON-RPC API surface
 ollama-proxy/            Ollama-compatible routing proxy
 lmstudio-proxy/          OpenAI-compatible routing proxy for LM Studio
+omlx-proxy/              OpenAI-compatible routing proxy for oMLX
 nvpair-node-info/        Local GPU-inventory HTTP service
 nvpair-node-scanner/     Consolidated _nvpair-node._tcp discovery daemon
 nvpair-manual-nodes/     Manual-node manager
@@ -84,8 +104,8 @@ shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all thirteen binaries (Windows)
-build.sh                  Builds all thirteen binaries (Linux)
+build.bat                 Builds all fourteen service executables (Windows)
+build.sh                  Builds all fourteen service executables (Linux/macOS)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -115,7 +135,8 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all thirteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
+Both scripts read `versions.json`, build all fourteen service executables with
+`-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
 
@@ -132,16 +153,18 @@ To drive a services-only build interactively, run `nvpair-tui` — it launches a
 supervises its own broker, so nothing else needs to be running. See
 [Using the PAIR terminal interface](../docs/terminal-interface.mdx).
 
-For backend development or direct API access, launch the broker yourself; it
-supervises workers that it expects as siblings in the same `build/bin/`
-directory:
+For service development or direct API access, launch the broker with
+`build/bin/` as its working directory. Default worker paths resolve from the
+**current working directory**, not from the broker executable's location:
 
 ```powershell
-.\build\bin\nvpair-ui-broker.exe                                              # Windows
+Set-Location build\bin
+.\nvpair-ui-broker.exe                         # Windows
 ```
 
 ```bash
-./build/bin/nvpair-ui-broker                                                  # Linux
+cd build/bin
+./nvpair-ui-broker                             # Linux/macOS
 ```
 
 The bundled UI connects to the broker over its JSON-RPC API (stdio or `--ipc`).
@@ -152,20 +175,45 @@ the API surface.
 
 Every binary respects two inputs for its starting log level, resolved before any other work happens. Precedence: `--log-level` flag > `NVPAIR_LOG_LEVEL` env var > default (`info`). The broker passes its own resolved level to every subprocess it spawns (`--log-level <level>`), so setting either before launch turns on debug output from the very first line of all processes.
 
+From `services/build/bin/`, use either the environment variable or the flag:
+
 ```powershell
 # Windows / PowerShell
 $env:NVPAIR_LOG_LEVEL = "debug"
-& ".\build\bin\nvpair-ui-broker.exe"
-& ".\build\bin\nvpair-ui-broker.exe" --log-level debug
+& ".\nvpair-ui-broker.exe"
+# Alternatively:
+& ".\nvpair-ui-broker.exe" --log-level debug
 ```
 
 ```bash
-# Linux
-NVPAIR_LOG_LEVEL=debug ./build/bin/nvpair-ui-broker
-./build/bin/nvpair-ui-broker --log-level debug
+# Linux/macOS
+NVPAIR_LOG_LEVEL=debug ./nvpair-ui-broker
+# Alternatively:
+./nvpair-ui-broker --log-level debug
 ```
 
 Accepted values: `debug`, `info`, `warn`, `error`. The level can also be changed live over the broker's `log/set-level` JSON-RPC method (not persisted across restarts), so for launch-time issues use the env var or the flag.
+
+Those are standalone defaults. Desktop persists `modularLogLevel`, defaults to
+`warn`, and passes an explicit level to the broker. Current unreleased desktop
+logging preserves structured service severity and writes verbose protocol/debug
+entries to its log file only at `debug`; stderr alone does not mean warning.
+
+### Inference tracing
+
+Proxy OpenTelemetry providers read startup environment variables:
+`PAIR_TELEMETRY_ENABLED`, `PAIR_TELEMETRY_ENDPOINT`, and
+`PAIR_TELEMETRY_RECORD_PAYLOADS` (with the OTel alternatives documented in each
+proxy's `telemetry.go`). Defaults are enabled, `localhost:4317`, and payloads
+false. Saved UI telemetry settings currently do not configure live providers;
+`otel` discovery advertisements are not consumed as exporter selection.
+Export is plaintext OTLP, not cluster mTLS. Phoenix's Compose ports `6006` and
+`4317` are not loopback-restricted and have no configured authentication/TLS;
+stopping the container retains its named-volume data. Fixed-header redaction is
+not general secret scrubbing. Local-only, explicitly opted-in evaluation capture
+is contributor policy, not an enforced transport restriction. See
+[Observability](../docs/architecture.mdx#observability-and-distributed-tracing)
+and [SECURITY.md](../SECURITY.md) before enabling payload capture.
 
 ## Testing
 
@@ -190,7 +238,7 @@ cd shared
 go test ./...
 ```
 
-**Every one of the thirteen binaries has tests**, as do `shared/` and
+**Every one of the fourteen service executables has tests**, as do `shared/` and
 `eap-noob/`. Depth varies with how much behaviour a component carries:
 `nvpair-engine-manager` and `nvpair-cluster-manager` have the largest suites,
 while a component with one test file may still hold twenty test functions in it.
@@ -220,13 +268,28 @@ Some tests need something the machine may not have, and skip rather than fail:
 - Tests needing a real mDNS responder skip when one is unavailable.
 - Live engine tests only run when you opt in:
 
+From `nvpair-engine-manager/`, both the `live` build tag and environment opt-in
+are required; the ordinary `go test ./...` excludes these files:
+
 ```bash
-NVPAIR_LIVE_OLLAMA=1 go test ./...        # drives a real Ollama install
-NVPAIR_LIVE_LMSTUDIO=1 go test ./...      # drives a real LM Studio install
+NVPAIR_LIVE_OLLAMA=1 go test -tags live -run '^TestLiveOllamaCleanRoom$' -v -timeout 900s
+NVPAIR_LIVE_LMSTUDIO=1 go test -tags live -run '^TestLiveLMStudioCleanRoom$' -v -timeout 1200s
 ```
 
-Those two install, start, stop, and pull against the engines actually on your
-machine. Run them deliberately, on a machine you do not mind changing.
+These perform real engine lifecycle operations with platform-specific guards;
+read the selected test before running it. Separate `live_pound_test.go` coverage
+uses an existing Ollama install. Run deliberately on systems you control.
+
+From `omlx-proxy/`, the smoke test uses an existing loopback engine without
+restarting it (no `live` build tag):
+
+```bash
+PAIR_OMLX_LIVE_URL=http://127.0.0.1:1235 PAIR_OMLX_LIVE_MODEL='your-model-id' \
+  go test -run '^TestLiveOMLXCacheAffinityConversation$' -v -timeout 10m
+```
+
+Replace `your-model-id` with a real advertised model ID. This single-node test does not
+prove cross-node routing, KV-cache hits, or comparative performance.
 
 A skip is not a pass. If you are relying on a test, check it actually ran.
 

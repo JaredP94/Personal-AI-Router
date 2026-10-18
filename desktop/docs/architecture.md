@@ -44,6 +44,7 @@ The canonical runtime inventory is
 | `nvpair-ui-broker`        | Electron         | Worker supervision and control-plane relay  |
 | `ollama-proxy`            | Broker           | Ollama-compatible proxy and cluster routing |
 | `lmstudio-proxy`          | Broker, optional | LM Studio OpenAI-compatible proxy           |
+| `omlx-proxy`              | Broker, optional | oMLX OpenAI-compatible proxy                |
 | `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
 | `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
 | `nvpair-workload-manager` | Broker, optional | Workload replication                        |
@@ -104,13 +105,21 @@ the two process trees compete for the same engines and proxy ports.
 
 ### Electron to backend
 
-`JsonRpcSubprocess` provides newline-delimited JSON-RPC over stdio. The
-supervisor passes worker paths and the configured log level to the broker,
+`JsonRpcSubprocess` provides newline-delimited JSON-RPC over stdio. Relay protocol
+v2 notifications carry `epoch` and `seq`; requests/responses remain unstamped.
+Broker epoch/resync payloads report `protocol: 2`. Go codecs terminate on envelope
+mismatches; the desktop parser currently reads stamps without enforcing those
+invariants on every inbound frame. Use matched clients and workers. Epoch changes drive per-domain
+snapshot recovery, not sequence-gap polling. A 15-second broker heartbeat and
+45-second inbound-silence deadline support frontend-owned recovery with bounded
+readiness; this is distinct from worker crash supervision or hang detection.
+
+The supervisor passes worker paths and the configured log level to the broker,
 subscribes to broker relays after `app:ready`, and converts backend responses
 into stable UI contracts.
 
 Electron reports the service connected after broker `app:ready`. The
-broker-owned Ollama and LM Studio proxies remain asynchronous capabilities; a
+broker-owned Ollama, LM Studio, and oMLX proxies remain asynchronous capabilities; a
 late or failed proxy does not misreport the broker startup as failed. If
 `app:ready` does not arrive within the startup deadline, Overview opens Settings
 
@@ -128,10 +137,15 @@ the renderer re-reads every domain snapshot, because the restarted broker builds
 a fresh state projection.
 
 The only direct backend HTTP polling in Electron is `/v1/node-info`: Electron
-polls healthy local and discovered nodes every two seconds because rich
-telemetry is not part of the broker JSON-RPC surface. Consecutive failures back
-off to 4, 8, 16, then 30 seconds; the first success or a changed endpoint
-restores the normal cadence.
+polls healthy local and discovered nodes every two seconds with a visible UI,
+and every 30 seconds when hidden/minimized, because rich telemetry is not part of
+the broker JSON-RPC surface. Consecutive failures back off to a 30-second cap;
+success or an endpoint change restores the visibility-appropriate cadence.
+Explicit background UI polls read cached snapshots without renewing interactive
+GPU-sampling activity. Scanner/manual scheduling consumers retain foreground
+sampling to preserve their freshness contract, so a hidden UI alone does not
+guarantee idle hardware collection. Scanner telemetry remains approximately two
+seconds with jitter/backoff.
 
 ## State flow
 

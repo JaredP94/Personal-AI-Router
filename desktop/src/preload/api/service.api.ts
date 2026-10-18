@@ -3,12 +3,13 @@
 
 import { ipcRenderer } from 'electron'
 import { invokeAndUnwrap } from '@/preload/api/unwrap'
-import type { ServiceStatus, ServiceVersions } from '@/shared/types/ipc-channels'
+import type { FirewallSetupMode, ServiceStatus, ServiceVersions } from '@/shared/types/ipc-channels'
 import type { ModularLogLevel } from '@/shared/constants/modular-runtime'
 
 export interface IServiceApi {
     getStatus(): Promise<ServiceStatus>
     getVersions(): Promise<ServiceVersions>
+    getFirewallSetup(): Promise<FirewallSetupMode>
     stop(): Promise<void>
     start(): Promise<void>
     restart(): Promise<void>
@@ -24,6 +25,8 @@ export interface IServiceApi {
 export const serviceApi: IServiceApi = {
     getStatus: () => invokeAndUnwrap<ServiceStatus>(ipcRenderer.invoke('service:get-status')),
     getVersions: () => invokeAndUnwrap<ServiceVersions>(ipcRenderer.invoke('service:get-versions')),
+    getFirewallSetup: () =>
+        invokeAndUnwrap<FirewallSetupMode>(ipcRenderer.invoke('service:get-firewall-setup')),
     stop: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:stop')),
     start: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:start')),
     restart: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:restart')),

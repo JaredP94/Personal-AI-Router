@@ -132,24 +132,27 @@ mkdir -p "$STAGE/bin"
 
 BIN_SRC="$ROOT/build/bin"
 
-if [[ ! -x "$BIN_SRC/nvpair-ui-broker" ]]; then
-    echo "ERROR: expected worker binaries at $BIN_SRC after build.sh — was the build interrupted?" >&2
+while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    binary="$BIN_SRC/$name"
+    if [[ ! -x "$binary" ]]; then
+        echo "ERROR: missing staged binary $name" >&2
+        exit 1
+    fi
+    cp "$binary" "$STAGE/bin/"
+done < <(jq -r '.components | keys[]' "$VERSIONS_FILE")
+
+if [[ ! -f "$ROOT/../LICENSE" ]]; then
+    echo "ERROR: missing LICENSE at $ROOT/../LICENSE" >&2
     exit 1
 fi
+cp "$ROOT/../LICENSE" "$STAGE/"
 
-cp "$BIN_SRC/ollama-proxy"     "$STAGE/bin/"
-cp "$BIN_SRC/lmstudio-proxy"   "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-node-info"    "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-node-scanner" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-manual-nodes" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-workload-manager" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-errors"       "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-engine-manager" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-node-settings" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-cluster-manager" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-job-scheduler" "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-ui-broker"    "$STAGE/bin/"
-cp "$BIN_SRC/nvpair-tui"          "$STAGE/bin/"
+if [[ ! -f "$ROOT/../THIRD_PARTY_NOTICES.md" ]]; then
+    echo "ERROR: missing THIRD_PARTY_NOTICES.md at $ROOT/../THIRD_PARTY_NOTICES.md" >&2
+    exit 1
+fi
+cp "$ROOT/../THIRD_PARTY_NOTICES.md" "$STAGE/"
 
 if [[ "$PLATFORM" == "darwin" ]]; then
     cp "$ROOT/installer/macos/INSTALL.md" "$STAGE/"
@@ -198,6 +201,7 @@ echo "========================================"
 echo " Installer ready"
 echo "========================================"
 echo
+# shellcheck disable=SC2012
 ls -lh "$ARCHIVE_PATH" | awk '{printf "  %s  (%s)\n", $NF, $5}'
 echo
 echo "  Extract with:  tar xf $ARCHIVE_NAME"

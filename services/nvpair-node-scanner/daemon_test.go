@@ -129,6 +129,31 @@ func TestSelfNotEvictedByBrowse(t *testing.T) {
 	}
 }
 
+func TestFetchNodeInfoKeepsSchedulingTelemetryActive(t *testing.T) {
+	polls := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls <- r.Header.Get("X-NVPAIR-Poll")
+		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+	}))
+	defer srv.Close()
+	host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &daemon{http: srv.Client()}
+	info, ok := d.fetchNodeInfo(host, port)
+	if !ok || info.HostUUID != "peer-uuid" {
+		t.Fatalf("fetchNodeInfo = %+v, %v; want a successful peer response", info, ok)
+	}
+	if got := <-polls; got != "foreground" {
+		t.Fatalf("scheduling telemetry poll = %q, want foreground to retain active sampling", got)
+	}
+}
+
 // TestPublishSelfEnrichesOverLoopback covers the "no metrics" failure mode:
 // self enrichment must dial loopback, not the advertised LAN ip=, so a firewall
 // block on inbound to our own LAN address can't blank the local card. The stub

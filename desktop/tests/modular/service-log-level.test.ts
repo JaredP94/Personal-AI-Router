@@ -1,8 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import fs from 'fs'
 import { describe, expect, it } from 'vitest'
 import { serviceLogLevel } from '@/electron/service-bridge/service-log-level'
+import {
+    createStructuredLogger,
+    getStructuredLogFilePath,
+    initFileLogger,
+    setStructuredLogLevel
+} from '@/shared/utils/log'
+import { assertIsolated } from '../fixtures/isolation'
 
 /**
  * The services log every severity to stderr, so classifying a line by the
@@ -35,5 +43,30 @@ describe('serviceLogLevel', () => {
         // unstructured stderr line is the shape a crash takes.
         expect(serviceLogLevel('stderr', 'panic: runtime error: index out of range')).toBe('warn')
         expect(serviceLogLevel('stdout', '{"jsonrpc":"2.0","method":"ready"}')).toBe('verbose')
+    })
+
+    it('gates verbose file writes on the active log level', () => {
+        assertIsolated()
+        const userData = process.env.PAIR_USER_DATA ?? ''
+        initFileLogger({
+            getUserData: () => userData,
+            getTemp: () => userData,
+            getResourcesPath: () => userData,
+            getAppName: () => 'PAIR'
+        })
+        const logger = createStructuredLogger('service-bridge')
+
+        setStructuredLogLevel('warn')
+        logger.verbose({ sublevel: 'broker', message: 'suppressed-verbose' })
+        logger.warn({ sublevel: 'broker', message: 'kept-warn' })
+
+        setStructuredLogLevel('debug')
+        logger.verbose({ sublevel: 'broker', message: 'kept-verbose' })
+        setStructuredLogLevel('warn')
+
+        const written = fs.readFileSync(getStructuredLogFilePath(), 'utf8')
+        expect(written).not.toContain('suppressed-verbose')
+        expect(written).toContain('kept-warn')
+        expect(written).toContain('kept-verbose')
     })
 })

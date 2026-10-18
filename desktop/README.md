@@ -27,7 +27,10 @@ docs/             Desktop-specific architecture and contract documentation
 
 The renderer reaches services only through the preload bridge; it never talks to
 a Go worker directly. Electron starts `nvpair-ui-broker` and the broker
-supervises every other worker.
+supervises up to 12 workers. The service bundle contains 14 executables, including
+`omlx-proxy` and the separate, unsupervised `nvpair-tui`. Desktop prevalidates
+broker, scanner, Ollama proxy, node-info, and node-settings; standalone broker
+requirements are narrower.
 
 ## Develop
 
@@ -37,22 +40,24 @@ npm start
 ```
 
 `npm start` compiles the Go binaries from the sibling `../services` directory
-into `cli-bin/`, then launches Electron. Prerequisites, with versions and download
-links, are listed under
+into `cli-bin/`, builds the inference-dispatcher client into `tools/`, then
+launches Electron. Prerequisites, with versions and download links, are listed under
 [Prerequisites](../docs/building.mdx#prerequisites).
 
 ## Testing and checks
 
-Four checks, all runnable from this directory:
+Five checks, all runnable from this directory:
 
 ```bash
 npm run lint                     # ESLint, including Prettier formatting
 npm run typecheck                # main, renderer, and test tsconfigs
 npm test                         # unit tests
 npm run service-contracts:check  # this app still agrees with ../services
+npm run dead-code:check          # unused exported values/types
 ```
 
-Run all four before opening a merge request. `npm run format` applies formatting
+Run all five before opening a merge request. `make check` does not include
+`dead-code:check`; run it separately. `npm run format` applies formatting
 rather than just reporting it.
 
 ### While you are editing
@@ -70,9 +75,12 @@ anything other than loopback is blocked, and `PAIR_USER_DATA` points at a
 per-worker temp directory, so a test can never write to your real application
 data. A test that needs HTTP should stand up a local fake.
 
-Coverage is scoped to `src/shared/**`. The Electron main process and the renderer
-are excluded, so a green coverage number says less than it appears to — most of
-`src/electron/` and the renderer stores have no unit tests at all.
+Coverage includes shared logic, renderer utilities/constants, and selected
+Electron modules listed in `vitest.config.ts`; it is not whole-application
+coverage. Unit regressions also exercise supervisor readiness and cleanup,
+epoch/domain recovery, silence reconnect, node-info polling, engine/model state,
+workload recovery, telemetry controls, and logging/redaction with isolated
+fixtures. A coverage percentage is not evidence of live service interoperability.
 
 `vitest.config.ts` also declares an `e2e` project, but it selects no files. There
 is no end-to-end suite yet; nothing exercises the app together with its service
@@ -99,8 +107,13 @@ npm run build              # renderer, main, preload, and CLI bundles
 ```
 
 This produces the bundles the application runs from, for use on the machine that
-built them. Installable builds come from the
-[releases page](https://github.com/NVIDIA/Personal-AI-Router/releases).
+built them; it does not stage the full runtime by itself. Platform `build:*`
+scripts also stage services/tools and produce unsigned packages with
+electron-builder. The current fork candidate, 0.7.0-rc.1 for macOS arm64, is
+unsigned and unnotarized, not an NVIDIA-certified release. Inspect actual assets
+and signatures rather than assuming upstream release properties. Mac helper
+packaging additionally needs the macOS SDK and Swift tools; see
+[Building PAIR](../docs/building.mdx#build-the-desktop-application-alone).
 
 ## Documentation
 

@@ -156,7 +156,7 @@ function main(): void {
         sdkPath,
         CTL_OUTPUT,
         [...shared, versionSource, ...swiftSources(CTL_DIR)],
-        ['Foundation', 'ServiceManagement']
+        ['Foundation', 'ServiceManagement', 'Security']
     )
 
     console.log(`[build-helper] helper binaries ready in ${BUILD_DIR} (v${version})`)

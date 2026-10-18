@@ -348,6 +348,96 @@ func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
 	}
 }
 
+// TestManualAliasesDoNotOscillateOnUpsertOrTrustRefresh: when two manual aliases
+// resolve to the same HostUUID, repeated upserts of either alias and repeated
+// refreshManualNodesTrust passes must project a deterministic canonical alias
+// without emitting spurious discovery store change notifications.
+func TestManualAliasesDoNotOscillateOnUpsertOrTrustRefresh(t *testing.T) {
+	b := newManualTestBroker()
+	const shared = "shared-uuid"
+
+	b.upsertManualNode(manualStatus("alias-b", "10.0.0.1", shared))
+	b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", shared))
+
+	snap := b.store.Snapshot()
+	if len(snap) != 1 || snap[0].ID != "alias-a" {
+		t.Fatalf("expected canonical alias-a projected, got %+v", snap)
+	}
+
+	var changes int
+	b.store.SetOnChange(func() { changes++ })
+
+	// Upserting the non-canonical alias with unchanged state or running
+	// refreshManualNodesTrust across map iterations must not flip the projected
+	// ID or emit store changes.
+	for i := 0; i < 10; i++ {
+		b.upsertManualNode(manualStatus("alias-b", "10.0.0.1", shared))
+		b.refreshManualNodesTrust()
+	}
+
+	if changes != 0 {
+		t.Fatalf("expected 0 store change notifications across alias refreshes, got %d", changes)
+	}
+	snap = b.store.Snapshot()
+	if len(snap) != 1 || snap[0].ID != "alias-a" {
+		t.Fatalf("expected canonical alias-a after refreshes, got %+v", snap)
+	}
+}
+
+// A failed, lexically first alias must not hide a working address for the same
+// host. Operational failover may change the address, but not the display identity.
+func TestManualAliasesRetainReachableRouteWithStableIdentity(t *testing.T) {
+	b := newManualTestBroker()
+	const shared = "shared-uuid"
+	first := manualStatus("alias-a", "192.0.2.1", shared)
+	first.NodeInfoUp = true
+	first.OllamaUp = true
+	first.OllamaModels = []string{"test-model"}
+	second := first
+	second.ID = "alias-b"
+	second.Address = "192.0.2.2"
+	b.upsertManualNode(first)
+	b.upsertManualNode(second)
+
+	assertRoute := func(address string) {
+		t.Helper()
+		snapshot := b.store.Snapshot()
+		if len(snapshot) != 1 || snapshot[0].ID != "alias-a" || snapshot[0].IPAddress != address {
+			t.Fatalf("want stable alias-a at %s, got %+v", address, snapshot)
+		}
+		nodes := b.relayDir.Snapshot("")
+		if len(nodes) != 1 || nodes[0].Name != "alias-a" || nodes[0].IP != address {
+			t.Fatalf("want stable relay identity at %s, got %+v", address, nodes)
+		}
+		if _, ok := nodes[0].Services[noderec.ServiceOllama]; !ok {
+			t.Fatal("healthy alias must retain the Ollama route")
+		}
+		b.manualMu.Lock()
+		selected, ok := b.survivingAliasLocked(shared)
+		b.manualMu.Unlock()
+		if !ok || !selected.status.OllamaUp || selected.status.Address != address {
+			t.Fatalf("proxy bridge must receive a healthy alias at %s: %+v", address, selected)
+		}
+	}
+	assertRoute("192.0.2.1")
+
+	b.upsertManualNode(manualStatus("alias-a", "192.0.2.1", shared))
+	assertRoute("192.0.2.2")
+	for i := 0; i < 3; i++ {
+		b.upsertManualNode(second)
+		b.refreshManualNodesTrust()
+		assertRoute("192.0.2.2")
+	}
+
+	// A healthy node-info endpoint alone must not displace a known engine route.
+	metadataOnly := manualStatus("alias-a", "192.0.2.1", shared)
+	metadataOnly.NodeInfoUp = true
+	b.upsertManualNode(metadataOnly)
+	assertRoute("192.0.2.2")
+	b.upsertManualNode(first)
+	assertRoute("192.0.2.1")
+}
+
 // TestDiscoveryStoreRemoveWrongSourceNoop: removing a source that never claimed
 // the record leaves it (and the other source) intact.
 func TestDiscoveryStoreRemoveWrongSourceNoop(t *testing.T) {
