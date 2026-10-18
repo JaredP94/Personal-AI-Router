@@ -80,13 +80,15 @@ flowchart TB
 
 Electron starts only `nvpair-ui-broker` as a Go service. The service inventory
 contains 14 executables: broker + 12 workers (including `omlx-proxy`) + TUI.
-The broker attempts to start available workers, monitors them, reports crashes,
-and attempts bounded restart after a successful initial start. Workers log to
-stderr; stdout is reserved for newline-delimited JSON-RPC in stdio mode.
+The broker attempts to start available workers, probes their control health,
+reports lifecycle state, and retries crashes, optional initial spawn failures,
+and eligible hangs within a shared budget. Workers log to stderr; stdout is
+reserved for newline-delimited JSON-RPC in stdio mode.
 
 Standalone, only the scanner is required. Missing default auxiliary binaries or
 initial auxiliary spawn failures are non-fatal, but invalid explicit paths are
-fatal. Failed initial spawns are not automatically retried. Desktop additionally
+fatal. Scanner initial spawn failure is fatal too. Missing defaults stay `missing`
+without automatic retries until `workers:restart` finds them. Desktop additionally
 prevalidates broker, scanner, Ollama proxy, node-info, and node-settings binaries.
 `app:ready` does not establish that all optional HTTP listeners are ready; use
 their reported status.
@@ -99,33 +101,61 @@ engines, and persisted settings.
 
 ### Health and Failure Detection
 
-There is no `/health` endpoint on any PAIR service, and the broker does not
-heartbeat its workers. What exists is uneven, so it is worth being precise about
-the layers that are checked:
+Worker health is a stdio JSON-RPC method, not an HTTP `/health` endpoint.
+The checks have separate meanings at each layer:
 
 | Layer | How it is checked |
 | --- | --- |
 | Engines | A readiness probe on start, then a periodic health probe. Status carries a `healthy` flag, and a failed probe raises a service error. |
-| Workers | Process liveness only. An exit is detected and restarted. A hang is not detected. |
+| Workers | Process exit detection plus `worker/health` control-loop probes. Failed probes degrade state; eligible workers restart on a hang within a bounded budget. This does not prove domain progress or HTTP/inference readiness. |
 | The broker | `ping` plus a 15-second notification heartbeat. Desktop detects 45 seconds of inbound silence and owns bounded stop/start recovery and rehydration. This does not monitor worker hangs. |
-| Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. The inference proxies report activity but are never probed. |
+| Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. Peer inference proxies report activity; their HTTP listeners are not probed for peer reachability. |
 
-Worker supervision is restart-based. An unexpected exit is retried with
-exponential backoff from roughly one second to 16, with a budget of five attempts
-for each unhealthy streak and a 60-second window after which a worker that
-stayed up is considered recovered and its budget resets. A crash raises a sticky
-error entry so the interface can show that a component is down. Recovery clears
-it, and a worker that exhausts its budget is left down with the entry standing.
-`nvpair-errors` is the exception that cannot report its own death, so its crashes
-go to stderr instead.
+Each of the twelve workers answers `worker/health` with `{"ok":true}`. The broker
+probes every **30 seconds**, with a **5-second deadline**. The diagnostic flag
+`--worker-health-interval` defaults to `30s` and requires at least `1s`; the
+probe deadline is capped at the interval. **Two consecutive failed probes**
+report `degraded`. Any successful probe clears the failure count and restores
+`running`. After **three consecutive failures**, only these eight workers are
+stopped through bounded escalation and restarted:
 
-The gap this leaves is an individual worker that is running but wedged. A healthy
-broker can keep emitting heartbeats while that worker stops answering. Request
-timeouts or stalled UI state may expose it; restart from **Settings > Service**.
+- `scanner`, `errors`, `settings`, `node-info`
+- `workload-manager`, `manual-nodes`, `cluster-manager`, `scheduler`
+
+**Engine-manager and all three proxies are never auto-restarted on a hang.**
+Engine-manager restart can orphan engines; proxy HTTP inference runs separately
+from stdio control, and restart would interrupt live streams. They still accept
+explicit restarts. Their desktop rows show "Not responding — restart manually".
+A successful probe can restore them without restarting.
+
+Optional initial spawn failures, unexpected exits, and eligible hang restarts
+share one budget: **1, 2, 4, 8, then 16 seconds** of backoff, with **five
+replacement attempts per unhealthy streak** (in addition to the initial spawn).
+Healthy reset requires both **60 seconds uptime and at least one successful
+probe since that spawn**. A crash raises a sticky error; eligible hang restarts
+report `subprocess <name> stopped responding`. Proven recovery clears the error;
+exhaustion leaves the worker down until an explicit retry. `nvpair-errors`
+cannot report its own death into itself, so its crashes go to stderr instead.
+
+The broker registry is independent of the errors service. `workers:get-status`
+returns all twelve workers with `running`, `degraded`, `restarting`, `exhausted`,
+or `missing` state. Unconditional `workers:update` notifications carry full
+snapshots, not deltas. `workers:restart {name}` initiates restart/retry, including
+from exhaustion; a missing default is rechecked and only starts if found.
+Desktop **Settings → Service → Workers** renders state, PID, attempts and last
+error; engine-manager and proxy restarts require confirmation. TUI **Overview**
+shows all twelve workers and uses **`R`** with confirmation. Both clients recover
+worker snapshots on epoch changes; neither owns health/retry policy.
+
+Cross-process hang tests are **Unix-only**; Windows hang recovery remains
+unproven. These probes detect control responsiveness, not stalled domain
+operations that continue to answer health requests.
+
 Broker-channel silence is handled separately by the frontend. Desktop allows an
-automatic recovery attempt, waits for readiness, and refreshes state; an
-unexpected broker exit still takes the crash path. Do not infer unconditional
-crash reconnect from the silence-recovery mechanism.
+automatic recovery attempt after 45 seconds of inbound silence, waits for
+readiness, and refreshes state; an unexpected broker exit still takes the crash
+path. The broker's 15-second heartbeat is not a worker-health signal. Do not
+infer unconditional crash reconnect from the silence-recovery mechanism.
 
 ## Control Flow
 

@@ -1,7 +1,7 @@
 {
   "$comment": "Single source of truth for all version numbers. See VERSIONING.md for bump rules.",
-  "product": "2.1.0",
-  "installer": "2.1.0",
+  "product": "2.2.0",
+  "installer": "2.2.0",
   "components": {
     "ollama-proxy": "1.2.0",
     "lmstudio-proxy": "1.2.0",
@@ -15,7 +15,7 @@
     "nvpair-engine-manager": "1.1.0",
     "nvpair-cluster-manager": "2.1.0",
     "nvpair-job-scheduler": "1.1.0",
-    "nvpair-tui": "1.1.2",
+    "nvpair-tui": "1.2.0",
     "omlx-proxy": "1.2.0"
   }
 }

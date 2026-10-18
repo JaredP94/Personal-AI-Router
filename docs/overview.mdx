@@ -192,9 +192,15 @@ The Go services tree produces 14 executables: broker + 12 workers + TUI:
 
 The broker supervises up to 12 worker processes. Standalone, only the scanner
 is required; missing default auxiliary binaries or initial auxiliary spawn
-failures leave reduced capabilities. Invalid explicit paths are fatal, and
-failed initial spawns are not automatically retried. Desktop also prevalidates
-broker, scanner, Ollama proxy, node-info, and node-settings binaries.
+failures leave reduced capabilities. Invalid explicit paths and scanner initial
+spawn failure are fatal. Optional initial failures use bounded retries; missing
+default binaries stay `missing` until an explicit retry finds them. Desktop also
+prevalidates broker, scanner, Ollama proxy, node-info, and node-settings binaries.
+Worker health and retry state appear under **Settings → Service → Workers** and
+in TUI **Overview**, where `R` requests restart with confirmation. The broker
+owns health policy: eight workers can restart on a hang, while engine-manager
+and the three proxies only degrade and require manual restart if unresponsive.
+See [Health and Failure Detection](architecture.mdx#health-and-failure-detection).
 `nvpair-tui` is a separate client that starts its own broker, not a worker.
 
 ## Next Steps

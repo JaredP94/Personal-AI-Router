@@ -53,6 +53,7 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 
 | Method | Params | Result |
 |---|---|---|
+| `worker/health` | — | `{"ok":true}` — control-loop responsiveness only |
 | `discovery:register` | `{service, port, txt?}` | `{ok:true}` — record a local service so it's folded into this node's `_nvpair-node` record |
 | `discovery:unregister` | `{service}` | `{ok:true}` — drop a local service |
 | `discovery:update-txt` | `{service, port, txt?}` | `{ok:true}` — same as register with a new TXT |

@@ -208,6 +208,9 @@ Entries for the `nvpair-errors` pipeline, keyed by a stable `id` so a report and
 
 ### Requests (client → proxy)
 
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
+
 Requests carry an `id` and receive a response.
 
 #### `nodes/list`

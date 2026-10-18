@@ -124,6 +124,32 @@ Historical performance observations and the final-artifact profiling gate are in
 - **Legacy Fallback Removed:** The legacy `broker:epoch` params fallback for
   envelope epoch discovery has been completely removed.
 
+### Worker Health
+
+**Implemented, pending release testing.**
+
+- All twelve workers answer `worker/health`; the broker probes every 30 s with a
+  5 s deadline (`--worker-health-interval`, minimum 1 s; deadline capped at the
+  interval). Two consecutive failures report `degraded`; a successful probe
+  restores `running` and clears the failure count.
+- Three failures restart only scanner, errors, settings, node-info,
+  workload-manager, manual-nodes, cluster-manager, and scheduler. Engine-manager
+  and the three proxies never auto-restart on a hang: orphan/stream safety is not
+  established. Desktop shows "Not responding — restart manually" for those rows.
+- Optional initial spawn failures, crashes and eligible hang restarts share
+  1 s → 16 s backoff and five replacement attempts. Healthy reset needs 60 s
+  uptime and a successful probe since spawn. Missing default binaries remain
+  `missing` with no automatic retry until `workers:restart` finds them. Scanner
+  initial failure and invalid explicit paths remain fatal.
+- `workers:get-status`, `workers:restart`, and full `workers:update` snapshots
+  drive Settings → Service → Workers and TUI Overview (all twelve workers, `R`
+  with confirmation). Clients recover worker snapshots after epoch changes;
+  the 15 s broker heartbeat / 45 s client-silence layer remains separate.
+- Cross-process hang tests are **Unix-only; Windows behavior remains unproven**.
+  Passing source checks is not final-artifact or release testing. Verify packaged
+  startup/retry, manual confirmation and recovery on each release platform before
+  classifying this item resolved for that release.
+
 ### Private Vulnerability Reporting
 
 **Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled

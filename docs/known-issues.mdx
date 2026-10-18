@@ -64,17 +64,29 @@ Improving this is on the roadmap, and knowing which signals matter on your
 hardware would help. Refer to
 [Roadmap](../README.md#roadmap).
 
-## Worker Hangs Are Distinct from Broker-Client Silence
+## Worker Health: Manual Recovery and Platform Limits
 
-A successfully started worker is crash-supervised, but a worker can remain alive
-and stop responding without triggering a restart. Optional workers that fail
-their initial spawn are not automatically retried. State may stop updating;
-restart services from **Settings > Service** to retry.
+The broker probes all twelve workers, marks them `degraded` after two consecutive
+failed probes, and restarts eight eligible workers after three. Engine-manager
+and the three proxies are **never auto-restarted on a hang**: doing so could
+orphan engines or interrupt inference streams. Their degraded desktop rows show
+"Not responding — restart manually" under **Settings → Service → Workers**.
+Restarting engine-manager may leave engines running or stop them; proxy restarts
+interrupt inference. Desktop asks for confirmation for these four workers; TUI
+**Overview** offers `R` with confirmation for any selected worker.
 
-Relay protocol v2 separately monitors the broker-client link: heartbeats every
-15 seconds and a 45-second inbound-silence deadline trigger frontend-owned
-recovery with a readiness deadline. This is not per-worker hang detection or a
-guarantee that every unexpected broker exit automatically reconnects.
+Optional initial spawn failures now use bounded retries shared with crashes and
+eligible hangs. Exhausted workers need an explicit restart; missing default
+binaries remain `missing` until an explicit retry finds them. Health proves
+control-loop responsiveness, not domain progress or HTTP/inference readiness.
+See [Health and Failure Detection](architecture.mdx#health-and-failure-detection).
+
+Cross-process hang tests use Unix signals and are Unix-only. Windows hang
+recovery remains unproven; unit tests are not cross-process Windows evidence.
+
+The broker-client layer remains separate: a 15-second heartbeat and 45-second
+inbound-silence deadline support frontend-owned recovery with a readiness deadline.
+This is not a guarantee that every unexpected broker exit automatically reconnects.
 
 ## macOS Can Stop Answering LAN Connections While Unclustered
 

@@ -14,6 +14,10 @@ Two surfaces:
 - **HTTP(S)** — serves the node inventory at `/v1/node-info`. Plaintext HTTP on `:14318` by default; optional HTTPS (with optional mTLS) on `:14319` when a cert/key pair is supplied.
 - **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `worker/health`, `nodeinfo:set-cluster-identity`, `stats/set-demand`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
 
+| Control request | Params | Result |
+| --- | --- | --- |
+| `worker/health` | — | `{"ok":true}` — control-loop responsiveness only |
+
 An id-bearing `worker/health` request returns `{"ok":true}` through the shared
 stdin control loop. This checks control-loop responsiveness, not HTTP listener
 or telemetry readiness. Notifications receive no response.

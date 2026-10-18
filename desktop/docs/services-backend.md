@@ -135,6 +135,18 @@ params fallback has been removed. Epoch changes drive per-domain snapshot hydrat
 not sequence-gap polling. Broker heartbeats every 15 seconds support a 45-second
 inbound-silence deadline and frontend-owned recovery. This is not per-worker hang detection.
 
+Worker health is independently broker-owned: `worker/health` probes every 30 s
+with a 5 s deadline; two failures degrade, three restart eligible workers only.
+Engine-manager and the three proxies never auto-restart on a hang. Optional
+initial spawn failures share the bounded crash/hang budget, while missing default
+binaries remain `missing` until explicit retry. The bridge hydrates
+`workers:get-status` on every epoch, replaces rows on full `workers:update`
+snapshots, and relays `workers:restart {name}`. Settings → Service → Workers
+shows all twelve, attempts and last errors, including "Not responding — restart
+manually" where applicable. Engine-manager and proxy restarts ask for
+confirmation. No health/retry policy is duplicated in TypeScript; see the
+[broker contract](../../services/nvpair-ui-broker/README.md#worker-lifecycle-registry).
+
 Telemetry configuration is managed by `nvpair-node-settings` (`settings/get-telemetry-config`)
 and reconciled into proxies dynamically by `nvpair-ui-broker` via `telemetry/configure`.
 Proxies start with tracing disabled; environment variables (`PAIR_TELEMETRY_*`, `OTEL_*`)

@@ -27,7 +27,7 @@ Tabs:
 
 | Tab | Purpose |
 | --- | --- |
-| **Overview** | Broker liveness/version/uptime (`ping`) and a per-worker health table derived from the broker's `supervisor:subprocess-crashed:*` errors. |
+| **Overview** | Broker version/uptime (`ping`) and all twelve workers from `workers:get-status` + full `workers:update` snapshots: state, attempts, last error. `R` restarts the selected worker after confirmation. |
 | **Errors** | The service-error datastore (`errors:get-initial` + live `errors:update`); `c` clears the selected entry. |
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
 | **Proxies** | Ollama, LM Studio and oMLX reverse proxies: status, cache-affinity selection rate, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
@@ -38,9 +38,20 @@ Tabs:
 | **Settings** | The node-settings store (force-ports, cluster auto-sync, cluster id/name). |
 | **Logs** | The broker's (and workers') stderr, with live log-level control (`d`/`i`/`w`/`e`). |
 
+Worker snapshots are refreshed on broker epoch recovery, independently of the
+Errors tab. The broker owns probe/retry policy; the TUI only renders its registry
+and relays `workers:restart {name}`. States are `running`, `degraded`,
+`restarting`, `exhausted`, and `missing`. Engine-manager and the three proxies
+never auto-restart on a hang; use `R` if manual recovery is needed. Confirmation
+warns that engines may remain running or stop and inference may be interrupted.
+Restart initiation is not completed recovery; follow subsequent worker updates.
+See [broker supervision](../nvpair-ui-broker/README.md#supervision--recovery).
+
 ## Keys
 
 - `tab` / `shift+tab` (or `→` / `←`, `l` / `h`) — switch tabs
+- `R` on Overview — confirm a worker restart; `y` sends it, `n`/`esc`/`enter`
+  cancel. Global navigation/quit keys are captured while the prompt is open.
 - `?` — toggle full help
 - `q` / `ctrl+c` — quit (the broker is shut down cleanly on exit)
 - Per-tab keys appear in the footer; while editing a field (port, PIN,
@@ -75,7 +86,10 @@ nvpair-tui (this process)
 ```
 
 The supervisor sends `shutdown` and closes the broker's stdin on exit; the
-broker tears its own workers down, so quitting leaves no orphans.
+broker tears its own workers down using bounded escalation. This shutdown path
+is not proof of orphan-free engine teardown: engine-manager is deliberately
+ineligible for automatic hang restart. Cross-process hang tests are Unix-only;
+Windows hang behavior remains unproven.
 
 ## Build & test
 

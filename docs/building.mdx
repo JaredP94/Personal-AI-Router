@@ -199,9 +199,22 @@ working directory**, not its executable directory. A programmatic client normall
 spawns it with piped stdio and `services/build/bin/` as its working directory.
 Standalone, only the scanner is required; other missing default binaries or
 initial spawn failures degrade capabilities without aborting. Invalid explicit
-paths are fatal, and failed initial auxiliary spawns are not automatically
-retried. Desktop additionally prevalidates broker, scanner, Ollama proxy,
-node-info, and node-settings binaries.
+paths and scanner initial spawn failure are fatal. Failed initial auxiliary
+spawns share the crash/hang restart budget: 1 s → 16 s backoff, five replacement
+attempts; reset needs 60 s uptime and a successful health probe since spawn.
+Missing defaults stay `missing`, without automatic retries, until
+`workers:restart` finds them. Explicit path validation checks accessibility, not
+executable format; a resolved but unlaunchable auxiliary enters bounded retries.
+Desktop additionally prevalidates broker, scanner, Ollama proxy, node-info, and
+node-settings binaries.
+
+The broker probes `worker/health` every 30 s with a 5 s deadline. For diagnostics,
+`--worker-health-interval <duration>` accepts at least `1s`; the deadline is capped
+at that interval. Query `workers:get-status`, follow full `workers:update`
+snapshots, or request `workers:restart {"name":"scheduler"}`. These are worker
+controls, distinct from the broker's 15 s heartbeat / 45 s client-silence layer.
+See [Health and Failure Detection](architecture.mdx#health-and-failure-detection)
+for restart eligibility and [the broker API](../services/nvpair-ui-broker/README.md#worker-lifecycle-registry).
 
 A quick check that it came up, on Linux or macOS:
 

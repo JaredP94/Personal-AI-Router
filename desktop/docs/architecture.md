@@ -120,6 +120,17 @@ not sequence-gap polling. A 15-second broker heartbeat and 45-second inbound-sil
 deadline support frontend-owned recovery with bounded readiness; this is distinct
 from worker crash supervision or hang detection.
 
+The Go broker separately probes `worker/health` every 30 s (5 s deadline),
+reports `degraded` after two failures, and restarts the eight eligible workers
+after three. Engine-manager and the three proxies never auto-restart on a hang.
+The bridge recovers `workers:get-status` on each epoch and replaces its cache on
+full `workers:update` snapshots. Settings → Service → Workers renders all twelve
+rows and relays `workers:restart`; ineligible degraded rows say "Not responding —
+restart manually". Engine-manager and proxy restarts require confirmation because
+they may interrupt engines or inference. Health, initial-spawn retry, missing
+inventory and budget exhaustion policy stay in Go, not Electron or the renderer.
+See [worker health policy](../../docs/architecture.mdx#health-and-failure-detection).
+
 The supervisor passes worker paths and the configured log level to the broker,
 subscribes to broker relays after `app:ready`, and converts backend responses
 into stable UI contracts.

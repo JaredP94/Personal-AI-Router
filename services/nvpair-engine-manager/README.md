@@ -37,6 +37,7 @@ Requests (caller → service):
 
 | Method | Params | Result |
 |---|---|---|
+| `worker/health` | — | `{"ok":true}` — control-loop responsiveness only |
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |

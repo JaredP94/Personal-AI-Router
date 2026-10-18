@@ -101,6 +101,9 @@ pile onto the node that was least-loaded at ranking time.
 
 ## Requests
 
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
+
 | Method | Result |
 | --- | --- |
 | `scheduler:get-status` | `{ interval_ms, engines: { <engine>: { engine, emitted, lastEmittedAt } } }` |

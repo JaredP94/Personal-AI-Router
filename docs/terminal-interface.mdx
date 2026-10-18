@@ -127,7 +127,7 @@ Tab switching and `q` do not work until you do.
 
 | # | Tab | What It Shows |
 | --- | --- | --- |
-| 1 | **Overview** | Service uptime and version, and an `ok` / `DOWN` table for each worker |
+| 1 | **Overview** | Broker uptime/version and all twelve workers: state, attempts, last error; `R` restarts with confirmation |
 | 2 | **Errors** | Active service errors by severity, age, node, and message |
 | 3 | **Nodes** | Nodes discovered on the network, with `Connected` or `In cluster` status |
 | 4 | **Proxies** | Both compatible proxies: listening port, discovered upstreams, and which node is selected |
@@ -137,6 +137,27 @@ Tab switching and `q` do not work until you do.
 | 8 | **Manual** | Nodes you added by address, with reachability |
 | 9 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
 | 10 | **Logs** | Service log output, with live log-level control |
+
+### Worker Health and Restart
+
+Overview renders the broker's `workers:get-status` snapshot and full
+`workers:update` pushes, refreshed after an epoch change; it does not infer health
+from crash errors. States are `running`, `degraded`, `restarting`, `exhausted`, and
+`missing`. Select a worker and press **`R`** to request `workers:restart` after
+confirmation: `y` confirms; `n`, `esc`, or `enter` cancel. Other keys, including
+quit and tab switching, stay captured while the question is open. The request
+initiates recovery; later updates show the result.
+
+The broker probes every 30 s with a 5 s deadline, degrades after two failures,
+and restarts eight eligible workers after three. Engine-manager and all three
+proxies never auto-restart on a hang. Restarting engine-manager may leave engines
+running or stop them; restarting a proxy interrupts inference through it. These
+warnings appear before confirmation. Missing defaults wait for explicit retry;
+exhausted workers need it to resume. See
+[Health and Failure Detection](architecture.mdx#health-and-failure-detection)
+for the shared retry budget and eligibility. Unix-only cross-process hang tests
+do not prove Windows recovery. Broker-client heartbeat/silence recovery is a
+separate layer, not this worker table's health policy.
 
 ## Pair This Machine with Another
 

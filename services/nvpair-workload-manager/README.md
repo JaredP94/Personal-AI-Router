@@ -66,6 +66,15 @@ Workload state is therefore only ever exchanged between paired members. See the
 repository [`SECURITY.md`](../../SECURITY.md) for the surrounding trust
 boundaries.
 
+## Local control requests
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `worker/health` | — | `{"ok":true}` — control-loop responsiveness only |
+
+See [Worker control health](#worker-control-health). Health is a local stdio
+request, not an inter-node lifecycle event.
+
 ## Lifecycle events
 
 Inbound lifecycle notifications, on either channel:

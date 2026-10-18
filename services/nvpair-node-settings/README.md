@@ -155,6 +155,9 @@ failures. Call `settings/get-telemetry-config` to fetch the initial snapshot.
 
 ## JSON-RPC Methods (caller → manager)
 
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
+
 Non-telemetry settings have symmetric individual get/set pairs. The cluster-id
 and cluster-auto-sync setters also trigger the matching
 `connection/*` notification above; the request/response side stays

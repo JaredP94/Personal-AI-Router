@@ -454,6 +454,15 @@ These are not silently declared fixed by the release-readiness work:
 | TUI operation gaps | Add capability-driven broker actions/views for supported model/lifecycle/remote operations and workload destination, with destructive confirmations and fake-broker/native integration tests. Do not invent unsupported oMLX pull/delete actions. |
 | Installed engines not on PATH | Prefer an explicit per-user PAIR engine-launch command resolving the managed executable through services, rather than globally mutating PATH or guessing vendor installation paths. |
 
+Worker health/startup retry implementation is now tracked in
+[Next Release Readiness](../../release-readiness.mdx#worker-health), pending
+release testing. The broker probes all twelve workers; only eight child-free
+workers auto-restart on a hang. Engine-manager and the three proxies require
+manual restart if degraded. Missing defaults wait for explicit retry; optional
+initial spawn failures use the shared bounded budget. Cross-process hang proof
+is Unix-only, not Windows evidence. This implementation does not certify the
+request-deadline/progress or orphan-safety gates for every domain operation.
+
 For the next release, the owner must classify each applicable known limitation as
 resolved, explicitly accepted/documented with support scope, or release-blocking.
 Investigation and external permission/signing tasks cannot be certified complete

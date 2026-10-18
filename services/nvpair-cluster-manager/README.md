@@ -108,6 +108,9 @@ settings store**. Concretely, the parent must:
 
 ## Methods (caller → manager)
 
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
+
 All requests carry a JSON-RPC `id` and get exactly one `result` or `error`
 back. Negative *outcomes* (failed pairing, wrong PIN, non-member removal)
 come back as a **successful `result`** with a terminal `state`/flag — not

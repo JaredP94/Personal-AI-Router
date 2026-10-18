@@ -118,6 +118,9 @@ Starter ids:
 
 ## JSON-RPC methods (broker → nvpair-errors)
 
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
+
 ### `errors:get-initial` (request)
 
 Returns the current full list, sorted by id.

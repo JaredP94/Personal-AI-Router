@@ -109,6 +109,9 @@ Emitted so the supervising broker can forward them into the `nvpair-errors` pipe
 
 ## JSON-RPC Methods (caller → manager)
 
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
+
 ### `node/add`
 
 Add a node by address. The manager immediately probes it and emits a `node/discovered` event.
