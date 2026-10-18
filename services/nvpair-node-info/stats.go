@@ -51,6 +51,7 @@ type statsSnapshot struct {
 	// collected. Failed collection attempts retain the previous timestamp so
 	// consumers can distinguish stale telemetry from freshly sampled data.
 	GPUSampledAt time.Time
+	GPUSampleSeq uint64
 	CPUUtilPct   uint32
 	MemUsedBytes uint64
 }
@@ -63,10 +64,14 @@ func applyGPUStats(previous statsSnapshot, next *statsSnapshot, sampled map[stri
 	if sampledAt.IsZero() && !previous.GPUSampledAt.IsZero() {
 		next.GPU = previous.GPU
 		next.GPUSampledAt = previous.GPUSampledAt
+		next.GPUSampleSeq = previous.GPUSampleSeq
 		return
 	}
 	next.GPU = sampled
 	next.GPUSampledAt = sampledAt
+	if !sampledAt.IsZero() {
+		next.GPUSampleSeq = previous.GPUSampleSeq + 1
+	}
 }
 
 // parseEngineInstance pulls the adapter-LUID key and the engine-type tag

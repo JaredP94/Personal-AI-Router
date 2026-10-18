@@ -627,4 +627,5 @@ type NodeTelemetry struct {
 	GPUUtilizationPct uint32 `json:"gpuUtilizationPercent"`
 	TelemetryValid    bool   `json:"telemetryValid"`
 	MSSince           int64  `json:"msSince"`
+	SampleSeq         uint64 `json:"sampleSeq,omitempty"`
 }

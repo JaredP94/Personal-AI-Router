@@ -348,6 +348,7 @@ func sampleInfo() NodeInfoResponse {
 		Memory:         &MemoryInfo{TotalBytes: 128 << 30, UsedBytes: 32 << 30},
 		TelemetryValid: true,
 		MSSince:        137,
+		SampleSeq:      42,
 	}
 }
 
@@ -397,6 +398,9 @@ func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) 
 	}
 	if !status.TelemetryValid || status.MSSince < 137 {
 		t.Fatalf("telemetry = valid:%v age:%d, want true/at least 137", status.TelemetryValid, status.MSSince)
+	}
+	if status.SampleSeq != 42 {
+		t.Fatalf("sampleSeq = %d, want 42", status.SampleSeq)
 	}
 }
 

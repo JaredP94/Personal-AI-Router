@@ -80,6 +80,7 @@ type NodeInfoResponse struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
 	// HostUUID is the remote node's stable per-host identity, reported by
 	// node-info. We surface it so a manual node is tracked by the same permanent
 	// identity as the rest of the fleet — including deduping with the same
@@ -137,6 +138,7 @@ type ManualNodeStatus struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
 	// HostUUID is the remote's stable per-host identity from node-info, so a
 	// manual node carries the same permanent identity the rest of the system
 	// keys on. Empty when node-info didn't report one.
@@ -625,6 +627,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		Memory:         info.Memory,
 		TelemetryValid: info.TelemetryValid,
 		MSSince:        msSince,
+		SampleSeq:      info.SampleSeq,
 		HostUUID:       info.HostUUID,
 		ClusterUUID:    clusterUUID,
 		Models:         finalModels,
@@ -682,7 +685,8 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
 		prev.TelemetryValid != newStatus.TelemetryValid ||
-		prev.MSSince != newStatus.MSSince
+		prev.MSSince != newStatus.MSSince ||
+		prev.SampleSeq != newStatus.SampleSeq
 
 	if changed {
 		slog.Info("manual node state changed",

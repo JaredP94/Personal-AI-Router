@@ -18,12 +18,13 @@ const (
 )
 
 type gpuTelemetryState struct {
-	ewma         float64
-	pressure     int
-	hasEWMA      bool
-	valid        bool
-	ageAtReceipt time.Duration
-	receivedAt   time.Time
+	ewma          float64
+	pressure      int
+	hasEWMA       bool
+	valid         bool
+	ageAtReceipt  time.Duration
+	receivedAt    time.Time
+	lastSampleSeq uint64
 }
 
 func (m *Manager) applyTelemetry(params json.RawMessage) bool {
@@ -59,15 +60,19 @@ func (m *Manager) applyTelemetryAt(value noderec.NodeTelemetry, receivedAt time.
 	next.ageAtReceipt = ageAtReceipt
 	next.receivedAt = receivedAt
 	if incomingFresh {
-		previousFresh := existed && telemetryFreshAt(previous, receivedAt)
-		if !previousFresh || !previous.hasEWMA {
-			next.ewma = float64(utilization)
-			next.pressure = pressureBand(next.ewma)
-		} else {
-			next.ewma = gpuEWMAAlpha*float64(utilization) + (1-gpuEWMAAlpha)*previous.ewma
-			next.pressure = pressureWithHysteresis(next.ewma, previous.pressure)
+		repeatedSample := value.SampleSeq != 0 && previous.lastSampleSeq == value.SampleSeq
+		if !repeatedSample {
+			previousFresh := existed && telemetryFreshAt(previous, receivedAt)
+			if !previousFresh || !previous.hasEWMA {
+				next.ewma = float64(utilization)
+				next.pressure = pressureBand(next.ewma)
+			} else {
+				next.ewma = gpuEWMAAlpha*float64(utilization) + (1-gpuEWMAAlpha)*previous.ewma
+				next.pressure = pressureWithHysteresis(next.ewma, previous.pressure)
+			}
+			next.hasEWMA = true
 		}
-		next.hasEWMA = true
+		next.lastSampleSeq = value.SampleSeq
 	}
 	m.telemetry[value.HostUUID] = next
 	return previousPressure != effectiveGPUPressure(next, true, receivedAt)

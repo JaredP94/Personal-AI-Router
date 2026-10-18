@@ -30,6 +30,7 @@ type darwinGPUReading struct {
 	stats              map[string]gpuStat
 	utilizationSamples int
 	sampledAt          time.Time
+	sampleSeq          uint64
 }
 
 type statsCollector struct {
@@ -160,6 +161,11 @@ func (c *statsCollector) collectGPU(ctx context.Context) {
 	}
 	if reading.utilizationSamples > 0 {
 		reading.sampledAt = time.Now()
+		var prevSeq uint64
+		if prev := c.latestGPU.Load(); prev != nil {
+			prevSeq = prev.sampleSeq
+		}
+		reading.sampleSeq = prevSeq + 1
 		c.latestGPU.Store(&reading)
 		return
 	}
@@ -192,6 +198,7 @@ func (c *statsCollector) PeekSnapshot() statsSnapshot {
 		snap.GPU = gpu.stats
 		snap.GPUInventory = gpu.inventory
 		snap.GPUSampledAt = gpu.sampledAt
+		snap.GPUSampleSeq = gpu.sampleSeq
 	}
 	return snap
 }

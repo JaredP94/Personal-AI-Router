@@ -164,3 +164,39 @@ func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 		t.Fatalf("final manual alias left telemetry cached: %+v", snapshot)
 	}
 }
+
+func TestTelemetryCachePreservesSampleSeq(t *testing.T) {
+	cache := newTelemetryCache()
+	receivedAt := time.Unix(1_700_000_000, 0)
+	input := noderec.NodeTelemetry{
+		HostUUID:          "node-a",
+		GPUUtilizationPct: 84,
+		TelemetryValid:    true,
+		MSSince:           137,
+		SampleSeq:         42,
+	}
+	projected, ok := cache.Upsert(sourceScanner, input, receivedAt)
+	if !ok || projected.SampleSeq != 42 {
+		t.Fatalf("projected SampleSeq = %d, want 42", projected.SampleSeq)
+	}
+	snapshot := cache.Snapshot(receivedAt.Add(250 * time.Millisecond))
+	if len(snapshot) != 1 || snapshot[0].SampleSeq != 42 {
+		t.Fatalf("snapshot SampleSeq = %d, want 42", snapshot[0].SampleSeq)
+	}
+}
+
+func TestManualNodeTelemetryPreservesSampleSeq(t *testing.T) {
+	status := manualNodeStatus{
+		ID:             "manual:node-a",
+		HostUUID:       "node-a",
+		TelemetryValid: true,
+		MSSince:        100,
+		SampleSeq:      77,
+		GPUs:           []GPUInfo{{UtilizationPercent: 50}},
+	}
+	telemetry := manualNodeTelemetry(status, "node-a")
+	if telemetry.SampleSeq != 77 {
+		t.Fatalf("manualNodeTelemetry SampleSeq = %d, want 77", telemetry.SampleSeq)
+	}
+}
+

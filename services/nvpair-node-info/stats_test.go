@@ -191,6 +191,77 @@ func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
 	}
 }
 
+func TestApplyGPUStatsIncrementsSampleSeqOnlyOnUsableSample(t *testing.T) {
+	initial := statsSnapshot{}
+	first := &statsSnapshot{}
+	sampledAt1 := time.Unix(1_700_000_000, 0)
+	applyGPUStats(initial, first, map[string]gpuStat{"gpu-a": {UtilizationPct: 10}}, sampledAt1)
+	if first.GPUSampleSeq != 1 {
+		t.Fatalf("first sample seq = %d, want 1", first.GPUSampleSeq)
+	}
+
+	// Failed collection preserves sampleSeq
+	failed := &statsSnapshot{}
+	applyGPUStats(*first, failed, nil, time.Time{})
+	if failed.GPUSampleSeq != 1 {
+		t.Fatalf("failed collection sample seq = %d, want 1", failed.GPUSampleSeq)
+	}
+
+	// Second usable sample increments
+	second := &statsSnapshot{}
+	sampledAt2 := time.Unix(1_700_000_002, 0)
+	applyGPUStats(*failed, second, map[string]gpuStat{"gpu-a": {UtilizationPct: 20}}, sampledAt2)
+	if second.GPUSampleSeq != 2 {
+		t.Fatalf("second sample seq = %d, want 2", second.GPUSampleSeq)
+	}
+}
+
+func TestBuildResponseSampleSeqOmittedWhenZero(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	bodyWithSeq := buildResponseAt(
+		[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
+		nil,
+		0,
+		statsSnapshot{
+			GPU:          map[string]gpuStat{"gpu-a": {UtilizationPct: 10}},
+			GPUSampledAt: now,
+			GPUSampleSeq: 42,
+		},
+		"",
+		nil,
+		now,
+	)
+	var rawWithSeq map[string]any
+	if err := json.Unmarshal(bodyWithSeq, &rawWithSeq); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	seqVal, ok := rawWithSeq["sampleSeq"].(float64)
+	if !ok || uint64(seqVal) != 42 {
+		t.Fatalf("sampleSeq = %v, want 42", rawWithSeq["sampleSeq"])
+	}
+
+	bodyZeroSeq := buildResponseAt(
+		[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
+		nil,
+		0,
+		statsSnapshot{
+			GPU:          map[string]gpuStat{"gpu-a": {UtilizationPct: 10}},
+			GPUSampledAt: now,
+			GPUSampleSeq: 0,
+		},
+		"",
+		nil,
+		now,
+	)
+	var rawZeroSeq map[string]any
+	if err := json.Unmarshal(bodyZeroSeq, &rawZeroSeq); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := rawZeroSeq["sampleSeq"]; present {
+		t.Fatalf("sampleSeq was not omitted when 0: %v", rawZeroSeq["sampleSeq"])
+	}
+}
+
 func TestBuildResponseTelemetryFreshness(t *testing.T) {
 	now := time.Unix(1_700_000_000, 500_000_000)
 	cases := []struct {

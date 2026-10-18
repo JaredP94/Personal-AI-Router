@@ -77,6 +77,7 @@ type NodeInfoResponse struct {
 	Memory         *MemoryInfo `json:"memory,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
+	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
 	// HostUUID is this node's stable per-host identity (the same value the
 	// node-scanner advertises as uuid= and the cluster uses as nodeUuid). It lets
 	// a consumer that reaches this node only over HTTP — notably a user-added
@@ -188,11 +189,12 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 		}
 	}
 
-	telemetryValid, msSince := telemetryStatus(snap.GPUSampledAt, now)
+	telemetryValid, msSince, sampleSeq := telemetryStatus(snap.GPUSampledAt, snap.GPUSampleSeq, now)
 	resp := NodeInfoResponse{
 		GPUs:           outGPUs,
 		TelemetryValid: telemetryValid,
 		MSSince:        msSince,
+		SampleSeq:      sampleSeq,
 		HostUUID:       hostUUID,
 		ClusterUUID:    clusterUUID,
 	}
@@ -211,15 +213,15 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 	return body
 }
 
-func telemetryStatus(sampledAt, now time.Time) (bool, int64) {
+func telemetryStatus(sampledAt time.Time, seq uint64, now time.Time) (bool, int64, uint64) {
 	if sampledAt.IsZero() {
-		return false, 0
+		return false, 0, 0
 	}
 	age := now.Sub(sampledAt)
 	if age < 0 {
 		age = 0
 	}
-	return true, age.Milliseconds()
+	return true, age.Milliseconds(), seq
 }
 
 func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {

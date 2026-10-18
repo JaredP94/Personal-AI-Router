@@ -1647,6 +1647,7 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 		GPUUtilizationPct: utilization,
 		TelemetryValid:    info.TelemetryValid,
 		MSSince:           age,
+		SampleSeq:         info.SampleSeq,
 	})
 	return true
 }
