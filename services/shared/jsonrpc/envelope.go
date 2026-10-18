@@ -15,6 +15,10 @@ import (
 // negotiation: the envelope stamp (§2.2) is the discriminator.
 const ProtocolVersion = 2
 
+// ReservedMembers is the set of top-level JSON-RPC envelope member names reserved
+// by protocol v2.
+var ReservedMembers = []string{"jsonrpc", "id", "method", "params", "result", "error", "epoch", "seq"}
+
 // HeartbeatInterval is how often a peer expects to hear from the other side.
 const HeartbeatInterval = 15 * time.Second
 
