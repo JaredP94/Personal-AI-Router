@@ -5,10 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-node-settings
 
-> **Status: scaffolding.** This subprocess persists four per-node
-> settings (`force_ports`, `cluster_auto_sync`, `cluster_id`,
-> `cluster_friendly_name`) and pushes cluster identity / auto-sync
-> change notifications to its peer. The **names** of the settings
+> **Status: cluster/port scaffolding.** This subprocess persists four
+> non-telemetry settings (`force_ports`, `cluster_auto_sync`, `cluster_id`,
+> `cluster_friendly_name`) plus revisioned telemetry configuration. It pushes
+> cluster identity / auto-sync and telemetry change notifications to its peer. The **names** of the settings
 > reflect a later reshape of the design (auto-join-invites and the
 > opaque cluster-secret were dropped; a stable cluster identifier and
 > a display label took their place). How — and whether — each
@@ -39,8 +39,9 @@ SPDX-License-Identifier: Apache-2.0
 
 A typed key-value store for per-node NVPAIR preferences, persisted to a
 JSON file in the user's config directory and exposed to the supervising
-broker over JSON-RPC. Pure datastore: no business logic, no
-auto-generation, no defaulting beyond Go zero-values.
+broker over JSON-RPC. It also validates and revisions the complete telemetry
+configuration, enforcing explicit payload-capture consent. Telemetry defaults
+off; the collector destination is a loopback port, never a remote address.
 
 ## Communication
 
@@ -61,19 +62,25 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 - Writes go to `settings.json.tmp` first, then `os.Rename` over the destination. A crash mid-save leaves either the previous file intact or the new one fully written, never a half-file.
 - File mode is pinned to `0o600` (parent directory `0o700`) regardless of umask. The previous cluster-secret rationale is gone, but per-user settings still shouldn't be world-readable on shared hosts.
 - A malformed file on load is renamed aside as `settings.json.corrupt-<unix-ts>` and the subprocess starts with product defaults — refusing to start used to wedge every UI settings call behind a parse error.
-- Unknown JSON keys on load are silently ignored, and missing fields take Go zero-values. Adding or removing a setting is a non-breaking on-disk change: older settings.json files with the removed `auto_join_invites` / `cluster_secret` keys load cleanly under the new schema and those keys are dropped on the next save.
+- Unknown JSON keys on load are silently ignored, and missing fields take product defaults.
+- Files without `schema_version`, or with a version below 2, are immediately migrated and saved as schema 2. All recognized non-telemetry settings are preserved. Telemetry is reset to disabled, payload capture off, consent version 0, collector port 4317, and revision 1. An old `telemetry_enabled: true` or `telemetry_record_payloads: true` is **not** consent. The removed `telemetry_endpoint` is discarded.
+- Missing files use the same defaults in memory. Corrupt files retain the rename-aside behavior above. Neither path emits telemetry change notifications.
+- A failed migration save fails startup rather than claiming that the migration was persisted.
 
 ## Settings schema
 
 ```json
 {
-  "force_ports":               true,
-  "cluster_auto_sync":         false,
-  "cluster_id":                "",
-  "cluster_friendly_name":     "",
-  "telemetry_enabled":         true,
-  "telemetry_endpoint":        "localhost:4317",
-  "telemetry_record_payloads": false
+  "schema_version":                    2,
+  "force_ports":                       true,
+  "cluster_auto_sync":                 false,
+  "cluster_id":                        "",
+  "cluster_friendly_name":             "",
+  "telemetry_revision":                1,
+  "telemetry_enabled":                 false,
+  "telemetry_collector_port":          4317,
+  "telemetry_record_payloads":         false,
+  "telemetry_payload_consent_version": 0
 }
 ```
 
@@ -83,9 +90,12 @@ The stored fields:
 - `cluster_auto_sync` (bool) — when true, this node accepts automatic syncs of cluster-managed state from peers.
 - `cluster_id` (string) — opaque, stable identifier for the cluster this node belongs to. Empty means "not in a cluster". The wire format is byte-for-byte (no normalization, no trimming) so a future migration of the id format doesn't have to coordinate with the datastore.
 - `cluster_friendly_name` (string) — human-presentable label for the cluster (e.g. "Lab 3 desks"). Display only — anything operational keys off `cluster_id`.
-- `telemetry_enabled` (bool) — when true, proxies emit OpenTelemetry traces to the configured collector. Defaults to true.
-- `telemetry_endpoint` (string) — OTLP gRPC endpoint address (e.g. "localhost:4317"). Defaults to "localhost:4317".
-- `telemetry_record_payloads` (bool) — when true, prompt and completion payloads are attached to spans for local evaluations in Arize Phoenix. Defaults to false.
+- `schema_version` (int) — current on-disk schema version, 2.
+- `telemetry_revision` (uint64) — starts at 1 and increases once per changed telemetry configuration.
+- `telemetry_enabled` (bool) — enables local OpenTelemetry tracing when applied by the broker. Defaults to false.
+- `telemetry_collector_port` (int) — OTLP gRPC port on `127.0.0.1`, from 1 through 65535 inclusive. Defaults to 4317.
+- `telemetry_record_payloads` (bool) — attaches prompt and completion payloads to spans for local evaluations. Defaults to false; requires telemetry enabled and consent to the current policy.
+- `telemetry_payload_consent_version` (int) — explicitly accepted payload policy version. Defaults to 0 (no consent). The current `TelemetryPayloadPolicyVersion` is 1.
 
 ## JSON-RPC Notifications (manager → caller)
 
@@ -123,9 +133,22 @@ Same lifecycle as `connection/cluster-identity` — fires on change only, after 
 {"jsonrpc":"2.0","method":"connection/cluster-auto-sync","params":{"value": <bool>}}
 ```
 
+### `settings/telemetry-changed`
+
+Emitted after the successful response to a changed
+`settings/set-telemetry-config` request, once the new configuration has been
+persisted. Its params have the same complete snapshot shape as the getter:
+
+```json
+{"jsonrpc":"2.0","method":"settings/telemetry-changed","params":{"revision":2,"enabled":true,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0,"payloadPolicyVersion":1}}
+```
+
+No notification is emitted on startup, unchanged sets, invalid requests, or save
+failures. Call `settings/get-telemetry-config` to fetch the initial snapshot.
+
 ## JSON-RPC Methods (caller → manager)
 
-Every stored setting has a symmetric get/set pair. The cluster-id
+Non-telemetry settings have symmetric individual get/set pairs. The cluster-id
 and cluster-auto-sync setters also trigger the matching
 `connection/*` notification above; the request/response side stays
 as a simple ack so React-init code can rely on a single round-trip.
@@ -152,21 +175,24 @@ as a simple ack so React-init code can rely on a single round-trip.
 {"jsonrpc":"2.0","id":8,"method":"settings/get-cluster-friendly-name"}                                  // -> {"value": ""}
 {"jsonrpc":"2.0","id":9,"method":"settings/set-cluster-friendly-name","params":{"value":"Lab 3 desks"}} // -> {"ok": true}
 
-// telemetry-enabled (bool)
-{"jsonrpc":"2.0","id":10,"method":"settings/get-telemetry-enabled"}                                    // -> {"value": true}
-{"jsonrpc":"2.0","id":11,"method":"settings/set-telemetry-enabled","params":{"value": false}}          // -> {"ok": true}
+// telemetry configuration (atomic snapshot)
+{"jsonrpc":"2.0","id":10,"method":"settings/get-telemetry-config"}
+// -> {"revision":1,"enabled":false,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0,"payloadPolicyVersion":1}
 
-// telemetry-endpoint (string)
-{"jsonrpc":"2.0","id":12,"method":"settings/get-telemetry-endpoint"}                                   // -> {"value": "localhost:4317"}
-{"jsonrpc":"2.0","id":13,"method":"settings/set-telemetry-endpoint","params":{"value": "192.168.1.50:4317"}} // -> {"ok": true}
-
-// telemetry-record-payloads (bool)
-{"jsonrpc":"2.0","id":14,"method":"settings/get-telemetry-record-payloads"}                           // -> {"value": false}
-{"jsonrpc":"2.0","id":15,"method":"settings/set-telemetry-record-payloads","params":{"value": true}}  // -> {"ok": true}
+{"jsonrpc":"2.0","id":11,"method":"settings/set-telemetry-config","params":{"enabled":true,"collectorPort":4317,"recordPayloads":true,"payloadConsentVersion":1}}
+// -> {"revision":2,"enabled":true,"collectorPort":4317,"recordPayloads":true,"payloadConsentVersion":1,"payloadPolicyVersion":1}
+//    plus settings/telemetry-changed with the same snapshot
 ```
 
+The telemetry setter requires all four params, including explicit false values.
+A changed configuration is persisted atomically before it is committed in
+memory, then the revisioned snapshot is returned and pushed. An unchanged
+configuration returns the existing snapshot without saving, incrementing its
+revision, or notifying. Save failures return `-32603` without changing the
+in-memory configuration or revision.
+
 `settings/get-cluster-id` returns the raw stored `cluster_id`
-string — the same shape every other `settings/get-*` getter uses
+string — the same shape the other non-telemetry getters use
 (`{"value": <stored value>}`) — so the getter round-trips with
 `settings/set-cluster-id`. Empty / unset is `{"value": ""}`;
 non-empty is the verbatim id. Live cluster-membership changes
@@ -175,13 +201,21 @@ from polling this getter.
 
 ### Removed methods
 
-The schema update removed four method pairs. They return `-32601`
+The following legacy methods return `-32601`
 ("method not found") and are NOT redirected to the new equivalents,
 so any code path still calling them surfaces loudly instead of
 silently dropping writes:
 
 - `settings/get-auto-join-invites`, `settings/set-auto-join-invites` — the auto-accept-invites toggle was removed; cluster invites are now always interactive.
 - `settings/get-cluster-secret`, `settings/set-cluster-secret` — the opaque shared secret was replaced by `cluster_id`. The push `connection/cluster-identity` was retained but its payload changed from `{secret, clustered}` to `{id}`; callers parsing the old shape must be updated.
+
+- `settings/get-telemetry-enabled`, `settings/set-telemetry-enabled`
+- `settings/get-telemetry-endpoint`, `settings/set-telemetry-endpoint`
+- `settings/get-telemetry-record-payloads`, `settings/set-telemetry-record-payloads`
+
+The six individual telemetry methods were replaced by the complete
+`settings/get-telemetry-config` / `settings/set-telemetry-config` pair. There
+are no compatibility aliases.
 
 ### Standard handlers
 
@@ -190,12 +224,19 @@ silently dropping writes:
 
 ## Validation errors
 
-All setters validate their `value` field via `json.Unmarshal` and return `-32602` on:
+Non-telemetry setters validate their `value` field via `json.Unmarshal` and
+return `-32602` on missing, null, or wrong-type values.
 
-- A missing `value` field (`{}` params).
-- A wrong-type `value` (string where bool was expected, etc.).
+`settings/set-telemetry-config` returns `-32602` for:
 
-Unknown methods return `-32601`.
+- Missing, null, or wrong-type `enabled` (bool), `collectorPort` (int),
+  `recordPayloads` (bool), or `payloadConsentVersion` (int).
+- A collector port outside 1–65535 inclusive.
+- `recordPayloads: true` with `enabled: false`.
+- Payload capture without consent to policy version 1. The exact error message
+  is `payload capture requires consent to policy version 1`.
+
+Unknown and removed methods return `-32601`.
 
 ## Shutdown
 

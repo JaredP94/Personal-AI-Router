@@ -24,6 +24,9 @@ import (
 // See versions.json at the repo root for the source of truth.
 var Version = "dev"
 
+// TelemetryPayloadPolicyVersion identifies the explicit payload-capture policy.
+const TelemetryPayloadPolicyVersion = 1
+
 // Settings is the on-disk schema. This whole surface is still
 // SCAFFOLDING: auto_join_invites and the opaque cluster_secret were
 // dropped; cluster_id and cluster_friendly_name took their place.
@@ -37,8 +40,11 @@ var Version = "dev"
 // are quietly discarded on the next save (this is how cluster_secret,
 // cluster_auto_sync's old companion auto_join_invites, and the
 // previous cluster_identity derivation all disappeared without a
-// migration step).
+// migration step). Telemetry is the exception: schema 2 explicitly migrates
+// older files to disabled tracing without payload consent.
 type Settings struct {
+	SchemaVersion int `json:"schema_version"`
+
 	// ForcePorts enables managed compatibility-port ownership. Consumers must
 	// leave running or unidentified owners untouched and surface a blocked
 	// state; this setting never grants generic process-kill authority.
@@ -69,8 +75,14 @@ type Settings struct {
 	// TelemetryEnabled controls whether proxies emit OpenTelemetry spans.
 	TelemetryEnabled bool `json:"telemetry_enabled"`
 
-	// TelemetryEndpoint is the OTLP gRPC endpoint address (e.g. "localhost:4317").
-	TelemetryEndpoint string `json:"telemetry_endpoint"`
+	// TelemetryRevision increases only when the telemetry configuration changes.
+	TelemetryRevision uint64 `json:"telemetry_revision"`
+
+	// TelemetryCollectorPort is the OTLP gRPC port on loopback.
+	TelemetryCollectorPort int `json:"telemetry_collector_port"`
+
+	// TelemetryPayloadConsentVersion records explicit consent to a payload policy.
+	TelemetryPayloadConsentVersion int `json:"telemetry_payload_consent_version"`
 
 	// TelemetryRecordPayloads controls whether prompt and completion text
 	// is attached to spans for local evaluations.
@@ -79,10 +91,32 @@ type Settings struct {
 
 func defaultSettings() Settings {
 	return Settings{
-		ForcePorts:              true,
-		TelemetryEnabled:        true,
-		TelemetryEndpoint:       "localhost:4317",
-		TelemetryRecordPayloads: false,
+		SchemaVersion:          2,
+		ForcePorts:             true,
+		TelemetryRevision:      1,
+		TelemetryCollectorPort: 4317,
+	}
+}
+
+// TelemetryConfig is the snapshot returned by telemetry get/set and pushed after
+// a successful configuration change. Startup and unchanged sets do not push.
+type TelemetryConfig struct {
+	Revision              uint64 `json:"revision"`
+	Enabled               bool   `json:"enabled"`
+	CollectorPort         int    `json:"collectorPort"`
+	RecordPayloads        bool   `json:"recordPayloads"`
+	PayloadConsentVersion int    `json:"payloadConsentVersion"`
+	PayloadPolicyVersion  int    `json:"payloadPolicyVersion"`
+}
+
+func (s Settings) telemetryConfig() TelemetryConfig {
+	return TelemetryConfig{
+		Revision:              s.TelemetryRevision,
+		Enabled:               s.TelemetryEnabled,
+		CollectorPort:         s.TelemetryCollectorPort,
+		RecordPayloads:        s.TelemetryRecordPayloads,
+		PayloadConsentVersion: s.TelemetryPayloadConsentVersion,
+		PayloadPolicyVersion:  TelemetryPayloadPolicyVersion,
 	}
 }
 
@@ -180,14 +214,12 @@ func (m *Manager) emitClusterAutoSync() error {
 // load reads the settings file from disk and merges it into
 // m.settings. Three outcomes:
 //
-//   - Missing file → clean zero-values (first run).
-//   - Well-formed file → parsed in; unknown JSON keys are dropped
-//     (Go's default unmarshal behavior), so schema evolution is
-//     non-breaking. This is how legacy keys like cluster_secret
-//     and auto_join_invites are silently discarded when an
-//     older settings.json is loaded after a schema change.
+//   - Missing file → product defaults, with telemetry disabled (first run).
+//   - Well-formed file → parsed over defaults; unknown JSON keys are dropped.
+//     Files older than schema 2 retain non-telemetry settings, reset telemetry
+//     to disabled with no payload consent, and are immediately persisted.
 //   - Malformed file → renamed aside as `<path>.corrupt-<unix-ts>`
-//     and we start with zero-values. This is the degraded-but-
+//     and we start with product defaults. This is the degraded-but-
 //     responsive path: refusing to start (the previous behavior)
 //     wedged every settings call in the UI behind a parse error
 //     until the user located and deleted the file by hand. The
@@ -211,6 +243,8 @@ func (m *Manager) load() error {
 	// first-run or older partial file) enables the recommended managed-port
 	// policy. An explicitly persisted false still wins and remains an opt-out.
 	s := defaultSettings()
+	// A missing version must be detected rather than inherited from defaults.
+	s.SchemaVersion = 0
 	if err := json.Unmarshal(data, &s); err != nil {
 		backup := fmt.Sprintf("%s.corrupt-%d", m.path, time.Now().Unix())
 		if renameErr := os.Rename(m.path, backup); renameErr != nil {
@@ -222,6 +256,18 @@ func (m *Manager) load() error {
 		}
 		return nil
 	}
+	if s.SchemaVersion < 2 {
+		defaults := defaultSettings()
+		s.SchemaVersion = defaults.SchemaVersion
+		s.TelemetryEnabled = defaults.TelemetryEnabled
+		s.TelemetryRecordPayloads = defaults.TelemetryRecordPayloads
+		s.TelemetryPayloadConsentVersion = defaults.TelemetryPayloadConsentVersion
+		s.TelemetryCollectorPort = defaults.TelemetryCollectorPort
+		s.TelemetryRevision = defaults.TelemetryRevision
+		if err := m.saveSettings(s); err != nil {
+			return fmt.Errorf("migrate telemetry settings: %w", err)
+		}
+	}
 	m.mu.Lock()
 	m.settings = s
 	m.mu.Unlock()
@@ -232,7 +278,7 @@ func (m *Manager) load() error {
 		"has_cluster_id", s.ClusterID != "",
 		"has_cluster_friendly_name", s.ClusterFriendlyName != "",
 		"telemetry_enabled", s.TelemetryEnabled,
-		"telemetry_endpoint", s.TelemetryEndpoint,
+		"telemetry_collector_port", s.TelemetryCollectorPort,
 		"telemetry_record_payloads", s.TelemetryRecordPayloads)
 	return nil
 }
@@ -325,6 +371,13 @@ type boolValueParams struct {
 
 type stringValueParams struct {
 	Value *string `json:"value"`
+}
+
+type telemetryConfigParams struct {
+	Enabled               *bool `json:"enabled"`
+	CollectorPort         *int  `json:"collectorPort"`
+	RecordPayloads        *bool `json:"recordPayloads"`
+	PayloadConsentVersion *int  `json:"payloadConsentVersion"`
 }
 
 func (m *Manager) handleMessage(msg *Message) {
@@ -479,83 +532,60 @@ func (m *Manager) handleMessage(msg *Message) {
 			slog.Warn("failed to emit cluster-auto-sync notification after set", "err", err)
 		}
 
-	case "settings/get-telemetry-enabled":
+	case "settings/get-telemetry-config":
 		m.mu.RLock()
-		v := m.settings.TelemetryEnabled
+		config := m.settings.telemetryConfig()
 		m.mu.RUnlock()
-		m.codec.Respond(msg.ID, map[string]bool{"value": v})
+		m.codec.Respond(msg.ID, config)
 
-	case "settings/set-telemetry-enabled":
-		var p boolValueParams
-		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
-			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <bool>}`)
+	case "settings/set-telemetry-config":
+		var p telemetryConfigParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil ||
+			p.Enabled == nil || p.CollectorPort == nil ||
+			p.RecordPayloads == nil || p.PayloadConsentVersion == nil {
+			m.codec.RespondError(msg.ID, -32602, "invalid params: expected enabled, collectorPort, recordPayloads and payloadConsentVersion")
 			return
 		}
+		if *p.CollectorPort < 1 || *p.CollectorPort > 65535 {
+			m.codec.RespondError(msg.ID, -32602, "collector port must be between 1 and 65535")
+			return
+		}
+		if *p.RecordPayloads && !*p.Enabled {
+			m.codec.RespondError(msg.ID, -32602, "payload recording requires telemetry to be enabled")
+			return
+		}
+		if *p.RecordPayloads && *p.PayloadConsentVersion != TelemetryPayloadPolicyVersion {
+			m.codec.RespondError(msg.ID, -32602, "payload capture requires consent to policy version 1")
+			return
+		}
+		// Like the other setters, persist the candidate before publishing it.
+		// The read loop serializes setters across this snapshot/commit window.
 		m.mu.RLock()
 		newSettings := m.settings
 		m.mu.RUnlock()
-		newSettings.TelemetryEnabled = *p.Value
+		previous := newSettings.telemetryConfig()
+		newSettings.TelemetryEnabled = *p.Enabled
+		newSettings.TelemetryCollectorPort = *p.CollectorPort
+		newSettings.TelemetryRecordPayloads = *p.RecordPayloads
+		newSettings.TelemetryPayloadConsentVersion = *p.PayloadConsentVersion
+		if newSettings.telemetryConfig() == previous {
+			m.codec.Respond(msg.ID, previous)
+			return
+		}
+		newSettings.TelemetryRevision++
 		if err := m.saveSettings(newSettings); err != nil {
-			slog.Error("failed to persist telemetry-enabled", "err", err)
+			slog.Error("failed to persist telemetry config", "err", err)
 			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
 			return
 		}
 		m.mu.Lock()
 		m.settings = newSettings
 		m.mu.Unlock()
-		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
-
-	case "settings/get-telemetry-endpoint":
-		m.mu.RLock()
-		v := m.settings.TelemetryEndpoint
-		m.mu.RUnlock()
-		m.codec.Respond(msg.ID, map[string]string{"value": v})
-
-	case "settings/set-telemetry-endpoint":
-		var p stringValueParams
-		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
-			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <string>}`)
-			return
+		config := newSettings.telemetryConfig()
+		m.codec.Respond(msg.ID, config)
+		if err := m.codec.Notify("settings/telemetry-changed", config); err != nil {
+			slog.Warn("failed to emit telemetry-changed notification after set", "err", err)
 		}
-		m.mu.RLock()
-		newSettings := m.settings
-		m.mu.RUnlock()
-		newSettings.TelemetryEndpoint = *p.Value
-		if err := m.saveSettings(newSettings); err != nil {
-			slog.Error("failed to persist telemetry-endpoint", "err", err)
-			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
-			return
-		}
-		m.mu.Lock()
-		m.settings = newSettings
-		m.mu.Unlock()
-		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
-
-	case "settings/get-telemetry-record-payloads":
-		m.mu.RLock()
-		v := m.settings.TelemetryRecordPayloads
-		m.mu.RUnlock()
-		m.codec.Respond(msg.ID, map[string]bool{"value": v})
-
-	case "settings/set-telemetry-record-payloads":
-		var p boolValueParams
-		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
-			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <bool>}`)
-			return
-		}
-		m.mu.RLock()
-		newSettings := m.settings
-		m.mu.RUnlock()
-		newSettings.TelemetryRecordPayloads = *p.Value
-		if err := m.saveSettings(newSettings); err != nil {
-			slog.Error("failed to persist telemetry-record-payloads", "err", err)
-			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
-			return
-		}
-		m.mu.Lock()
-		m.settings = newSettings
-		m.mu.Unlock()
-		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
 
 	case "shutdown":
 		if err := m.codec.Respond(msg.ID, nil); err != nil {
