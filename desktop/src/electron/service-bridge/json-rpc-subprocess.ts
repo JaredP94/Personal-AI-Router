@@ -9,6 +9,7 @@ import getErrorString from '@/shared/utils/get-error-string'
 import { createStructuredLogger } from '@/shared/utils/log'
 import { redactSensitiveLogText } from '@/electron/redact-log'
 import { MODULAR_HEARTBEAT_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
+import { decodeRelayFrame, encodeSeq, type JsonRpcMessage } from './relay-envelope'
 
 export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[]
 
@@ -31,31 +32,21 @@ export class JsonRpcResponseError extends Error {
     }
 }
 
-type JsonRpcId = number | string
-
-interface JsonRpcMessage {
-    jsonrpc: '2.0'
-    id?: JsonRpcId
-    method?: string
-    params?: JsonValue
-    result?: JsonValue
-    error?: JsonRpcError
-    /**
-     * Protocol v2 envelope. Present on every notification, absent on requests
-     * and responses: their presence IS the version discriminator, and a v2
-     * reader rejects a notification without them as a terminal protocol
-     * mismatch. So only {@link JsonRpcSubprocess.notify} ever sets them.
-     */
-    epoch?: string
-    seq?: number
+export class JsonRpcProtocolMismatchError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'JsonRpcProtocolMismatchError'
+    }
 }
+
+type JsonRpcId = number | string
 
 export interface JsonRpcNotification {
     source: string
     method: string
     params?: JsonValue
     epoch?: string
-    seq?: number
+    seq?: bigint
 }
 
 /**
@@ -83,6 +74,7 @@ interface JsonRpcSubprocessEvents {
     log: [{ source: string; stream: 'stdout' | 'stderr'; text: string }]
     exit: [{ source: string; code: number | null }]
     unresponsive: [{ source: string }]
+    'protocol-mismatch': [{ source: string; reason: string }]
 }
 
 const log = createStructuredLogger('service-bridge')
@@ -105,12 +97,12 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
      * Initialized to a local UUID so any notification sent before the peer's
      * first inbound frame still carries a non-empty epoch (satisfying the Go
      * codec's presence check). As soon as an inbound notification frame
-     * carries a non-empty epoch (or broker:epoch announces one in params),
-     * handleStdout adopts that peer epoch so both ends agree on the broker's
-     * identity.
+     * carries a non-empty epoch, handleStdout adopts that peer epoch so both
+     * ends agree on the broker's identity.
      */
     private epoch: string = randomUUID()
-    private notificationSeq = 0
+    private notificationSeq = 0n
+    private protocolMismatch = false
     private silenceTimer: ReturnType<typeof setTimeout> | null = null
     private silenceGeneration = 0
     private silenceEnabled = false
@@ -135,7 +127,8 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         })
         this.child = child
         this.epoch = randomUUID()
-        this.notificationSeq = 0
+        this.notificationSeq = 0n
+        this.protocolMismatch = false
         this.writeTail = Promise.resolve()
         this.silenceExpired = false
         this.silenceEnabled = true
@@ -190,7 +183,7 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         if (!child) throw new Error(`${this.name} is not running`)
 
         const id = ++this.nextId
-        const message: JsonRpcMessage = { jsonrpc: '2.0', id, method, params }
+        const message = { jsonrpc: '2.0', id, method, params }
 
         return new Promise((resolve, reject) => {
             const timeout =
@@ -201,7 +194,7 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
                           reject(new Error(`${this.name} ${method} timed out`))
                       }, timeoutMs)
             this.pending.set(id, { resolve, reject, timeout })
-            this.write(message).catch(err => {
+            this.write(JSON.stringify(message)).catch(err => {
                 if (timeout) clearTimeout(timeout)
                 this.pending.delete(id)
                 reject(err)
@@ -219,7 +212,7 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
      */
     send(method: string, params?: JsonValue): Promise<void> {
         const id = ++this.nextId
-        return this.write({ jsonrpc: '2.0', id, method, params })
+        return this.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
     }
 
     /** Observe a long-running request's eventual response without imposing a timeout. */
@@ -238,22 +231,22 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         // that append. Assigning the seq somewhere earlier (or awaiting in
         // between) would violate the sender's monotonic wire guarantee.
         // Receivers do not resync on gaps or regressions.
-        return this.write({
-            jsonrpc: '2.0',
-            method,
-            params,
-            epoch: this.epoch,
-            seq: ++this.notificationSeq
-        })
+        const seq = ++this.notificationSeq
+        const encodedSeq = encodeSeq(seq)
+        const payload =
+            params !== undefined
+                ? `{"jsonrpc":"2.0","method":${JSON.stringify(method)},"params":${JSON.stringify(params)},"epoch":${JSON.stringify(this.epoch)},"seq":${encodedSeq}}`
+                : `{"jsonrpc":"2.0","method":${JSON.stringify(method)},"epoch":${JSON.stringify(this.epoch)},"seq":${encodedSeq}}`
+        return this.write(payload)
     }
 
     /** Reply to a child-initiated request (see {@link JsonRpcInboundRequest}). */
     respond(id: JsonRpcId, result: JsonValue): Promise<void> {
-        return this.write({ jsonrpc: '2.0', id, result })
+        return this.write(JSON.stringify({ jsonrpc: '2.0', id, result }))
     }
 
     respondError(id: JsonRpcId, code: number, message: string): Promise<void> {
-        return this.write({ jsonrpc: '2.0', id, error: { code, message } })
+        return this.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }))
     }
 
     /**
@@ -343,20 +336,30 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         })
     }
 
-    private async write(message: JsonRpcMessage): Promise<void> {
+    private async write(payload: string): Promise<void> {
         if (this.silenceExpired)
             throw new Error(`${this.name} connection lost: inbound silence timeout`)
+        if (this.protocolMismatch)
+            throw new JsonRpcProtocolMismatchError(
+                `${this.name} connection closed due to protocol mismatch`
+            )
         const child = this.child
         if (!child) throw new Error(`${this.name} is not running`)
 
         this.writeTail = this.writeTail.then(
             () =>
                 new Promise<void>((resolve, reject) => {
-                    if (this.child !== child || this.silenceExpired) {
-                        reject(new Error(`${this.name} connection is no longer active`))
+                    if (this.child !== child || this.silenceExpired || this.protocolMismatch) {
+                        reject(
+                            new Error(
+                                this.protocolMismatch
+                                    ? `${this.name} connection closed due to protocol mismatch`
+                                    : `${this.name} connection is no longer active`
+                            )
+                        )
                         return
                     }
-                    child.stdin.write(`${JSON.stringify(message)}\n`, err => {
+                    child.stdin.write(`${payload}\n`, err => {
                         if (err) {
                             reject(err)
                             return
@@ -378,17 +381,32 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
             text: redactSensitiveLogText(line)
         })
 
-        let message: JsonRpcMessage
-        try {
-            message = JSON.parse(line) as JsonRpcMessage
-        } catch {
-            // Already emitted above; the owner logs it.
+        if (this.protocolMismatch) return
+
+        const frame = decodeRelayFrame(line)
+        if (frame.kind === 'decode-error') {
+            log.warn({
+                sublevel: this.name,
+                message: `${this.name} relay frame decode error: ${redactSensitiveLogText(frame.reason)}`
+            })
+            return
+        }
+
+        if (frame.kind === 'mismatch') {
+            this.protocolMismatch = true
+            this.cancelSilenceDeadline()
+            this.failPending(new JsonRpcProtocolMismatchError(frame.reason))
+            this.emit('protocol-mismatch', {
+                source: this.name,
+                reason: frame.reason
+            })
             return
         }
 
         if (this.child) this.armSilenceDeadline(this.child)
 
-        if (message.id !== undefined && message.method) {
+        const message = frame.message
+        if (message.id !== undefined && message.id !== null && message.method) {
             this.emit('request', {
                 source: this.name,
                 method: message.method,
@@ -398,31 +416,20 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
             return
         }
 
-        if (message.id !== undefined) {
+        if (message.id !== undefined && message.id !== null) {
             this.deliverResponse(message)
             return
         }
 
         if (message.method) {
-            let inboundEpoch =
+            const inboundEpoch =
                 typeof message.epoch === 'string' && message.epoch.length > 0
                     ? message.epoch
                     : undefined
-            if (
-                !inboundEpoch &&
-                message.method === 'broker:epoch' &&
-                message.params &&
-                typeof message.params === 'object' &&
-                !Array.isArray(message.params) &&
-                typeof message.params.epoch === 'string' &&
-                message.params.epoch.length > 0
-            ) {
-                inboundEpoch = message.params.epoch
-            }
             if (inboundEpoch) {
                 this.epoch = inboundEpoch
             }
-            const inboundSeq = typeof message.seq === 'number' ? message.seq : undefined
+            const inboundSeq = typeof message.seq === 'bigint' ? message.seq : undefined
             this.emit('notification', {
                 source: this.name,
                 method: message.method,

@@ -395,7 +395,7 @@ class ModularSupervisor {
     // Invoked when the broker process exits unexpectedly (not via stop()). The
     // connector registers this to flip status and prompt the user — the
     // supervisor never imports the connector, keeping the dependency one-way.
-    private onBrokerCrash?: (info: { code: number | null }) => void
+    private onBrokerCrash?: (info: { code: number | null; reason?: string }) => void
     // Invoked instead of onBrokerCrash when an unresponsive broker is about to be
     // restarted automatically: the owner keeps ownership and waits for onReady.
     private onBrokerReconnecting?: () => void
@@ -504,7 +504,7 @@ class ModularSupervisor {
     }
 
     /** Register a handler invoked when the broker exits unexpectedly. */
-    setOnBrokerCrash(cb: (info: { code: number | null }) => void): void {
+    setOnBrokerCrash(cb: (info: { code: number | null; reason?: string }) => void): void {
         this.onBrokerCrash = cb
     }
 
@@ -971,6 +971,17 @@ class ModularSupervisor {
                 message: entry.text,
                 data: { stream: entry.stream }
             })
+        })
+        child.on('protocol-mismatch', event => {
+            if (!isCurrent() || child.name !== 'broker' || this.shuttingDown) return
+            this.brokerReady = false
+            this.brokerHydrationDone = false
+            this.isReady = false
+            this.readinessReported = false
+            this.invalidateEpochRecovery()
+            this.rejectReadinessWaiters(new Error(`Broker protocol mismatch: ${event.reason}`))
+            this.onBrokerCrash?.({ code: null, reason: event.reason })
+            void this.stop(true)
         })
         child.on('unresponsive', () => {
             if (!isCurrent() || child.name !== 'broker' || this.shuttingDown || this.silenceRestart)
@@ -1576,13 +1587,8 @@ class ModularSupervisor {
 
     private handleNotification(notification: JsonRpcNotification): void {
         if (notification.source === 'broker') {
-            const candidateEpoch =
-                notification.epoch ||
-                (notification.method === 'broker:epoch'
-                    ? stringValue(objectValue(notification.params)?.epoch)
-                    : '')
-            if (candidateEpoch) {
-                this.noteEpoch(candidateEpoch)
+            if (notification.epoch) {
+                this.noteEpoch(notification.epoch)
             }
         }
 
