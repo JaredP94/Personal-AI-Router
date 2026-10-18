@@ -5,8 +5,6 @@ import type { GpuInfo as HardwareGpuInfo } from '@/shared/types/hardware'
 
 export type GpuInfo = HardwareGpuInfo & {
     sharedUsed: number | null
-    vramTotalFormatted: string
-    vramUsageFormatted: string
     vramUsage: number | null // percentage
     usage: number | null // percentage
     usageColor: string

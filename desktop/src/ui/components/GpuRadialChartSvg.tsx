@@ -17,9 +17,10 @@ import {
 } from '@/ui/utils/donut-segment-path'
 
 export interface RadialMetric {
-    value: number
+    value: number | null
     color: string
     shown: boolean
+    label?: string
 }
 
 interface GpuRadialChartSvgProps {
@@ -46,8 +47,10 @@ export default function GpuRadialChartSvg({
 }: GpuRadialChartSvgProps) {
     const baseId = `glow-${useId().replace(/:/g, '')}`
 
-    const currentRef = useRef<number[]>(metrics.map(m => m.value))
-    const [animatedValues, setAnimatedValues] = useState<number[]>(() => metrics.map(m => m.value))
+    const currentRef = useRef<(number | null)[]>(metrics.map(m => m.value))
+    const [animatedValues, setAnimatedValues] = useState<(number | null)[]>(() =>
+        metrics.map(m => m.value)
+    )
 
     useEffect(() => {
         const targets = metrics.map(m => m.value)
@@ -69,9 +72,15 @@ export default function GpuRadialChartSvg({
             if (cancelled) return
             let settled = true
             for (let i = 0; i < curr.length; i++) {
-                const diff = targets[i] - curr[i]
+                const target = targets[i]
+                const current = curr[i]
+                if (target === null || current === null) {
+                    curr[i] = target
+                    continue
+                }
+                const diff = target - current
                 if (Math.abs(diff) > 0.5) {
-                    curr[i] += diff * 0.3
+                    curr[i] = current + diff * 0.3
                     settled = false
                 } else {
                     curr[i] = targets[i]
@@ -91,7 +100,10 @@ export default function GpuRadialChartSvg({
     const visible = useMemo(
         () =>
             metrics
-                .map((m, i) => ({ ...m, value: animatedValues[i] ?? m.value }))
+                .map((m, i) => ({
+                    ...m,
+                    value: m.value === null ? null : (animatedValues[i] ?? m.value)
+                }))
                 .filter(m => m.shown),
         [metrics, animatedValues]
     )
@@ -107,7 +119,9 @@ export default function GpuRadialChartSvg({
         const maxCornerRadiusPx = Math.floor(perRing / 2.2)
 
         return visible.map((metric, i) => {
-            const value = clampPercent(metric.value)
+            const isUnknown = metric.value === null
+            // Zero is used only for inert geometry; unknown rings render no value path.
+            const value = metric.value === null ? 0 : clampPercent(metric.value)
             const outerRadius = fullRadius - i * (perRing + ringSpacing)
             const strokeRadius = Math.max(0, outerRadius - perRing / 2)
             const innerR = Math.max(0, strokeRadius - perRing / 2)
@@ -125,15 +139,12 @@ export default function GpuRadialChartSvg({
             const gradColor = `${metric.color}AA`
             const cx = size / 2
             const cy = size / 2
-            const valuePath = donutSegmentPath(cx, cy, innerR, outerR, value, cornerRadius)
-            const outerEdgePath = donutSegmentOuterEdgePath(
-                cx,
-                cy,
-                innerR,
-                outerR,
-                value,
-                cornerRadius
-            )
+            const valuePath = isUnknown
+                ? ''
+                : donutSegmentPath(cx, cy, innerR, outerR, value, cornerRadius)
+            const outerEdgePath = isUnknown
+                ? ''
+                : donutSegmentOuterEdgePath(cx, cy, innerR, outerR, value, cornerRadius)
             // Outer end corner (leading edge) for gradient direction — glow brightest here
             const endAngle = value > 0 ? (value / 100) * 2 * Math.PI : 0
             const R = effectiveCornerRadius(innerR, outerR, value, cornerRadius)
@@ -149,6 +160,8 @@ export default function GpuRadialChartSvg({
             const ringThicknessPx = outerR - innerR
             const peakRadius = ringThicknessPx * 2.5
             return {
+                isUnknown,
+                label: `${metric.label ?? 'Usage'} ${isUnknown ? '—' : `${Math.round(value)}%`}`,
                 cx,
                 cy,
                 strokeRadius,
@@ -312,6 +325,7 @@ export default function GpuRadialChartSvg({
                     <g transform={`rotate(90 ${size / 2} ${size / 2})`}>
                         {rings.map((ring, i) => (
                             <g key={i}>
+                                <title>{ring.label}</title>
                                 <circle
                                     cx={ring.cx}
                                     cy={ring.cy}
@@ -322,6 +336,19 @@ export default function GpuRadialChartSvg({
                                     strokeDasharray={`${ring.circumference} ${ring.circumference}`}
                                     strokeDashoffset={0}
                                 />
+                                {ring.isUnknown && (
+                                    <text
+                                        x={ring.cx}
+                                        y={ring.cy + ring.strokeRadius}
+                                        transform={`rotate(-90 ${ring.cx} ${ring.cy})`}
+                                        textAnchor="middle"
+                                        dominantBaseline="central"
+                                        fontSize={Math.max(8, Math.min(12, ring.strokeWidth))}
+                                        fill="currentColor"
+                                    >
+                                        —
+                                    </text>
+                                )}
                                 {/* Value: filled path with gradient (dark → bright at outer end corner) */}
                                 {ring.valuePath && (
                                     <path

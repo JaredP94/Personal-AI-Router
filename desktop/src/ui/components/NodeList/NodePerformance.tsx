@@ -9,6 +9,7 @@ import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { getGpuColor, getVramColor } from '@/ui/utils/colors'
 import { formatBytes } from '@/ui/utils/formatters'
 import { CHART_COLORS } from '@/ui/constants/colors'
+import { getGpuMemoryLabel, getGpuMemoryPresentation } from '@/ui/utils/gpu-memory'
 
 export default function NodePerformance({
     node,
@@ -64,19 +65,22 @@ export default function NodePerformance({
             key: 'memory'
         })
 
-        // Add VRAM datasets (cycling through color palette)
+        // Memory remains per adapter; unavailable memory has no numeric series.
         nodeMetrics.gpuVramUsage.forEach((gpu, index) => {
+            const hardware = node.topology.gpus[index]
+            if (!hardware || hardware.memoryKind === 'unavailable') return
             const color = getVramColor(index)
+            const label = getGpuMemoryLabel(hardware.memoryKind)
             result.push({
                 data: gpu.data,
-                label: gpuCount > 1 ? `VRAM ${index}` : 'VRAM',
+                label: gpuCount > 1 ? `${label} ${index}` : label,
                 color,
                 key: `vram-${gpu.id}`
             })
         })
 
         return result
-    }, [nodeMetrics])
+    }, [nodeMetrics, node.topology.gpus])
 
     const hardwareInfo = useMemo(() => {
         const totalStorage = node.topology.storage.reduce(
@@ -98,10 +102,12 @@ export default function NodePerformance({
                 return {
                     id: gpu.id,
                     name: gpu.name,
-                    vramTotal: gpu.vramTotal,
-                    vramFormatted: gpu.vramTotal === null ? '—' : formatBytes(gpu.vramTotal, 1),
+                    memory: getGpuMemoryPresentation(
+                        gpu,
+                        gpuVramData ? getLatestValue(gpuVramData.data) : null,
+                        gpuVramData ? getLatestValue(gpuVramData.sharedUsed) : null
+                    ),
                     utilization: gpuUtilData ? getLatestValue(gpuUtilData.data) : null,
-                    vramUsage: gpuVramData ? getLatestValue(gpuVramData.data) : null,
                     color: getGpuColor(index),
                     vramColor: getVramColor(index)
                 }
@@ -235,20 +241,15 @@ export default function NodePerformance({
                                                     : 0.5
                                         }}
                                     >
-                                        <Text kind="body/regular/sm">VRAM</Text>
-                                        <Text kind="body/regular/sm">
-                                            {gpu.vramTotal === null || gpu.vramUsage === null
-                                                ? '—'
-                                                : formatBytes(
-                                                      Math.floor(
-                                                          (gpu.vramTotal * gpu.vramUsage) / 100
-                                                      ),
-                                                      1
-                                                  )}{' '}
-                                            / {gpu.vramFormatted}
-                                        </Text>
+                                        <Text kind="body/regular/sm">{gpu.memory.label}</Text>
+                                        {gpu.memory.detail && (
+                                            <Text kind="body/regular/sm">{gpu.memory.detail}</Text>
+                                        )}
                                     </Flex>
                                 </Flex>
+                                {gpu.memory.sharedDetail && (
+                                    <Text kind="body/regular/sm">{gpu.memory.sharedDetail}</Text>
+                                )}
                             </Stack>
                         </Stack>
                     )

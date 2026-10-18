@@ -102,19 +102,34 @@ function SvgLineChart({
                         : chartW / (recent.length - 1)
                     : 0
 
-            const pts = recent.map((p, i) => ({
-                x: PADDING + i * step,
-                y: PADDING + chartH - (Math.min(p.value ?? 0, yAxisMax) / yAxisMax) * chartH
-            }))
+            const segments: { x: number; y: number }[][] = []
+            let segment: { x: number; y: number }[] = []
+            recent.forEach((point, index) => {
+                if (point.value === null) {
+                    if (segment.length > 0) segments.push(segment)
+                    segment = []
+                    return
+                }
+                segment.push({
+                    x: PADDING + index * step,
+                    y: PADDING + chartH - (Math.min(point.value, yAxisMax) / yAxisMax) * chartH
+                })
+            })
+            if (segment.length > 0) segments.push(segment)
 
-            if (pts.length === 0) return { key: ds.key, color: ds.color, line: '', fill: '' }
-
-            const line = buildSmoothPath(pts)
-            const last = pts[pts.length - 1]
-            const first = pts[0]
-            const fill = `${line} L ${last.x} ${PADDING + chartH} L ${first.x} ${PADDING + chartH} Z`
-
-            return { key: ds.key, color: ds.color, line, fill }
+            const lines = segments.map(points => {
+                const line = buildSmoothPath(points)
+                const last = points[points.length - 1]
+                const first = points[0]
+                const fill = `${line} L ${last.x} ${PADDING + chartH} L ${first.x} ${PADDING + chartH} Z`
+                return { line, fill }
+            })
+            return {
+                key: ds.key,
+                color: ds.color,
+                line: lines.map(path => path.line).join(' '),
+                fill: lines.map(path => path.fill).join(' ')
+            }
         })
     }, [datasets, maxDataPoints, yAxisMax, chartW, chartH])
 

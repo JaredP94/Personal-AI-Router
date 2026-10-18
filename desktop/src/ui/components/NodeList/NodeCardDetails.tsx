@@ -83,12 +83,6 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                 {
                     ...gpu,
                     sharedUsed: gpuVramData ? getLatestValue(gpuVramData.sharedUsed) : null,
-                    vramTotalFormatted:
-                        gpu.vramTotal === null ? '—' : formatBytes(gpu.vramTotal, 1),
-                    vramUsageFormatted:
-                        gpu.vramTotal === null || vramUsage === null
-                            ? '—'
-                            : formatBytes((gpu.vramTotal * vramUsage) / 100, 1),
                     vramUsage,
                     usage: gpuUtilData ? getLatestValue(gpuUtilData.data) : null,
                     usageColor: getGpuColor(index),

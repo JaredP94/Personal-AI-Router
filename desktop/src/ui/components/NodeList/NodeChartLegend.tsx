@@ -4,6 +4,7 @@
 import { memo } from 'react'
 import { Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { CpuFallbackInfo, GpuInfo } from '@/ui/types/node-hardware'
+import { getGpuMemoryPresentation } from '@/ui/utils/gpu-memory'
 
 const dotSize = '10px'
 
@@ -57,31 +58,35 @@ function NodeChartLegend({
 
     return (
         <Stack gap="3">
-            {gpuInfo.map(gpu => (
-                <Stack key={gpu.id} gap="1">
-                    <Text kind="body/semibold/sm">{gpu.name}</Text>
-                    <Flex align="center" gap="2">
-                        <ColorDot color={gpu.usageColor} />
+            {gpuInfo.map(gpu => {
+                const memory = getGpuMemoryPresentation(gpu, gpu.vramUsage, gpu.sharedUsed)
+                return (
+                    <Stack key={gpu.id} gap="1">
+                        <Text kind="body/semibold/sm">{gpu.name}</Text>
                         <Flex align="center" gap="2">
-                            <Text kind="body/regular/sm" className="text-subtle-color">
-                                Usage
-                            </Text>
-                            <Text kind="body/semibold/sm">
-                                {gpu.usage === null ? '—' : `${gpu.usage}%`}
-                            </Text>
+                            <ColorDot color={gpu.usageColor} />
+                            <Flex align="center" gap="2">
+                                <Text kind="body/regular/sm" className="text-subtle-color">
+                                    Usage
+                                </Text>
+                                <Text kind="body/semibold/sm">
+                                    {gpu.usage === null ? '—' : `${gpu.usage}%`}
+                                </Text>
+                            </Flex>
                         </Flex>
-                    </Flex>
-                    <Flex align="center" gap="2">
-                        <ColorDot color={gpu.vramColor} />
-                        <Text kind="body/regular/sm" className="text-subtle-color">
-                            VRAM
-                        </Text>
-                        <Text kind="body/semibold/sm">
-                            {gpu.vramUsageFormatted} / {gpu.vramTotalFormatted}
-                        </Text>
-                    </Flex>
-                </Stack>
-            ))}
+                        <Flex align="center" gap="2">
+                            <ColorDot color={gpu.vramColor} />
+                            <Text kind="body/regular/sm" className="text-subtle-color">
+                                {memory.label}
+                            </Text>
+                            {memory.detail && <Text kind="body/semibold/sm">{memory.detail}</Text>}
+                        </Flex>
+                        {memory.sharedDetail && (
+                            <Text kind="body/regular/sm">{memory.sharedDetail}</Text>
+                        )}
+                    </Stack>
+                )
+            })}
         </Stack>
     )
 }

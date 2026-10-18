@@ -18,7 +18,8 @@ import GpuRadialChartSvg from '@/ui/components/GpuRadialChartSvg'
 import NodeActive from '@/ui/components/NodeActive/NodeActive'
 import { hasFirstMetrics } from '@/ui/utils/has-first-metrics'
 import { buildRadialChartMetrics } from '@/ui/utils/build-radial-chart-metrics'
-import { hasInferenceReadyGpu } from '@/ui/utils/gpu-inference'
+import { hasInferenceReadyGpu, isGpuInferenceReady } from '@/ui/utils/gpu-inference'
+import { getGpuMemoryPresentation } from '@/ui/utils/gpu-memory'
 
 const CHART_SIZE = 48
 
@@ -121,6 +122,30 @@ function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkload
                     <Text kind="body/regular/xs" className="text-subtle-color">
                         Jobs ({jobCount})
                     </Text>
+                    {node.topology.gpus.map((gpu, index) => {
+                        if (!isGpuInferenceReady(gpu, node.topology.inferenceHardwareIds))
+                            return null
+                        const readings = nodeMetrics?.gpuVramUsage[index]
+                        const memory = getGpuMemoryPresentation(
+                            gpu,
+                            readings?.data.at(-1)?.value ?? null,
+                            readings?.sharedUsed.at(-1)?.value ?? null
+                        )
+                        return (
+                            <Stack key={gpu.id} gap="1">
+                                <Text kind="body/regular/xs" className="text-subtle-color">
+                                    {gpu.name}
+                                </Text>
+                                <Text kind="body/regular/xs">
+                                    {memory.label}
+                                    {memory.detail ? ` ${memory.detail}` : ''}
+                                </Text>
+                                {memory.sharedDetail && (
+                                    <Text kind="body/regular/xs">{memory.sharedDetail}</Text>
+                                )}
+                            </Stack>
+                        )
+                    })}
                 </Stack>
             </div>
         </div>

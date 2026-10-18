@@ -7,6 +7,7 @@ import type { NodeMetricsHistory } from '@/ui/stores/metrics.store'
 import { CHART_COLORS } from '@/ui/constants/colors'
 import { getGpuColor, getVramColor } from '@/ui/utils/colors'
 import { hasInferenceReadyGpu, isGpuInferenceReady } from '@/ui/utils/gpu-inference'
+import { getGpuMemoryLabel } from './gpu-memory'
 
 function getLatest(data: { timestamp: number; value: number | null }[]): number | null {
     return data[data.length - 1]?.value ?? null
@@ -43,14 +44,21 @@ export function buildRadialChartMetrics(
         const gpuUtil = nodeMetrics?.gpuUtilization[gpuIdx]
         const gpuVram = nodeMetrics?.gpuVramUsage[gpuIdx]
         const utilization = gpuUtil ? getLatest(gpuUtil.data) : null
-        const memoryUsage = gpuVram ? getLatest(gpuVram.data) : null
-        const metrics: RadialMetric[] = []
-        if (utilization !== null) {
-            metrics.push({ value: utilization, color: getGpuColor(gpuIdx), shown: true })
-        }
-        if (memoryUsage !== null) {
-            metrics.push({ value: memoryUsage, color: getVramColor(gpuIdx), shown: true })
-        }
-        return metrics
+        const memoryUsage =
+            gpu.memoryKind === 'unavailable' ? null : gpuVram ? getLatest(gpuVram.data) : null
+        return [
+            {
+                value: utilization,
+                color: getGpuColor(gpuIdx),
+                shown: true,
+                label: `${gpu.name}: Usage`
+            },
+            {
+                value: memoryUsage,
+                color: getVramColor(gpuIdx),
+                shown: true,
+                label: `${gpu.name}: ${getGpuMemoryLabel(gpu.memoryKind)}`
+            }
+        ]
     })
 }
