@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -198,8 +199,17 @@ type Manager struct {
 	clusterDir       string
 	lastMembersMtime time.Time
 
+	now func() time.Time
+
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
+}
+
+func (m *Manager) clockNow() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
 }
 
 func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh, clusterDir ...string) (*Manager, error) {
@@ -217,6 +227,7 @@ func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh,
 	return &Manager{
 		codec: codec,
 		mesh:  mesh,
+		now:   time.Now,
 		client: &http.Client{
 			Timeout:   probeTimeout,
 			Transport: noKeepAliveTransport(),
@@ -462,6 +473,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 	}
 	nodeInfoUp, info := m.probeNodeInfo(probeClient, scheme, addr, nodeInfoPort)
+	nodeInfoReceived := m.clockNow()
 	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() {
 		m.mesh.Refresh()
 		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
@@ -471,6 +483,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 					nodeInfoUp = true
 					info = tlsInfo
 					nodeInfoPort = port
+					nodeInfoReceived = m.clockNow()
 					break
 				}
 			}
@@ -570,6 +583,26 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 	}
 
+	var msSince int64
+	if info.TelemetryValid {
+		age := info.MSSince
+		if age < 0 {
+			age = 0
+		}
+		elapsed := m.clockNow().Sub(nodeInfoReceived).Milliseconds()
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		if age > 0 && elapsed > math.MaxInt64-age {
+			msSince = math.MaxInt64
+		} else {
+			msSince = age + elapsed
+		}
+		if msSince < info.MSSince {
+			msSince = info.MSSince
+		}
+	}
+
 	newStatus := ManualNodeStatus{
 		ID:             id,
 		Name:           entry.Name,
@@ -591,7 +624,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		CPU:            info.CPU,
 		Memory:         info.Memory,
 		TelemetryValid: info.TelemetryValid,
-		MSSince:        info.MSSince,
+		MSSince:        msSince,
 		HostUUID:       info.HostUUID,
 		ClusterUUID:    clusterUUID,
 		Models:         finalModels,

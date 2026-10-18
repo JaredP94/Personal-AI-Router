@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -394,8 +395,8 @@ func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) 
 	if status.Memory == nil || status.Memory.UsedBytes != 32<<30 {
 		t.Fatalf("memory = %#v", status.Memory)
 	}
-	if !status.TelemetryValid || status.MSSince != 137 {
-		t.Fatalf("telemetry = valid:%v age:%d, want true/137", status.TelemetryValid, status.MSSince)
+	if !status.TelemetryValid || status.MSSince < 137 {
+		t.Fatalf("telemetry = valid:%v age:%d, want true/at least 137", status.TelemetryValid, status.MSSince)
 	}
 }
 
@@ -622,6 +623,219 @@ func TestProbeFailurePreservesHostUUID(t *testing.T) {
 		t.Fatalf("HostUUID after recovery = %q, want node-uuid", up.HostUUID)
 	}
 }
+
+func TestManualTelemetryAgeIncludesProbeDuration(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{
+		entry: entry,
+		status: ManualNodeStatus{
+			ID:           "lab",
+			Address:      "node.local",
+			OllamaPort:   11434,
+			NodeInfoPort: 14318,
+		},
+	}
+
+	simulatedTime := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	m.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return simulatedTime
+	}
+
+	info := sampleInfo()
+	info.TelemetryValid = true
+	info.MSSince = 1000
+
+	infoHost := net.JoinHostPort("node.local", "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+
+	ollamaHost := net.JoinHostPort("node.local", "11434")
+	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+		mu.Lock()
+		simulatedTime = simulatedTime.Add(2500 * time.Millisecond)
+		mu.Unlock()
+		return httpJSON(http.StatusOK, `{}`)
+	})
+	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+	})
+
+	m.probeNode(entry)
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
+	if !updated.TelemetryValid {
+		t.Fatalf("expected TelemetryValid to be true, got false")
+	}
+	if updated.MSSince < 3500 {
+		t.Fatalf("expected published MSSince >= 3500, got %d", updated.MSSince)
+	}
+}
+
+func TestManualTelemetryAgeInvalidTelemetryZero(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{
+		entry: entry,
+		status: ManualNodeStatus{
+			ID:           "lab",
+			Address:      "node.local",
+			OllamaPort:   11434,
+			NodeInfoPort: 14318,
+		},
+	}
+
+	simulatedTime := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	m.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return simulatedTime
+	}
+
+	info := sampleInfo()
+	info.TelemetryValid = false
+	info.MSSince = 1000
+
+	infoHost := net.JoinHostPort("node.local", "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+
+	ollamaHost := net.JoinHostPort("node.local", "11434")
+	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+		mu.Lock()
+		simulatedTime = simulatedTime.Add(2500 * time.Millisecond)
+		mu.Unlock()
+		return httpJSON(http.StatusOK, `{}`)
+	})
+	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+	})
+
+	m.probeNode(entry)
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
+	if updated.TelemetryValid {
+		t.Fatalf("expected TelemetryValid false, got true")
+	}
+	if updated.MSSince != 0 {
+		t.Fatalf("expected MSSince 0 for invalid telemetry, got %d", updated.MSSince)
+	}
+}
+
+func TestManualTelemetryAgeSaturatesOnOverflow(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{
+		entry: entry,
+		status: ManualNodeStatus{
+			ID:           "lab",
+			Address:      "node.local",
+			OllamaPort:   11434,
+			NodeInfoPort: 14318,
+		},
+	}
+
+	simulatedTime := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	m.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return simulatedTime
+	}
+
+	info := sampleInfo()
+	info.TelemetryValid = true
+	info.MSSince = math.MaxInt64 - 500
+
+	infoHost := net.JoinHostPort("node.local", "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+
+	ollamaHost := net.JoinHostPort("node.local", "11434")
+	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+		mu.Lock()
+		simulatedTime = simulatedTime.Add(2500 * time.Millisecond)
+		mu.Unlock()
+		return httpJSON(http.StatusOK, `{}`)
+	})
+	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+	})
+
+	m.probeNode(entry)
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
+	if !updated.TelemetryValid {
+		t.Fatalf("expected TelemetryValid true, got false")
+	}
+	if updated.MSSince != math.MaxInt64 {
+		t.Fatalf("expected MSSince saturated to %d, got %d", int64(math.MaxInt64), updated.MSSince)
+	}
+}
+
+func TestManualTelemetryAgeNeverDecreases(t *testing.T) {
+	m, rw, rt := newTestManager()
+	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m.nodes["lab"] = &trackedNode{
+		entry: entry,
+		status: ManualNodeStatus{
+			ID:           "lab",
+			Address:      "node.local",
+			OllamaPort:   11434,
+			NodeInfoPort: 14318,
+		},
+	}
+
+	simulatedTime := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	m.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return simulatedTime
+	}
+
+	info := sampleInfo()
+	info.TelemetryValid = true
+	info.MSSince = 1000
+
+	infoHost := net.JoinHostPort("node.local", "14318")
+	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(info)
+		return httpJSON(http.StatusOK, string(data))
+	})
+
+	ollamaHost := net.JoinHostPort("node.local", "11434")
+	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+		mu.Lock()
+		simulatedTime = simulatedTime.Add(-500 * time.Millisecond)
+		mu.Unlock()
+		return httpJSON(http.StatusOK, `{}`)
+	})
+	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
+		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+	})
+
+	m.probeNode(entry)
+
+	updated := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
+	if !updated.TelemetryValid {
+		t.Fatalf("expected TelemetryValid true, got false")
+	}
+	if updated.MSSince < 1000 {
+		t.Fatalf("expected MSSince >= 1000, got %d", updated.MSSince)
+	}
+}
+
 
 func TestCPUAndMemoryNilAwareEquality(t *testing.T) {
 	if !cpuEqual(nil, nil) || !memoryEqual(nil, nil) {
