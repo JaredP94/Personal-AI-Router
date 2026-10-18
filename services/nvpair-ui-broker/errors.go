@@ -67,6 +67,10 @@ func (e *errorsProcess) SetLogLevel(level string) error {
 // nvpair-errors process has exited (cmd.Wait returned).
 func (e *errorsProcess) Done() <-chan struct{} { return e.done }
 
+func (e *errorsProcess) PID() int { return e.cmd.Process.Pid }
+
+func (e *errorsProcess) Health(ctx context.Context) error { return healthCall(ctx, e.peer) }
+
 // Notify forwards a fire-and-forget notification (producers' errors:report /
 // errors:clear) into nvpair-errors.
 func (e *errorsProcess) Notify(method string, params any) error {

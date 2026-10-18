@@ -90,6 +90,10 @@ func (p *proxyProcess) SetLogLevel(level string) error {
 // process has exited (cmd.Wait returned).
 func (p *proxyProcess) Done() <-chan struct{} { return p.done }
 
+func (p *proxyProcess) PID() int { return p.cmd.Process.Pid }
+
+func (p *proxyProcess) Health(ctx context.Context) error { return healthCall(ctx, p.peer) }
+
 // Status reports whether the proxy has announced itself ready and, if so, the
 // HTTP port it bound (0 until "ready" arrives).
 func (p *proxyProcess) Status() (bool, int) {

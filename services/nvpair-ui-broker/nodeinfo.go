@@ -5,12 +5,12 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"sync"
 
@@ -42,11 +42,9 @@ type nodeInfoProcess struct {
 	// node-info sees a protocol v2 envelope on the notification it receives.
 	// One Codec per child, so its seq is this connection's run.
 	codec *Codec
-	// stdinMu serializes log-level forwarding writes against the Close()
-	// in Stop() (this handle stays notify-only, not on jsonrpc.Peer). It sits
-	// outside codec's own write lock, which keeps the stamp and the write
-	// together; the outer lock is what keeps a write from racing Stop()'s
-	// close of the same pipe.
+	peer  *Peer
+	// stdinMu serializes the notification senders. Health calls share the
+	// same codec through peer, so notification and request writes cannot mix.
 	stdinMu sync.Mutex
 	done    chan struct{}
 }
@@ -85,6 +83,10 @@ func (n *nodeInfoProcess) SetDemand(localExecution bool) error {
 // node-info process has exited (cmd.Wait returned).
 func (n *nodeInfoProcess) Done() <-chan struct{} { return n.done }
 
+func (n *nodeInfoProcess) PID() int { return n.cmd.Process.Pid }
+
+func (n *nodeInfoProcess) Health(ctx context.Context) error { return healthCall(ctx, n.peer) }
+
 // startNodeInfo spawns nvpair-node-info with the given binary path, forwards
 // the broker's current log level via --log-level, hides the console
 // window on Windows, and reads its stdout for the notifications it emits.
@@ -113,10 +115,12 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 		return nil, fmt.Errorf("start %s: %w", binaryPath, err)
 	}
 
+	peer := nodeInfoPeer(stdout, stdin)
 	np := &nodeInfoProcess{
 		cmd:   cmd,
 		stdin: stdin,
-		codec: NewCodec(writeOnlyReadWriter{stdin}),
+		codec: peer.Codec(),
+		peer:  peer,
 		done:  make(chan struct{}),
 	}
 
@@ -125,10 +129,11 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 	// risk wedging the child on a full pipe buffer.
 	go func() {
 		defer stdin.Close()
-		drainNodeInfoStdout(stdout, onNotify)
+		np.peer.Serve(nil, onNotify)
 	}()
 	go func() {
 		_ = cmd.Wait()
+		np.peer.Close()
 		close(np.done)
 	}()
 
@@ -136,9 +141,9 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 }
 
 // drainNodeInfoStdout consumes node-info's newline-delimited stdout until the
-// pipe goes away, handing every notification frame to onNotify. Frames that are
-// not notifications (a control-request response) are skipped, as is anything
-// that isn't JSON; a protocol mismatch is terminal.
+// pipe goes away, handing every notification frame to onNotify. Production
+// uses the same nodeInfoPeer factory to correlate health responses as well.
+// Malformed JSON is skipped; a protocol mismatch is terminal.
 //
 // This must never stop reading while the child lives: node-info writes its
 // observed-address reports here, and an unread stdout pipe fills up and blocks
@@ -147,28 +152,12 @@ func startNodeInfo(binaryPath, logLevel string, onNotify func(method string, par
 // so nodeInfoFrames drops an oversized frame on its own before the codec sees
 // it, and the one codec for this connection reads the next frame normally.
 func drainNodeInfoStdout(stdout io.Reader, onNotify func(method string, params json.RawMessage)) {
+	nodeInfoPeer(stdout, io.Discard).Serve(nil, onNotify)
+}
+
+func nodeInfoPeer(stdout io.Reader, stdin io.Writer) *Peer {
 	frames := &nodeInfoFrames{reader: bufio.NewReaderSize(stdout, maxNodeInfoLine)}
-	codec := jsonrpc.NewCodecMaxFrame(readWriter{frames, io.Discard}, maxNodeInfoLine)
-	for {
-		msg, err := codec.Read()
-		if err != nil {
-			var de *jsonrpc.DecodeError
-			if errors.As(err, &de) {
-				continue
-			}
-			var mismatch *jsonrpc.ProtocolMismatchError
-			if errors.As(err, &mismatch) {
-				slog.Warn("node-info JSON-RPC read error (terminal)", "err", err)
-				return
-			}
-			logNodeInfoDrainEnd(err)
-			return
-		}
-		// json.Unmarshal copied Params out of the scanner's buffer.
-		if msg.IsNotification() && onNotify != nil {
-			onNotify(msg.Method, msg.Params)
-		}
-	}
+	return NewPeer(jsonrpc.NewCodecMaxFrame(readWriter{frames, stdin}, maxNodeInfoLine))
 }
 
 // nodeInfoFrames yields node-info's stdout to the codec one complete frame at a
@@ -208,17 +197,6 @@ func discardToFrameEnd(reader *bufio.Reader) error {
 			return err
 		}
 	}
-}
-
-// logNodeInfoDrainEnd separates the expected end of the stream — the child
-// exited or Stop closed the pipe — from a read failure, which ends
-// observed-address delivery and is worth a warning.
-func logNodeInfoDrainEnd(err error) {
-	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
-		slog.Debug("node-info stdout closed", "err", err)
-		return
-	}
-	slog.Warn("node-info stdout read failed; stopped draining", "err", err)
 }
 
 // Stop signals node-info to exit by closing its stdin, which node-info observes

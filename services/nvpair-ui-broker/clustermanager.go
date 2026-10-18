@@ -58,6 +58,10 @@ func (c *clusterManagerProcess) SetLogLevel(level string) error {
 // cluster-manager process has exited (cmd.Wait returned).
 func (c *clusterManagerProcess) Done() <-chan struct{} { return c.done }
 
+func (c *clusterManagerProcess) PID() int { return c.cmd.Process.Pid }
+
+func (c *clusterManagerProcess) Health(ctx context.Context) error { return healthCall(ctx, c.peer) }
+
 // startClusterManager spawns nvpair-cluster-manager with the broker's current log
 // level, hides the console window on Windows, and runs the peer read pump.
 // onNotify (may be nil) is invoked for every notification it emits so the

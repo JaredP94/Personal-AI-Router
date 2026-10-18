@@ -38,6 +38,10 @@ type rpcWorker struct {
 // process has exited (cmd.Wait returned).
 func (w *rpcWorker) Done() <-chan struct{} { return w.done }
 
+func (w *rpcWorker) PID() int { return w.cmd.Process.Pid }
+
+func (w *rpcWorker) Health(ctx context.Context) error { return healthCall(ctx, w.peer) }
+
 // SetLogLevel forwards an already-validated log level as a log/set-level
 // notification (through the peer's codec).
 func (w *rpcWorker) SetLogLevel(level string) error {

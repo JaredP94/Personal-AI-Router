@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -68,8 +69,14 @@ func startBrokerWithConfigDirAndEnv(t *testing.T, configDir string, extraEnv []s
 
 func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extraEnv []string, extraArgs ...string) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, stderrLines <-chan string, cleanup func()) {
 	t.Helper()
+	return startSupervisedBrokerInDir(t, "", configDir, clusterDir, extraEnv, extraArgs...)
+}
+
+func startSupervisedBrokerInDir(t *testing.T, workDir, configDir, clusterDir string, extraEnv []string, extraArgs ...string) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, stderrLines <-chan string, cleanup func()) {
+	t.Helper()
 	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", clusterDir}, extraArgs...)
 	cmd := exec.Command(brokerBin, args...)
+	cmd.Dir = workDir
 	// Every supervised worker must use disposable per-test config. In
 	// particular, managed-port startup can persist an Ollama backend port; a
 	// cross-process test must never read or rewrite the developer's real file.
@@ -504,6 +511,195 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 			t.Fatalf("proxy:get-status never reported the rebound port %d", target)
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// workerHealthStatus is the public broker lifecycle contract, independent of
+// worker domain status and the errors datastore.
+type workerHealthStatus struct {
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	PID       int    `json:"pid"`
+	LastError string `json:"lastError"`
+}
+
+func waitWorkerState(t *testing.T, msgs <-chan jsonrpc.Message, name, state string, timeout time.Duration) workerHealthStatus {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case msg, ok := <-msgs:
+			if !ok {
+				t.Fatal("broker stream closed")
+			}
+			if msg.Method != "workers:update" {
+				continue
+			}
+			var snapshot struct {
+				Workers []workerHealthStatus `json:"workers"`
+			}
+			if err := json.Unmarshal(msg.Params, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range snapshot.Workers {
+				if status.Name == name && status.State == state {
+					return status
+				}
+			}
+		case <-timer.C:
+			t.Fatalf("worker %s never reached %s", name, state)
+		}
+	}
+}
+
+func waitWorkerRunning(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, name string) workerHealthStatus {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for id := 10000; ; id++ {
+		sendReq(t, stdin, id, "workers:get-status")
+		response := waitForResponseID(t, msgs, id, time.Second)
+		var snapshot struct {
+			Workers []workerHealthStatus `json:"workers"`
+		}
+		if err := json.Unmarshal(response.Result, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range snapshot.Workers {
+			if s.Name == name && s.State == "running" && s.PID != 0 {
+				return s
+			}
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("worker %s never published a running PID", name)
+		case <-tick.C:
+		}
+	}
+}
+
+func signalWorker(t *testing.T, pid int, signal string) {
+	t.Helper()
+	if output, err := exec.Command("kill", "-"+signal, strconv.Itoa(pid)).CombinedOutput(); err != nil {
+		t.Fatalf("kill -%s %d: %v %s", signal, pid, err, output)
+	}
+}
+
+func TestHungSchedulerRestarts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only SIGSTOP/SIGCONT worker supervision proof")
+	}
+	stdin, msgs, _, cleanup := startBrokerWith(t, "--worker-health-interval", "1s", "--scheduler-path", schedulerBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	old := waitWorkerRunning(t, stdin, msgs, "scheduler").PID
+	signalWorker(t, old, "STOP")
+	t.Cleanup(func() { _ = exec.Command("kill", "-CONT", strconv.Itoa(old)).Run() })
+	waitWorkerState(t, msgs, "scheduler", "degraded", 8*time.Second)
+	waitWorkerState(t, msgs, "scheduler", "restarting", 10*time.Second)
+	status := waitWorkerState(t, msgs, "scheduler", "running", 5*time.Second)
+	if status.PID == 0 || status.PID == old {
+		t.Fatalf("replacement PID = %d, old = %d", status.PID, old)
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if exec.Command("kill", "-0", strconv.Itoa(old)).Run() != nil {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("old PID %d not reaped", old)
+		case <-tick.C:
+		}
+	}
+}
+
+func TestHungEngineManagerOnlyDegrades(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only SIGSTOP/SIGCONT worker supervision proof")
+	}
+	stdin, msgs, _, cleanup := startBrokerWith(t, "--worker-health-interval", "1s", "--engine-manager-path", engineMgrBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	pid := waitWorkerRunning(t, stdin, msgs, "engine-manager").PID
+	var snapshot struct {
+		Workers []workerHealthStatus `json:"workers"`
+	}
+	signalWorker(t, pid, "STOP")
+	t.Cleanup(func() { _ = exec.Command("kill", "-CONT", strconv.Itoa(pid)).Run() })
+	waitWorkerState(t, msgs, "engine-manager", "degraded", 8*time.Second)
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	id := 910
+	for monitoring := true; monitoring; {
+		select {
+		case <-timer.C:
+			monitoring = false
+		case <-tick.C:
+			sendReq(t, stdin, id, "workers:get-status")
+			response := waitForResponseID(t, msgs, id, 2*time.Second)
+			id++
+			if err := json.Unmarshal(response.Result, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range snapshot.Workers {
+				if s.Name == "engine-manager" && (s.State != "degraded" || s.PID != pid) {
+					t.Fatalf("hung engine-manager restarted: %+v", s)
+				}
+			}
+		}
+	}
+	signalWorker(t, pid, "CONT")
+	waitWorkerState(t, msgs, "engine-manager", "running", 5*time.Second)
+}
+
+func TestMissingWorkerThenRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only executable-copy worker supervision proof")
+	}
+	workDir := t.TempDir()
+	stdin, msgs, _, cleanup := startSupervisedBrokerInDir(t, workDir, t.TempDir(), t.TempDir(), nil, "--worker-health-interval", "1s")
+	t.Cleanup(cleanup)
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	sendReq(t, stdin, 903, "workers:get-status")
+	response := waitForResponseID(t, msgs, 903, 5*time.Second)
+	var snapshot struct {
+		Workers []workerHealthStatus `json:"workers"`
+	}
+	if err := json.Unmarshal(response.Result, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range snapshot.Workers {
+		if s.Name == "manual-nodes" {
+			found = true
+			if s.State != "missing" || s.PID != 0 || s.LastError == "" {
+				t.Fatalf("missing status = %+v", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("manual-nodes missing from inventory")
+	}
+	data, err := os.ReadFile(manualNodesBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "nvpair-manual-nodes"), data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sendLine(t, stdin, map[string]any{"jsonrpc": "2.0", "id": 904, "method": "workers:restart", "params": map[string]string{"name": "manual-nodes"}})
+	status := waitWorkerState(t, msgs, "manual-nodes", "running", 5*time.Second)
+	if status.PID == 0 {
+		t.Fatal("restarted worker PID missing")
 	}
 }
 

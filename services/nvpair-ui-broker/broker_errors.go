@@ -44,9 +44,15 @@ func subprocessCrashedID(name string) string {
 func (b *Broker) crashReporter(name string) (onCrash func(attempt int), onRecovered func()) {
 	id := subprocessCrashedID(name)
 	onCrash = func(attempt int) {
+		message := fmt.Sprintf("subprocess %s exited unexpectedly", name)
+		for _, status := range b.workerSnapshot().Workers {
+			if status.Name == name && status.LastError == "unresponsive" {
+				message = fmt.Sprintf("subprocess %s stopped responding", name)
+			}
+		}
 		b.forwardErrorsReport(errors.ServiceError{
 			ID:        id,
-			Message:   fmt.Sprintf("subprocess %s exited unexpectedly", name),
+			Message:   message,
 			Timestamp: nowMillis(),
 			NodeID:    b.nodeID,
 			Severity:  "error",

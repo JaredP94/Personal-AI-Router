@@ -4,8 +4,8 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,12 +19,11 @@ import (
 )
 
 // workloadManagerProcess is the broker's handle on its child
-// nvpair-workload-manager. Unlike node-info (fire-and-forget) it
-// is bidirectional, but notification-only: the broker writes local-origin
+// nvpair-workload-manager. Its domain traffic uses notifications: the broker writes local-origin
 // workload:* / workloads:remove frames to its stdin (for cluster
 // broadcast) and reads workloads:upsert / workloads:remove frames back off
-// its stdout (peer-origin events to relay to clients). There is no
-// id-bearing request/response layer on this interface (spec 7.1).
+// its stdout (peer-origin events to relay to clients). The shared Peer also
+// correlates broker-origin worker/health requests.
 //
 // The handle owns the OS process, the stdin pipe used to signal clean
 // shutdown (via EOF) and to forward frames (workload events, log/set-level),
@@ -36,8 +35,9 @@ type workloadManagerProcess struct {
 	// the manager's shared jsonrpc reader sees a protocol v2 envelope on each
 	// notification. One Codec per child, so its seq is this connection's run.
 	codec *Codec
-	// stdinMu serializes Forward / log-level writes against the Close() in
-	// Stop(); see nodeInfoProcess.stdinMu.
+	peer  *Peer
+	// stdinMu serializes notification senders; peer shares this codec for
+	// health requests, preserving one writer and notification sequence.
 	stdinMu sync.Mutex
 	done    chan struct{}
 
@@ -70,13 +70,16 @@ func (m *workloadManagerProcess) SetLogLevel(level string) error {
 // workload-manager process has exited (cmd.Wait returned).
 func (m *workloadManagerProcess) Done() <-chan struct{} { return m.done }
 
+func (m *workloadManagerProcess) PID() int { return m.cmd.Process.Pid }
+
+func (m *workloadManagerProcess) Health(ctx context.Context) error { return healthCall(ctx, m.peer) }
+
 // Forward writes a JSON-RPC notification to the manager's stdin. The broker
 // uses it to hand local-origin workload lifecycle / removal frames to the
 // manager for cluster broadcast. The canonical codec stamps the frame with this
 // connection's epoch and next seq as it writes it, so the manager's reader sees
 // a v2 envelope and concurrent senders cannot put the frames on the wire out of
-// seq order. Writes are serialized against Stop()'s stdin close by stdinMu,
-// which wraps — rather than races — the codec's own write lock.
+// seq order. The same codec serializes health requests with these writes.
 func (m *workloadManagerProcess) Forward(method string, params json.RawMessage) error {
 	m.stdinMu.Lock()
 	defer m.stdinMu.Unlock()
@@ -110,18 +113,21 @@ func startWorkloadManager(binaryPath, logLevel string, relayDir *relay.Directory
 		return nil, fmt.Errorf("start %s: %w", binaryPath, err)
 	}
 
+	peer := NewPeer(jsonrpc.NewCodecMaxFrame(readWriter{stdout, stdin}, 256*1024))
 	wm := &workloadManagerProcess{
 		cmd:      cmd,
 		stdin:    stdin,
-		codec:    NewCodec(writeOnlyReadWriter{stdin}),
+		codec:    peer.Codec(),
+		peer:     peer,
 		done:     make(chan struct{}),
 		onNotify: onNotify,
 		relayDir: relayDir,
 	}
 
-	go wm.readMessages(stdout)
+	go wm.readMessages()
 	go func() {
 		_ = cmd.Wait()
+		wm.peer.Close()
 		wm.subMu.Lock()
 		if wm.subID != 0 && wm.relayDir != nil {
 			wm.relayDir.Unsubscribe(wm.subID)
@@ -135,38 +141,20 @@ func startWorkloadManager(binaryPath, logLevel string, relayDir *relay.Directory
 }
 
 // readMessages consumes newline-delimited JSON-RPC frames from the
-// manager's stdout and forwards every notification to onNotify. The
-// manager's local interface is notification-only, so any id-bearing frame
-// is unexpected and dropped. It runs until stdout closes (manager exit).
-func (m *workloadManagerProcess) readMessages(stdout io.Reader) {
+// manager\'s stdout, correlates responses, and forwards domain notifications
+// to onNotify. Discovery subscriptions stay broker-local. It runs until the
+// transport closes or a terminal protocol error occurs.
+func (m *workloadManagerProcess) readMessages() {
 	defer m.stdin.Close()
-	codec := jsonrpc.NewCodecMaxFrame(readWriter{stdout, io.Discard}, 256*1024)
-	for {
-		msg, err := codec.Read()
-		if err != nil {
-			var de *jsonrpc.DecodeError
-			if errors.As(err, &de) {
-				continue
-			}
-			if !errors.Is(err, io.EOF) {
-				slog.Warn("workload-manager JSON-RPC read error (terminal)", "err", err)
-			}
+	m.peer.Serve(nil, func(method string, params json.RawMessage) {
+		if method == noderec.MethodSubscribe {
+			m.handleSubscribe(params)
 			return
 		}
-		if !msg.IsNotification() {
-			continue
-		}
-		// The manager subscribes upward for its peer set: wire it to
-		// the relay directory and push events down its stdin, rather than
-		// relaying this as a client-facing event.
-		if msg.Method == noderec.MethodSubscribe {
-			m.handleSubscribe(msg.Params)
-			continue
-		}
 		if m.onNotify != nil {
-			m.onNotify(msg.Method, msg.Params)
+			m.onNotify(method, params)
 		}
-	}
+	})
 }
 
 // handleSubscribe wires the manager's discovery:subscribe into the relay

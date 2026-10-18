@@ -452,6 +452,10 @@ func (s *scannerProcess) SetLogLevel(level string) error {
 // scanner process has exited (cmd.Wait returned).
 func (s *scannerProcess) Done() <-chan struct{} { return s.done }
 
+func (s *scannerProcess) PID() int { return s.cmd.Process.Pid }
+
+func (s *scannerProcess) Health(ctx context.Context) error { return healthCall(ctx, s.peer) }
+
 // startScanner spawns nvpair-node-scanner with the given binary path, forwards
 // the broker's current log level via --log-level, hides the console
 // window on Windows, and launches a goroutine to consume the scanner's
