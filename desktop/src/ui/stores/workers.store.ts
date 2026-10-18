@@ -14,13 +14,15 @@ interface WorkersStore {
 }
 
 let unsubs: Array<() => void> = []
+let generation = 0
+let revision = 0
 
 /**
  * The broker-reported lifecycle of every supervised worker, in startup order.
  * This store holds no health or retry logic: a `workers:update` push replaces
  * the list wholesale, and `workers:get-status` re-reads it after a reconnect.
  */
-export const useWorkersStore = create<WorkersStore>(set => ({
+export const useWorkersStore = create<WorkersStore>((set, get) => ({
     workers: [],
 
     restartWorker: name => {
@@ -29,8 +31,12 @@ export const useWorkersStore = create<WorkersStore>(set => ({
     },
 
     refresh: async () => {
+        const lifetime = generation
+        const baseline = revision
         try {
             const workers = await window.pairApi.workers.getStatus()
+            if (lifetime !== generation || baseline !== revision) return
+            revision++
             set({ workers })
         } catch (error) {
             console.error('Failed to refresh workers store:', error)
@@ -38,23 +44,24 @@ export const useWorkersStore = create<WorkersStore>(set => ({
     },
 
     initialize: async () => {
-        try {
-            const workers = await window.pairApi.workers.getStatus()
-            set({ workers })
-        } catch (error) {
-            console.error('Failed to initialize workers store:', error)
-        }
-
+        get().cleanup()
+        const lifetime = generation
+        // Subscribe before fetching: a push received during the baseline read
+        // must win, including on the first initialization of a window.
         if (window.pairApi) {
             unsubs.push(
                 window.pairApi.workers.onUpdate((workers: WorkerStatus[]) => {
+                    if (lifetime !== generation) return
+                    revision++
                     set({ workers })
                 })
             )
         }
+        await get().refresh()
     },
 
     cleanup: () => {
+        generation++
         unsubs.forEach(u => u())
         unsubs = []
         // A resubscribe must not keep the previous connection's rows on screen.

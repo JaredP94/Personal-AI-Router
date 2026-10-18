@@ -83,6 +83,46 @@ it('re-reads the whole snapshot on refresh', async () => {
     expect(useWorkersStore.getState().workers).toEqual([missing])
 })
 
+it.each(['initialize', 'refresh'])(
+    '%s preserves a degraded push received during a held fetch',
+    async action => {
+        if (action === 'refresh') await useWorkersStore.getState().initialize()
+        let resolve = (_workers: WorkerStatus[]): void => {}
+        api.getStatus.mockImplementationOnce(
+            () =>
+                new Promise<WorkerStatus[]>(done => {
+                    resolve = done
+                })
+        )
+        const read = useWorkersStore.getState()[action]()
+        const degraded: WorkerStatus = { ...worker, state: 'degraded' }
+        api.push([degraded])
+        resolve([worker])
+        await read
+        expect(useWorkersStore.getState().workers).toEqual([degraded])
+    }
+)
+
+it.each(['initialize', 'refresh'])(
+    '%s cannot repopulate a cleaned-up store with a late response',
+    async action => {
+        if (action === 'refresh') await useWorkersStore.getState().initialize()
+        let resolve = (_workers: WorkerStatus[]): void => {}
+        api.getStatus.mockImplementationOnce(
+            () =>
+                new Promise<WorkerStatus[]>(done => {
+                    resolve = done
+                })
+        )
+        const read = useWorkersStore.getState()[action]()
+        useWorkersStore.getState().cleanup()
+        resolve([worker])
+        await read
+        expect(useWorkersStore.getState().workers).toEqual([])
+        expect(api.subscribed()).toBe(false)
+    }
+)
+
 it('relays one restart by name and leaves the broker rejection to the caller', async () => {
     await expect(useWorkersStore.getState().restartWorker('scanner')).resolves.toEqual(worker)
     expect(api.restart).toHaveBeenCalledExactlyOnceWith('scanner')

@@ -25,7 +25,6 @@ import {
     getModularBridgeState,
     isProxyEngine,
     isUpstreamUnreachableError,
-    parseBrokerWorkers,
     parseServiceErrors,
     parseWorkerStatus,
     parseWorkloadsInitial
@@ -815,12 +814,7 @@ async function handleWorkersGetStatus(): Promise<WorkerStatus[]> {
     const supervisor = getModularSupervisor()
     if (supervisor.hasProcess('broker')) {
         try {
-            const result = await supervisor.callProcess('broker', 'workers:get-status')
-            const workers = parseBrokerWorkers(result ?? null)
-            // Keep the cache authoritative so the fallback below answers with
-            // what the broker just reported, not an older relayed snapshot.
-            getModularBridgeState().replaceWorkers(workers)
-            return workers
+            return await supervisor.readWorkersSnapshot()
         } catch {
             return getModularBridgeState().getWorkers()
         }

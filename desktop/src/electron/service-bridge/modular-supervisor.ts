@@ -439,6 +439,7 @@ class ModularSupervisor {
     private epochObservation = 0
     private hydratedObservation = -1
     private resyncLifecycle = 0
+    private workersRevision = 0
     private activeResync: EpochResyncPass | null = null
 
     get ready(): boolean {
@@ -1373,6 +1374,32 @@ class ModularSupervisor {
         }
     }
 
+    /**
+     * Full snapshots race full pushes. A read may seed the cache only while it
+     * still owns the connection/epoch and no newer worker facts have landed.
+     * Both epoch hydration and renderer reads use this same fence.
+     */
+    async readWorkersSnapshot() {
+        const lifecycle = this.resyncLifecycle
+        const observation = this.epochObservation
+        const revision = this.workersRevision
+        const result = await this.callProcess('broker', 'workers:get-status')
+        if (
+            !this.shuttingDown &&
+            lifecycle === this.resyncLifecycle &&
+            observation === this.epochObservation &&
+            revision === this.workersRevision
+        ) {
+            this.replaceWorkersSnapshot(result)
+        }
+        return getModularBridgeState().getWorkers()
+    }
+
+    private replaceWorkersSnapshot(result: JsonValue | undefined): void {
+        this.workersRevision++
+        getModularBridgeState().replaceWorkers(parseBrokerWorkers(result))
+    }
+
     /** A guarded recovery fetch: startup's best-effort helpers must not hide failures. */
     private async readRecoverySnapshot(
         pass: EpochResyncPass,
@@ -1479,14 +1506,10 @@ class ModularSupervisor {
             )
                 return
 
-            if (
-                !(await this.readRecoverySnapshot(pass, 'workers:get-status', result => {
-                    getModularBridgeState().replaceWorkers(parseBrokerWorkers(result))
-                }))
-            )
-                return
-
             if (!this.ownsEpochRecovery(pass)) return
+            await this.readWorkersSnapshot()
+            if (!this.ownsEpochRecovery(pass)) return
+
             const snapshot = state.beginWorkloadRecovery()
             pass.workloadSnapshot = snapshot
             if (
@@ -1615,7 +1638,7 @@ class ModularSupervisor {
         // lifecycle snapshot on every change (state, attempt, restart, recovery).
         // Desktop only relays it; all retry policy lives in the broker.
         if (notification.method === 'workers:update') {
-            getModularBridgeState().replaceWorkers(parseBrokerWorkers(notification.params))
+            this.replaceWorkersSnapshot(notification.params)
             return
         }
 

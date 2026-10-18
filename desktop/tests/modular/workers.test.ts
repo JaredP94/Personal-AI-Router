@@ -7,6 +7,7 @@ import { getModularSupervisor, noteEpoch } from '@/electron/service-bridge/modul
 import { getModularBridgeState } from '@/electron/service-bridge/modular-state'
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 import type { JsonValue } from '@/shared/types/json'
+import { emitBridgePush } from '@/electron/service-bridge/broadcaster'
 
 type JsonRow = { [key: string]: JsonValue }
 
@@ -76,6 +77,7 @@ describe('workers broker integration', () => {
     let snapshot: JsonValue = { workers: [worker] }
 
     beforeEach(async () => {
+        vi.restoreAllMocks()
         const supervisor = getModularSupervisor()
         await supervisor.stop()
         supervisor['shuttingDown'] = false
@@ -122,6 +124,88 @@ describe('workers broker integration', () => {
         })
         expect(getModularBridgeState().getWorkers()).toEqual([])
     })
+
+    it.each(['recovery', 'renderer'])(
+        '%s read cannot overwrite a push received during its fetch',
+        async path => {
+            const supervisor = getModularSupervisor()
+            vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
+            let resolve = (_value: JsonValue | undefined): void => {}
+            const held = new Promise<JsonValue | undefined>(done => {
+                resolve = done
+            })
+            const callProcess = supervisor.callProcess
+            supervisor.callProcess = (name, method, params) => {
+                if (method === 'workers:get-status') {
+                    calls.push({ method, params })
+                    return held
+                }
+                return callProcess(name, method, params)
+            }
+            const read =
+                path === 'renderer'
+                    ? handleServiceBridgeInvoke('workers:get-status', undefined)
+                    : Promise.resolve(noteEpoch('held-recovery'))
+            await flush()
+            expect(calls.some(call => call.method === 'workers:get-status')).toBe(true)
+            const degraded = { ...worker, state: 'degraded' }
+            supervisor['handleNotification']({
+                source: 'broker',
+                method: 'workers:update',
+                params: { workers: [degraded] }
+            })
+            vi.mocked(emitBridgePush).mockClear()
+            resolve({ workers: [worker] })
+            const result = await read
+            await flush()
+            expect(getModularBridgeState().getWorkers()).toEqual([degraded])
+            if (path === 'renderer') expect(result).toEqual([degraded])
+            expect(
+                vi
+                    .mocked(emitBridgePush)
+                    .mock.calls.filter(([channel]) => channel === 'workers:update')
+            ).toEqual([])
+        }
+    )
+
+    it.each(['epoch', 'connection'])(
+        'renderer read is fenced across a new %s generation',
+        async generation => {
+            const supervisor = getModularSupervisor()
+            vi.spyOn(supervisor, 'hasProcess').mockReturnValue(true)
+            let resolve = (_value: JsonValue | undefined): void => {}
+            const held = new Promise<JsonValue | undefined>(done => {
+                resolve = done
+            })
+            const callProcess = supervisor.callProcess
+            let first = true
+            supervisor.callProcess = (name, method, params) => {
+                if (method === 'workers:get-status' && first) {
+                    first = false
+                    return held
+                }
+                return callProcess(name, method, params)
+            }
+            const read = handleServiceBridgeInvoke('workers:get-status', undefined)
+            if (generation === 'connection') {
+                await supervisor.stop()
+                supervisor['shuttingDown'] = false
+            }
+            snapshot = { workers: [{ ...worker, state: 'exhausted' }] }
+            noteEpoch('replacement-epoch')
+            await flush()
+            expect(getModularBridgeState().getWorkers()[0]?.state).toBe('exhausted')
+            vi.mocked(emitBridgePush).mockClear()
+            resolve({ workers: [worker] })
+            await read
+            expect(getModularBridgeState().getWorkers()[0]?.state).toBe('exhausted')
+            expect(
+                vi
+                    .mocked(emitBridgePush)
+                    .mock.calls.filter(([channel]) => channel === 'workers:update')
+            ).toEqual([])
+        }
+    )
 
     it('relays exactly one restart with the requested name', async () => {
         await expect(
