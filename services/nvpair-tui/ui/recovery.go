@@ -104,6 +104,11 @@ func (m *Model) beginRecovery() tea.Cmd {
 			raw, _ := json.Marshal(v)
 			return NotificationMsg{&rpc.Message{Method: "errors:update", Params: raw}}
 		}, func(err error) tea.Msg { return errorsLoadedMsg{err: err} }),
+		snapshotQuery(client, "workers:get-status", func(v struct {
+			Workers []workerStatus `json:"workers"`
+		}) tea.Msg {
+			return workersLoadedMsg{workers: v.Workers}
+		}, func(err error) tea.Msg { return workersLoadedMsg{err: err} }),
 	}
 	// Other actual cached getters consumed by tabs, once each. These commands
 	// only decode; results are retained here, never applied off the update loop.
@@ -177,7 +182,7 @@ func (m Model) recoveryResultSuperseded(result tea.Msg) bool {
 func recoveryPushKey(msg NotificationMsg) string {
 	method := msg.Msg.Method
 	// This classifies cached snapshots for replay, not inbound RPC methods.
-	if method == "discovery:nodes-changed" || method == "nodes:changed" || method == "errors:update" || method == "cluster:identity-changed" {
+	if method == "discovery:nodes-changed" || method == "nodes:changed" || method == "errors:update" || method == "cluster:identity-changed" || method == "workers:update" {
 		return method
 	}
 	switch method {
