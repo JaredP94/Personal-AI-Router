@@ -175,7 +175,7 @@ func directoryNodeEqual(a, b noderec.DirectoryNode) bool {
 			return false
 		}
 	}
-	if !slices.Equal(a.GPUs, b.GPUs) {
+	if !slices.EqualFunc(a.GPUs, b.GPUs, noderec.GPUInfo.Equal) {
 		return false
 	}
 	if (a.CPU == nil) != (b.CPU == nil) || (a.CPU != nil && *a.CPU != *b.CPU) {

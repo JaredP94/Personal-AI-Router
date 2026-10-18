@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/noderec"
 )
 
 type captureRW struct {
@@ -345,9 +346,10 @@ func sampleInfo() NodeInfoResponse {
 	return NodeInfoResponse{
 		GPUs: []GPUInfo{{
 			Name:               "RTX 6000",
-			VramBytes:          48 << 30,
-			VramUsedBytes:      12 << 30,
-			UtilizationPercent: 42,
+			MemoryKind:         noderec.MemoryDedicated,
+			VRAMBytes:          gpuReading(uint64(48 << 30)),
+			VRAMUsedBytes:      gpuReading(uint64(12 << 30)),
+			UtilizationPercent: gpuReading(uint32(42)),
 		}},
 		CPU:            &CPUInfo{Name: "Threadripper", Cores: 64, UtilizationPercent: 7},
 		Memory:         &MemoryInfo{TotalBytes: 128 << 30, UsedBytes: 32 << 30},
@@ -845,7 +847,6 @@ func TestManualTelemetryAgeNeverDecreases(t *testing.T) {
 	}
 }
 
-
 func TestCPUAndMemoryNilAwareEquality(t *testing.T) {
 	if !cpuEqual(nil, nil) || !memoryEqual(nil, nil) {
 		t.Fatal("nil values should compare equal")
@@ -1259,8 +1260,8 @@ func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T)
 	info.MSSince = 120
 	info.SampleSeq = 42
 	info.GPUs = []GPUInfo{
-		{Name: "GPU 0", UtilizationPercent: 10},
-		{Name: "GPU 1", UtilizationPercent: 77},
+		{Name: "GPU 0", UtilizationPercent: gpuReading(uint32(10))},
+		{Name: "GPU 1", UtilizationPercent: gpuReading(uint32(77))},
 	}
 
 	var pollHeader string
@@ -1498,5 +1499,3 @@ func TestTelemetryCancellationOnRemovalAbortsInFlightRequest(t *testing.T) {
 
 	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
 }
-
-

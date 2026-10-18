@@ -1638,8 +1638,8 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 	}
 	var utilization uint32
 	for i := range info.GPUs {
-		if info.GPUs[i].UtilizationPercent > utilization {
-			utilization = info.GPUs[i].UtilizationPercent
+		if reading := info.GPUs[i].UtilizationPercent; reading != nil && *reading > utilization {
+			utilization = *reading
 		}
 	}
 	d.emitTelemetry(noderec.NodeTelemetry{
