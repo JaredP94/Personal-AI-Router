@@ -19,55 +19,22 @@ import (
 	"nvpair-shared/telemetry"
 )
 
-// The broker is the only source of tracing consent. Require every policy field
-// so missing/null values cannot silently become an accepted policy revision.
 func (p *Proxy) handleTelemetryConfigure(msg *Message) {
-	var params struct {
-		Revision       *uint64 `json:"revision"`
-		Enabled        *bool   `json:"enabled"`
-		CollectorPort  *int    `json:"collectorPort"`
-		RecordPayloads *bool   `json:"recordPayloads"`
-	}
-	if err := json.Unmarshal(msg.Params, &params); err != nil || params.Revision == nil || params.Enabled == nil || params.CollectorPort == nil || params.RecordPayloads == nil {
-		p.codec.RespondError(msg.ID, -32602, "expected revision, enabled, collectorPort and recordPayloads")
-		return
-	}
-	settings := telemetry.Settings{Enabled: *params.Enabled, CollectorPort: *params.CollectorPort, RecordPayloads: *params.RecordPayloads}
-	if err := telemetry.ValidateSettings(settings); err != nil {
+	revision, settings, err := telemetry.DecodeConfigureRequest(msg.Params)
+	if err != nil {
 		p.codec.RespondError(msg.ID, -32602, err.Error())
 		return
 	}
-	revision, err := p.telemetry.Apply(context.Background(), *params.Revision, settings)
+	revision, err = p.telemetry.Apply(context.Background(), revision, settings)
 	if err != nil {
 		p.codec.RespondError(msg.ID, -32000, "failed to configure telemetry")
 		return
 	}
-	p.codec.Respond(msg.ID, struct {
-		Revision uint64 `json:"revision"`
-	}{Revision: revision})
+	p.codec.Respond(msg.ID, telemetry.ConfigureResult{Revision: revision})
 }
 
 func (p *Proxy) handleTelemetryStatus(msg *Message) {
-	status := p.telemetry.Status()
-	var lastError *string
-	if status.LastExportError != "" {
-		lastError = &status.LastExportError
-	}
-	p.codec.Respond(msg.ID, struct {
-		Revision          uint64  `json:"revision"`
-		Enabled           bool    `json:"enabled"`
-		LastExportOK      *string `json:"lastExportOk"`
-		LastExportError   *string `json:"lastExportError"`
-		LastExportErrorAt *string `json:"lastExportErrorAt"`
-	}{status.Revision, status.Enabled, telemetryTimestamp(status.LastExportOK), lastError, telemetryTimestamp(status.LastExportErrorAt)})
-}
-
-func telemetryTimestamp(t time.Time) *string {
-	if t.IsZero() {
-		return nil
-	}
-	value := t.UTC().Format(time.RFC3339)
-	return &value
+	p.codec.Respond(msg.ID, telemetry.NewStatusResult(p.telemetry.Status()))
 }
 
 func metadataAttribute(key, value string) attribute.KeyValue {

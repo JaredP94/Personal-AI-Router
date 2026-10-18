@@ -3,8 +3,8 @@
   "product": "1.1.1",
   "installer": "1.1.1",
   "components": {
-    "ollama-proxy": "1.0.2",
-    "lmstudio-proxy": "1.0.2",
+    "ollama-proxy": "1.0.3",
+    "lmstudio-proxy": "1.0.3",
     "nvpair-node-info": "1.0.2",
     "nvpair-node-scanner": "1.0.2",
     "nvpair-manual-nodes": "1.0.2",
@@ -16,6 +16,6 @@
     "nvpair-cluster-manager": "2.0.2",
     "nvpair-job-scheduler": "1.0.1",
     "nvpair-tui": "1.1.0",
-    "omlx-proxy": "1.0.2"
+    "omlx-proxy": "1.0.3"
   }
 }
