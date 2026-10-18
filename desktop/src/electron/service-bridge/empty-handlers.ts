@@ -6,7 +6,14 @@ import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
-import type { TelemetryStatus } from '@/shared/types/telemetry'
+import type {
+    TelemetryConfig,
+    TelemetryConfigRequest,
+    TelemetryPurgeRequest,
+    TelemetryPurgeResult,
+    TelemetryStatus,
+    TelemetryStorage
+} from '@/shared/types/telemetry'
 import {
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
@@ -957,48 +964,85 @@ async function handleNodeRemoveMember(
     }
 }
 
-function parseTelemetryStatus(raw: JsonValue | undefined): TelemetryStatus {
-    const obj = objectValue(raw)
+function telemetryObject(value: JsonValue | undefined): JsonObject {
+    return objectValue(value) ?? {}
+}
+
+function telemetryArray(value: JsonValue | undefined): JsonValue[] {
+    return Array.isArray(value) ? value : []
+}
+
+function nullableTelemetryNumber(value: JsonValue | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function nullableTelemetryString(value: JsonValue | undefined): string | null {
+    return typeof value === 'string' ? value : null
+}
+
+function parseTelemetryConfig(raw: JsonValue | undefined): TelemetryConfig {
+    const obj = telemetryObject(raw)
     return {
-        enabled: booleanValue(obj?.enabled),
-        endpoint: stringValue(obj?.endpoint) || 'localhost:4317',
-        uiUrl: stringValue(obj?.uiUrl) || 'http://localhost:6006',
-        recordPayloads: booleanValue(obj?.recordPayloads),
-        containerState: stringValue(obj?.containerState) || 'stopped',
-        collectorReachable: booleanValue(obj?.collectorReachable),
-        currentVersion: stringValue(obj?.currentVersion) || undefined,
-        updateAvailable: booleanValue(obj?.updateAvailable),
-        latestVersion: stringValue(obj?.latestVersion) || undefined
+        revision: numberValue(obj.revision),
+        enabled: booleanValue(obj.enabled),
+        collectorPort: numberValue(obj.collectorPort),
+        recordPayloads: booleanValue(obj.recordPayloads),
+        payloadConsentVersion: numberValue(obj.payloadConsentVersion),
+        payloadPolicyVersion: numberValue(obj.payloadPolicyVersion)
+    }
+}
+
+function parseTelemetryStorage(raw: JsonValue | undefined): TelemetryStorage {
+    const obj = telemetryObject(raw)
+    return {
+        bytes: nullableTelemetryNumber(obj.bytes),
+        volumes: telemetryArray(obj.volumes).map(rawVolume => {
+            const volume = telemetryObject(rawVolume)
+            return { name: stringValue(volume.name), bytes: nullableTelemetryNumber(volume.bytes) }
+        }),
+        measuredAt: nullableTelemetryString(obj.measuredAt),
+        error: nullableTelemetryString(obj.error)
+    }
+}
+
+function parseTelemetryStatus(raw: JsonValue | undefined): TelemetryStatus {
+    const obj = telemetryObject(raw)
+    const managedConfig = obj.managedConfig
+    if (
+        managedConfig !== 'current' &&
+        managedConfig !== 'outdated' &&
+        managedConfig !== 'missing'
+    ) {
+        throw new Error('Invalid telemetry managed configuration response')
+    }
+    return {
+        ...parseTelemetryConfig(obj),
+        workers: telemetryArray(obj.workers).map(rawWorker => {
+            const worker = telemetryObject(rawWorker)
+            return {
+                name: stringValue(worker.name),
+                appliedRevision: numberValue(worker.appliedRevision),
+                state: stringValue(worker.state),
+                error: stringValue(worker.error),
+                lastExportOk: nullableTelemetryString(worker.lastExportOk),
+                lastExportError: nullableTelemetryString(worker.lastExportError),
+                lastExportErrorAt: nullableTelemetryString(worker.lastExportErrorAt)
+            }
+        }),
+        containerState: stringValue(obj.containerState),
+        collectorReachable: booleanValue(obj.collectorReachable),
+        uiUrl: stringValue(obj.uiUrl),
+        imageVersion: stringValue(obj.imageVersion),
+        bindingsLoopbackOnly:
+            typeof obj.bindingsLoopbackOnly === 'boolean' ? obj.bindingsLoopbackOnly : null,
+        managedConfig,
+        storage: parseTelemetryStorage(obj.storage)
     }
 }
 
 export async function handleTelemetryGetStatus(): Promise<TelemetryStatus> {
-    try {
-        const raw = await getModularSupervisor().callProcess('broker', 'telemetry/get-status')
-        return parseTelemetryStatus(raw)
-    } catch {
-        // Fallback reading directly from node settings if broker call fails
-        const supervisor = getModularSupervisor()
-        const [enRes, epRes, rpRes] = await Promise.all([
-            supervisor
-                .callProcess('broker', 'settings/get-telemetry-enabled')
-                .catch(() => undefined),
-            supervisor
-                .callProcess('broker', 'settings/get-telemetry-endpoint')
-                .catch(() => undefined),
-            supervisor
-                .callProcess('broker', 'settings/get-telemetry-record-payloads')
-                .catch(() => undefined)
-        ])
-        return {
-            enabled: booleanValue(objectValue(enRes)?.value),
-            endpoint: stringValue(objectValue(epRes)?.value) || 'localhost:4317',
-            uiUrl: 'http://localhost:6006',
-            recordPayloads: booleanValue(objectValue(rpRes)?.value),
-            containerState: 'stopped',
-            collectorReachable: false
-        }
-    }
+    const raw = await getModularSupervisor().callProcess('broker', 'telemetry/get-status')
+    return parseTelemetryStatus(raw)
 }
 
 export async function handleTelemetryStart(): Promise<TelemetryStatus> {
@@ -1021,64 +1065,42 @@ export async function handleTelemetryStop(): Promise<TelemetryStatus> {
     return parseTelemetryStatus(raw)
 }
 
-export async function handleTelemetryCheckUpdate(): Promise<TelemetryStatus> {
+export async function handleTelemetrySetConfig(
+    payload?: TelemetryConfigRequest
+): Promise<TelemetryConfig> {
+    if (!payload) throw new Error('Telemetry configuration is required')
     const raw = await getModularSupervisor().callProcess(
         'broker',
-        'telemetry/check-update',
-        undefined,
-        15_000
-    )
-    return parseTelemetryStatus(raw)
-}
-
-export async function handleTelemetryUpdate(): Promise<TelemetryStatus> {
-    const raw = await getModularSupervisor().callProcess(
-        'broker',
-        'telemetry/update',
-        undefined,
-        15_000
-    )
-    return parseTelemetryStatus(raw)
-}
-
-export async function handleTelemetrySetEnabled(payload?: {
-    value: boolean
-}): Promise<{ ok: boolean }> {
-    const val = payload ? payload.value : false
-    const raw = await getModularSupervisor().callProcess(
-        'broker',
-        'settings/set-telemetry-enabled',
+        'settings/set-telemetry-config',
         {
-            value: val
+            enabled: payload.enabled,
+            collectorPort: payload.collectorPort,
+            recordPayloads: payload.recordPayloads,
+            payloadConsentVersion: payload.recordPayloads ? payload.payloadConsentVersion : 0
         }
     )
-    return { ok: booleanValue(objectValue(raw)?.ok) }
+    return parseTelemetryConfig(raw)
 }
 
-export async function handleTelemetrySetEndpoint(payload?: {
-    value: string
-}): Promise<{ ok: boolean }> {
-    const val = payload ? payload.value : 'localhost:4317'
+export async function handleTelemetryPurgeStorage(
+    payload?: TelemetryPurgeRequest
+): Promise<TelemetryPurgeResult> {
+    if (!payload) throw new Error('Trace deletion confirmation is required')
     const raw = await getModularSupervisor().callProcess(
         'broker',
-        'settings/set-telemetry-endpoint',
-        {
-            value: val
-        }
+        'telemetry/purge-storage',
+        { confirm: payload.confirm },
+        120_000
     )
-    return { ok: booleanValue(objectValue(raw)?.ok) }
-}
-
-export async function handleTelemetrySetRecordPayloads(payload?: {
-    value: boolean
-}): Promise<{ ok: boolean }> {
-    const val = payload ? payload.value : false
-    const raw = await getModularSupervisor().callProcess(
-        'broker',
-        'settings/set-telemetry-record-payloads',
-        { value: val }
-    )
-    return { ok: booleanValue(objectValue(raw)?.ok) }
+    const obj = telemetryObject(raw)
+    return {
+        removed: telemetryArray(obj.removed).map(stringValue),
+        refused: telemetryArray(obj.refused).map(rawRefusal => {
+            const refusal = telemetryObject(rawRefusal)
+            return { name: stringValue(refusal.name), reason: stringValue(refusal.reason) }
+        }),
+        storage: parseTelemetryStorage(obj.storage)
+    }
 }
 
 const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
@@ -1113,11 +1135,8 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'telemetry:get-status': () => handleTelemetryGetStatus(),
     'telemetry:start': () => handleTelemetryStart(),
     'telemetry:stop': () => handleTelemetryStop(),
-    'telemetry:check-update': () => handleTelemetryCheckUpdate(),
-    'telemetry:update': () => handleTelemetryUpdate(),
-    'telemetry:set-enabled': payload => handleTelemetrySetEnabled(payload),
-    'telemetry:set-endpoint': payload => handleTelemetrySetEndpoint(payload),
-    'telemetry:set-record-payloads': payload => handleTelemetrySetRecordPayloads(payload)
+    'telemetry:set-config': payload => handleTelemetrySetConfig(payload),
+    'telemetry:purge-storage': payload => handleTelemetryPurgeStorage(payload)
 }
 
 export function handleServiceBridgeInvoke<C extends WsInvokeChannel>(

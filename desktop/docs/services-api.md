@@ -13,7 +13,7 @@
 ## Drift summary
 
 ### Notifications emitted but NOT consumed by the bridge
-- ❌ nvpair-node-settings → settings/telemetry-changed
+- none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
 - ⚠️ lmstudio-proxy → node/selected
@@ -35,14 +35,12 @@
 - ⚠️ nvpair-node-settings → settings/get-telemetry-config
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
 - ⚠️ nvpair-node-settings → settings/set-force-ports
-- ⚠️ nvpair-node-settings → settings/set-telemetry-config
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
 - ⚠️ nvpair-ui-broker → proxy:get-status
 - ⚠️ nvpair-ui-broker → proxy:unsubscribe
-- ⚠️ nvpair-ui-broker → telemetry/purge-storage
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 - ⚠️ ollama-proxy → node/selected
 - ⚠️ ollama-proxy → node/set-local-backend
@@ -207,7 +205,7 @@
 | `connection/cluster-auto-sync` | notification (we consume) | ➖ ignored |
 | `connection/cluster-identity` | notification (we consume) | ✅ yes |
 | `ready` | notification (we consume) | ✅ yes |
-| `settings/telemetry-changed` | notification (we consume) | ❌ **MISSING** |
+| `settings/telemetry-changed` | notification (we consume) | ➖ ignored |
 | `settings/get-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/get-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/get-cluster-id` | request (we call) | ✅ yes |
@@ -217,7 +215,7 @@
 | `settings/set-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
-| `settings/set-telemetry-config` | request (we call) | ⚠️ not called |
+| `settings/set-telemetry-config` | request (we call) | ✅ yes |
 
 ## nvpair-tui
 
@@ -276,7 +274,7 @@
 | `proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
 | `telemetry/get-status` | request (we call) | ✅ yes |
-| `telemetry/purge-storage` | request (we call) | ⚠️ not called |
+| `telemetry/purge-storage` | request (we call) | ✅ yes |
 | `telemetry/start` | request (we call) | ✅ yes |
 | `telemetry/stop` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |

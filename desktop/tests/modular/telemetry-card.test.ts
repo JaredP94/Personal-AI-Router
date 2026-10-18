@@ -4,12 +4,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TelemetryStatus } from '@/shared/types/telemetry'
 import {
+    formatTelemetryStorage,
+    isCollectorPortValid,
+    observabilityCopy,
+    observabilityWarnings
+} from '@/ui/utils/observability-copy'
+import {
     getObservabilityBadge,
     getPhoenixDashboardUrl,
     isDockerUnavailable,
     isPhoenixRunning
 } from '@/shared/utils/telemetry'
-import getErrorString from '@/shared/utils/get-error-string'
 
 const mocks = vi.hoisted(() => ({
     supervisor: {
@@ -17,18 +22,14 @@ const mocks = vi.hoisted(() => ({
         callProcess: vi.fn(),
         sendProcess: vi.fn(),
         reportError: vi.fn()
-    },
-    openExternal: vi.fn().mockResolvedValue(undefined),
-    windowOpen: vi.fn()
+    }
 }))
 
 vi.mock('@/electron/service-bridge/modular-supervisor', () => ({
     getModularSupervisor: () => mocks.supervisor
 }))
 vi.mock('@/electron/service-bridge/modular-state', () => ({
-    getModularBridgeState: () => ({
-        getSelfId: () => 'local-node'
-    }),
+    getModularBridgeState: () => ({ getSelfId: () => 'local-node' }),
     isProxyEngine: () => false,
     isUpstreamUnreachableError: () => false,
     parseServiceErrors: () => []
@@ -37,610 +38,327 @@ vi.mock('@/electron/model-hub', () => ({ getEngineHubModels: vi.fn() }))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
 
-describe('ObservabilityCard helpers and state management', () => {
+function telemetryStatus(overrides: Partial<TelemetryStatus> = {}): TelemetryStatus {
+    return {
+        revision: 4,
+        enabled: true,
+        collectorPort: 4317,
+        recordPayloads: false,
+        payloadConsentVersion: 0,
+        payloadPolicyVersion: 1,
+        workers: [
+            {
+                name: 'proxy',
+                appliedRevision: 4,
+                state: 'applied',
+                error: '',
+                lastExportOk: '2026-10-18T12:00:00Z',
+                lastExportError: null,
+                lastExportErrorAt: null
+            }
+        ],
+        containerState: 'running',
+        collectorReachable: true,
+        uiUrl: 'http://127.0.0.1:6006',
+        imageVersion: 'version-20.23.0',
+        bindingsLoopbackOnly: true,
+        managedConfig: 'current',
+        storage: {
+            bytes: 1024,
+            volumes: [{ name: 'nvpair-telemetry_nvpair-phoenix-data', bytes: 1024 }],
+            measuredAt: '2026-10-18T12:00:00Z',
+            error: null
+        },
+        ...overrides
+    }
+}
+
+describe('telemetry service bridge', () => {
     beforeEach(() => {
-        vi.clearAllMocks()
+        mocks.supervisor.callProcess.mockReset().mockResolvedValue(undefined)
     })
 
-    describe('getObservabilityBadge', () => {
-        it('returns Active ● (green) when collector is reachable', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            }
-            const badge = getObservabilityBadge(status)
-            expect(badge.label).toBe('Active ●')
-            expect(badge.color).toBe('green')
-        })
-
-        it('returns Starting… (yellow) when container is running but collector not reachable', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: false
-            }
-            const badge = getObservabilityBadge(status)
-            expect(badge.label).toBe('Starting…')
-            expect(badge.color).toBe('yellow')
-        })
-
-        it('returns Starting… (yellow) when container is starting (e.g. pulling image)', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'starting',
-                collectorReachable: false
-            }
-            const badge = getObservabilityBadge(status)
-            expect(badge.label).toBe('Starting…')
-            expect(badge.color).toBe('yellow')
-        })
-
-        it('returns Updating… (yellow) when container is updating', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'updating',
-                collectorReachable: false
-            }
-            const badge = getObservabilityBadge(status)
-            expect(badge.label).toBe('Updating…')
-            expect(badge.color).toBe('yellow')
-        })
-
-        it('returns Stopped (gray) when container is stopped', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'stopped',
-                collectorReachable: false
-            }
-            const badge = getObservabilityBadge(status)
-            expect(badge.label).toBe('Stopped')
-            expect(badge.color).toBe('gray')
-        })
-
-        it('returns Stopped (gray) when status is null', () => {
-            const badge = getObservabilityBadge(null)
-            expect(badge.label).toBe('Stopped')
-            expect(badge.color).toBe('gray')
-        })
-
-        it('returns Stopped (gray) when container is docker-unavailable', () => {
-            const status: TelemetryStatus = {
-                enabled: false,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'docker-unavailable',
-                collectorReachable: false
-            }
-            const badge = getObservabilityBadge(status)
-            expect(badge.label).toBe('Stopped')
-            expect(badge.color).toBe('gray')
-            expect(isDockerUnavailable(status)).toBe(true)
-        })
+    it('preserves the complete authoritative broker status including nullable fields', async () => {
+        const status = telemetryStatus({ bindingsLoopbackOnly: null, managedConfig: 'missing' })
+        mocks.supervisor.callProcess.mockResolvedValueOnce(status)
+        await expect(handleServiceBridgeInvoke('telemetry:get-status', undefined)).resolves.toEqual(
+            status
+        )
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledWith('broker', 'telemetry/get-status')
     })
 
-    describe('isPhoenixRunning', () => {
-        it('returns true when collectorReachable is true', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'stopped',
-                collectorReachable: true
-            }
-            expect(isPhoenixRunning(status)).toBe(true)
-        })
-
-        it('returns true when containerState is running', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: false
-            }
-            expect(isPhoenixRunning(status)).toBe(true)
-        })
-
-        it('returns true when containerState is starting', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'starting',
-                collectorReachable: false
-            }
-            expect(isPhoenixRunning(status)).toBe(true)
-        })
-
-        it('returns true when containerState is updating', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'updating',
-                collectorReachable: false
-            }
-            expect(isPhoenixRunning(status)).toBe(true)
-        })
-
-        it('returns false when stopped and unreachable', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'stopped',
-                collectorReachable: false
-            }
-            expect(isPhoenixRunning(status)).toBe(false)
-        })
-
-        it('returns false for null status', () => {
-            expect(isPhoenixRunning(null)).toBe(false)
-        })
+    it('surfaces status errors without attempting settings fallback', async () => {
+        mocks.supervisor.callProcess.mockRejectedValueOnce(new Error('broker unavailable'))
+        await expect(handleServiceBridgeInvoke('telemetry:get-status', undefined)).rejects.toThrow(
+            'broker unavailable'
+        )
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledTimes(1)
     })
 
-    describe('getPhoenixDashboardUrl', () => {
-        it('returns the configured uiUrl when present', () => {
-            const status: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://127.0.0.1:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            }
-            expect(getPhoenixDashboardUrl(status)).toBe('http://127.0.0.1:6006')
-        })
-
-        it('defaults to http://localhost:6006 when uiUrl is empty or null', () => {
-            expect(getPhoenixDashboardUrl(null)).toBe('http://localhost:6006')
-            const emptyUrlStatus: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: '',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            }
-            expect(getPhoenixDashboardUrl(emptyUrlStatus)).toBe('http://localhost:6006')
-        })
-    })
-
-    describe('telemetry lifecycle and state flows', () => {
-        interface TelemetryControllerState {
-            status: TelemetryStatus | null
-            error: string | null
-            loading: 'start' | 'stop' | null
-        }
-
-        class TelemetryController {
-            public state: TelemetryControllerState = {
-                status: null,
-                error: null,
-                loading: null
-            }
-
-            constructor(
-                private readonly api: {
-                    getStatus: () => Promise<TelemetryStatus>
-                    start: () => Promise<TelemetryStatus>
-                    stop: () => Promise<TelemetryStatus>
-                    setEnabled: (val: boolean) => Promise<{ ok: boolean }>
-                    setRecordPayloads: (val: boolean) => Promise<{ ok: boolean }>
-                }
-            ) {}
-
-            async fetchStatus(): Promise<void> {
-                try {
-                    const s = await this.api.getStatus()
-                    this.state.status = s
-                } catch {
-                    // ignore polling errors
-                }
-            }
-
-            async start(): Promise<void> {
-                this.state.loading = 'start'
-                this.state.error = null
-                try {
-                    const s = await this.api.start()
-                    this.state.status = s
-                } catch (err) {
-                    this.state.error = getErrorString(err)
-                } finally {
-                    this.state.loading = null
-                }
-            }
-
-            async stop(): Promise<void> {
-                this.state.loading = 'stop'
-                this.state.error = null
-                try {
-                    const s = await this.api.stop()
-                    this.state.status = s
-                } catch (err) {
-                    this.state.error = getErrorString(err)
-                } finally {
-                    this.state.loading = null
-                }
-            }
-
-            async toggleEnabled(val: boolean): Promise<void> {
-                if (this.state.status) {
-                    this.state.status = { ...this.state.status, enabled: val }
-                }
-                try {
-                    await this.api.setEnabled(val)
-                } catch (err) {
-                    this.state.error = getErrorString(err)
-                    await this.fetchStatus()
-                }
-            }
-
-            async toggleRecordPayloads(val: boolean): Promise<void> {
-                if (this.state.status) {
-                    this.state.status = { ...this.state.status, recordPayloads: val }
-                }
-                try {
-                    await this.api.setRecordPayloads(val)
-                } catch (err) {
-                    this.state.error = getErrorString(err)
-                    await this.fetchStatus()
-                }
+    it.each(['telemetry:start', 'telemetry:stop'])(
+        'returns the full status for %s',
+        async channel => {
+            const status = telemetryStatus({ containerState: 'stopped', collectorReachable: false })
+            mocks.supervisor.callProcess.mockResolvedValueOnce(status)
+            if (channel === 'telemetry:start') {
+                await expect(
+                    handleServiceBridgeInvoke('telemetry:start', undefined)
+                ).resolves.toEqual(status)
+                expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                    'broker',
+                    'telemetry/start',
+                    undefined,
+                    15_000
+                )
+            } else {
+                await expect(
+                    handleServiceBridgeInvoke('telemetry:stop', undefined)
+                ).resolves.toEqual(status)
+                expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                    'broker',
+                    'telemetry/stop',
+                    undefined,
+                    15_000
+                )
             }
         }
+    )
 
-        it('fetches initial status successfully', async () => {
-            const initialStatus: TelemetryStatus = {
+    it.each([
+        { recordPayloads: true, consent: 1 },
+        { recordPayloads: false, consent: 0 }
+    ])(
+        'forwards consent only while capture is $recordPayloads',
+        async ({ recordPayloads, consent }) => {
+            const config = {
+                revision: 5,
                 enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'stopped',
-                collectorReachable: false
+                collectorPort: 54317,
+                recordPayloads,
+                payloadConsentVersion: consent,
+                payloadPolicyVersion: 1
             }
-            const api = {
-                getStatus: vi.fn().mockResolvedValue(initialStatus),
-                start: vi.fn(),
-                stop: vi.fn(),
-                setEnabled: vi.fn(),
-                setRecordPayloads: vi.fn()
+            mocks.supervisor.callProcess.mockResolvedValueOnce(config)
+            await expect(
+                handleServiceBridgeInvoke('telemetry:set-config', {
+                    enabled: true,
+                    collectorPort: 54317,
+                    recordPayloads,
+                    payloadConsentVersion: 1
+                })
+            ).resolves.toEqual(config)
+            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+                'broker',
+                'settings/set-telemetry-config',
+                {
+                    enabled: true,
+                    collectorPort: 54317,
+                    recordPayloads,
+                    payloadConsentVersion: consent
+                }
+            )
+        }
+    )
+
+    it('relays purge confirmation and preserves refused volumes and unknown storage sizes', async () => {
+        const result = {
+            removed: ['unused-traces'],
+            refused: [{ name: 'busy-traces', reason: 'volume is used by active container' }],
+            storage: {
+                bytes: null,
+                volumes: [{ name: 'busy-traces', bytes: null }],
+                measuredAt: null,
+                error: 'size unavailable'
             }
+        }
+        mocks.supervisor.callProcess.mockResolvedValueOnce(result)
+        await expect(
+            handleServiceBridgeInvoke('telemetry:purge-storage', { confirm: 'delete-traces' })
+        ).resolves.toEqual(result)
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+            'broker',
+            'telemetry/purge-storage',
+            { confirm: 'delete-traces' },
+            120_000
+        )
+    })
+})
 
-            const controller = new TelemetryController(api)
-            await controller.fetchStatus()
-            expect(controller.state.status).toEqual(initialStatus)
-            expect(controller.state.error).toBeNull()
-            expect(controller.state.loading).toBeNull()
-        })
-
-        it('manages starting lifecycle and updates state', async () => {
-            const startedStatus: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
+describe('Observability privacy copy and warnings', () => {
+    it('uses the approved consent and deletion wording verbatim', () => {
+        expect(observabilityCopy).toEqual({
+            consent: {
+                title: 'Capture prompts and responses?',
+                body: "PAIR will attach the text of prompts and model responses (up to 16 KB each) to traces sent to Phoenix on this machine. Captured text may contain personal or confidential information and stays in Phoenix's storage until you clear it. Turning capture off stops new capture but can't remove text already stored.",
+                confirm: 'Capture text',
+                cancel: 'Cancel'
+            },
+            clear: {
+                title: 'Clear stored traces?',
+                body: 'This permanently deletes the traces stored by Phoenix on this machine. Phoenix stops while the data is deleted.',
+                confirm: 'Delete traces',
+                cancel: 'Cancel'
             }
-            const api = {
-                getStatus: vi.fn(),
-                start: vi.fn().mockResolvedValue(startedStatus),
-                stop: vi.fn(),
-                setEnabled: vi.fn(),
-                setRecordPayloads: vi.fn()
-            }
-
-            const controller = new TelemetryController(api)
-            const startPromise = controller.start()
-            expect(controller.state.loading).toBe('start')
-            await startPromise
-            expect(controller.state.loading).toBeNull()
-            expect(controller.state.status).toEqual(startedStatus)
-            expect(controller.state.error).toBeNull()
-        })
-
-        it('captures errors when start fails and resets loading state', async () => {
-            const api = {
-                getStatus: vi.fn(),
-                start: vi.fn().mockRejectedValue(new Error('Docker daemon not running')),
-                stop: vi.fn(),
-                setEnabled: vi.fn(),
-                setRecordPayloads: vi.fn()
-            }
-
-            const controller = new TelemetryController(api)
-            await controller.start()
-            expect(controller.state.loading).toBeNull()
-            expect(controller.state.error).toBe('Docker daemon not running')
-        })
-
-        it('manages stopping lifecycle and updates state', async () => {
-            const stoppedStatus: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'stopped',
-                collectorReachable: false
-            }
-            const api = {
-                getStatus: vi.fn(),
-                start: vi.fn(),
-                stop: vi.fn().mockResolvedValue(stoppedStatus),
-                setEnabled: vi.fn(),
-                setRecordPayloads: vi.fn()
-            }
-
-            const controller = new TelemetryController(api)
-            const stopPromise = controller.stop()
-            expect(controller.state.loading).toBe('stop')
-            await stopPromise
-            expect(controller.state.loading).toBeNull()
-            expect(controller.state.status).toEqual(stoppedStatus)
-            expect(controller.state.error).toBeNull()
-        })
-
-        it('captures errors when stop fails and resets loading state', async () => {
-            const api = {
-                getStatus: vi.fn(),
-                start: vi.fn(),
-                stop: vi.fn().mockRejectedValue(new Error('Container not found')),
-                setEnabled: vi.fn(),
-                setRecordPayloads: vi.fn()
-            }
-
-            const controller = new TelemetryController(api)
-            await controller.stop()
-            expect(controller.state.loading).toBeNull()
-            expect(controller.state.error).toBe('Container not found')
-        })
-
-        it('toggles tracing enabled successfully', async () => {
-            const currentStatus: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            }
-            const api = {
-                getStatus: vi.fn(),
-                start: vi.fn(),
-                stop: vi.fn(),
-                setEnabled: vi.fn().mockResolvedValue({ ok: true }),
-                setRecordPayloads: vi.fn()
-            }
-
-            const controller = new TelemetryController(api)
-            controller.state.status = currentStatus
-            await controller.toggleEnabled(false)
-            expect(api.setEnabled).toHaveBeenCalledWith(false)
-            expect(controller.state.status?.enabled).toBe(false)
-            expect(controller.state.error).toBeNull()
-        })
-
-        it('reverts and refetches when toggling tracing enabled fails', async () => {
-            const serverStatus: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            }
-            const api = {
-                getStatus: vi.fn().mockResolvedValue(serverStatus),
-                start: vi.fn(),
-                stop: vi.fn(),
-                setEnabled: vi.fn().mockRejectedValue(new Error('Failed to persist setting')),
-                setRecordPayloads: vi.fn()
-            }
-
-            const controller = new TelemetryController(api)
-            controller.state.status = { ...serverStatus }
-            await controller.toggleEnabled(false)
-            expect(api.setEnabled).toHaveBeenCalledWith(false)
-            expect(controller.state.error).toBe('Failed to persist setting')
-            expect(controller.state.status?.enabled).toBe(true)
-        })
-
-        it('toggles record payloads successfully', async () => {
-            const currentStatus: TelemetryStatus = {
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            }
-            const api = {
-                getStatus: vi.fn(),
-                start: vi.fn(),
-                stop: vi.fn(),
-                setEnabled: vi.fn(),
-                setRecordPayloads: vi.fn().mockResolvedValue({ ok: true })
-            }
-
-            const controller = new TelemetryController(api)
-            controller.state.status = currentStatus
-            await controller.toggleRecordPayloads(true)
-            expect(api.setRecordPayloads).toHaveBeenCalledWith(true)
-            expect(controller.state.status?.recordPayloads).toBe(true)
-            expect(controller.state.error).toBeNull()
         })
     })
 
-    describe('Service Bridge empty-handlers invocation for telemetry', () => {
-        it('handles telemetry:get-status via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({
-                enabled: true,
-                endpoint: '127.0.0.1:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: true,
-                containerState: 'running',
-                collectorReachable: true
-            })
-
-            const status = await handleServiceBridgeInvoke('telemetry:get-status', undefined)
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'telemetry/get-status'
+    it('warns when enabled tracing is dropping because Phoenix is stopped', () => {
+        expect(
+            observabilityWarnings(
+                telemetryStatus({ containerState: 'stopped', collectorReachable: false })
             )
-            expect(status).toEqual({
-                enabled: true,
-                endpoint: '127.0.0.1:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: true,
-                containerState: 'running',
-                collectorReachable: true,
-                currentVersion: undefined,
-                updateAvailable: false,
-                latestVersion: undefined
-            })
-        })
-
-        it('handles telemetry:check-update via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true,
-                currentVersion: 'v20.16.0',
-                updateAvailable: true,
-                latestVersion: 'v20.19.0'
-            })
-
-            const status = await handleServiceBridgeInvoke('telemetry:check-update', undefined)
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'telemetry/check-update',
-                undefined,
-                15000
+        ).toEqual([
+            "Tracing is on, but Phoenix isn't running, so this node's traces are being dropped."
+        ])
+    })
+    it('does not warn about dropping when tracing is off or Phoenix is running', () => {
+        expect(
+            observabilityWarnings(
+                telemetryStatus({
+                    enabled: false,
+                    containerState: 'stopped',
+                    collectorReachable: false
+                })
             )
-            expect(status.updateAvailable).toBe(true)
-            expect(status.currentVersion).toBe('v20.16.0')
-            expect(status.latestVersion).toBe('v20.19.0')
-        })
-
-        it('handles telemetry:update via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true,
-                currentVersion: 'v20.19.0',
-                updateAvailable: false,
-                latestVersion: 'v20.19.0'
-            })
-
-            const status = await handleServiceBridgeInvoke('telemetry:update', undefined)
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'telemetry/update',
-                undefined,
-                15000
+        ).toEqual([])
+        expect(observabilityWarnings(telemetryStatus())).toEqual([])
+        expect(observabilityWarnings(null)).toEqual([])
+    })
+    it('warns about exposed network bindings', () => {
+        expect(observabilityWarnings(telemetryStatus({ bindingsLoopbackOnly: false }))).toEqual([
+            'Phoenix is reachable from other machines on your network. Restart it to apply the local-only configuration.'
+        ])
+    })
+    it('does not confuse unknown bindings or missing config with an exposed or outdated container', () => {
+        expect(
+            observabilityWarnings(
+                telemetryStatus({ bindingsLoopbackOnly: null, managedConfig: 'missing' })
             )
-            expect(status.containerState).toBe('running')
-            expect(status.currentVersion).toBe('v20.19.0')
-            expect(status.updateAvailable).toBe(false)
-        })
-
-        it('handles telemetry:start via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'running',
-                collectorReachable: true
-            })
-
-            const status = await handleServiceBridgeInvoke('telemetry:start', undefined)
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'telemetry/start',
-                undefined,
-                15000
+        ).toEqual([])
+    })
+    it('warns about an outdated managed config', () => {
+        expect(observabilityWarnings(telemetryStatus({ managedConfig: 'outdated' }))).toEqual([
+            'Phoenix is running an older PAIR configuration. Restart it to apply the current one.'
+        ])
+    })
+    it('lists failed workers individually alongside the other warnings', () => {
+        expect(
+            observabilityWarnings(
+                telemetryStatus({
+                    containerState: 'stopped',
+                    collectorReachable: false,
+                    bindingsLoopbackOnly: false,
+                    managedConfig: 'outdated',
+                    workers: [
+                        {
+                            name: 'proxy',
+                            appliedRevision: 3,
+                            state: 'failed',
+                            error: 'timeout',
+                            lastExportOk: null,
+                            lastExportError: null,
+                            lastExportErrorAt: null
+                        },
+                        {
+                            name: 'omlx-proxy',
+                            appliedRevision: 3,
+                            state: 'pending',
+                            error: '',
+                            lastExportOk: null,
+                            lastExportError: null,
+                            lastExportErrorAt: null
+                        },
+                        {
+                            name: 'lmstudio-proxy',
+                            appliedRevision: 3,
+                            state: 'failed',
+                            error: 'timeout',
+                            lastExportOk: null,
+                            lastExportError: null,
+                            lastExportErrorAt: null
+                        }
+                    ]
+                })
             )
-            expect(status.containerState).toBe('running')
-            expect(status.collectorReachable).toBe(true)
+        ).toEqual([
+            "Tracing is on, but Phoenix isn't running, so this node's traces are being dropped.",
+            'Phoenix is reachable from other machines on your network. Restart it to apply the local-only configuration.',
+            'Phoenix is running an older PAIR configuration. Restart it to apply the current one.',
+            "Tracing settings didn't reach proxy. Restart PAIR's services from this page if it persists.",
+            "Tracing settings didn't reach lmstudio-proxy. Restart PAIR's services from this page if it persists."
+        ])
+    })
+})
+
+describe('Phoenix status helpers', () => {
+    it('defaults to stopped when status is unavailable', () => {
+        expect(getObservabilityBadge(null)).toEqual({ label: 'Stopped', color: 'gray' })
+        expect(isPhoenixRunning(null)).toBe(false)
+    })
+    it('reports reachable, starting and stopped collector states', () => {
+        expect(getObservabilityBadge(telemetryStatus())).toEqual({
+            label: 'Active ●',
+            color: 'green'
         })
-
-        it('handles telemetry:stop via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({
-                enabled: true,
-                endpoint: 'localhost:4317',
-                uiUrl: 'http://localhost:6006',
-                recordPayloads: false,
-                containerState: 'stopped',
-                collectorReachable: false
-            })
-
-            const status = await handleServiceBridgeInvoke('telemetry:stop', undefined)
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'telemetry/stop',
-                undefined,
-                15000
+        expect(
+            getObservabilityBadge(
+                telemetryStatus({ containerState: 'starting', collectorReachable: false })
             )
-            expect(status.containerState).toBe('stopped')
-            expect(status.collectorReachable).toBe(false)
-        })
-
-        it('handles telemetry:set-enabled via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({ ok: true })
-
-            const res = await handleServiceBridgeInvoke('telemetry:set-enabled', {
-                value: true
-            })
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'settings/set-telemetry-enabled',
-                { value: true }
+        ).toEqual({ label: 'Starting…', color: 'yellow' })
+        expect(
+            getObservabilityBadge(
+                telemetryStatus({ containerState: 'stopped', collectorReachable: false })
             )
-            expect(res).toEqual({ ok: true })
-        })
-
-        it('handles telemetry:set-record-payloads via supervisor broker call', async () => {
-            mocks.supervisor.callProcess.mockResolvedValueOnce({ ok: true })
-
-            const res = await handleServiceBridgeInvoke('telemetry:set-record-payloads', {
-                value: true
-            })
-            expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
-                'broker',
-                'settings/set-telemetry-record-payloads',
-                { value: true }
+        ).toEqual({ label: 'Stopped', color: 'gray' })
+        expect(
+            isPhoenixRunning(
+                telemetryStatus({ containerState: 'starting', collectorReachable: false })
             )
-            expect(res).toEqual({ ok: true })
-        })
+        ).toBe(true)
+        expect(
+            isPhoenixRunning(
+                telemetryStatus({ containerState: 'stopped', collectorReachable: false })
+            )
+        ).toBe(false)
+    })
+    it('uses the broker Docker state and local dashboard URL', () => {
+        expect(isDockerUnavailable(telemetryStatus({ containerState: 'docker_unavailable' }))).toBe(
+            true
+        )
+        expect(isDockerUnavailable(telemetryStatus())).toBe(false)
+        expect(getPhoenixDashboardUrl(telemetryStatus())).toBe('http://127.0.0.1:6006')
+    })
+})
+
+describe('Telemetry input validation and formatting', () => {
+    it('validates numeric collector ports strictly between 1 and 65535', () => {
+        expect(isCollectorPortValid('4317')).toBe(true)
+        expect(isCollectorPortValid('1')).toBe(true)
+        expect(isCollectorPortValid('65535')).toBe(true)
+        expect(isCollectorPortValid('0')).toBe(false)
+        expect(isCollectorPortValid('-1')).toBe(false)
+        expect(isCollectorPortValid('65536')).toBe(false)
+        expect(isCollectorPortValid('4317.5')).toBe(false)
+        expect(isCollectorPortValid('')).toBe(false)
+        expect(isCollectorPortValid('abc')).toBe(false)
+        expect(isCollectorPortValid('4317abc')).toBe(false)
+    })
+
+    it('formats storage size and measurement time or reports unavailable', () => {
+        expect(formatTelemetryStorage(null)).toBe('Storage size unavailable')
+        expect(
+            formatTelemetryStorage({ bytes: null, volumes: [], measuredAt: null, error: null })
+        ).toBe('Storage size unavailable')
+        expect(
+            formatTelemetryStorage({ bytes: 1024, volumes: [], measuredAt: null, error: null })
+        ).toBe('1 KB')
+        expect(
+            formatTelemetryStorage({
+                bytes: 1048576,
+                volumes: [],
+                measuredAt: new Date(Date.now() - 60_000).toISOString(),
+                error: null
+            })
+        ).toMatch(/^1 MB \(.+\)$/)
     })
 })
