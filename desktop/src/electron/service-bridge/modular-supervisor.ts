@@ -19,6 +19,7 @@ import {
     getModularBridgeState,
     isProxyEngine,
     isUpstreamUnreachableError,
+    parseBrokerWorkers,
     parseServiceErrors,
     parseWorkloadsInitial,
     PROXY_ENGINES,
@@ -1478,6 +1479,13 @@ class ModularSupervisor {
             )
                 return
 
+            if (
+                !(await this.readRecoverySnapshot(pass, 'workers:get-status', result => {
+                    getModularBridgeState().replaceWorkers(parseBrokerWorkers(result))
+                }))
+            )
+                return
+
             if (!this.ownsEpochRecovery(pass)) return
             const snapshot = state.beginWorkloadRecovery()
             pass.workloadSnapshot = snapshot
@@ -1600,6 +1608,14 @@ class ModularSupervisor {
         // nvpair-errors and relays the authoritative snapshot back as errors:update.
         if (notification.method === 'errors:update') {
             this.handleErrorsNotification(notification)
+            return
+        }
+
+        // Worker supervision: the broker publishes a full, startup-ordered
+        // lifecycle snapshot on every change (state, attempt, restart, recovery).
+        // Desktop only relays it; all retry policy lives in the broker.
+        if (notification.method === 'workers:update') {
+            getModularBridgeState().replaceWorkers(parseBrokerWorkers(notification.params))
             return
         }
 

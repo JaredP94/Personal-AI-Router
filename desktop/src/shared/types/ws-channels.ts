@@ -36,6 +36,7 @@ import type { NodeItem } from '@/shared/types/nodes'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
+import type { WorkerStatus } from '@/shared/types/workers'
 import type {
     AvailableNode,
     ClusterIdentityPayload,
@@ -111,6 +112,10 @@ export interface WsInvokeChannelMap {
     // Workloads
     'workloads:get-initial': { request: void; response: Record<string, Workload> }
 
+    // Worker supervision (broker-owned retry/restart policy; desktop only relays)
+    'workers:get-status': { request: void; response: WorkerStatus[] }
+    'workers:restart': { request: { name: string }; response: WorkerStatus }
+
     // Telemetry (Arize Phoenix & OpenTelemetry)
     'telemetry:get-status': { request: void; response: TelemetryStatus }
     'telemetry:start': { request: void; response: TelemetryStatus }
@@ -151,6 +156,9 @@ export interface WsPushChannelMap {
 
     // Errors
     'errors:update': ServiceError[]
+
+    // Worker supervision. Full startup-ordered snapshot, pushed on every change.
+    'workers:update': WorkerStatus[]
 
     // Cluster flow — an inbound pairing arrived; prompt the user for the PIN.
     'cluster:invite-received': Invite

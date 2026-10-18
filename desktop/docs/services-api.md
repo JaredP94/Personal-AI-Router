@@ -248,6 +248,7 @@
 | `errors:update` | notification (we consume) | ✅ yes |
 | `heartbeat` | notification (we consume) | ✅ yes |
 | `proxy:ready` | notification (we consume) | ✅ yes |
+| `workers:update` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `broker:resync` | request (we call) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
@@ -279,6 +280,8 @@
 | `telemetry/purge-storage` | request (we call) | ✅ yes |
 | `telemetry/start` | request (we call) | ✅ yes |
 | `telemetry/stop` | request (we call) | ✅ yes |
+| `workers:get-status` | request (we call) | ✅ yes |
+| `workers:restart` | request (we call) | ✅ yes |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:subscribe` | request (we call) | ✅ yes |
@@ -293,7 +296,11 @@
 - `omlx-proxy:*  (omlxproxy.go)`
 - `method (var)  (proxy.go)`
 - `method (var)  (rpcworker.go, 2 sites)`
-- `method (var)  (workloadmanager.go)`
+- `WorkerRunning (var)  (supervisor.go, 2 sites)`
+- `WorkerDegraded (var)  (supervisor.go)`
+- `WorkerRestarting (var)  (supervisor.go)`
+- `state (var)  (supervisor.go)`
+- `method (var)  (workloadmanager.go, 2 sites)`
 
 ## nvpair-workload-manager
 

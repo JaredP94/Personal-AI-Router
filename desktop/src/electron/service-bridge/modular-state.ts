@@ -16,6 +16,7 @@ import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
+import type { WorkerState, WorkerStatus } from '@/shared/types/workers'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
@@ -28,6 +29,7 @@ import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
+import { createStructuredLogger } from '@/shared/utils/log'
 import { mergePullProgressPercent } from './pull-error-handling'
 import type { JsonObject, JsonRpcNotification, JsonValue } from './json-rpc-subprocess'
 import { serviceLogLevel } from './service-log-level'
@@ -336,6 +338,89 @@ export function parseServiceErrors(value: JsonValue | undefined): ServiceError[]
         if (error) errors.push(error)
     }
     return errors
+}
+
+const WORKER_STATES: readonly WorkerState[] = [
+    'running',
+    'degraded',
+    'restarting',
+    'exhausted',
+    'missing'
+]
+const WORKER_STATE_SET: ReadonlySet<string> = new Set(WORKER_STATES)
+
+function isWorkerState(value: string): value is WorkerState {
+    return WORKER_STATE_SET.has(value)
+}
+
+const workerLog = createStructuredLogger('service-bridge')
+
+/**
+ * Parse one broker `WorkerStatus` row. An unrecognized `state` is rejected
+ * rather than coerced: a desktop that guessed would invent a health state the
+ * broker never reported. `onRejected` reports the drop to the caller, which
+ * logs it without the payload.
+ */
+export function parseWorkerStatus(value: JsonValue | undefined): WorkerStatus | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const name = stringValue(obj.name)
+    const state = stringValue(obj.state)
+    const attempts = obj.attempts
+    const since = stringValue(obj.since)
+    if (!name || !since || !isWorkerState(state)) return null
+    if (typeof attempts !== 'number' || typeof obj.restartOnHang !== 'boolean') return null
+
+    const pid = obj.pid
+    if (pid !== undefined && typeof pid !== 'number') return null
+    const lastError = obj.lastError
+    if (lastError !== undefined && typeof lastError !== 'string') return null
+
+    const worker: WorkerStatus = {
+        name,
+        state,
+        attempts,
+        restartOnHang: obj.restartOnHang,
+        since
+    }
+    if (typeof pid === 'number') worker.pid = pid
+    if (typeof lastError === 'string' && lastError) worker.lastError = lastError
+    return worker
+}
+
+/** Parse a broker `workers:get-status` / `workers:update` snapshot envelope. */
+export function parseWorkers(value: JsonValue | undefined, onRejected: () => void): WorkerStatus[] {
+    const rows = objectValue(value)?.workers
+    if (!Array.isArray(rows)) return []
+    const workers: WorkerStatus[] = []
+    for (const row of rows) {
+        const worker = parseWorkerStatus(row)
+        if (!worker) {
+            onRejected()
+            continue
+        }
+        workers.push(worker)
+    }
+    return workers
+}
+
+/**
+ * Parse a broker worker snapshot and report what it could not read. Dropped
+ * rows are logged by count only: a worker row can carry an engine error message,
+ * and no broker payload belongs in a log sink.
+ */
+export function parseBrokerWorkers(value: JsonValue | undefined): WorkerStatus[] {
+    let dropped = 0
+    const workers = parseWorkers(value, () => {
+        dropped++
+    })
+    if (dropped > 0) {
+        workerLog.warn({
+            sublevel: 'workers',
+            message: `Discarded ${dropped} unreadable worker status row(s) from the broker`
+        })
+    }
+    return workers
 }
 
 /**
@@ -933,6 +1018,7 @@ class ModularBridgeState {
     private nodes = new Map<string, ModularNode>()
     private brokerNodeIds = new Set<string>()
     private errors: ServiceError[] = []
+    private workers: WorkerStatus[] = []
     private workloads = new Map<string, Workload>()
     // Exists only during one epoch snapshot fetch, including removal tombstones.
     private workloadRecovery: Set<string> | null = null
@@ -1312,6 +1398,25 @@ class ModularBridgeState {
     clearError(id: string): void {
         this.errors = this.errors.filter(error => error.id !== id)
         emitBridgePush('errors:update', [...this.errors])
+    }
+
+    /**
+     * Authoritative broker-reported worker lifecycle snapshot, in startup order.
+     * Desktop holds no opinion about health or retries: this is exactly what
+     * `workers:get-status` / `workers:update` last reported.
+     */
+    getWorkers(): WorkerStatus[] {
+        return [...this.workers]
+    }
+
+    /**
+     * Replace the whole snapshot from the broker's `workers:update` (or from
+     * epoch hydration). It is a complete list, including an empty one, so an
+     * authoritative empty snapshot is applied rather than merged.
+     */
+    replaceWorkers(workers: WorkerStatus[]): void {
+        this.workers = [...workers]
+        emitBridgePush('workers:update', [...this.workers])
     }
 
     getWorkloads(): WsInvokeResponse<'workloads:get-initial'> {

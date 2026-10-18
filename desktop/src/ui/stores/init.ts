@@ -6,6 +6,7 @@ import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useErrorsStore } from '@/ui/stores/errors.store'
+import { useWorkersStore } from '@/ui/stores/workers.store'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useWorkloadsStore } from '@/ui/stores/workloads.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
@@ -62,6 +63,7 @@ async function initializeAllStores(): Promise<void> {
 
     await useConnectionStore.getState().initialize(appInitial, clusterInitial)
     await useErrorsStore.getState().initialize()
+    await useWorkersStore.getState().initialize()
     await useNodesStore.getState().initialize()
     await useDiscoveredNodesStore.getState().initialize()
     await useClusterInvitationsStore.getState().initialize(clusterInitial)
@@ -108,6 +110,7 @@ function cleanupAllStores(): void {
     unsubStateRefresh = null
     useConnectionStore.getState().cleanup()
     useErrorsStore.getState().cleanup()
+    useWorkersStore.getState().cleanup()
     useNodesStore.getState().cleanup()
     useDiscoveredNodesStore.getState().cleanup()
     useClusterInvitationsStore.getState().cleanup()
@@ -135,6 +138,7 @@ async function resyncAllStores(): Promise<void> {
     }
     await useWorkloadsStore.getState().refresh()
     useErrorsStore.getState().refresh()
+    await useWorkersStore.getState().refresh()
     useMetricsStore.getState().clearAll()
 
     let engineInitial: EngineInitialState | undefined

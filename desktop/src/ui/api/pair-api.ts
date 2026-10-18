@@ -14,6 +14,7 @@ import type { ServiceError } from '@/shared/types/errors'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
+import type { WorkerStatus } from '@/shared/types/workers'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type {
     TelemetryConfig,
@@ -115,6 +116,15 @@ export interface IErrorsApi {
     onUpdate(callback: (errors: ServiceError[]) => void): () => void
 }
 
+export interface IWorkersApi {
+    /** Fetch the broker-reported lifecycle snapshot of every supervised worker. */
+    getStatus(): Promise<WorkerStatus[]>
+    /** Ask the broker to restart one worker. Health and retry policy is the broker's. */
+    restart(name: string): Promise<WorkerStatus>
+    /** The broker reported a new complete worker snapshot. */
+    onUpdate(callback: (workers: WorkerStatus[]) => void): () => void
+}
+
 export interface IMetricsApi {
     getRouting(): Promise<RoutingMetrics[]>
     onRoutingUpdate(callback: (metrics: RoutingMetrics[]) => void): () => void
@@ -139,6 +149,7 @@ export interface IPairApi {
     engines: IEngineApi
     workloads: IWorkloadsApi
     errors: IErrorsApi
+    workers: IWorkersApi
     metrics: IMetricsApi
     telemetry: ITelemetryApi
 }
@@ -199,6 +210,11 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
                 await transport.invoke('errors:clear', id)
             },
             onUpdate: cb => transport.subscribePush('errors:update', cb)
+        },
+        workers: {
+            getStatus: () => transport.invoke('workers:get-status'),
+            restart: name => transport.invoke('workers:restart', { name }),
+            onUpdate: cb => transport.subscribePush('workers:update', cb)
         },
         metrics: {
             getRouting: () => transport.invoke('metrics:get-routing'),
