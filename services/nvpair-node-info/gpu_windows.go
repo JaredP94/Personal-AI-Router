@@ -268,9 +268,10 @@ func detectGPUs() []GPUInfo {
 		}
 
 		gpus = append(gpus, GPUInfo{
-			Name:      name,
-			VramBytes: uint64(desc.DedicatedVideoMemory),
-			statsKey:  luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
+			Name:       name,
+			MemoryKind: MemoryDedicated,
+			VRAMBytes:  byteCapacity(uint64(desc.DedicatedVideoMemory)),
+			statsKey:   luidKey(desc.AdapterLuidLow, desc.AdapterLuidHigh),
 		})
 	}
 	return gpus

@@ -47,7 +47,7 @@ func TestParseIORegistryGPUs(t *testing.T) {
 	if apple.statsKey != "ioreg:2a" || apple.name != "Apple M3 Max" {
 		t.Fatalf("unexpected Apple identity: %+v", apple)
 	}
-	if apple.vramTotal != systemMemory || apple.vramUsed != 8<<30 {
+	if apple.memoryKind != MemoryUnified || apple.vramTotal != systemMemory || apple.vramUsed != 8<<30 || !apple.vramUsedValid {
 		t.Fatalf("unexpected Apple memory: %+v", apple)
 	}
 	if apple.utilizationPct != 100 || !apple.utilizationValid {
@@ -59,7 +59,7 @@ func TestParseIORegistryGPUs(t *testing.T) {
 	if discrete.statsKey != "ioreg:63" || discrete.name != "AMD Radeon Pro" {
 		t.Fatalf("unexpected discrete identity: %+v", discrete)
 	}
-	if discrete.vramTotal != 8<<30 || discrete.vramUsed != 2<<30 {
+	if discrete.memoryKind != MemoryDedicated || discrete.vramTotal != 8<<30 || discrete.vramUsed != 2<<30 || !discrete.vramUsedValid {
 		t.Fatalf("unexpected discrete memory: %+v", discrete)
 	}
 	if discrete.utilizationPct != 25 || !discrete.utilizationValid {
@@ -131,13 +131,13 @@ func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
 	if len(records) != 3 {
 		t.Fatalf("got %d records, want 3", len(records))
 	}
-	if records[0].vramTotal != 0 || records[0].vramUsed != 1<<30 {
+	if records[0].vramTotal != 0 || records[0].vramUsed != 0 || records[0].vramUsedValid {
 		t.Fatalf("free-only counters inferred false capacity: %+v", records[0])
 	}
 	if records[0].utilizationValid {
 		t.Fatalf("missing utilization reported valid: %+v", records[0])
 	}
-	if records[1].vramTotal != 8<<30 || records[1].vramUsed != 0 ||
+	if records[1].vramTotal != 8<<30 || records[1].vramUsed != 0 || !records[1].vramUsedValid ||
 		records[1].utilizationPct != 0 || !records[1].utilizationValid {
 		t.Fatalf("explicit zero used counter was not preserved: %+v", records[1])
 	}

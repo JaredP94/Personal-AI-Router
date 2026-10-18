@@ -28,10 +28,13 @@ import (
 )
 
 type GPUInfo struct {
-	Name               string `json:"name"`
-	VramBytes          uint64 `json:"vram_bytes,omitempty"`
-	VramUsedBytes      uint64 `json:"vram_used_bytes,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
+	Name               string     `json:"name"`
+	MemoryKind         MemoryKind `json:"memory_kind"`
+	VRAMBytes          *uint64    `json:"vram_bytes,omitempty"`
+	VRAMUsedBytes      *uint64    `json:"vram_used_bytes,omitempty"`
+	SharedBytes        *uint64    `json:"shared_bytes,omitempty"`
+	SharedUsedBytes    *uint64    `json:"shared_used_bytes,omitempty"`
+	UtilizationPercent *uint32    `json:"utilization_percent,omitempty"`
 
 	// statsKey is the opaque per-adapter identifier used to join this
 	// static GPUInfo against statsCollector.Snapshot() results. Its
@@ -44,7 +47,7 @@ type GPUInfo struct {
 
 	// usesSystemMemoryUsage is set by Linux static detection when nvidia-smi
 	// cannot report GPU memory usage. Response assembly then maps the
-	// independently collected system-memory usage onto VramUsedBytes.
+	// independently collected system-memory usage onto VRAMUsedBytes.
 	usesSystemMemoryUsage bool `json:"-"`
 }
 
@@ -176,10 +179,9 @@ func handleDemand(msg applog.StdinMessage, collector *statsCollector) {
 //
 // GPUs whose statsKey doesn't appear in snap.GPU (host with no dynamic GPU
 // source, counter absent, or a just-plugged-in adapter the collector hasn't
-// seen yet) keep their zero-valued dynamic fields, which the omitempty tags
-// drop from JSON. GPUs explicitly marked usesSystemMemoryUsage are the
-// exception: their VRAM-used value is the independently sampled system-memory
-// usage, so it remains available even when dynamic nvidia-smi collection is not.
+// seen yet) omit their dynamic fields. Measured zero is present. GPUs marked
+// usesSystemMemoryUsage use an independently measured system-memory reading,
+// even when dynamic nvidia-smi collection is unavailable.
 //
 // cpuStatic is nil when static CPU introspection failed; memTotal is zero when
 // physical-memory introspection failed. Both conditions omit their respective
@@ -192,14 +194,19 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 	outGPUs := mergeGPUInventory(gpus, snap.GPUInventory)
 	for i := range outGPUs {
 		gpu := &outGPUs[i]
-		if gpu.usesSystemMemoryUsage {
-			gpu.VramUsedBytes = snap.MemUsedBytes
+		if gpu.MemoryKind == "" {
+			gpu.MemoryKind = MemoryUnavailable
 		}
-		if s, ok := snap.GPU[gpu.statsKey]; ok {
-			if !gpu.usesSystemMemoryUsage {
-				gpu.VramUsedBytes = s.VRAMUsed
+		if gpu.usesSystemMemoryUsage && snap.MemUsedValid {
+			gpu.VRAMUsedBytes = &snap.MemUsedBytes
+		}
+		if s, ok := snap.GPU[gpu.statsKey]; ok && gpu.statsKey != "" {
+			if gpu.MemoryKind != MemoryUnavailable && !gpu.usesSystemMemoryUsage && s.VRAMUsedValid {
+				gpu.VRAMUsedBytes = &s.VRAMUsed
 			}
-			gpu.UtilizationPercent = s.UtilizationPct
+			if s.UtilizationValid {
+				gpu.UtilizationPercent = &s.UtilizationPct
+			}
 		}
 	}
 
@@ -255,8 +262,11 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 			if merged[index].Name == "" {
 				merged[index].Name = gpu.Name
 			}
-			if merged[index].VramBytes == 0 {
-				merged[index].VramBytes = gpu.VramBytes
+			if merged[index].VRAMBytes == nil {
+				merged[index].VRAMBytes = gpu.VRAMBytes
+			}
+			if merged[index].MemoryKind == "" || merged[index].MemoryKind == MemoryUnavailable {
+				merged[index].MemoryKind = gpu.MemoryKind
 			}
 			continue
 		}
@@ -382,8 +392,8 @@ func main() {
 	gpus := detectGPUs()
 	log.Printf("detected %d GPU(s)", len(gpus))
 	for i, g := range gpus {
-		if g.VramBytes > 0 {
-			log.Printf("  GPU %d: %s (%d MiB)", i, g.Name, g.VramBytes/(1024*1024))
+		if g.VRAMBytes != nil {
+			log.Printf("  GPU %d: %s (%d MiB, %s)", i, g.Name, *g.VRAMBytes/(1024*1024), g.MemoryKind)
 		} else {
 			log.Printf("  GPU %d: %s", i, g.Name)
 		}

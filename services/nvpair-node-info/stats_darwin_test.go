@@ -69,7 +69,7 @@ func TestDarwinCollectorPublishesAndStops(t *testing.T) {
 		return darwinGPUReading{
 			inventory: []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
 			stats: map[string]gpuStat{
-				"ioreg:2a": {VRAMUsed: 8 << 30, UtilizationPct: 42},
+				"ioreg:2a": {VRAMUsedValid: true, VRAMUsed: 8 << 30, UtilizationValid: true, UtilizationPct: 42},
 			},
 			utilizationSamples: 1,
 		}, nil
@@ -132,7 +132,7 @@ func TestDarwinCollectorRetriesGPUAfterFailure(t *testing.T) {
 			}
 			return darwinGPUReading{
 				inventory:          []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
-				stats:              map[string]gpuStat{"ioreg:2a": {UtilizationPct: 77}},
+				stats:              map[string]gpuStat{"ioreg:2a": {UtilizationValid: true, UtilizationPct: 77}},
 				utilizationSamples: 1,
 			}, nil
 		},
@@ -153,16 +153,16 @@ func TestDarwinCollectorRequiresUtilizationSample(t *testing.T) {
 	readings := []darwinGPUReading{
 		{
 			inventory: []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
-			stats:     map[string]gpuStat{"ioreg:2a": {VRAMUsed: 2 << 30}},
+			stats:     map[string]gpuStat{"ioreg:2a": {VRAMUsedValid: true, VRAMUsed: 2 << 30}},
 		},
 		{
 			inventory:          []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
-			stats:              map[string]gpuStat{"ioreg:2a": {VRAMUsed: 3 << 30, UtilizationPct: 0}},
+			stats:              map[string]gpuStat{"ioreg:2a": {VRAMUsedValid: true, VRAMUsed: 3 << 30, UtilizationValid: true, UtilizationPct: 0}},
 			utilizationSamples: 1,
 		},
 		{
 			inventory: []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
-			stats:     map[string]gpuStat{"ioreg:2a": {VRAMUsed: 4 << 30}},
+			stats:     map[string]gpuStat{"ioreg:2a": {VRAMUsedValid: true, VRAMUsed: 4 << 30}},
 		},
 	}
 	call := 0
@@ -249,7 +249,7 @@ func TestDynamicGPUReadingFromIORegistry(t *testing.T) {
 	if discrete.VRAMUsed != 2<<30 || discrete.UtilizationPct != 25 {
 		t.Fatalf("unexpected discrete stats: %+v", discrete)
 	}
-	if reading.inventory[0].VramBytes != 36<<30 {
+	if reading.inventory[0].VRAMBytes == nil || *reading.inventory[0].VRAMBytes != 36<<30 {
 		t.Fatalf("unexpected Apple inventory: %+v", reading.inventory[0])
 	}
 	if reading.utilizationSamples != 2 {
@@ -263,7 +263,7 @@ func TestDarwinCollectorAdaptiveGPUInterval(t *testing.T) {
 		gpuReads.Add(1)
 		return darwinGPUReading{
 			inventory:          []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
-			stats:              map[string]gpuStat{"ioreg:2a": {UtilizationPct: 50}},
+			stats:              map[string]gpuStat{"ioreg:2a": {UtilizationValid: true, UtilizationPct: 50}},
 			utilizationSamples: 1,
 		}, nil
 	}
@@ -308,7 +308,7 @@ func TestDarwinCollectorAdaptiveGPUInterval(t *testing.T) {
 func TestDarwinCollectorSampleSeqIncrementsOnUsableSampleAndPreservesOnRead(t *testing.T) {
 	reading := darwinGPUReading{
 		inventory:          []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}},
-		stats:              map[string]gpuStat{"ioreg:2a": {UtilizationPct: 50}},
+		stats:              map[string]gpuStat{"ioreg:2a": {UtilizationValid: true, UtilizationPct: 50}},
 		utilizationSamples: 1,
 	}
 	c := &statsCollector{
@@ -341,4 +341,3 @@ func TestDarwinCollectorSampleSeqIncrementsOnUsableSampleAndPreservesOnRead(t *t
 		t.Fatalf("second GPUSampleSeq = %d, want 2", snap2.GPUSampleSeq)
 	}
 }
-

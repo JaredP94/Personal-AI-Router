@@ -9,17 +9,13 @@ import (
 	"time"
 )
 
-
-// gpuStat is the per-adapter dynamic state the service layers on top of the
-// static detectGPUs() output. Both fields are zero when the underlying OS
-// counter is unavailable; upstream code maps zeros back to "omit from JSON"
-// via the omitempty tags on GPUInfo, so clients see a missing field rather
-// than a misleading literal zero. The residual ambiguity for UtilizationPct
-// (0 could mean "GPU is actually idle" or "we couldn't read") is benign
-// because the two cases are visually identical to a user.
+// gpuStat retains per-adapter metric presence independently of its value.
+// A valid zero is a measurement, not an unavailable counter.
 type gpuStat struct {
-	VRAMUsed       uint64
-	UtilizationPct uint32
+	VRAMUsed         uint64
+	VRAMUsedValid    bool
+	UtilizationPct   uint32
+	UtilizationValid bool
 }
 
 // statsSnapshot is the dynamic bundle the HTTP handler reads without locking.
@@ -29,11 +25,9 @@ type gpuStat struct {
 // retrying ioreg sample so a transient startup enumeration failure can recover
 // without restarting the service.
 //
-// Unsupported collectors publish a zero-valued snapshot — GPU is a nil map
-// (omitempty semantics for downstream lookups come from the per-GPU omitempty
-// tags, not from an empty-map check here), CPUUtilPct is 0, MemUsedBytes is 0.
-// buildResponse treats each subsystem's zero-value as "unknown" and drops the
-// corresponding field per the normal omitempty rules.
+// Unsupported collectors publish a zero-valued snapshot with no valid GPU
+// metrics. MemUsedValid distinguishes measured system-memory usage from unknown
+// when a Linux unified-memory adapter uses that reading.
 type statsSnapshot struct {
 	GPU          map[string]gpuStat
 	GPUInventory []GPUInfo
@@ -45,6 +39,7 @@ type statsSnapshot struct {
 	GPUSampleSeq uint64
 	CPUUtilPct   uint32
 	MemUsedBytes uint64
+	MemUsedValid bool
 }
 
 // applyGPUStats publishes a usable GPU sample or preserves the last usable

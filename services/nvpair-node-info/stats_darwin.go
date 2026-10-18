@@ -25,14 +25,6 @@ type darwinCPUTimes struct {
 	valid bool
 }
 
-type darwinGPUReading struct {
-	inventory          []GPUInfo
-	stats              map[string]gpuStat
-	utilizationSamples int
-	sampledAt          time.Time
-	sampleSeq          uint64
-}
-
 type statsCollector struct {
 	latest    atomic.Pointer[statsSnapshot]
 	latestGPU atomic.Pointer[darwinGPUReading]
@@ -101,6 +93,7 @@ func initialDarwinMemorySnapshot(readMemory func() (uint64, bool)) *statsSnapsho
 	snap := &statsSnapshot{}
 	if used, ok := readMemory(); ok {
 		snap.MemUsedBytes = used
+		snap.MemUsedValid = true
 	}
 	return snap
 }
@@ -190,6 +183,7 @@ func (c *statsCollector) decodeSystemSnapshot() *statsSnapshot {
 	}
 	if used, ok := c.readMemory(); ok {
 		snap.MemUsedBytes = used
+		snap.MemUsedValid = true
 	}
 	return snap
 }
@@ -281,30 +275,4 @@ func readDarwinGPUStats(ctx context.Context) (darwinGPUReading, error) {
 		systemMemory = memory.Total
 	}
 	return dynamicGPUReadingFromIORegistry(data, systemMemory)
-}
-
-func dynamicGPUReadingFromIORegistry(data []byte, systemMemory uint64) (darwinGPUReading, error) {
-	records, err := parseIORegistryGPUs(data, systemMemory)
-	if err != nil {
-		return darwinGPUReading{}, err
-	}
-	reading := darwinGPUReading{
-		inventory: make([]GPUInfo, 0, len(records)),
-		stats:     make(map[string]gpuStat, len(records)),
-	}
-	for _, record := range records {
-		reading.inventory = append(reading.inventory, GPUInfo{
-			Name:      record.name,
-			VramBytes: record.vramTotal,
-			statsKey:  record.statsKey,
-		})
-		if record.utilizationValid {
-			reading.utilizationSamples++
-		}
-		reading.stats[record.statsKey] = gpuStat{
-			VRAMUsed:       record.vramUsed,
-			UtilizationPct: record.utilizationPct,
-		}
-	}
-	return reading, nil
 }

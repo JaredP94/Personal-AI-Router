@@ -13,7 +13,7 @@ import (
 
 // detectGPUs is the fallback for hosts without a platform-specific detector.
 // It reuses ghw to enumerate display adapters and returns a name only —
-// VramBytes is left at 0 ("unknown") because ghw does not expose VRAM on any
+// Memory is unavailable because ghw does not expose VRAM on any
 // platform.
 func detectGPUs() []GPUInfo {
 	gpu, err := ghw.GPU()
@@ -28,7 +28,7 @@ func detectGPUs() []GPUInfo {
 		if card.DeviceInfo != nil && card.DeviceInfo.Product != nil {
 			name = card.DeviceInfo.Product.Name
 		}
-		gpus = append(gpus, GPUInfo{Name: name})
+		gpus = append(gpus, namesOnlyGPU(name))
 	}
 	return gpus
 }

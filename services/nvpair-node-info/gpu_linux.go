@@ -9,8 +9,6 @@ import (
 	"context"
 	"log"
 	"os/exec"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jaypipes/ghw"
@@ -32,7 +30,7 @@ const nvidiaSmiTimeout = 3 * time.Second
 //
 // On unified-memory architectures (UMA, e.g. Grace-Blackwell / DGX Spark)
 // nvidia-smi reports [N/A] for memory.total because the GPU shares system
-// DRAM; in that case VramBytes is filled from detectMemoryTotal() instead.
+// DRAM; in that case VRAMBytes is filled from detectMemoryTotal() instead.
 func detectGPUs() []GPUInfo {
 	if out, err := nvidiaSmiCSV("uuid,name,memory.total"); err == nil {
 		if gpus, uma := parseNvidiaStatic(out); len(gpus) > 0 {
@@ -40,7 +38,7 @@ func detectGPUs() []GPUInfo {
 				if total := detectMemoryTotal(); total > 0 {
 					for i := range gpus {
 						if gpus[i].usesSystemMemoryUsage {
-							gpus[i].VramBytes = total
+							gpus[i].VRAMBytes = byteCapacity(total)
 						}
 					}
 				}
@@ -53,7 +51,7 @@ func detectGPUs() []GPUInfo {
 
 // detectGPUsGHW is the ghw-based fallback, identical in spirit to the
 // non-Windows/non-Linux path in gpu_other.go: enumerate display adapters and
-// return names only (VramBytes stays 0, statsKey stays empty).
+// return names only (memory is unavailable, statsKey stays empty).
 func detectGPUsGHW() []GPUInfo {
 	gpu, err := ghw.GPU()
 	if err != nil {
@@ -66,7 +64,7 @@ func detectGPUsGHW() []GPUInfo {
 		if card.DeviceInfo != nil && card.DeviceInfo.Product != nil {
 			name = card.DeviceInfo.Product.Name
 		}
-		gpus = append(gpus, GPUInfo{Name: name})
+		gpus = append(gpus, namesOnlyGPU(name))
 	}
 	return gpus
 }
@@ -86,70 +84,4 @@ func nvidiaSmiCSVContext(ctx context.Context, fields string) (string, error) {
 		"--query-gpu="+fields,
 		"--format=csv,noheader,nounits").Output()
 	return string(out), err
-}
-
-// isNvidiaSmiNA reports whether an nvidia-smi CSV field is a "not
-// applicable" sentinel rather than a numeric value. UMA platforms such as
-// DGX Spark return [N/A] or [Not Supported] for GPU memory queries.
-func isNvidiaSmiNA(s string) bool {
-	s = strings.TrimSpace(s)
-	s = strings.Trim(s, "[]")
-	switch strings.ToLower(s) {
-	case "n/a", "not supported":
-		return true
-	default:
-		return false
-	}
-}
-
-// parseNvidiaStatic decodes the static query (uuid,name,memory.total) into
-// GPUInfo records. memory.total is reported in MiB (because of -nounits); we
-// convert to bytes. Rows missing a uuid or name, or with an unparseable VRAM
-// figure, are skipped rather than emitted with placeholder values. Each
-// unified-memory row is marked so response assembly can source its used bytes
-// from system memory without depending on dynamic nvidia-smi collection. The
-// second return value reports whether any row was unified, allowing the caller
-// to fetch the shared system-memory total only when needed.
-func parseNvidiaStatic(out string) ([]GPUInfo, bool) {
-	var gpus []GPUInfo
-	var unifiedMemory bool
-	for _, line := range strings.Split(out, "\n") {
-		fields := splitCSVRow(line)
-		if len(fields) < 3 {
-			continue
-		}
-		uuid, name := fields[0], fields[1]
-		if uuid == "" || name == "" {
-			continue
-		}
-		var vramBytes uint64
-		usesUnifiedMemory := isNvidiaSmiNA(fields[2])
-		if usesUnifiedMemory {
-			unifiedMemory = true
-		} else if mib, err := strconv.ParseUint(fields[2], 10, 64); err == nil {
-			vramBytes = mib * 1024 * 1024
-		}
-		gpus = append(gpus, GPUInfo{
-			Name:                  name,
-			VramBytes:             vramBytes,
-			statsKey:              uuid,
-			usesSystemMemoryUsage: usesUnifiedMemory,
-		})
-	}
-	return gpus, unifiedMemory
-}
-
-// splitCSVRow splits one nvidia-smi CSV row on commas and trims surrounding
-// whitespace from each field (the tool emits ", " separators). Returns nil for
-// a blank line so callers can skip it.
-func splitCSVRow(line string) []string {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil
-	}
-	parts := strings.Split(line, ",")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
 }

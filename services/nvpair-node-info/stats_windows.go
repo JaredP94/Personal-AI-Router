@@ -109,7 +109,7 @@ var (
 	procPdhGetFormattedCounterArrayW = modPDH.NewProc("PdhGetFormattedCounterArrayW")
 	procPdhCloseQuery                = modPDH.NewProc("PdhCloseQuery")
 
-	modKernel32             = windows.NewLazySystemDLL("kernel32.dll")
+	modKernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procGlobalMemoryStatusEx = modKernel32.NewProc("GlobalMemoryStatusEx")
 
 	// Per-counter "unavailable" latches. Set once on first
@@ -341,6 +341,7 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	if used, ok := readMemoryUsed(); ok {
 		snap.MemUsedBytes = used
+		snap.MemUsedValid = true
 	}
 
 	return snap
@@ -362,6 +363,7 @@ func (c *statsCollector) decodeGPU() (map[string]gpuStat, bool) {
 			}
 			s := out[lname]
 			s.VRAMUsed = uint64(v)
+			s.VRAMUsedValid = true
 			out[lname] = s
 		}
 	}
@@ -372,6 +374,7 @@ func (c *statsCollector) decodeGPU() (map[string]gpuStat, bool) {
 		for luid, pct := range util {
 			s := out[luid]
 			s.UtilizationPct = pct
+			s.UtilizationValid = true
 			out[luid] = s
 		}
 	}

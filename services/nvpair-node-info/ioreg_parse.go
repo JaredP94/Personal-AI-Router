@@ -13,7 +13,7 @@ import (
 type ioRegistryPerformance struct {
 	DeviceUtilization   *uint64 `plist:"Device Utilization %"`
 	GPUActivity         *uint64 `plist:"GPU Activity(%)"`
-	AllocSystemMemory   uint64  `plist:"Alloc system memory"`
+	AllocSystemMemory   *uint64 `plist:"Alloc system memory"`
 	InUseSystemMemory   uint64  `plist:"In use system memory"`
 	VRAMUsedBytes       *uint64 `plist:"vramUsedBytes"`
 	InUseVidMemoryBytes *uint64 `plist:"inUseVidMemoryBytes"`
@@ -25,16 +25,37 @@ type ioRegistryEntry struct {
 	EntryName             string                `plist:"IORegistryEntryName"`
 	ObjectClass           string                `plist:"IOObjectClass"`
 	Model                 string                `plist:"model"`
-	VRAMTotalMB           uint64                `plist:"VRAM,totalMB"`
+	VRAMTotalMB           uint64                `plist:"-"`
 	Performance           ioRegistryPerformance `plist:"PerformanceStatistics"`
 	RegistryEntryChildren []ioRegistryEntry     `plist:"IORegistryEntryChildren"`
+}
+
+// UnmarshalPlist handles the literal comma in VRAM,totalMB, which the plist
+// package otherwise interprets as a struct-tag option separator.
+func (entry *ioRegistryEntry) UnmarshalPlist(unmarshal func(interface{}) error) error {
+	type fields ioRegistryEntry
+	var decoded fields
+	if err := unmarshal(&decoded); err != nil {
+		return err
+	}
+	var values map[string]interface{}
+	if err := unmarshal(&values); err != nil {
+		return err
+	}
+	if total, ok := values["VRAM,totalMB"].(uint64); ok {
+		decoded.VRAMTotalMB = total
+	}
+	*entry = ioRegistryEntry(decoded)
+	return nil
 }
 
 type darwinGPURecord struct {
 	statsKey         string
 	name             string
+	memoryKind       MemoryKind
 	vramTotal        uint64
 	vramUsed         uint64
+	vramUsedValid    bool
 	utilizationPct   uint32
 	utilizationValid bool
 }
@@ -71,16 +92,21 @@ func appendIORegistryGPUs(entry ioRegistryEntry, systemMemory uint64, records *[
 }
 
 func normalizeIORegistryGPU(entry ioRegistryEntry, name string, systemMemory uint64) darwinGPURecord {
-	isApple := strings.HasPrefix(entry.ObjectClass, "AGXAccelerator") ||
+	isApple := strings.HasPrefix(entry.ObjectClass, "AGX") ||
 		strings.HasPrefix(name, "Apple ")
 	record := darwinGPURecord{
 		statsKey: fmt.Sprintf("ioreg:%x", entry.EntryID),
 		name:     name,
 	}
 	if isApple {
+		record.memoryKind = MemoryUnified
 		record.vramTotal = systemMemory
-		record.vramUsed = entry.Performance.AllocSystemMemory
+		if entry.Performance.AllocSystemMemory != nil {
+			record.vramUsed = *entry.Performance.AllocSystemMemory
+			record.vramUsedValid = true
+		}
 	} else {
+		record.memoryKind = MemoryDedicated
 		record.vramTotal = entry.VRAMTotalMB * 1024 * 1024
 		dedicatedUsed := entry.Performance.VRAMUsedBytes
 		if dedicatedUsed == nil {
@@ -88,8 +114,7 @@ func normalizeIORegistryGPU(entry ioRegistryEntry, name string, systemMemory uin
 		}
 		if dedicatedUsed != nil {
 			record.vramUsed = *dedicatedUsed
-		} else {
-			record.vramUsed = entry.Performance.AllocSystemMemory
+			record.vramUsedValid = true
 		}
 		if record.vramTotal == 0 && dedicatedUsed != nil &&
 			entry.Performance.VRAMFreeBytes != nil {
