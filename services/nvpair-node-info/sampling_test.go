@@ -207,11 +207,13 @@ const (
 	eventCollectStart simEventType = iota
 	eventCollectFinish
 	eventScannerPoll
+	eventSchedulerArrival
 )
 
 type simEvent struct {
-	at   time.Duration
-	kind simEventType
+	at        time.Duration
+	kind      simEventType
+	sampledAt time.Duration
 }
 
 type simEventQueue []simEvent
@@ -228,29 +230,30 @@ func (q *simEventQueue) Pop() any {
 	return item
 }
 
-// TestSchedulingFreshnessBudget: virtual clock, scheduling lease kept alive by reads
-// every 2.25 s with 0.5 s request latency, collection taking up to 1 s, swept over
-// every phase offset in 50 ms steps for 60 s -> the age delivered to the scheduler
-// is always <= 10 s.
-func TestSchedulingFreshnessBudget(t *testing.T) {
+// sweepSchedulingFreshness models the pipeline with a virtual clock across phase offsets
+// from 0 to readInterval in 50 ms steps for 60 s. It tracks the maximum age the scheduler
+// holds at any instant (evaluated just before each new arrival replaces the held sample,
+// and at the end of the window).
+func sweepSchedulingFreshness(schedulingInterval time.Duration) time.Duration {
 	const (
 		readInterval   = 2250 * time.Millisecond // 2.25 s
 		requestLatency = 500 * time.Millisecond  // 0.5 s
 		collectTime    = 1000 * time.Millisecond // up to 1 s
 		testDuration   = 60 * time.Second
-		freshnessLimit = 10 * time.Second
 	)
 
-	var maxDeliveredAgeOverall time.Duration
+	var maxHeldAgeOverall time.Duration
 
 	// Sweep phase offsets from 0 to 2250 ms in 50 ms steps
 	for phase := 0 * time.Millisecond; phase < readInterval; phase += 50 * time.Millisecond {
 		var (
-			now            time.Duration
-			lastSampledAt  time.Duration
-			collecting     bool
-			collectPending bool
-			events         simEventQueue
+			now                    time.Duration
+			lastSampledAt          time.Duration = 0 // Initial sample collected at t=0
+			collecting             bool
+			collectPending         bool
+			events                 simEventQueue
+			schedulerHeldSampledAt time.Duration
+			hasHeldSample          bool
 		)
 
 		epoch := time.Unix(1000000, 0)
@@ -260,6 +263,9 @@ func TestSchedulingFreshnessBudget(t *testing.T) {
 				wakeSignal()
 			}
 		})
+		if schedulingInterval > 0 {
+			policy.schedulingInterval = schedulingInterval
+		}
 
 		wakeSignal = func() {
 			if !collecting && collectPending {
@@ -277,7 +283,6 @@ func TestSchedulingFreshnessBudget(t *testing.T) {
 		heap.Init(&events)
 
 		// Initial sample collected at t=0
-		lastSampledAt = 0
 		collectPending = true
 		heap.Push(&events, simEvent{at: policy.Interval(epoch), kind: eventCollectStart})
 
@@ -287,7 +292,7 @@ func TestSchedulingFreshnessBudget(t *testing.T) {
 		for events.Len() > 0 {
 			ev := heap.Pop(&events).(simEvent)
 			now = ev.at
-			if now > testDuration+readInterval {
+			if now > testDuration+requestLatency {
 				break
 			}
 
@@ -296,23 +301,29 @@ func TestSchedulingFreshnessBudget(t *testing.T) {
 				// Request arrives at node-info, renews scheduling lease
 				policy.RenewScheduling(epoch.Add(now))
 
-				// node-info computes msSince
-				msSince := now - lastSampledAt
-				// response travels over network to scheduler with latency
-				deliveredAge := msSince + requestLatency
+				// node-info responds with latest snapshot (lastSampledAt)
+				// delivery arrives at scheduler after requestLatency
+				heap.Push(&events, simEvent{
+					at:        now + requestLatency,
+					kind:      eventSchedulerArrival,
+					sampledAt: lastSampledAt,
+				})
 
-				if deliveredAge > freshnessLimit {
-					t.Fatalf("phase %v at %v: delivered age %v exceeded %v limit (sampledAt=%v, msSince=%v)",
-						phase, now, deliveredAge, freshnessLimit, lastSampledAt, msSince)
-				}
-				if deliveredAge > maxDeliveredAgeOverall {
-					maxDeliveredAgeOverall = deliveredAge
-				}
-
-				// Schedule next poll
-				if now+readInterval <= testDuration+readInterval {
+				// Schedule next scanner poll
+				if now+readInterval <= testDuration {
 					heap.Push(&events, simEvent{at: now + readInterval, kind: eventScannerPoll})
 				}
+
+			case eventSchedulerArrival:
+				// Decision point: evaluate age of held sample just before this new delivery replaces it
+				if hasHeldSample {
+					heldAge := now - schedulerHeldSampledAt
+					if heldAge > maxHeldAgeOverall {
+						maxHeldAgeOverall = heldAge
+					}
+				}
+				schedulerHeldSampledAt = ev.sampledAt
+				hasHeldSample = true
 
 			case eventCollectStart:
 				collectPending = false
@@ -329,11 +340,50 @@ func TestSchedulingFreshnessBudget(t *testing.T) {
 				heap.Push(&events, simEvent{at: now + interval, kind: eventCollectStart})
 			}
 		}
+
+		// Evaluate held sample age at the end of the window (testDuration)
+		if hasHeldSample {
+			heldAgeAtEnd := testDuration - schedulerHeldSampledAt
+			if heldAgeAtEnd > maxHeldAgeOverall {
+				maxHeldAgeOverall = heldAgeAtEnd
+			}
+		}
 	}
 
-	t.Logf("Max delivered age across 60s sweep: %v (budget limit %v)", maxDeliveredAgeOverall, freshnessLimit)
-	if maxDeliveredAgeOverall > freshnessLimit {
-		t.Fatalf("max delivered age %v > %v", maxDeliveredAgeOverall, freshnessLimit)
+	return maxHeldAgeOverall
+}
+
+// TestSchedulingFreshnessBudget: virtual clock, scheduling lease kept alive by reads
+// every 2.25 s with 0.5 s request latency, collection taking up to 1 s, swept over
+// every phase offset in 50 ms steps for 60 s -> the maximum age the scheduler holds
+// at any instant (evaluated just before each new arrival and at the end of the window)
+// is always <= 10 s.
+func TestSchedulingFreshnessBudget(t *testing.T) {
+	const freshnessLimit = 10 * time.Second
+
+	maxHeldAge := sweepSchedulingFreshness(SchedulingInterval)
+	t.Logf("Max decision-point held age across 60s sweep: %v (budget limit %v)", maxHeldAge, freshnessLimit)
+
+	if maxHeldAge > freshnessLimit {
+		t.Fatalf("max held age at decision point %v exceeded %v budget limit", maxHeldAge, freshnessLimit)
+	}
+}
+
+// TestSchedulingFreshnessBudgetFailsFor8sInterval proves that with SchedulingInterval raised
+// to 8 s, the worst-case held age at the scheduler's decision point exceeds the 10 s budget,
+// proving the test catches regressions when the interval is too large.
+func TestSchedulingFreshnessBudgetFailsFor8sInterval(t *testing.T) {
+	const (
+		interval8s     = 8 * time.Second
+		freshnessLimit = 10 * time.Second
+	)
+
+	maxHeldAge := sweepSchedulingFreshness(interval8s)
+	t.Logf("Max decision-point held age with 8s interval: %v (budget limit %v)", maxHeldAge, freshnessLimit)
+
+	if maxHeldAge <= freshnessLimit {
+		t.Fatalf("expected sweep to FAIL (> %v) with 8s scheduling interval, but got max held age %v",
+			freshnessLimit, maxHeldAge)
 	}
 }
 
