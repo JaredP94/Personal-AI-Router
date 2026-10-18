@@ -206,9 +206,8 @@ npm run licenses:check
 
 `npm run licenses:check` (also callable as `make licenses-check` from the repository root)
 is a release check that verifies third-party notices against `attribution-manifest.json`
-and fails on stale notices or unresolved entries without downloading Go modules. It is
-deliberately not part of `make check` so that everyday development checks remain green
-while owner-blocked attribution decisions are pending.
+and fails on stale notices or unresolved entries without downloading Go modules; the
+gate now passes cleanly across all dependencies.
 
 Run the Go tests from a Go component directory, and from `services/tests` for
 cross-process coverage:

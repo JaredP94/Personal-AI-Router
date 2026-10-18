@@ -114,9 +114,8 @@ make test     # desktop unit tests plus go test in every services module
 
 `make check` does not include `npm run dead-code:check`, so run that as well.
 `make licenses-check` (`cd desktop && npm run licenses:check`) is a release
-check that verifies third-party notices against `attribution-manifest.json`; it
-is deliberately not part of `make check` so everyday checks remain green while
-owner-blocked attribution decisions are pending.
+check that verifies third-party notices against `attribution-manifest.json`; the
+gate now passes cleanly across all dependencies.
 On Windows, run the underlying npm and `go test` commands directly.
 
 ## Conventions

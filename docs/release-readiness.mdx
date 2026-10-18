@@ -109,10 +109,8 @@ Regeneration inventories **296 component/version entries**: 240 npm/Electron and
 
 - **24 README-fallback/missing-text entries were audited** (23 npm entries and
   `github.com/mattn/go-localereader@v0.0.1`): resolved with authoritative upstream
-  texts in `desktop/licenses/texts/` and recorded in `desktop/licenses/attribution-manifest.json`,
-  except 5 owner decisions (`@electron-internal/extract-zip@1.0.4`, `lazy-val@1.0.5`,
-  `react-remove-scroll-bar@2.3.8`, `github.com/mattn/go-localereader@v0.0.1`, and
-  `kaizen-ui-foundations@1.0.0`) which remain blocked awaiting owner resolution.
+  texts in `desktop/licenses/texts/` and recorded in `desktop/licenses/attribution-manifest.json`
+  (including all 5 entries resolved by controller determination on 2026-10-18).
 - Lucide's attribution is now included in the canonical notice as a reviewed asset entry.
 - Vendored Kaizen CSS verifies pinned SHA-256 digests of downloaded bytes before writing.
 - Standalone installers stage every component and notice: `services/installer_build.sh`
@@ -133,12 +131,14 @@ not part of `make check`) fails on a stale notice or unresolved entries and neve
 downloads Go modules (`GOPROXY=off`, `GOFLAGS=-mod=readonly`). It scans installed
 npm packages and compares generated output against `attribution-manifest.json`.
 
-Blocked attribution decisions requiring owner resolution (5 entries):
-- `@electron-internal/extract-zip@1.0.4`: No license file in published npm tarball or upstream repository at tag `v1.0.4`; README mentions BSD-2-Clause but no authoritative grant text exists.
-- `github.com/mattn/go-localereader@v0.0.1`: No license file in upstream repository at tag `v0.0.1` (`6338b4c69507fb1f9edba3db33882a8e9ab9bfa8`) or in module cache.
-- `kaizen-ui-foundations@1.0.0`: NVIDIA redistribution/modification terms needed from the owner.
-- `lazy-val@1.0.5`: No license file in published npm tarball or upstream repository at commit `b69ad4119f1b19bdab13c61ee2fcc88d46b89071`; package.json specifies MIT without authoritative text.
-- `react-remove-scroll-bar@2.3.8`: No license file in published npm tarball; gitHead commit `b3b1287aad81def2e2ae707274b74531b61ddbaf` is unreachable upstream; LICENSE was added only later in PR #76.
+Resolved by controller determination (2026-10-18):
+- `@electron-internal/extract-zip@1.0.4`: Derived from `max-mapper/extract-zip`; resolved with BSD-2-Clause LICENSE from `max-mapper/extract-zip` default-branch HEAD (`d6f095261840e6523f9a4fd84caa645f22ba1078`).
+- `github.com/mattn/go-localereader@v0.0.1`: Tag v0.0.1 README declares MIT; resolved with author's MIT LICENSE added at commit `d92f6c38ec2b974f0d9e3cc3ea57288345cb74bf`.
+- `kaizen-ui-foundations@1.0.0`: Companion stylesheet of `@nvidia/foundations-react-core@1.0.0`; resolved with its Apache-2.0 `LICENSE.md`.
+- `lazy-val@1.0.5`: Package declares MIT; resolved with standard MIT license text from `spdx/license-list-data` tag `v3.29.0` (commit `31ba1a50e5397e00a304dbadc76531740e89ee48`) without filled placeholders.
+- `react-remove-scroll-bar@2.3.8`: Package declares MIT; resolved with author's MIT LICENSE added at commit `7301c160fda44cb8cf2b9fdfde61efad35736196`.
+
+- Caveat: `@nvidia/foundations-react-core 1.0.0 ships a NOTICE.md whose SPDX header reads LicenseRef-NvidiaProprietary while its package.json and LICENSE.md declare Apache-2.0; the notice treats Apache-2.0 as governing. Raise with NVIDIA if this matters for your distribution.`
 
 ## Repeatable Checks
 
@@ -165,8 +165,8 @@ npm run service-contracts:check
 
 `licenses:check` (also callable as `make licenses-check` from the repository root)
 is a release check, deliberately not included in `make check`. It fails on a
-stale notice or any unresolved entry (currently failing only on the 5 owner-blocked
-entries).
+stale notice or any unresolved entry; with all manifest determinations resolved,
+the gate now passes cleanly.
 
 Review the regenerated notice diff; unchanged inputs should reproduce identical
 output. These checks do not replace Go suites, authorized live inference tests,
