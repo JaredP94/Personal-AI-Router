@@ -565,7 +565,14 @@ Returns the desired telemetry snapshot (`revision`, `enabled`, `collectorPort`,
   or `missing` with no container. The canonical SHA-256 is computed with the
   managed-config label value empty, then inserted into the final render.
 - `imageVersion`: the pinned Phoenix release tag (`version-20.23.0`).
-- `storage` remains null pending retention support.
+- `storage`: `{ "bytes": integer|null, "volumes": [{ "name": string,
+  "bytes": integer|null }], "measuredAt": string|null, "error": string|null }`.
+  Only volumes labelled `com.docker.compose.volume=nvpair-phoenix-data` count,
+  including earlier PAIR Compose projects. Measurement has a 10-second timeout;
+  any command/decoding/missing-size failure returns `bytes: null` and an error,
+  not a misleading zero. Successful measurements include a UTC RFC3339 timestamp
+  and a sum of the listed volume sizes (zero with an empty array when none exist).
+  Sizes come from Docker's formatted disk usage and inherit its rounding.
 
 The broker loads `settings/get-telemetry-config` whenever settings announces ready,
 including restarts, and consumes/forwards `settings/telemetry-changed` snapshots.
@@ -608,6 +615,33 @@ Stops the managed Arize Phoenix container via
 `docker compose -p nvpair-telemetry -f <appdir>/telemetry/phoenix-compose.yml stop`
 and returns the updated `TelemetryStatusResult`. Its named trace-data volume is
 retained; this is not trace deletion or proxy tracing disablement.
+
+#### `telemetry/purge-storage`
+
+Permanently deletes PAIR-created Phoenix trace volumes on this machine. Requires
+params `{ "confirm": "delete-traces" }`; a wrong, missing, or malformed confirmation
+returns `-32602` without Docker operations. This does not disable tracing policy.
+
+Cancels pending startup and stops the managed Compose deployment (20-second
+command timeout), then enumerates **only** volumes labelled
+`com.docker.compose.volume=nvpair-phoenix-data`. This includes earlier PAIR
+Compose projects, not just the current `nvpair-telemetry` project. A stop or
+volume-list failure returns `-32000` without attempting volume deletion.
+
+For each labelled volume, lists all referencing containers. Any running container
+(including non-PAIR containers), paused/restarting container, unknown state, or
+failed users lookup refuses deletion. When safe, removes a stopped container named
+exactly `nvpair-phoenix` referencing that volume, then runs `docker volume rm
+<name>`. Other containers and unlabelled/unrelated volumes are never removed.
+Volume removal is not forced; references from other stopped containers can cause
+Docker to refuse it. No `prune` command is used. Phoenix stays stopped; deletion
+is not automatically followed by a restart.
+
+Returns `{ "removed": ["volume-name"], "refused": [{ "name": "volume-name",
+"reason": "description" }], "storage": <storage object above> }`. Per-volume
+failures are reported in `refused` and do not prevent attempts on the other
+labelled volumes. `storage` is a fresh post-purge measurement, which can itself
+report an error even when deletion succeeded.
 
 #### `node/add` / `node/remove` / `nodes/list` (manual nodes)
 

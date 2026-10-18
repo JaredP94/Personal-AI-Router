@@ -243,14 +243,21 @@ func TestStatusReportsDesiredAndEffective(t *testing.T) {
 	}
 	var got map[string]json.RawMessage
 	json.Unmarshal(raw, &got)
-	want := map[string]string{"revision": "12", "enabled": "true", "collectorPort": "54317", "recordPayloads": "true", "payloadConsentVersion": "1", "payloadPolicyVersion": "1", "containerState": `"running"`, "collectorReachable": "true", "uiUrl": `"http://127.0.0.1:6006"`, "imageVersion": `"version-20.23.0"`, "bindingsLoopbackOnly": "true", "managedConfig": `"outdated"`, "storage": "null"}
-	if len(got) != len(want)+1 {
+	want := map[string]string{"revision": "12", "enabled": "true", "collectorPort": "54317", "recordPayloads": "true", "payloadConsentVersion": "1", "payloadPolicyVersion": "1", "containerState": `"running"`, "collectorReachable": "true", "uiUrl": `"http://127.0.0.1:6006"`, "imageVersion": `"version-20.23.0"`, "bindingsLoopbackOnly": "true", "managedConfig": `"outdated"`}
+	if len(got) != len(want)+2 {
 		t.Errorf("unexpected status keys: %s", raw)
 	}
 	for key, value := range want {
 		if string(got[key]) != value {
 			t.Errorf("%s = %s, want %s", key, got[key], value)
 		}
+	}
+	var storage storageWire
+	if err := json.Unmarshal(got["storage"], &storage); err != nil {
+		t.Fatal(err)
+	}
+	if storage.Bytes == nil || *storage.Bytes != 0 || storage.Volumes == nil || len(storage.Volumes) != 0 || storage.MeasuredAt == nil || storage.Error != nil {
+		t.Errorf("unexpected empty storage: %+v", storage)
 	}
 	var workers []map[string]interface{}
 	json.Unmarshal(got["workers"], &workers)

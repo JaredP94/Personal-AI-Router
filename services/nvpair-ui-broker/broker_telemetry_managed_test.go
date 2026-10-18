@@ -197,9 +197,9 @@ func TestStartReplacesForeignProjectContainerKeepsVolumes(t *testing.T) {
 			if response.Error != nil {
 				t.Fatal(response.Error)
 			}
-			want := "remove,up"
+			want := "remove,up,list,sizes"
 			if project == "nvpair-telemetry" {
-				want = "up"
+				want = "up,list,sizes"
 			}
 			if strings.Join(runner.events, ",") != want {
 				t.Errorf("events = %v, want %s", runner.events, want)

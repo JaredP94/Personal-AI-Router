@@ -3181,6 +3181,9 @@ func (b *Broker) handleMessage(msg *Message) {
 	case "telemetry/stop":
 		go b.handleTelemetryStop(msg)
 
+	case "telemetry/purge-storage":
+		go b.handleTelemetryPurgeStorage(msg)
+
 	case "shutdown":
 		if err := b.codec.Respond(msg.ID, nil); err != nil {
 			log.Printf("failed to respond to shutdown: %v", err)

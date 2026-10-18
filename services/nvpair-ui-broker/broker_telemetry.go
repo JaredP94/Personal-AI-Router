@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -89,7 +92,36 @@ type TelemetryStatusResult struct {
 	ImageVersion         string                 `json:"imageVersion"`
 	BindingsLoopbackOnly *bool                  `json:"bindingsLoopbackOnly"`
 	ManagedConfig        json.RawMessage        `json:"managedConfig"`
-	Storage              json.RawMessage        `json:"storage"`
+	Storage              telemetryStorage       `json:"storage"`
+}
+
+const traceVolumeLabel = "com.docker.compose.volume=nvpair-phoenix-data"
+
+type telemetryVolumeStorage struct {
+	Name  string `json:"name"`
+	Bytes *int64 `json:"bytes"`
+}
+
+type telemetryStorage struct {
+	Bytes      *int64                   `json:"bytes"`
+	Volumes    []telemetryVolumeStorage `json:"volumes"`
+	MeasuredAt *string                  `json:"measuredAt"`
+	Error      *string                  `json:"error"`
+}
+
+type telemetryPurgeResult struct {
+	Removed []string                 `json:"removed"`
+	Refused []telemetryVolumeRefusal `json:"refused"`
+	Storage telemetryStorage         `json:"storage"`
+}
+
+type telemetryVolumeRefusal struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+type dockerVolume struct {
+	Name string `json:"Name"`
 }
 
 type dockerPortBinding struct {
@@ -109,6 +141,10 @@ type dockerRunner interface {
 	removeContainer(ctx context.Context, containerName string) error
 	composeUp(ctx context.Context, composeFile string) error
 	composeStop(ctx context.Context, composeFile string) error
+	listVolumes(ctx context.Context, labelFilter string) ([]dockerVolume, error)
+	volumeSizes(ctx context.Context) (map[string]int64, error)
+	volumeUsers(ctx context.Context, name string) ([]string, error)
+	removeVolume(ctx context.Context, name string) error
 }
 
 type defaultDockerRunner struct {
@@ -219,6 +255,99 @@ func (r *defaultDockerRunner) composeStop(ctx context.Context, composeFile strin
 	return nil
 }
 
+// storageCommand never invokes a shell. Volume removal deliberately has no
+// force/prune flags; Docker remains the final guard against attached volumes.
+func (r *defaultDockerRunner) storageCommand(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, r.getDockerPath(), args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker %s failed: %w (stderr: %s)", args[0], err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+func (r *defaultDockerRunner) listVolumes(ctx context.Context, labelFilter string) ([]dockerVolume, error) {
+	output, err := r.storageCommand(ctx, "volume", "ls", "--filter", "label="+labelFilter, "--format", "{{json .}}")
+	if err != nil {
+		return nil, err
+	}
+	volumes := make([]dockerVolume, 0)
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	for {
+		var volume dockerVolume
+		if err := decoder.Decode(&volume); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("decode docker volumes: %w", err)
+		}
+		if volume.Name == "" || strings.HasPrefix(volume.Name, "-") {
+			return nil, errors.New("docker returned an invalid volume name")
+		}
+		volumes = append(volumes, volume)
+	}
+	return volumes, nil
+}
+
+// Docker's verbose formatter returns a Volumes array with human-readable SI
+// sizes (e.g. 1.024kB), not the engine API's UsageData.Size integers. Report the
+// bytes represented by that measurement; do not interpret unavailable sizes as 0.
+func (r *defaultDockerRunner) volumeSizes(ctx context.Context) (map[string]int64, error) {
+	output, err := r.storageCommand(ctx, "system", "df", "-v", "--format", "{{json .}}")
+	if err != nil {
+		return nil, err
+	}
+	var usage struct {
+		Volumes *[]struct {
+			Name string
+			Size string
+		}
+	}
+	if err := json.Unmarshal(output, &usage); err != nil {
+		return nil, fmt.Errorf("decode docker disk usage: %w", err)
+	}
+	if usage.Volumes == nil {
+		return nil, errors.New("docker disk usage has no volumes measurement")
+	}
+	sizes := make(map[string]int64)
+	for _, volume := range *usage.Volumes {
+		var multiplier float64
+		var number string
+		for i, unit := range []string{"B", "kB", "MB", "GB", "TB", "PB", "EB"} {
+			if strings.HasSuffix(volume.Size, unit) {
+				multiplier = math.Pow(1000, float64(i))
+				number = strings.TrimSpace(strings.TrimSuffix(volume.Size, unit))
+			}
+		}
+		value, err := strconv.ParseFloat(number, 64)
+		value = math.Round(value * multiplier)
+		if err != nil || multiplier == 0 || math.IsNaN(value) || value < 0 || value >= float64(math.MaxInt64) || volume.Name == "" {
+			return nil, fmt.Errorf("docker volume %q has an unavailable or invalid size", volume.Name)
+		}
+		sizes[volume.Name] = int64(value)
+	}
+	return sizes, nil
+}
+
+func (r *defaultDockerRunner) volumeUsers(ctx context.Context, name string) ([]string, error) {
+	output, err := r.storageCommand(ctx, "ps", "-a", "--filter", "volume="+name, "--format", "{{.Names}}|{{.State}}")
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return []string{}, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
+func (r *defaultDockerRunner) removeVolume(ctx context.Context, name string) error {
+	_, err := r.storageCommand(ctx, "volume", "rm", name)
+	return err
+}
+
 func (b *Broker) getDockerRunner() dockerRunner {
 	if b.dockerRunner != nil {
 		return b.dockerRunner
@@ -291,6 +420,143 @@ func (b *Broker) getTelemetryStatus(ctx context.Context) TelemetryStatusResult {
 		ImageVersion:           phoenixImageVersion,
 		BindingsLoopbackOnly:   bindingsLoopbackOnly,
 		ManagedConfig:          managedConfig,
+		Storage:                b.measureTelemetryStorage(ctx),
+	}
+}
+
+func (b *Broker) measureTelemetryStorage(parent context.Context) telemetryStorage {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	storage := telemetryStorage{Volumes: make([]telemetryVolumeStorage, 0)}
+	failed := func(err error) telemetryStorage {
+		message := err.Error()
+		storage.Error = &message
+		return storage
+	}
+	runner := b.getDockerRunner()
+	volumes, err := runner.listVolumes(ctx, traceVolumeLabel)
+	if err != nil {
+		return failed(err)
+	}
+	sort.Slice(volumes, func(i, j int) bool { return volumes[i].Name < volumes[j].Name })
+	for _, volume := range volumes {
+		storage.Volumes = append(storage.Volumes, telemetryVolumeStorage{Name: volume.Name})
+	}
+	sizes, err := runner.volumeSizes(ctx)
+	if err != nil {
+		return failed(err)
+	}
+	var total int64
+	for i := range storage.Volumes {
+		volume := &storage.Volumes[i]
+		size, found := sizes[volume.Name]
+		if !found || size < 0 || total > math.MaxInt64-size {
+			return failed(fmt.Errorf("size unavailable for trace volume %q", volume.Name))
+		}
+		volume.Bytes = &size
+		total += size
+	}
+	if err := ctx.Err(); err != nil {
+		return failed(err)
+	}
+	measuredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	storage.Bytes = &total
+	storage.MeasuredAt = &measuredAt
+	return storage
+}
+
+func purgeTraceVolume(ctx context.Context, runner dockerRunner, name string) error {
+	users, err := runner.volumeUsers(ctx, name)
+	if err != nil {
+		return err
+	}
+	removePhoenix := false
+	// Check every user before removing even a stopped Phoenix container.
+	for _, user := range users {
+		container, state, ok := strings.Cut(strings.TrimSpace(user), "|")
+		if !ok || container == "" {
+			return errors.New("cannot determine volume users")
+		}
+		switch state {
+		case "exited", "dead", "created":
+			if container == "nvpair-phoenix" {
+				removePhoenix = true
+			}
+		case "running", "paused", "restarting":
+			return fmt.Errorf("volume is used by active container %q", container)
+		default:
+			return fmt.Errorf("cannot safely remove volume used by container %q in state %q", container, state)
+		}
+	}
+	if removePhoenix {
+		if err := runner.removeContainer(ctx, "nvpair-phoenix"); err != nil {
+			return err
+		}
+	}
+	return runner.removeVolume(ctx, name)
+}
+
+func (b *Broker) purgeTelemetryStorage(ctx context.Context) (telemetryPurgeResult, error) {
+	b.telemetryMu.Lock()
+	defer b.telemetryMu.Unlock()
+	result := telemetryPurgeResult{Removed: make([]string, 0), Refused: make([]telemetryVolumeRefusal, 0)}
+	if b.telemetryCancelStart != nil {
+		b.telemetryCancelStart()
+		b.telemetryCancelStart = nil
+	}
+	b.telemetryStarting.Store(false)
+	composePath, err := b.writePhoenixCompose()
+	if err != nil {
+		return result, fmt.Errorf("cannot write managed compose file: %w", err)
+	}
+	runner := b.getDockerRunner()
+	stopCtx, stopCancel := context.WithTimeout(ctx, 20*time.Second)
+	err = runner.composeStop(stopCtx, composePath)
+	stopCancel()
+	if err != nil {
+		return result, fmt.Errorf("cannot stop managed Phoenix: %w", err)
+	}
+	b.unregisterService(noderec.ServiceOTel)
+	listCtx, listCancel := context.WithTimeout(ctx, 10*time.Second)
+	volumes, err := runner.listVolumes(listCtx, traceVolumeLabel)
+	listCancel()
+	if err != nil {
+		return result, fmt.Errorf("cannot list trace volumes: %w", err)
+	}
+	sort.Slice(volumes, func(i, j int) bool { return volumes[i].Name < volumes[j].Name })
+	for _, volume := range volumes {
+		volumeCtx, volumeCancel := context.WithTimeout(ctx, 20*time.Second)
+		err := purgeTraceVolume(volumeCtx, runner, volume.Name)
+		volumeCancel()
+		if err != nil {
+			result.Refused = append(result.Refused, telemetryVolumeRefusal{Name: volume.Name, Reason: err.Error()})
+		} else {
+			result.Removed = append(result.Removed, volume.Name)
+		}
+	}
+	result.Storage = b.measureTelemetryStorage(ctx)
+	return result, nil
+}
+
+func (b *Broker) handleTelemetryPurgeStorage(msg *Message) {
+	var params struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil || params.Confirm != "delete-traces" {
+		if err := b.codec.RespondError(msg.ID, -32602, "confirm must be delete-traces"); err != nil {
+			log.Printf("failed to respond to telemetry/purge-storage: %v", err)
+		}
+		return
+	}
+	result, err := b.purgeTelemetryStorage(context.Background())
+	if err != nil {
+		if err := b.codec.RespondError(msg.ID, -32000, err.Error()); err != nil {
+			log.Printf("failed to respond to telemetry/purge-storage: %v", err)
+		}
+		return
+	}
+	if err := b.codec.Respond(msg.ID, result); err != nil {
+		log.Printf("failed to respond to telemetry/purge-storage: %v", err)
 	}
 }
 

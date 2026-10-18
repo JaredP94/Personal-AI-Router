@@ -24,6 +24,18 @@ type mockDockerRunner struct {
 	removed     []string
 	removeErr   error
 	events      []string
+
+	volumeLabels    map[string]string
+	volumeBytes     map[string]int64
+	users           map[string][]string
+	listErr         error
+	sizesErr        error
+	usersErr        error
+	volumeRemoveErr error
+	stopErr         error
+	removedVolumes  []string
+	storageTimeout  time.Duration
+	stopTimeout     time.Duration
 }
 
 func (m *mockDockerRunner) setState(state string) {
@@ -68,8 +80,12 @@ func (m *mockDockerRunner) composeStop(ctx context.Context, composeFile string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopCalled = true
+	m.events = append(m.events, "stop")
 	m.composeFile = composeFile
-	return nil
+	if deadline, ok := ctx.Deadline(); ok {
+		m.stopTimeout = time.Until(deadline)
+	}
+	return m.stopErr
 }
 
 func TestTelemetryGetStatus(t *testing.T) {
@@ -245,6 +261,7 @@ func TestTelemetryGetStatusDockerUnavailable(t *testing.T) {
 }
 
 type errorDockerRunner struct {
+	mockDockerRunner
 	upErr   error
 	stopErr error
 }
@@ -311,6 +328,7 @@ func TestTelemetryStartAndStopErrors(t *testing.T) {
 }
 
 type slowDockerRunner struct {
+	mockDockerRunner
 	mu             sync.Mutex
 	composeUpDelay time.Duration
 	state          string
