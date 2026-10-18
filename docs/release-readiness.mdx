@@ -150,6 +150,30 @@ Historical performance observations and the final-artifact profiling gate are in
   startup/retry, manual confirmation and recovery on each release platform before
   classifying this item resolved for that release.
 
+### GPU Memory Semantics
+
+**Implemented, pending release testing; Windows runtime untested on this host;
+Linux AMD/Intel remain names-only.**
+
+- Go reports `dedicated`, `unified`, `shared`, or `unavailable` per adapter.
+  Apple unified usage is GPU-mapped allocation; Linux NVIDIA unified usage is
+  system-used RAM. Windows dedicated VRAM and shared-system-memory budgets/usage
+  are separate; zero-dedicated adapters report shared memory, not VRAM.
+- Discovery/manual-node/broker propagation and desktop history preserve missing
+  readings separately from measured zero. Labels follow the reported kind;
+  unknown current readings show `—`, charts break at gaps, and adapter memory is
+  never summed. Older peers without a kind render unavailable memory.
+- Scheduler policy is unchanged: maximum measured utilization, neutral pressure
+  for invalid/stale telemetry, no memory-capacity ranking. Linux AMD/Intel driver
+  collectors are out of scope and remain **Memory unavailable**, without GPU
+  utilization.
+- Windows host-runnable classification/counter fixtures and cross-compilation
+  are not actual DXGI/PDH execution. Verify real adapter capacities, independent
+  dedicated/shared counters, idle/unknown readings, multi-adapter displays, and
+  packaged history recovery on release platforms before calling this resolved
+  in a release. Source checks do not certify published assets. See
+  [GPU memory limitations](known-issues.mdx#unified-memory-systems-report-misleading-gpu-memory).
+
 ### Private Vulnerability Reporting
 
 **Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled

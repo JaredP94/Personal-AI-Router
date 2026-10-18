@@ -86,17 +86,13 @@ Returns the merged static identity (collected once at startup) and the latest dy
 
 Field notes:
 
-- Dynamic fields (`vram_used_bytes`, `utilization_percent`, `cpu.utilization_percent`, `memory.used_bytes`) are populated by the Windows, Linux, and macOS per-tick stats collectors.
+- Dynamic fields (`vram_used_bytes`, `shared_used_bytes`, `utilization_percent`, `cpu.utilization_percent`, `memory.used_bytes`) are populated by the Windows, Linux, and macOS per-tick stats collectors.
 - `telemetryValid` and `msSince` describe the node-wide GPU utilization snapshot. `telemetryValid` is `true` after the collector has produced a usable GPU sample; `msSince` is that sample's age in milliseconds at response time. A failed collection retains the last usable sample and lets its age increase. Before the first usable sample, and on platforms without dynamic GPU telemetry, the response reports `telemetryValid:false` and `msSince:0`; consumers must ignore the age while validity is false.
 - `clusterUuid` is the cluster principal this node currently holds. It has three distinct states on the wire: **absent** means unknown, **present and empty** means this node belongs to no cluster, and a value is that principal. A consumer must not read absent as unclustered — that is how a node too old to report the field answers, and also how this node answers before its parent has told it anything, so acting on it would clear a correct annotation elsewhere in the fleet.
 - Under the broker, `clusterUuid` is pushed in over stdin (`nodeinfo:set-cluster-identity`) because node-info is spawned with no cluster dir and so cannot read membership itself; the field stays absent until the first push arrives. Standalone with `--cluster-dir`, it reads membership from the trust store per request instead and is therefore always known. The two sources are mutually exclusive by deployment, not a fallback chain.
 - `clusterUuid` exists so a peer can learn this node's membership without its mDNS record. Membership otherwise travels only as the `cluster-uuid=` TXT key, which a consumer reads once per record *change*; a consumer that misses that change keeps the previous value indefinitely, and one still holding a departed node's principal will suppress the invite that would bring it back.
-- Every GPU has `name` and `memory_kind`: `dedicated`, `unified`, `shared`, or `unavailable`. `vram_bytes` is that adapter's memory capacity **of the reported kind**, not necessarily dedicated VRAM. Unknown capacity is omitted. Capacities must never be summed across adapters: unified/shared adapters can refer to the same system-memory pool.
-- GPU `vram_used_bytes` and `utilization_percent` are present only when measured, including a measured **0**. Missing means unknown, not idle. Validity is retained independently for each adapter and metric, so an unknown adapter does not hide another adapter's measured utilization. GPU metric presence does not change node-wide `telemetryValid`, `msSince`, or `sampleSeq` semantics.
-- On Windows, adapters with DXGI `DedicatedVideoMemory > 0` are `dedicated`: `vram_bytes` / `vram_used_bytes` are dedicated capacity / PDH `Dedicated Usage`, while `shared_bytes` / `shared_used_bytes` separately report DXGI `SharedSystemMemory` / PDH `Shared Usage`. Dedicated and shared memory are never added together. Adapters with zero dedicated video memory are `shared`: `vram_bytes` / `vram_used_bytes` use the shared budget / usage, and the separate `shared_*` fields are omitted. A missing usage counter omits only its corresponding reading; a measured zero remains present. `DedicatedSystemMemory` is not reported as video memory.
+- GPU field presence and per-platform memory sources are defined in the [GPU wire contract](#gpu-wire-contract) below. `DedicatedSystemMemory` is never reported as video memory; macOS system allocation is never substituted for dedicated VRAM usage.
 - CPU / memory fields retain their existing `omitempty` semantics; a genuinely idle CPU is still omitted.
-- Windows reports dedicated/shared capacities through DXGI and measured usage through PDH. Linux NVIDIA numeric `memory.total` is `dedicated`; `[N/A]` / `Not Supported` totals are `unified`, using physical system memory for capacity and independently measured system-memory usage for used bytes. A malformed total is `unavailable` and omits memory readings. Linux names-only (`ghw`) and other-platform inventories are `unavailable`, without GPU utilization.
-- macOS Apple GPUs (AGX class or `Apple ` name) are `unified`: capacity is physical RAM and usage is the GPU driver's mapped allocation (`Alloc system memory`), not whole-system RAM usage or the momentarily active subset. Non-Apple adapters are `dedicated`: capacity comes from `VRAM,totalMB` (or dedicated used + free counters if total is missing); usage requires `vramUsedBytes` or `inUseVidMemoryBytes`. System allocation is never substituted for dedicated VRAM usage.
 - Telemetry sampling cadence is lease-driven via the `X-NVPAIR-Poll` request header:
   - `foreground` (visible UI) renews the **interactive** lease (2 s interval);
   - `scheduling` (scanner, manual nodes) renews the **scheduling** lease (5 s interval);
@@ -105,6 +101,57 @@ Field notes:
   - When neither lease is active and `localExecution` is false, sampling relaxes to idle (10 s interval).
   - Leases have a 6 s TTL (`LeaseTTL`). Any renewal that raises the sampling mode wakes the collector immediately.
 - The parent broker pushes `stats/set-demand` with `{"localExecution": bool}` over stdin on start and on workload change. When `localExecution` is true (at least one active non-terminal workload is scheduled on this node), sampling stays in interactive mode (2 s) regardless of incoming poll headers.
+
+### GPU wire contract
+
+The same GPU object fields travel in `/v1/node-info` `GPUs[]`, shared
+`noderec.GPUInfo` discovery records, and manual-nodes `gpus[]`:
+
+| Field | Presence and meaning |
+| --- | --- |
+| `name` | String, always present. |
+| `memory_kind` | Always present: `dedicated`, `unified`, `shared`, or `unavailable`. Classification belongs to Go, not the desktop. |
+| `vram_bytes` | Optional capacity in bytes of **this adapter's reported kind**: dedicated VRAM, physical system RAM for unified memory, or the shared-system-memory budget for shared memory. Omitted when unknown. |
+| `vram_used_bytes` | Optional measured used bytes for that kind; a measured `0` is present. Omitted when unknown. |
+| `shared_bytes` | Windows dedicated adapters only: optional shared-system-memory budget, separate from dedicated capacity. Omitted elsewhere or when unknown. |
+| `shared_used_bytes` | Windows dedicated adapters only: optional measured shared usage, separate from dedicated usage. A measured `0` is present; omitted elsewhere or when unknown. |
+| `utilization_percent` | Optional measured utilization, including idle `0`; omitted when unknown. Independent of memory availability. |
+
+Neither absent capacity nor absent usage means zero. Unknown fields are omitted,
+not fabricated. Presence is independent for every adapter and metric, so one
+unknown adapter does not hide another's measured utilization. Memory values are
+per adapter, never summed across adapters or between dedicated and shared pools.
+System RAM is never dedicated VRAM.
+
+| Collector / classification condition | `memory_kind` | Capacity / used source |
+| --- | --- | --- |
+| macOS Apple GPU: AGX class or `Apple ` name | `unified` | Physical RAM / GPU-mapped `Alloc system memory`, not whole-system used RAM. |
+| macOS non-Apple GPU | `dedicated` | `VRAM,totalMB` (or dedicated used + free when total is missing) / `vramUsedBytes` or `inUseVidMemoryBytes` only; otherwise usage omitted. |
+| Linux NVIDIA: numeric `memory.total` | `dedicated` | `nvidia-smi` total / used, converted from MiB to bytes. |
+| Linux NVIDIA: `[N/A]`, `N/A`, `[Not Supported]`, or `Not Supported` total | `unified` | Physical RAM / independently measured system-used RAM; sentinel-based classification, not a hardware memory-type query. |
+| Linux NVIDIA: malformed total | `unavailable` | Memory capacity and usage omitted; measured utilization remains independent. |
+| Linux names-only (`ghw`) and other OS inventories | `unavailable` | No memory readings or utilization. Linux AMD/Intel remain names-only; no new driver collectors. |
+| Windows DXGI: `DedicatedVideoMemory > 0` | `dedicated` | Dedicated capacity / PDH `Dedicated Usage`; separately `shared_bytes` = `SharedSystemMemory`, `shared_used_bytes` = PDH `Shared Usage`. |
+| Windows DXGI: `DedicatedVideoMemory == 0` | `shared` | `SharedSystemMemory` budget / PDH `Shared Usage`; separate `shared_*` fields omitted. |
+
+Downstream Go decoding normalizes missing or empty `memory_kind` from older peers
+to `unavailable`; the desktop also treats unrecognized kinds as `unavailable`
+rather than inferring from names or numeric capacities. Unknown readings become
+nullable desktop values: `—` in current displays and gaps in chart history.
+Measured zero is retained independently on each adapter. Labels are `VRAM`,
+`Unified memory`, `Shared memory`, and `Memory unavailable`. The unified detail
+uses `GPU-allocated` wording; on Linux NVIDIA unified adapters its used-byte source
+is **system-used RAM**, not a GPU-only allocation measurement.
+
+Memory semantics do not change scheduler policy: compact telemetry takes the
+maximum **measured** utilization across adapters and retains the existing
+node-wide validity, freshness, and sample-sequence rules. Invalid or stale samples
+remain neutral pressure; memory kind/capacity do not affect ranking.
+
+Windows classification and counter decoding have host-runnable fixture coverage
+and Windows cross-compilation checks, but actual DXGI/PDH runtime behavior is
+**untested on the macOS verification host**. These are source semantics, not
+release-artifact certification.
 
 ## Discovery
 

@@ -81,7 +81,27 @@ at startup and resolved as soon as the broker is ready, so self is identified by
 the same UUID key rather than a hostname guess.
 
 The broker discovery surface does not include full dynamic telemetry, so
-Electron polls `/v1/node-info` for CPU, memory, GPU, and VRAM values.
+Electron polls `/v1/node-info` for CPU, system memory, and per-adapter GPU values.
+
+Go classifies each GPU's `memory_kind`; the bridge preserves it as `memoryKind`
+without name-based inference. Dedicated, unified, shared, and unavailable memory
+render as **VRAM**, **Unified memory**, **Shared memory**, and **Memory unavailable**.
+Missing/empty legacy kinds and unrecognized kinds render unavailable, not VRAM.
+The [node-info wire contract](../../services/nvpair-node-info/README.md#gpu-wire-contract)
+defines capacity and usage sources per platform. Linux AMD/Intel remain names-only
+with no memory/utilization readings; no new driver support is implied.
+
+The bridge carries nullable primary capacity (`vramTotal`), Windows dedicated
+adapters' separate shared budget (`sharedTotal`), per-adapter usage percentages,
+and shared usage in bytes. Unknown readings stay null through history, current
+values show `—`, and charts break at nulls rather than plotting zero. A measured
+idle `0` remains visible, and an unknown adapter does not hide another adapter's
+measured values. Unavailable memory has no numerical memory plot. Card legends,
+performance details, and tray rows share the kind labels; Windows dedicated
+adapters show their shared budget/usage on an independent **Shared memory** line.
+Unified detail uses `<used> GPU-allocated of <total> unified memory`; on Linux
+NVIDIA unified adapters, used bytes come from **system-used RAM**, not GPU-only
+allocations. No capacities or usages are added across adapters or memory pools.
 
 Two limitations follow from the current discovery and node-info contract:
 
@@ -109,7 +129,8 @@ proxy ordering. Personal AI Router leaves proxies in automatic mode.
 
 `nvpair-job-scheduler` combines total queued and running workload across both
 engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and manual
-node worker provide maximum-GPU utilization, while invalid, missing, or
+node worker provide maximum utilization over adapters with measured readings
+(ignoring unknown readings), while invalid, missing, or
 older-than-10-second samples receive neutral pressure. The scheduler emits order,
 pending count, and pressure; the broker forwards each `schedule:priority`
 snapshot to the matching proxy through `node/set-priority`. Each proxy adds

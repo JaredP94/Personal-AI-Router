@@ -311,6 +311,30 @@ runs every two seconds with a visible UI, or every 30 seconds when all windows
 are hidden/minimized; failures use capped backoff. This is the one place Electron
 makes service-data HTTP calls of its own.
 
+GPU memory classification is owned by Go. Each adapter carries `memory_kind`
+(`dedicated`, `unified`, `shared`, or `unavailable`); `vram_bytes` means capacity
+of that kind, not necessarily dedicated VRAM. Apple macOS GPUs report unified
+physical RAM with GPU-mapped allocation usage. Non-Apple macOS GPUs use only
+dedicated-memory counters. Linux NVIDIA numeric totals mean dedicated VRAM;
+`[N/A]` / `Not Supported` totals mean unified physical RAM with **system-used RAM**,
+not GPU-only allocation usage. Malformed totals and names-only inventories report
+unavailable memory; Linux AMD/Intel remain names-only without GPU utilization.
+Windows DXGI adapters with dedicated video memory report it separately from
+`shared_bytes` / `shared_used_bytes`; zero-dedicated adapters use the shared budget
+as their primary memory. Windows runtime remains untested on the macOS
+verification host. See the full
+[wire contract and classification table](../services/nvpair-node-info/README.md#gpu-wire-contract).
+
+Unknown GPU numbers are omitted on the wire; measured zero is present. Presence
+is independent per adapter and metric. Desktop preserves unknowns as null, shows
+`—`, and breaks history plots at gaps. It renders Go's kind as `VRAM`, `Unified
+memory`, `Shared memory`, or `Memory unavailable`, without inferring from names.
+Older peers without a kind render unavailable memory. Memory capacities and usages
+are never summed across adapters or combined between dedicated and shared pools:
+several adapters may refer to the same physical RAM. These fields do not change
+routing: utilization pressure uses the maximum measured adapter utilization,
+and invalid/stale telemetry retains neutral pressure, not a capacity estimate.
+
 Local hardware GPU and CPU telemetry is lease-driven via `X-NVPAIR-Poll` request
 headers:
 - `foreground` (visible UI or local active workload) renews the interactive lease,
