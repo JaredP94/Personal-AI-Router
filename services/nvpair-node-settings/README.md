@@ -59,7 +59,7 @@ Bidirectional newline-delimited JSON-RPC 2.0. Stdio by default; `--ipc <path>` s
 ## Persistence
 
 - File: `settings.json` in the per-user data dir — `%LocalAppData%\Nvidia Corporation\Personal AI Router` (Windows), `~/.config/Nvidia Corporation/Personal AI Router` (Linux) — same directory as `manual-nodes.json`.
-- Writes go to `settings.json.tmp` first, then `os.Rename` over the destination. A crash mid-save leaves either the previous file intact or the new one fully written, never a half-file.
+- Writes go to `settings.json.tmp` first, with file permissions set before `os.Rename` over the destination. Rename is the save's commit point; no fallible save operation follows replacement. Failed saves leave the previous file and in-memory telemetry revision unchanged and emit no telemetry notification. A crash mid-save leaves either the previous file intact or the new one fully written, never a half-file.
 - File mode is pinned to `0o600` (parent directory `0o700`) regardless of umask. The previous cluster-secret rationale is gone, but per-user settings still shouldn't be world-readable on shared hosts.
 - A malformed file on load is renamed aside as `settings.json.corrupt-<unix-ts>` and the subprocess starts with product defaults — refusing to start used to wedge every UI settings call behind a parse error.
 - Unknown JSON keys on load are silently ignored, and missing fields take product defaults.

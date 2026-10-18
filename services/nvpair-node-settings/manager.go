@@ -310,9 +310,9 @@ func (m *Manager) save() error {
 // regardless of umask. Even though cluster_secret was removed (the
 // previous hard requirement for tight permissions), the rest of the
 // file is still per-user state and shouldn't be world-readable.
-// os.Chmod after rename matters because
-// os.WriteFile honors umask and Windows ignores the mode bits — we
-// re-set them explicitly to keep both platforms aligned.
+// Set the temp file's permissions explicitly before rename: WriteFile
+// honors umask and does not change an existing temp file's mode. Rename
+// is the commit point; no fallible operation may follow replacement.
 func (m *Manager) saveSettings(s Settings) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -328,15 +328,16 @@ func (m *Manager) saveSettings(s Settings) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod %s: %w", tmp, err)
+	}
 	if err := os.Rename(tmp, m.path); err != nil {
 		// Best-effort cleanup so we don't leave a stray .tmp behind
 		// when the rename fails (e.g. EACCES on Windows because some
 		// AV scanner is holding a read lock on the destination).
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename %s -> %s: %w", tmp, m.path, err)
-	}
-	if err := os.Chmod(m.path, 0o600); err != nil {
-		return fmt.Errorf("chmod %s: %w", m.path, err)
 	}
 	return nil
 }
@@ -558,11 +559,11 @@ func (m *Manager) handleMessage(msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "payload capture requires consent to policy version 1")
 			return
 		}
-		// Like the other setters, persist the candidate before publishing it.
-		// The read loop serializes setters across this snapshot/commit window.
-		m.mu.RLock()
+		// Hold one lock across read/compare/save/publish, including the response
+		// and notification, so concurrent telemetry updates stay revision-ordered.
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		newSettings := m.settings
-		m.mu.RUnlock()
 		previous := newSettings.telemetryConfig()
 		newSettings.TelemetryEnabled = *p.Enabled
 		newSettings.TelemetryCollectorPort = *p.CollectorPort
@@ -578,9 +579,7 @@ func (m *Manager) handleMessage(msg *Message) {
 			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
 			return
 		}
-		m.mu.Lock()
 		m.settings = newSettings
-		m.mu.Unlock()
 		config := newSettings.telemetryConfig()
 		m.codec.Respond(msg.ID, config)
 		if err := m.codec.Notify("settings/telemetry-changed", config); err != nil {

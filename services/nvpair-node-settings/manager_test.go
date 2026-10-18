@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -694,18 +695,124 @@ func TestTelemetryConfigValidation(t *testing.T) {
 
 func TestTelemetryConfigSaveFailureDoesNotCommitOrNotify(t *testing.T) {
 	m, rw, path := newTestManager(t)
+	want := telemetryConfigResult{Revision: 2, Enabled: true, CollectorPort: 4317, PayloadPolicyVersion: 1}
+	seed := callAndDecode[telemetryConfigResult](t, m, rw, 1, "settings/set-telemetry-config",
+		json.RawMessage(`{"enabled":true,"collectorPort":4317,"recordPayloads":false,"payloadConsentVersion":0}`))
+	if seed != want {
+		t.Fatalf("seed = %+v, want %+v", seed, want)
+	}
+	expectNotification(t, rw, "settings/telemetry-changed")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory in the temp-file slot fails even when tests run as root.
 	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	callExpectError(t, m, rw, 1, "settings/set-telemetry-config",
+	callExpectError(t, m, rw, 2, "settings/set-telemetry-config",
 		json.RawMessage(`{"enabled":true,"collectorPort":4317,"recordPayloads":true,"payloadConsentVersion":1}`), -32603)
-	got := callAndDecode[telemetryConfigResult](t, m, rw, 2, "settings/get-telemetry-config", nil)
-	if want := (telemetryConfigResult{Revision: 1, CollectorPort: 4317, PayloadPolicyVersion: 1}); got != want {
-		t.Fatalf("save failure changed state: %+v", got)
+	got := callAndDecode[telemetryConfigResult](t, m, rw, 3, "settings/get-telemetry-config", nil)
+	if got != want {
+		t.Fatalf("save failure changed state: %+v, want %+v", got, want)
 	}
 	assertNoNotification(t, rw)
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("failed save wrote settings file: %v", err)
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed save changed the persisted settings")
+	}
+	reloadRW := newCaptureRW()
+	reloaded, err := NewManager(NewCodec(reloadRW), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := callAndDecode[telemetryConfigResult](t, reloaded, reloadRW, 1, "settings/get-telemetry-config", nil); got != want {
+		t.Fatalf("restart after failed save = %+v, want %+v", got, want)
+	}
+}
+
+func TestSaveSettingsPreparesPermissionsBeforeRename(t *testing.T) {
+	m, _, path := newTestManager(t)
+	// A directory at the destination forces rename to fail. Keep a hard link
+	// to the stale temp inode to inspect its mode after failure cleanup.
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	witness := path + ".witness"
+	if err := os.Link(tmp, witness); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveSettings(defaultSettings()); err == nil || !strings.Contains(err.Error(), "rename ") {
+		t.Fatalf("expected rename failure, got %v", err)
+	}
+	info, err := os.Stat(witness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("temp mode before failed rename = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("failed rename left temp file: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("failed rename replaced destination: %v", err)
+	}
+}
+
+func TestSetTelemetryConfigConcurrentChangesStayRevisioned(t *testing.T) {
+	m, rw, path := newTestManager(t)
+	const count = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			m.handleMessage(requestMessage(i+1, "settings/set-telemetry-config",
+				map[string]any{"enabled": true, "collectorPort": 5000 + i, "recordPayloads": false, "payloadConsentVersion": 0}))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	var last telemetryConfigResult
+	ports := make(map[int]bool)
+	for i := range count {
+		last = decodeResult[telemetryConfigResult](t, readCaptureFrame(t, rw))
+		if last.Revision != i+2 || !last.Enabled || ports[last.CollectorPort] {
+			t.Fatalf("lost or unordered update: %+v", last)
+		}
+		ports[last.CollectorPort] = true
+		n := expectNotification(t, rw, "settings/telemetry-changed")
+		var pushed telemetryConfigResult
+		if err := json.Unmarshal(n.Params, &pushed); err != nil {
+			t.Fatal(err)
+		}
+		if pushed != last {
+			t.Fatalf("notification = %+v, want %+v", pushed, last)
+		}
+	}
+	if got := callAndDecode[telemetryConfigResult](t, m, rw, count+1, "settings/get-telemetry-config", nil); got != last {
+		t.Fatalf("memory = %+v, want %+v", got, last)
+	}
+	reloadRW := newCaptureRW()
+	reloaded, err := NewManager(NewCodec(reloadRW), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := callAndDecode[telemetryConfigResult](t, reloaded, reloadRW, 1, "settings/get-telemetry-config", nil); got != last {
+		t.Fatalf("disk = %+v, want %+v", got, last)
 	}
 }
 
