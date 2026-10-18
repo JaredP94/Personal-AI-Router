@@ -3,7 +3,7 @@
 
 export interface PerformanceMetric {
     timestamp: number
-    value: number
+    value: number | null
 }
 
 export type JobsFilterType = 'active' | 'completed' | 'failed'

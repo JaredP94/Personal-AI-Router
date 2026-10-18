@@ -64,10 +64,8 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
 
     const metricsReady = hasFirstMetrics(node, nodeMetrics)
 
-    const getLatestValue = (data: { timestamp: number; value: number }[]) => {
-        if (data.length === 0) return 0
-        return data[data.length - 1].value ?? 0
-    }
+    const getLatestValue = (data: { timestamp: number; value: number | null }[]) =>
+        data[data.length - 1]?.value ?? null
 
     const gpuInfo: GpuInfo[] = useMemo(() => {
         if (!hasGpu) return []
@@ -80,19 +78,19 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
             const gpuUtilData = nodeMetrics?.gpuUtilization[index]
             const gpuVramData = nodeMetrics?.gpuVramUsage[index]
 
+            const vramUsage = gpuVramData ? getLatestValue(gpuVramData.data) : null
             return [
                 {
-                    id: gpu.id,
-                    name: gpu.name,
-                    vramTotal: gpu.vramTotal,
-                    vramTotalFormatted: formatBytes(gpu.vramTotal, 1),
-                    vramUsageFormatted: formatBytes(
-                        (gpu.vramTotal * (gpuVramData ? getLatestValue(gpuVramData.data) : 0)) /
-                            100,
-                        1
-                    ),
-                    vramUsage: gpuVramData ? getLatestValue(gpuVramData.data) : 0,
-                    usage: gpuUtilData ? getLatestValue(gpuUtilData.data) : 0,
+                    ...gpu,
+                    sharedUsed: gpuVramData ? getLatestValue(gpuVramData.sharedUsed) : null,
+                    vramTotalFormatted:
+                        gpu.vramTotal === null ? '—' : formatBytes(gpu.vramTotal, 1),
+                    vramUsageFormatted:
+                        gpu.vramTotal === null || vramUsage === null
+                            ? '—'
+                            : formatBytes((gpu.vramTotal * vramUsage) / 100, 1),
+                    vramUsage,
+                    usage: gpuUtilData ? getLatestValue(gpuUtilData.data) : null,
                     usageColor: getGpuColor(index),
                     vramColor: getVramColor(index)
                 }
@@ -103,8 +101,8 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
     const cpuFallbackInfo: CpuFallbackInfo | null = useMemo(() => {
         if (hasGpu) return null
         const ramTotal = node.topology.ram
-        const cpuUsage = nodeMetrics ? getLatestValue(nodeMetrics.cpuUtilization) : 0
-        const memUsage = nodeMetrics ? getLatestValue(nodeMetrics.memoryUsage) : 0
+        const cpuUsage = nodeMetrics ? (getLatestValue(nodeMetrics.cpuUtilization) ?? 0) : 0
+        const memUsage = nodeMetrics ? (getLatestValue(nodeMetrics.memoryUsage) ?? 0) : 0
         return {
             model: node.topology.cpu.model,
             usage: Math.round(cpuUsage),

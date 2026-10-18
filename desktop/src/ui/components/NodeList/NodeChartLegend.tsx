@@ -66,7 +66,9 @@ function NodeChartLegend({
                             <Text kind="body/regular/sm" className="text-subtle-color">
                                 Usage
                             </Text>
-                            <Text kind="body/semibold/sm">{gpu.usage}%</Text>
+                            <Text kind="body/semibold/sm">
+                                {gpu.usage === null ? '—' : `${gpu.usage}%`}
+                            </Text>
                         </Flex>
                     </Flex>
                     <Flex align="center" gap="2">

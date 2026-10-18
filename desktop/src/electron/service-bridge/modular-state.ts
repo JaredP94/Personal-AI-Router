@@ -13,6 +13,7 @@ import type {
 import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
+import type { GpuMemoryKind } from '@/shared/types/hardware'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
@@ -215,9 +216,12 @@ function anyEngineUp(node: ModularNode): boolean {
 
 interface ModularGpu {
     name: string
-    vramBytes: number
-    vramUsedBytes: number
-    utilizationPercent: number
+    memoryKind: GpuMemoryKind
+    vramBytes: number | null
+    vramUsedBytes: number | null
+    sharedBytes: number | null
+    sharedUsedBytes: number | null
+    utilizationPercent: number | null
 }
 
 interface ModularCpu {
@@ -596,6 +600,12 @@ function nvidiaGpuRank(gpu: ModularGpu): number {
     return gpu.name.toLowerCase().includes('nvidia') ? 0 : 1
 }
 
+function gpuMemoryKind(value: JsonValue | undefined): GpuMemoryKind {
+    return value === 'dedicated' || value === 'unified' || value === 'shared'
+        ? value
+        : 'unavailable'
+}
+
 function gpuArrayValue(value: JsonValue | undefined): ModularGpu[] {
     if (!Array.isArray(value)) return []
     const gpus: ModularGpu[] = []
@@ -604,9 +614,12 @@ function gpuArrayValue(value: JsonValue | undefined): ModularGpu[] {
         if (!obj) continue
         gpus.push({
             name: stringValue(obj.name),
-            vramBytes: numberValue(obj.vram_bytes),
-            vramUsedBytes: numberValue(obj.vram_used_bytes),
-            utilizationPercent: numberValue(obj.utilization_percent)
+            memoryKind: gpuMemoryKind(obj.memory_kind),
+            vramBytes: nullableNumberValue(obj.vram_bytes),
+            vramUsedBytes: nullableNumberValue(obj.vram_used_bytes),
+            sharedBytes: nullableNumberValue(obj.shared_bytes),
+            sharedUsedBytes: nullableNumberValue(obj.shared_used_bytes),
+            utilizationPercent: nullableNumberValue(obj.utilization_percent)
         })
     }
     return gpus.sort((left, right) => nvidiaGpuRank(left) - nvidiaGpuRank(right))
@@ -639,8 +652,11 @@ function normalizeLastSeen(value: number): number {
 function sameGpu(left: ModularGpu, right: ModularGpu): boolean {
     return (
         left.name === right.name &&
+        left.memoryKind === right.memoryKind &&
         left.vramBytes === right.vramBytes &&
         left.vramUsedBytes === right.vramUsedBytes &&
+        left.sharedBytes === right.sharedBytes &&
+        left.sharedUsedBytes === right.sharedUsedBytes &&
         left.utilizationPercent === right.utilizationPercent
     )
 }
@@ -737,7 +753,9 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
             gpus: node.gpus.map((gpu, index) => ({
                 id: `${node.id}:gpu:${index}`,
                 name: gpu.name,
-                vramTotal: gpu.vramBytes
+                memoryKind: gpu.memoryKind,
+                vramTotal: gpu.vramBytes,
+                sharedTotal: gpu.sharedBytes
             })),
             ram: node.memory?.totalBytes ?? 0,
             storage: [],
@@ -766,7 +784,11 @@ function toMetrics(node: ModularNode): NodeItemMetrics {
         })),
         gpuVramUsage: node.gpus.map((gpu, index) => ({
             id: `${node.id}:gpu:${index}`,
-            value: gpu.vramBytes > 0 ? (gpu.vramUsedBytes / gpu.vramBytes) * 100 : 0
+            value:
+                gpu.vramBytes !== null && gpu.vramBytes > 0 && gpu.vramUsedBytes !== null
+                    ? (gpu.vramUsedBytes / gpu.vramBytes) * 100
+                    : null,
+            sharedUsed: gpu.sharedUsedBytes
         }))
     }
     return { id: node.id, current, historical: [current] }

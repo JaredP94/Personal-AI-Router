@@ -85,11 +85,8 @@ export default function NodePerformance({
         )
 
         // Helper to get the latest value from a metric data array
-        const getLatestValue = (data: { timestamp: number; value: number }[]) => {
-            if (data.length === 0) return 0
-            const value = data[data.length - 1].value
-            return value ?? 0 // Treat undefined as 0
-        }
+        const getLatestValue = (data: { timestamp: number; value: number | null }[]) =>
+            data[data.length - 1]?.value ?? null
 
         return {
             // Detailed view lists every detected GPU (incl. iGPUs); only the
@@ -102,19 +99,19 @@ export default function NodePerformance({
                     id: gpu.id,
                     name: gpu.name,
                     vramTotal: gpu.vramTotal,
-                    vramFormatted: formatBytes(gpu.vramTotal, 1),
-                    utilization: gpuUtilData ? getLatestValue(gpuUtilData.data) : 0,
-                    vramUsage: gpuVramData ? getLatestValue(gpuVramData.data) : 0,
+                    vramFormatted: gpu.vramTotal === null ? '—' : formatBytes(gpu.vramTotal, 1),
+                    utilization: gpuUtilData ? getLatestValue(gpuUtilData.data) : null,
+                    vramUsage: gpuVramData ? getLatestValue(gpuVramData.data) : null,
                     color: getGpuColor(index),
                     vramColor: getVramColor(index)
                 }
             }),
             cpuCores: node.topology.cpu.cores,
             cpuModel: node.topology.cpu.model,
-            cpuUtilization: nodeMetrics ? getLatestValue(nodeMetrics.cpuUtilization) : 0,
+            cpuUtilization: nodeMetrics ? (getLatestValue(nodeMetrics.cpuUtilization) ?? 0) : 0,
             memory: formatBytes(node.topology.ram, 1),
             memoryTotal: node.topology.ram,
-            memoryUsage: nodeMetrics ? getLatestValue(nodeMetrics.memoryUsage) : 0,
+            memoryUsage: nodeMetrics ? (getLatestValue(nodeMetrics.memoryUsage) ?? 0) : 0,
             storage: formatBytes(totalStorage, 1)
         }
     }, [node, nodeMetrics])
@@ -199,7 +196,9 @@ export default function NodePerformance({
                                     >
                                         <Text kind="body/regular/sm">Usage</Text>
                                         <Text kind="body/regular/sm">
-                                            {Math.floor(gpu.utilization)}%
+                                            {gpu.utilization === null
+                                                ? '—'
+                                                : `${Math.floor(gpu.utilization)}%`}
                                         </Text>
                                     </Flex>
                                 </Flex>
@@ -238,10 +237,14 @@ export default function NodePerformance({
                                     >
                                         <Text kind="body/regular/sm">VRAM</Text>
                                         <Text kind="body/regular/sm">
-                                            {formatBytes(
-                                                Math.floor((gpu.vramTotal * gpu.vramUsage) / 100),
-                                                1
-                                            )}{' '}
+                                            {gpu.vramTotal === null || gpu.vramUsage === null
+                                                ? '—'
+                                                : formatBytes(
+                                                      Math.floor(
+                                                          (gpu.vramTotal * gpu.vramUsage) / 100
+                                                      ),
+                                                      1
+                                                  )}{' '}
                                             / {gpu.vramFormatted}
                                         </Text>
                                     </Flex>

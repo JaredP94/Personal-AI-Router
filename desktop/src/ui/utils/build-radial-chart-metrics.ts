@@ -8,8 +8,8 @@ import { CHART_COLORS } from '@/ui/constants/colors'
 import { getGpuColor, getVramColor } from '@/ui/utils/colors'
 import { hasInferenceReadyGpu, isGpuInferenceReady } from '@/ui/utils/gpu-inference'
 
-function getLatest(data: { timestamp: number; value: number }[]): number {
-    return data.length === 0 ? 0 : (data[data.length - 1].value ?? 0)
+function getLatest(data: { timestamp: number; value: number | null }[]): number | null {
+    return data[data.length - 1]?.value ?? null
 }
 
 export function buildRadialChartMetrics(
@@ -23,12 +23,12 @@ export function buildRadialChartMetrics(
     if (!hasGpu) {
         return [
             {
-                value: nodeMetrics ? getLatest(nodeMetrics.cpuUtilization) : 0,
+                value: nodeMetrics ? (getLatest(nodeMetrics.cpuUtilization) ?? 0) : 0,
                 color: CHART_COLORS.CPU,
                 shown: true
             },
             {
-                value: nodeMetrics ? getLatest(nodeMetrics.memoryUsage) : 0,
+                value: nodeMetrics ? (getLatest(nodeMetrics.memoryUsage) ?? 0) : 0,
                 color: CHART_COLORS.MEMORY,
                 shown: true
             }
@@ -42,17 +42,15 @@ export function buildRadialChartMetrics(
         if (!isGpuInferenceReady(gpu, topology.inferenceHardwareIds)) return []
         const gpuUtil = nodeMetrics?.gpuUtilization[gpuIdx]
         const gpuVram = nodeMetrics?.gpuVramUsage[gpuIdx]
-        return [
-            {
-                value: gpuUtil ? getLatest(gpuUtil.data) : 0,
-                color: getGpuColor(gpuIdx),
-                shown: true
-            },
-            {
-                value: gpuVram ? getLatest(gpuVram.data) : 0,
-                color: getVramColor(gpuIdx),
-                shown: true
-            }
-        ]
+        const utilization = gpuUtil ? getLatest(gpuUtil.data) : null
+        const memoryUsage = gpuVram ? getLatest(gpuVram.data) : null
+        const metrics: RadialMetric[] = []
+        if (utilization !== null) {
+            metrics.push({ value: utilization, color: getGpuColor(gpuIdx), shown: true })
+        }
+        if (memoryUsage !== null) {
+            metrics.push({ value: memoryUsage, color: getVramColor(gpuIdx), shown: true })
+        }
+        return metrics
     })
 }
