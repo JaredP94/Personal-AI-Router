@@ -224,6 +224,62 @@ func TestCallCanceledWhileWaitingForWriterDoesNotWrite(t *testing.T) {
 	}
 }
 
+// The request writer itself must exit on cancellation, not just the Call
+// waiting for it. Otherwise repeated probes retain goroutines and params behind
+// a single stuck frame even though each Call returns on time.
+func TestCanceledQueuedRequestWritersExit(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	peer := NewPeer(writeCodec(writer))
+	defer peer.Close()
+	first := make(chan error, 1)
+	go func() { first <- peer.Notify("first", nil) }()
+	prefix := make([]byte, 1)
+	if _, err := io.ReadFull(reader, prefix); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	const queued = 16
+	exited := make(chan error, queued)
+	for i := range queued {
+		go func() {
+			// Exercise the same writer path as Call, but observe its exit
+			// directly rather than Call's independent context select.
+			exited <- peer.writeRequest(ctx, int64(i+1), "must-not-send", json.RawMessage(`{"probe":true}`))
+		}()
+	}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for i := range queued {
+		select {
+		case err := <-exited:
+			if err != context.DeadlineExceeded {
+				t.Fatalf("queued writer error = %v, want context.DeadlineExceeded", err)
+			}
+		case <-deadline.C:
+			t.Fatalf("only %d/%d canceled queued writers exited while the first frame was blocked", i, queued)
+		}
+	}
+	select {
+	case err := <-first:
+		t.Fatalf("first writer finished before its frame was drained: %v", err)
+	default:
+	}
+
+	// Cancellation must not release the active writer's lock or damage its
+	// frame. Let it finish only after every canceled queued writer has exited.
+	msg, err := readCodec(io.MultiReader(bytes.NewReader(prefix), reader)).Read()
+	if err != nil || msg.Method != "first" {
+		t.Fatalf("first frame = %+v, error = %v", msg, err)
+	}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCallDeadlineKeepsPartialFrameSerialized(t *testing.T) {
 	reader, writer := io.Pipe()
 	defer reader.Close()
@@ -283,7 +339,7 @@ func TestCallBlockedWriteFinishesWhenWriterCloses(t *testing.T) {
 	}
 	writer.Close()
 	// Acquiring the codec lock proves the abandoned write has finished.
-	go func() { peer.codec.wmu.Lock(); peer.codec.wmu.Unlock(); done <- nil }()
+	go func() { peer.codec.wmu <- struct{}{}; <-peer.codec.wmu; done <- nil }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):

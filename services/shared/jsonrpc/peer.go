@@ -84,7 +84,7 @@ func (p *Peer) RespondErrorData(id *json.RawMessage, code int, message string, d
 // complete (transport gone, ctx cancelled/deadline). Callers wanting a fixed
 // timeout should pass a ctx with a deadline. Cancellation does not interrupt an
 // in-flight frame: its write keeps the codec lock until it finishes or the
-// transport owner closes the writer. Queued writes check ctx before sending.
+// transport owner closes the writer. Queued writes stop waiting on cancellation.
 func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, *RPCError, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
