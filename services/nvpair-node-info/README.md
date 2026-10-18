@@ -12,7 +12,11 @@ A Go service that exposes this machine's hardware inventory (GPUs, CPU, physical
 Two surfaces:
 
 - **HTTP(S)** — serves the node inventory at `/v1/node-info`. Plaintext HTTP on `:14318` by default; optional HTTPS (with optional mTLS) on `:14319` when a cert/key pair is supplied.
-- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `nodeinfo:set-cluster-identity`, `stats/set-demand`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
+- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `worker/health`, `nodeinfo:set-cluster-identity`, `stats/set-demand`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
+
+An id-bearing `worker/health` request returns `{"ok":true}` through the shared
+stdin control loop. This checks control-loop responsiveness, not HTTP listener
+or telemetry readiness. Notifications receive no response.
 
 It does **not** advertise itself over mDNS. Discovery is centralized in the `nvpair-node-scanner` daemon: the broker registers this service's `ni` port with the daemon, which carries it on the node's one `_nvpair-node` record and fetches `/v1/node-info` over plain HTTP to enrich each node.
 

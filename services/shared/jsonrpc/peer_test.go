@@ -4,9 +4,11 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -129,6 +131,200 @@ func TestPeerCallCtxCancel(t *testing.T) {
 	_, _, err := a.Call(ctx, "hang", nil)
 	if err != context.Canceled {
 		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+func TestCallDeadlineWithBlockedWriter(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	peer := NewPeer(writeCodec(writer))
+	defer peer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := peer.Call(ctx, "worker/health", nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != context.DeadlineExceeded {
+			t.Fatalf("Call error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Call did not honour its deadline while the request write was blocked")
+	}
+	peer.mu.Lock()
+	pending := len(peer.pending)
+	peer.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending requests after deadline = %d, want 0", pending)
+	}
+}
+
+func TestCallWithCanceledContextDoesNotWrite(t *testing.T) {
+	var buf bytes.Buffer
+	peer := NewPeer(writeCodec(&buf))
+	defer peer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := peer.Call(ctx, "must-not-send", nil); err != context.Canceled {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("canceled Call wrote a request: %s", buf.String())
+	}
+}
+
+func TestCallCanceledWhileWaitingForWriterDoesNotWrite(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	peer := NewPeer(writeCodec(writer))
+	defer peer.Close()
+	first := make(chan error, 1)
+	go func() { first <- peer.Notify("first", nil) }()
+	prefix := make([]byte, 1)
+	if _, err := io.ReadFull(reader, prefix); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, _, err := peer.Call(ctx, "must-not-send", nil); done <- err }()
+	select {
+	case err := <-done:
+		if err != context.DeadlineExceeded {
+			t.Fatalf("Call error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Call blocked waiting for another writer")
+	}
+
+	codec := readCodec(io.MultiReader(bytes.NewReader(prefix), reader))
+	msg, err := codec.Read()
+	if err != nil || msg.Method != "first" {
+		t.Fatalf("first frame = %+v, error = %v", msg, err)
+	}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	// Other calls remain usable after a queued call expires.
+	go func() { _, _, err := peer.Call(context.Background(), "next", nil); done <- err }()
+	msg, err = codec.Read()
+	if err != nil || msg.Method != "next" {
+		t.Fatalf("frame after canceled Call = %+v, error = %v", msg, err)
+	}
+	peer.Close()
+	if err := <-done; err != ErrPeerClosed {
+		t.Fatalf("live Call error = %v, want ErrPeerClosed", err)
+	}
+}
+
+func TestCallDeadlineKeepsPartialFrameSerialized(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	peer := NewPeer(writeCodec(writer))
+	defer peer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, _, err := peer.Call(ctx, "first", nil); done <- err }()
+	prefix := make([]byte, 1)
+	if _, err := io.ReadFull(reader, prefix); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != context.DeadlineExceeded {
+			t.Fatalf("Call error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Call did not return after partially writing its frame")
+	}
+
+	go func() { done <- peer.Notify("second", nil) }()
+	codec := readCodec(io.MultiReader(bytes.NewReader(prefix), reader))
+	for _, method := range []string{"first", "second"} {
+		msg, err := codec.Read()
+		if err != nil || msg.Method != method {
+			t.Fatalf("want complete %q frame, got %+v, error = %v", method, msg, err)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCallBlockedWriteFinishesWhenWriterCloses(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	peer := NewPeer(writeCodec(writer))
+	defer peer.Close()
+	done := make(chan error, 1)
+	go func() { _, _, err := peer.Call(context.Background(), "blocked", nil); done <- err }()
+	prefix := make([]byte, 1)
+	if _, err := io.ReadFull(reader, prefix); err != nil {
+		t.Fatal(err)
+	}
+	peer.Close()
+	select {
+	case err := <-done:
+		if err != ErrPeerClosed {
+			t.Fatalf("Call error = %v, want ErrPeerClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not release Call with a blocked write")
+	}
+	writer.Close()
+	// Acquiring the codec lock proves the abandoned write has finished.
+	go func() { peer.codec.wmu.Lock(); peer.codec.wmu.Unlock(); done <- nil }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("closing the writer did not release the codec lock")
+	}
+}
+
+// partialErrorWriter leaves a truncated frame on its first write but would
+// accept later bytes, exposing a codec that reuses a damaged stream.
+type partialErrorWriter struct {
+	buf bytes.Buffer
+}
+
+func (w *partialErrorWriter) Write(data []byte) (int, error) {
+	if w.buf.Len() == 0 {
+		n, _ := w.buf.Write(data[:len(data)/2])
+		return n, io.ErrUnexpectedEOF
+	}
+	return w.buf.Write(data)
+}
+
+func TestCallWriteErrorPreventsAppendingToPartialFrame(t *testing.T) {
+	var writer partialErrorWriter
+	peer := NewPeer(writeCodec(&writer))
+	defer peer.Close()
+	if _, _, err := peer.Call(context.Background(), "first", nil); err != io.ErrUnexpectedEOF {
+		t.Fatalf("Call error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	prefix := writer.buf.String()
+	id := json.RawMessage(`7`)
+	for _, write := range []func() error{
+		func() error { return peer.Notify("later", nil) },
+		func() error { return peer.Respond(&id, true) },
+		func() error { return peer.codec.Request(&id, "later", nil) },
+	} {
+		if err := write(); err == nil {
+			t.Error("write to a damaged stream succeeded")
+		}
+	}
+	if writer.buf.String() != prefix {
+		t.Fatalf("later frames appended to a truncated frame: %q", writer.buf.String())
 	}
 }
 

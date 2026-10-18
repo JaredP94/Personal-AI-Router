@@ -13,11 +13,12 @@ import (
 	"sync/atomic"
 
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/workerhealth"
 )
 
 // StdinMessage is a minimal subset of a JSON-RPC message usable by
 // subprocesses that only care about a handful of control methods
-// (log/set-level, shutdown) and don't speak a full RPC protocol.
+// (log/set-level, worker/health, shutdown) and don't speak a full RPC protocol.
 type StdinMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -27,7 +28,8 @@ type StdinMessage struct {
 
 // StdinRPC runs a minimal newline-delimited JSON-RPC reader on os.Stdin for
 // subprocesses that don't already have a codec. It dispatches the built-in
-// log/set-level method itself and forwards everything else to onMessage.
+// log/set-level and worker/health methods itself and forwards everything else
+// to onMessage.
 //
 // onClose is called exactly once when stdin closes (parent died) or
 // otherwise becomes unreadable. It MUST be goroutine-safe and is the
@@ -75,6 +77,12 @@ func serveStdinRPC(source io.ReadCloser, writer io.Writer, onMessage func(StdinM
 }
 
 func handleStdinMessage(msg StdinMessage, writer io.Writer, onMessage func(StdinMessage)) {
+	if msg.Method == workerhealth.Method {
+		if len(msg.ID) > 0 && writer != nil {
+			writeStdinResult(writer, msg.ID, workerhealth.OK())
+		}
+		return
+	}
 	if msg.Method == SetLevelMethod {
 		resolved, err := HandleSetLevelParams(msg.Params)
 		if len(msg.ID) > 0 && writer != nil {

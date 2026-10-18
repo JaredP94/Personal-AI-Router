@@ -4,6 +4,7 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -81,16 +82,37 @@ func (p *Peer) RespondErrorData(id *json.RawMessage, code int, message string, d
 // is done, or the peer closes. It returns the raw result and any JSON-RPC error
 // the peer reported separately; a non-nil error means the call itself couldn't
 // complete (transport gone, ctx cancelled/deadline). Callers wanting a fixed
-// timeout should pass a ctx with a deadline.
+// timeout should pass a ctx with a deadline. Cancellation does not interrupt an
+// in-flight frame: its write keeps the codec lock until it finishes or the
+// transport owner closes the writer. Queued writes check ctx before sending.
 func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, *RPCError, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	ch, id, err := p.register()
 	if err != nil {
 		return nil, nil, err
 	}
 	defer p.clearPending(id)
 
-	if err := p.writeRequest(id, method, params); err != nil {
-		return nil, nil, err
+	// The writer may outlive Call, so it must not retain the caller's buffer.
+	params = bytes.Clone(params)
+	written := make(chan error, 1)
+	go func() { written <- p.writeRequest(ctx, id, method, params) }()
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-p.closedCh:
+		return nil, nil, ErrPeerClosed
+	case err := <-written:
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	select {
@@ -114,7 +136,7 @@ func (p *Peer) RelayRequest(method string, params json.RawMessage, respond func(
 		return err
 	}
 
-	if err := p.writeRequest(id, method, params); err != nil {
+	if err := p.writeRequest(context.Background(), id, method, params); err != nil {
 		p.clearPending(id)
 		return err
 	}
@@ -146,9 +168,9 @@ func (p *Peer) register() (chan *Message, int64, error) {
 	return ch, id, nil
 }
 
-func (p *Peer) writeRequest(id int64, method string, params json.RawMessage) error {
+func (p *Peer) writeRequest(ctx context.Context, id int64, method string, params json.RawMessage) error {
 	idRaw := json.RawMessage(strconv.FormatInt(id, 10))
-	return p.codec.Request(&idRaw, method, params)
+	return p.codec.request(ctx, &idRaw, method, params)
 }
 
 func (p *Peer) clearPending(id int64) {

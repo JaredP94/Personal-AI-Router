@@ -89,6 +89,10 @@ type Codec struct {
 	writer  io.Writer
 	wmu     sync.Mutex
 
+	// A failed write may have emitted a partial frame. Never append another
+	// frame to that stream; only the transport owner can replace it.
+	writeErr error
+
 	// seq is this connection's notification counter, starting at 1. The broker
 	// builds one Codec per client connection, so it is already per-connection.
 	seq atomic.Uint64
@@ -203,6 +207,9 @@ func (c *Codec) writeNotification(msg *Message) error {
 
 // writeLocked marshals and writes one frame. The caller must hold wmu.
 func (c *Codec) writeLocked(msg *Message) error {
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -214,10 +221,12 @@ func (c *Codec) writeLocked(msg *Message) error {
 	for off := 0; off < len(data); {
 		n, werr := c.writer.Write(data[off:])
 		if werr != nil {
+			c.writeErr = werr
 			return werr
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			c.writeErr = io.ErrShortWrite
+			return c.writeErr
 		}
 		off += n
 	}
@@ -243,7 +252,19 @@ func (c *Codec) Notify(method string, params any) error {
 // stamping a request would make the frame unreadable to a v2 peer. Peer.Call is
 // the higher-level form of this for callers that also want the response.
 func (c *Codec) Request(id *json.RawMessage, method string, params json.RawMessage) error {
-	return c.write(&Message{
+	return c.request(context.Background(), id, method, params)
+}
+
+// request skips a queued request if its caller has stopped waiting. Once a
+// frame starts, keep wmu through the entire write, even if ctx expires: releasing
+// it early would let another writer interleave with a partially written frame.
+func (c *Codec) request(ctx context.Context, id *json.RawMessage, method string, params json.RawMessage) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.writeLocked(&Message{
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  method,

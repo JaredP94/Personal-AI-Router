@@ -3,19 +3,19 @@
   "product": "2.1.0",
   "installer": "2.1.0",
   "components": {
-    "ollama-proxy": "1.1.1",
-    "lmstudio-proxy": "1.1.1",
-    "nvpair-node-info": "1.1.0",
-    "nvpair-node-scanner": "1.0.4",
-    "nvpair-manual-nodes": "1.1.0",
-    "nvpair-workload-manager": "1.0.3",
-    "nvpair-errors": "1.0.3",
-    "nvpair-node-settings": "3.0.1",
-    "nvpair-ui-broker": "2.1.0",
-    "nvpair-engine-manager": "1.0.3",
-    "nvpair-cluster-manager": "2.0.3",
-    "nvpair-job-scheduler": "1.0.2",
-    "nvpair-tui": "1.1.1",
-    "omlx-proxy": "1.1.1"
+    "ollama-proxy": "1.1.2",
+    "lmstudio-proxy": "1.1.2",
+    "nvpair-node-info": "1.2.0",
+    "nvpair-node-scanner": "1.0.5",
+    "nvpair-manual-nodes": "1.1.1",
+    "nvpair-workload-manager": "1.0.4",
+    "nvpair-errors": "1.0.4",
+    "nvpair-node-settings": "3.0.2",
+    "nvpair-ui-broker": "2.1.1",
+    "nvpair-engine-manager": "1.0.4",
+    "nvpair-cluster-manager": "2.0.4",
+    "nvpair-job-scheduler": "1.0.3",
+    "nvpair-tui": "1.1.2",
+    "omlx-proxy": "1.1.2"
   }
 }
