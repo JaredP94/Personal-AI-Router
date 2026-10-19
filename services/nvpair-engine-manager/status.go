@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"runtime"
 	"time"
 )
 
@@ -125,12 +126,13 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return EngineStatus{
-		Engine:      engine,
-		DisplayName: st.manifest.DisplayName,
-		Installed:   st.installed,
-		Running:     st.running,
-		Healthy:     st.healthy,
-		Port:        st.port,
+		Engine:       engine,
+		DisplayName:  st.manifest.DisplayName,
+		Installed:    st.installed,
+		Running:      st.running,
+		Healthy:      st.healthy,
+		Port:         st.port,
+		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted),
 	}
 }
 

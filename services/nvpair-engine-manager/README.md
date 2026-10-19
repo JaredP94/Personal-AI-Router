@@ -59,7 +59,27 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+`EngineStatus` = `{ engine, display_name, installed, running, healthy, port?, capabilities }`.
+Every status snapshot, lifecycle result, and `engine:state-changed` notification
+includes all seven boolean capability flags, derived by Go from the effective
+manifest (including user overrides), the host OS/architecture, and adoption state:
+
+| `capabilities` field | True when |
+|---|---|
+| `list_models`, `pull_model`, `delete_model` | The effective manifest declares that action and has a platform block for this host. |
+| `delete_restarts_engine` | `delete_model` is declared with `restart_after: true` on a supported platform. |
+| `set_port` | The platform's start argv, CLI args, or environment reference `{port}` — a probe or stop template alone moves nothing — and `engine:set-port` would not refuse the engine as externally adopted, which is the same adoption check it makes (a command-mode engine with an official stop command can be moved). |
+| `install` | The effective manifest has a platform block for this host OS/architecture. |
+| `uninstall` | `install` is true, an uninstall is declared, and the install is not externally adopted. |
+
+Unsupported platforms report all flags false. Bundled oMLX supports model listing
+but never pull/delete; its start command has no `{port}` input, so `set_port` is
+false. LM Studio deletion reports `delete_restarts_engine: true`.
+Capabilities describe support, not readiness or guaranteed success: normal action
+validation, port conflicts, ownership checks, and operation errors still apply.
+`engine:remote-get-installed` and other remote status results carry the **peer's**
+capabilities unchanged, not capabilities inferred from the caller's manifests.
+Clients must treat an absent `capabilities` object from an older peer as all-false.
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,
@@ -104,8 +124,10 @@ onto the new port if it was running. Setting the port back to the bundled
 default removes the override file. Because the chosen port lives in the
 effective manifest, restore is automatic: a normal `engine:start` (no explicit
 port) and the adopt-on-fixed-port path both come up on the retained port.
-Moving a **running, adopted** engine is **refused** with an error (nothing is
-persisted) — NVPAIR can't relocate a process it didn't start; see Adoption below.
+Moving a **running, adopted process-mode** engine, or an adopted command-mode
+engine without an official stop command, is **refused** with an error (nothing
+is persisted). An identified command-mode engine with an official stop command
+can be moved; see Adoption below.
 
 ## Lifecycle
 
@@ -156,11 +178,13 @@ would only collide on the port. Consequences worth knowing:
   the error as guidance, not as proof the OFF intent was lost. The same applies
   to cluster `POST /v1/engines/stop`, which may answer HTTP 500 even though OFF
   was recorded.
-- **`engine:set-port` on a running adopted engine is refused** (returns an
-  error, persists nothing). Moving it would mean killing the old listener and
-  spawning a new one; since NVPAIR can't kill what it didn't start, it errors
-  rather than leaving a duplicate serving the new port while the original keeps
-  serving the old one. Stop the engine in its own app first, then set the port.
+- **`engine:set-port` on a running adopted process-mode engine is refused**
+  (returns an error, persists nothing); an adopted command-mode engine may move
+  only with an official stop command. Moving a process-mode engine would mean
+  killing the old listener and spawning a new one; since NVPAIR can't kill what
+  it didn't start, it errors rather than leaving a duplicate serving the new port
+  while the original keeps serving the old one. Stop the engine in its own app
+  first, then set the port.
 - **`engine:install` short-circuits the same way.** `detect` honors existing
   system installs (Ollama's detect paths include `/Applications/Ollama.app`,
   `%LOCALAPPDATA%\Programs\Ollama`, etc.), so "installing" an engine that's
