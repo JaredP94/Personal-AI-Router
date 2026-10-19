@@ -24,7 +24,7 @@ SPDX-License-Identifier: Apache-2.0
 - Never offer, send, or implement oMLX pull or delete. Never route around engine-manager action validation.
 - Remote control uses only the existing `engine:remote-*` methods keyed by `node` = peer `hostUuid`. No remote uninstall, update, persistent port change, or restart method is added.
 - Destructive actions use the confirmation prompt from the worker-health plan (`services/nvpair-tui/ui/confirm.go`, `newConfirm(title, detail, onYes)`): default cancel, target frozen when the prompt opens, no RPC until `y`.
-- TUI call lifetimes: `longOpTimeout = 31 * time.Minute` for install, update, pull (local and remote) and remote install; `lifecycleOpTimeout = 11 * time.Minute` for start, stop, restart, set-port, model delete (local and remote); the existing 35 s for everything else.
+- TUI call lifetimes: `longOpTimeout = 31 * time.Minute` for install, update, pull (local and remote) and remote install; `lifecycleOpTimeout = 11 * time.Minute` for start, stop, restart, set-port, uninstall (including update's uninstall phase), model delete (local and remote); the existing 35 s for everything else.
 - JSON-RPC payload changes update producer, broker relay, every consumer, tests and docs together; regenerate `desktop/docs/services-api.md` with `npm run service-contracts:write`.
 - `services/versions.json` per the branch rule (no second bump of an already-bumped component unless severity rises).
 - Built-in inference submission stays out of scope; keep that bullet in the docs.
