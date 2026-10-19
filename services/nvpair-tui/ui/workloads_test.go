@@ -130,6 +130,51 @@ func TestWorkloadDestinationTracksDiscoveryWithoutLosingUUID(t *testing.T) {
 	}
 }
 
+// Malformed name updates must not replace or partially mutate a valid cache.
+func TestWorkloadDestinationPreservesNamesOnMalformedNotification(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, snapshot string
+		baseline, malformed    json.RawMessage
+	}{
+		{
+			name: "discovery wrong shape", method: "discovery:nodes-changed", snapshot: "discovery:get-nodes",
+			baseline:  json.RawMessage(`{"nodes":[{"hostUuid":"aaaaaaaa-1111","name":"GPU-box"}]}`),
+			malformed: json.RawMessage(`{"nodes":"invalid"}`),
+		},
+		{
+			name: "discovery partial decode", method: "discovery:nodes-changed", snapshot: "discovery:get-nodes",
+			baseline:  json.RawMessage(`{"nodes":[{"hostUuid":"aaaaaaaa-1111","name":"GPU-box"}]}`),
+			malformed: json.RawMessage(`[{"hostUuid":"aaaaaaaa-1111","name":"Corrupt","port":"invalid"}]`),
+		},
+		{
+			name: "membership wrong shape", method: "nodes:changed", snapshot: "nodes:get-initial",
+			baseline:  json.RawMessage(`{"nodes":[{"nodeUuid":"aaaaaaaa-1111","name":"GPU-box"}]}`),
+			malformed: json.RawMessage(`{"nodes":"invalid"}`),
+		},
+		{
+			name: "membership partial decode", method: "nodes:changed", snapshot: "nodes:get-initial",
+			baseline:  json.RawMessage(`{"nodes":[{"nodeUuid":"aaaaaaaa-1111","name":"GPU-box"}]}`),
+			malformed: json.RawMessage(`{"nodes":[{"nodeUuid":"aaaaaaaa-1111","name":"Corrupt","port":"invalid"}]}`),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, l, w := workloadSession(t, map[string]json.RawMessage{
+				"workloads:get-initial": json.RawMessage(`{"workloads":[{"id":"request","originatedFrom":"origin-uuid","scheduledOn":"aaaaaaaa-1111"}]}`),
+				tc.snapshot:             tc.baseline,
+			})
+			assertWorkloadDestination(t, w, "GPU-box")
+			b.push(t, "A", 2, tc.method, tc.malformed)
+			l.settle(t)
+			assertWorkloadDestination(t, w, "GPU-box")
+			// A row rebuild must still resolve the previous name, not a cache
+			// partially modified by decoding before the error was returned.
+			b.push(t, "A", 3, "workloads:upsert", json.RawMessage(`{"workloadInfo":{"id":"request","originatedFrom":"origin-uuid","scheduledOn":"aaaaaaaa-1111","state":"running"}}`))
+			l.settle(t)
+			assertWorkloadDestination(t, w, "GPU-box")
+		})
+	}
+}
+
 func TestWorkloadDestinationTracksClusterMembership(t *testing.T) {
 	b, l, w := workloadSession(t, map[string]json.RawMessage{
 		"workloads:get-initial": json.RawMessage(`{"workloads":[{"id":"request","originatedFrom":"origin-uuid","scheduledOn":"bbbbbbbb-1111"}]}`),

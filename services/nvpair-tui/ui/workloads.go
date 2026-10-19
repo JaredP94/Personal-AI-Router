@@ -113,13 +113,19 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 	case NotificationMsg:
 		switch msg.Msg.Method {
 		case "discovery:nodes-changed":
-			_ = decodeParams(msg.Msg.Params, &v.discovered)
+			var nodes []availableNode
+			if err := decodeParams(msg.Msg.Params, &nodes); err != nil {
+				return nil
+			}
+			v.discovered = nodes
 			v.refreshRows()
 		case "nodes:changed":
 			var p struct {
 				Nodes []clusterNode `json:"nodes"`
 			}
-			_ = decodeParams(msg.Msg.Params, &p)
+			if err := decodeParams(msg.Msg.Params, &p); err != nil {
+				return nil
+			}
 			v.members = p.Nodes
 			v.refreshRows()
 		case "workloads:upsert":
