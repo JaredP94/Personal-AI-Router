@@ -20,6 +20,10 @@ import (
 // content area: one header line, one tab-bar line, one footer line.
 const chromeHeight = 3
 
+// epochChangedMsg invalidates identity-relative UI actions before any new
+// epoch's notifications or asynchronous recovery snapshots are applied.
+type epochChangedMsg struct{}
+
 // Model is the root Bubble Tea model: a tab bar over a set of Views, a
 // header showing broker status, and a footer of contextual help. It owns
 // the broker notification loop and routes messages to the views.
@@ -141,7 +145,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case NotificationMsg:
 		// Same-epoch traffic retries dirty hydration; no polling timer.
+		var cmds []tea.Cmd
 		if msg.Msg.Epoch != nil {
+			if m.epoch != *msg.Msg.Epoch {
+				cmds = append(cmds, m.broadcast(epochChangedMsg{})...)
+			}
 			m.epoch = *msg.Msg.Epoch
 		}
 		if msg.Msg.Method == "app:ready" {
@@ -153,7 +161,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recoveryPushes[key] = msg
 			}
 		}
-		cmds := m.broadcast(msg)
+		cmds = append(cmds, m.broadcast(msg)...)
 		cmds = append(cmds, waitForNotification(m.client), m.retrySetup(), m.beginRecovery())
 		return m, tea.Batch(cmds...)
 

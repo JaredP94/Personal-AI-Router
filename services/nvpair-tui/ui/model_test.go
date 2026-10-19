@@ -66,6 +66,7 @@ type recoveryBroker struct {
 	writes     sync.Mutex
 	mu         sync.Mutex
 	epoch      string
+	clusterID  string
 	counts     map[string]int
 	order      []string
 	holdMethod string
@@ -138,7 +139,7 @@ func (b *recoveryBroker) serve() {
 		b.mu.Lock()
 		b.counts[q.Method]++
 		b.order = append(b.order, q.Method)
-		epoch := b.epoch
+		epoch, clusterID := b.epoch, b.clusterID
 		workloads := append([]workload{}, b.workloads...)
 		workers := append([]workerStatus{}, b.workers...)
 		gate := b.release
@@ -162,7 +163,7 @@ func (b *recoveryBroker) serve() {
 		var result any = map[string]any{}
 		switch q.Method {
 		case "cluster:get-node-id":
-			result = map[string]string{"nodeUuid": epoch, "nodeId": epoch + "-host"}
+			result = map[string]string{"nodeUuid": epoch, "nodeId": epoch + "-host", "clusterId": clusterID}
 		case "discovery:get-nodes", "nodes:get-initial", "nodes/list", "proxy:nodes/list", "lmstudio-proxy:nodes/list", "omlx-proxy:nodes/list":
 			result = map[string]any{"nodes": []any{}}
 		case "engine:get-installed":

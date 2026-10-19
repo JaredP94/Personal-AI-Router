@@ -60,6 +60,7 @@ type clusterView struct {
 	client        *rpc.Client
 	table         table.Model
 	identity      clusterIdentity
+	identityReady bool
 	nodes         []clusterNode
 	pending       *clusterInvite // most recent inbound invite awaiting a response
 	input         textinput.Model
@@ -116,8 +117,8 @@ func (v *clusterView) identityCmd() tea.Cmd {
 			return clusterIdentityMsg{err: err}
 		}
 		var id clusterIdentity
-		_ = decodeParams(msg.Result, &id)
-		return clusterIdentityMsg{id: id}
+		err = decodeParams(msg.Result, &id)
+		return clusterIdentityMsg{id: id, err: err}
 	})
 }
 
@@ -155,9 +156,18 @@ func (v *clusterView) CapturingInput() bool {
 
 func (v *clusterView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case epochChangedMsg:
+		v.identityReady = false
+		if v.leaveIdentity != nil {
+			v.confirm = nil
+			v.leaveIdentity = nil
+			v.status = "cluster changed; waiting for identity before confirming leave"
+		}
+		return nil
 	case clusterIdentityMsg:
 		if msg.err == nil {
 			v.identity = msg.id
+			v.identityReady = true
 		}
 		return nil
 	case clusterNodesMsg:
@@ -211,7 +221,7 @@ func (v *clusterView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if v.confirm.open() {
 		// cluster:leave has no target parameter. If the local principal changed,
 		// the frozen cluster can no longer be addressed: never leave its replacement.
-		if msg.String() == "y" && v.leaveIdentity != nil && (v.identity.ClusterID != v.leaveIdentity.ClusterID || v.identity.NodeUUID != v.leaveIdentity.NodeUUID) {
+		if msg.String() == "y" && v.leaveIdentity != nil && (!v.identityReady || v.identity.ClusterID != v.leaveIdentity.ClusterID || v.identity.NodeUUID != v.leaveIdentity.NodeUUID) {
 			v.confirm.done = true
 			v.leaveIdentity = nil
 			v.status = "cluster changed; confirm leave again"
@@ -334,6 +344,10 @@ func (v *clusterView) respondToInvite(accept bool, pin string) tea.Cmd {
 // (empty) + nodes:changed (empty), which refresh the view; the broker persists
 // the now-unclustered state so the node stays out after a restart.
 func (v *clusterView) leaveCluster() tea.Cmd {
+	if !v.identityReady {
+		v.status = "waiting for cluster identity; cannot confirm leave"
+		return nil
+	}
 	if v.identity.ClusterID == "" {
 		v.status = "not in a cluster"
 		return nil
