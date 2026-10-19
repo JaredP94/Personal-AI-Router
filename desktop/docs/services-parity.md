@@ -99,7 +99,7 @@ idle `0` remains visible, and an unknown adapter does not hide another adapter's
 measured values. Unavailable memory has no numerical memory plot. Card legends,
 performance details, and tray rows share the kind labels; Windows dedicated
 adapters show their shared budget/usage on an independent **Shared memory** line.
-Unified detail uses `<used> GPU-allocated of <total> unified memory`; on Linux
+Unified detail uses `<used> used of <total> unified memory` on every platform; on Linux
 NVIDIA unified adapters, used bytes come from **system-used RAM**, not GPU-only
 allocations. No capacities or usages are added across adapters or memory pools.
 

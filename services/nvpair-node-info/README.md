@@ -126,7 +126,8 @@ System RAM is never dedicated VRAM.
 | Collector / classification condition | `memory_kind` | Capacity / used source |
 | --- | --- | --- |
 | macOS Apple GPU: AGX class or `Apple ` name | `unified` | Physical RAM / GPU-mapped `Alloc system memory`, not whole-system used RAM. |
-| macOS non-Apple GPU | `dedicated` | `VRAM,totalMB` (or dedicated used + free when total is missing) / `vramUsedBytes` or `inUseVidMemoryBytes` only; otherwise usage omitted. |
+| macOS non-Apple Intel GPU: class, model, or entry name contains `Intel` (case-insensitive) | `shared` | `VRAM,totalMB` shared budget / `vramUsedBytes` or `inUseVidMemoryBytes` only; otherwise usage omitted. Never `Alloc system memory`. |
+| macOS other non-Apple GPU (AMD/NVIDIA discrete) | `dedicated` | `VRAM,totalMB` (or dedicated used + free when total is missing) / `vramUsedBytes` or `inUseVidMemoryBytes` only; otherwise usage omitted. |
 | Linux NVIDIA: numeric `memory.total` | `dedicated` | `nvidia-smi` total / used, converted from MiB to bytes. |
 | Linux NVIDIA: `[N/A]`, `N/A`, `[Not Supported]`, or `Not Supported` total | `unified` | Physical RAM / independently measured system-used RAM; sentinel-based classification, not a hardware memory-type query. |
 | Linux NVIDIA: malformed total | `unavailable` | Memory capacity and usage omitted; measured utilization remains independent. |
@@ -140,8 +141,9 @@ rather than inferring from names or numeric capacities. Unknown readings become
 nullable desktop values: `—` in current displays and gaps in chart history.
 Measured zero is retained independently on each adapter. Labels are `VRAM`,
 `Unified memory`, `Shared memory`, and `Memory unavailable`. The unified detail
-uses `GPU-allocated` wording; on Linux NVIDIA unified adapters its used-byte source
-is **system-used RAM**, not a GPU-only allocation measurement.
+is `<used> used of <total> unified memory` on every platform; on Linux NVIDIA
+unified adapters its used-byte source is **system-used RAM**, not a GPU-only
+allocation measurement.
 
 Memory semantics do not change scheduler policy: compact telemetry takes the
 maximum **measured** utilization across adapters and retains the existing

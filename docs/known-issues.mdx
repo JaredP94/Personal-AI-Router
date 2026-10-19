@@ -35,7 +35,8 @@ published `0.7.0-rc.1` assets. Current behavior depends on the collector:
 | System / source | Kind and displayed memory |
 | --- | --- |
 | macOS Apple GPU (AGX class or `Apple ` name) | **Unified memory:** physical RAM capacity and GPU-mapped allocation (`Alloc system memory`), not whole-system RAM usage. |
-| macOS non-Apple GPU | **VRAM** (`dedicated`): dedicated capacity and dedicated used counters only; system allocation is never substituted for VRAM usage. |
+| macOS non-Apple Intel GPU (class, model, or entry name contains `Intel`, case-insensitive) | **Shared memory:** `VRAM,totalMB` shared budget and dedicated-used counters only; `Alloc system memory` is never substituted for usage. |
+| macOS other non-Apple GPU (AMD/NVIDIA discrete) | **VRAM** (`dedicated`): dedicated capacity and dedicated used counters only; system allocation is never substituted for VRAM usage. |
 | Linux NVIDIA with numeric `memory.total` | **VRAM** (`dedicated`), from `nvidia-smi`. |
 | Linux NVIDIA with `[N/A]` / `Not Supported` total (including UMA systems such as DGX Spark) | **Unified memory:** physical RAM capacity and system-used RAM. This is sentinel-based classification; used bytes are not GPU-only allocations. |
 | Linux NVIDIA with malformed total | **Memory unavailable**; memory figures are omitted. Independently measured utilization can still appear. |
@@ -43,6 +44,8 @@ published `0.7.0-rc.1` assets. Current behavior depends on the collector:
 | Windows with zero dedicated video memory | **Shared memory:** the shared-system-memory budget and measured shared usage, not dedicated VRAM or a claim of exclusive GPU capacity. |
 | Linux AMD/Intel names-only inventory and other names-only platforms | **Memory unavailable**, without GPU utilization. Driver/collector support remains out of scope. |
 
+Unified detail reads `<used> used of <total> unified memory` on every platform,
+covering both macOS GPU allocation and Linux system-used RAM.
 Missing readings display `—`, not `0`; a measured idle `0` remains visible.
 Unknown readings on one adapter do not hide measured readings on another. Memory
 history breaks at missing samples rather than dropping to zero. Capacities and

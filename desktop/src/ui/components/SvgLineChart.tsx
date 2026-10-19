@@ -127,6 +127,7 @@ function SvgLineChart({
             return {
                 key: ds.key,
                 color: ds.color,
+                markers: segments.filter(points => points.length === 1).map(points => points[0]),
                 line: lines.map(path => path.line).join(' '),
                 fill: lines.map(path => path.fill).join(' ')
             }
@@ -186,6 +187,15 @@ function SvgLineChart({
                                     strokeLinejoin="round"
                                     strokeLinecap="round"
                                 />
+                                {p.markers.map(point => (
+                                    <circle
+                                        key={point.x}
+                                        cx={point.x}
+                                        cy={point.y}
+                                        r={3}
+                                        fill={p.color}
+                                    />
+                                ))}
                             </g>
                         )
                     })}

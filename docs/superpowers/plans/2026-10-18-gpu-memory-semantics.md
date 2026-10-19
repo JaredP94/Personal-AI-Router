@@ -43,7 +43,8 @@ Classification per platform:
 | Source | `memory_kind` | Capacity / used |
 | --- | --- | --- |
 | macOS Apple GPU (AGX class or `Apple ` name) | `unified` | physical RAM / GPU-allocated (`Alloc system memory`) |
-| macOS non-Apple GPU | `dedicated` | `VRAM,totalMB` / `vramUsedBytes` or `inUseVidMemoryBytes` only; otherwise used omitted |
+| macOS non-Apple Intel GPU (class, model, or entry name contains `Intel`, case-insensitive) | `shared` | `VRAM,totalMB` shared budget / `vramUsedBytes` or `inUseVidMemoryBytes` only; never `Alloc system memory`; otherwise used omitted |
+| macOS other non-Apple GPU (AMD/NVIDIA discrete) | `dedicated` | `VRAM,totalMB` / `vramUsedBytes` or `inUseVidMemoryBytes` only; otherwise used omitted |
 | Linux NVIDIA, numeric `memory.total` | `dedicated` | nvidia-smi |
 | Linux NVIDIA, `[N/A]`/`Not Supported` total | `unified` | physical RAM / system used RAM |
 | Linux NVIDIA, malformed total | `unavailable` | omitted |
@@ -120,7 +121,7 @@ Classification per platform:
 
 **Interfaces:** Exact copy:
 - Memory label by kind: `dedicated` → `VRAM`; `unified` → `Unified memory`; `shared` → `Shared memory`; `unavailable` → `Memory unavailable` (no used/total figures).
-- Unified detail line: `<used> GPU-allocated of <total> unified memory`.
+- Unified detail line: `<used> used of <total> unified memory` on every platform.
 - Windows dedicated adapter with `sharedTotal`: an extra line `Shared memory <used> / <total>` (used shown as `—` when unknown).
 - Unknown utilization: `Usage —`; radial ring shows an empty track and `—`; line charts break at `null` points.
 - No component sums memory across adapters.

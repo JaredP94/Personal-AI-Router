@@ -107,6 +107,11 @@ func normalizeIORegistryGPU(entry ioRegistryEntry, name string, systemMemory uin
 		}
 	} else {
 		record.memoryKind = MemoryDedicated
+		if strings.Contains(strings.ToLower(entry.ObjectClass), "intel") ||
+			strings.Contains(strings.ToLower(entry.Model), "intel") ||
+			strings.Contains(strings.ToLower(entry.EntryName), "intel") {
+			record.memoryKind = MemoryShared
+		}
 		record.vramTotal = entry.VRAMTotalMB * 1024 * 1024
 		dedicatedUsed := entry.Performance.VRAMUsedBytes
 		if dedicatedUsed == nil {
@@ -116,7 +121,7 @@ func normalizeIORegistryGPU(entry ioRegistryEntry, name string, systemMemory uin
 			record.vramUsed = *dedicatedUsed
 			record.vramUsedValid = true
 		}
-		if record.vramTotal == 0 && dedicatedUsed != nil &&
+		if record.memoryKind == MemoryDedicated && record.vramTotal == 0 && dedicatedUsed != nil &&
 			entry.Performance.VRAMFreeBytes != nil {
 			record.vramTotal = *dedicatedUsed + *entry.Performance.VRAMFreeBytes
 		}

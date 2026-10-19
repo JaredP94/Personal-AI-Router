@@ -116,7 +116,7 @@ const cases: { kind: GpuMemoryKind; label: string; detail: string }[] = [
     {
         kind: 'unified',
         label: 'Unified memory',
-        detail: '2 GB GPU-allocated of 8 GB unified memory'
+        detail: '2 GB used of 8 GB unified memory'
     },
     { kind: 'shared', label: 'Shared memory', detail: '2 GB / 8 GB' },
     { kind: 'unavailable', label: 'Memory unavailable', detail: '' }
@@ -189,9 +189,7 @@ it('does not invent used bytes when percentage or capacity is unknown', async ()
             createElement(TrayNodeRow, { node: node([hardware]), activeWorkloads: [] })
         ]) {
             await render(component)
-            expect(text()).toContain(
-                `— GPU-allocated of ${capacity === null ? '—' : '8 GB'} unified memory`
-            )
+            expect(text()).toContain(`— used of ${capacity === null ? '—' : '8 GB'} unified memory`)
         }
     }
 })
@@ -224,7 +222,7 @@ it.each(cases)('keeps measured idle memory distinct from unknown for $kind', asy
         if (kind === 'unavailable') expect(text()).toContain('Memory unavailable')
         else
             expect(text()).toContain(
-                kind === 'unified' ? '0 B GPU-allocated of 8 GB unified memory' : '0 B / 8 GB'
+                kind === 'unified' ? '0 B used of 8 GB unified memory' : '0 B / 8 GB'
             )
     }
 })
@@ -275,6 +273,66 @@ it('radial recovers measured readings after a gap without blanking another adapt
     expect(container.querySelectorAll('circle')).toHaveLength(4)
     expect(container.querySelector('path')).not.toBeNull()
     expect(text()).toContain('—')
+})
+
+it.each([
+    { value: 50, y: '100' },
+    { value: 0, y: '196' }
+])('line chart visibly marks an isolated measured $value between gaps', async ({ value, y }) => {
+    await render(
+        createElement(SvgLineChart, {
+            datasets: [
+                {
+                    key: 'gpu',
+                    label: 'GPU',
+                    color: '#00ff00',
+                    data: [null, value, null].map((value, timestamp) => ({ timestamp, value }))
+                }
+            ]
+        })
+    )
+    const markers = container.querySelectorAll('circle[fill="#00ff00"]')
+    expect(markers).toHaveLength(1)
+    expect(markers[0].getAttribute('cx')).toBe('150')
+    expect(markers[0].getAttribute('cy')).toBe(y)
+    expect(Number(markers[0].getAttribute('r'))).toBeGreaterThan(0)
+    expect(container.querySelector('path[stroke]')?.getAttribute('d')).not.toContain('C ')
+})
+
+it('line chart recovers isolated and connected measurements after gaps without joining them', async () => {
+    const dataset = {
+        key: 'gpu',
+        label: 'GPU',
+        color: '#00ff00',
+        data: [null, null, null].map((value, timestamp) => ({ timestamp, value }))
+    }
+    await render(createElement(SvgLineChart, { datasets: [dataset] }))
+    expect(container.querySelector('path')).toBeNull()
+    expect(container.querySelector('circle')).toBeNull()
+
+    await render(
+        createElement(SvgLineChart, {
+            datasets: [
+                {
+                    ...dataset,
+                    data: [null, 50, null, 0, 20, null].map((value, timestamp) => ({
+                        timestamp,
+                        value
+                    }))
+                }
+            ]
+        })
+    )
+    expect(container.querySelectorAll('circle[fill="#00ff00"]')).toHaveLength(1)
+    const stroke = container.querySelector('path[stroke="#00ff00"]')?.getAttribute('d') ?? ''
+    expect(stroke.match(/M /g)).toHaveLength(2)
+    expect(stroke.match(/C /g)).toHaveLength(1)
+    expect(stroke).toContain('M 62.4 100')
+    expect(stroke).toContain('M 179.2 196')
+
+    await render(createElement(SvgLineChart, { datasets: [dataset] }))
+    expect(container.querySelector('path')).toBeNull()
+    expect(container.querySelector('circle')).toBeNull()
 })
 
 it('line chart breaks both strokes and fills at null points, preserving x positions and real zero', async () => {

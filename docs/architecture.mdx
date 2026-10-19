@@ -314,8 +314,10 @@ makes service-data HTTP calls of its own.
 GPU memory classification is owned by Go. Each adapter carries `memory_kind`
 (`dedicated`, `unified`, `shared`, or `unavailable`); `vram_bytes` means capacity
 of that kind, not necessarily dedicated VRAM. Apple macOS GPUs report unified
-physical RAM with GPU-mapped allocation usage. Non-Apple macOS GPUs use only
-dedicated-memory counters. Linux NVIDIA numeric totals mean dedicated VRAM;
+physical RAM with GPU-mapped allocation usage. Non-Apple macOS Intel GPUs report
+a shared budget from `VRAM,totalMB`; other non-Apple GPUs (AMD/NVIDIA discrete)
+report dedicated VRAM. Both use only dedicated-used counters, never system
+allocation, for usage. Linux NVIDIA numeric totals mean dedicated VRAM;
 `[N/A]` / `Not Supported` totals mean unified physical RAM with **system-used RAM**,
 not GPU-only allocation usage. Malformed totals and names-only inventories report
 unavailable memory; Linux AMD/Intel remain names-only without GPU utilization.

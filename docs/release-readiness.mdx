@@ -157,7 +157,10 @@ Linux AMD/Intel remain names-only.**
 
 - Go reports `dedicated`, `unified`, `shared`, or `unavailable` per adapter.
   Apple unified usage is GPU-mapped allocation; Linux NVIDIA unified usage is
-  system-used RAM. Windows dedicated VRAM and shared-system-memory budgets/usage
+  system-used RAM. Unified detail reads `<used> used of <total> unified memory`.
+  macOS Intel GPUs report a shared budget, while AMD/NVIDIA discrete GPUs remain
+  dedicated; neither substitutes system allocation for dedicated-used counters.
+  Windows dedicated VRAM and shared-system-memory budgets/usage
   are separate; zero-dedicated adapters report shared memory, not VRAM.
 - Discovery/manual-node/broker propagation and desktop history preserve missing
   readings separately from measured zero. Labels follow the reported kind;

@@ -35,7 +35,7 @@ export function getGpuMemoryPresentation(
     const total = bytes(gpu.vramTotal)
     const detail =
         gpu.memoryKind === 'unified'
-            ? `${used} GPU-allocated of ${total} unified memory`
+            ? `${used} used of ${total} unified memory`
             : `${used} / ${total}`
     const sharedDetail =
         gpu.memoryKind === 'dedicated' && gpu.sharedTotal !== null
