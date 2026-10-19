@@ -6,11 +6,13 @@ import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
-import { ModelExpiry } from '@/shared/types/engines'
+import type { EngineType, ModelExpiry } from '@/shared/types/engines'
+import { noEngineCapabilities } from '@/shared/utils/engines'
 
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
 import { ModelHubModal } from '@/ui/components/ModelHub/ModelHubModal'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 
@@ -22,13 +24,28 @@ import type { ModelEntry } from '@/ui/types/model-hub'
 
 export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId: string }) {
     const [openModelHubModal, setOpenModelHubModal] = useState(false)
-    const [modelPendingDelete, setModelPendingDelete] = useState<string | null>(null)
-    const models = (backend.models ?? []).sort((a, b) =>
-        formatModelDisplayName(a.name, backend.type).localeCompare(
-            formatModelDisplayName(b.name, backend.type)
-        )
-    )
+    const [modelPendingDelete, setModelPendingDelete] = useState<{
+        nodeId: string
+        engineType: EngineType
+        modelName: string
+        displayName: string
+        engineName: string
+    } | null>(null)
     const caps = EngineCapabilities[backend.type]
+    // What this engine supports comes from the node that owns it — the local
+    // engine manager, or a peer's own `EngineStatus` — so a remote row is gated
+    // by that node's platform rather than by a local engine table.
+    const reported =
+        useEngineStatusStore(
+            state => state.statusByNode.get(nodeId)?.get(backend.type)?.capabilities
+        ) ?? noEngineCapabilities()
+    const models = reported.listModels
+        ? [...backend.models].sort((a, b) =>
+              formatModelDisplayName(a.name, backend.type).localeCompare(
+                  formatModelDisplayName(b.name, backend.type)
+              )
+          )
+        : []
 
     const backendType = backend.type
     const getProgress = useEngineProgressStore(state => state.getProgress)
@@ -105,13 +122,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         return results
     })()
 
-    // Only an engine that restarts to pick a deletion up (LM Studio today)
-    // confirms first, because the restart interrupts in-flight inference.
-    // Ollama and every other engine delete straight away — this stays false for
-    // them, which `tests/modular/delete-model-restart.test.ts` pins against the
-    // engine-manager manifests. The restart itself belongs to the engine
-    // manager, not to this click.
-    const confirmBeforeDelete = caps?.restartsOnModelDelete ?? false
+    // An engine that restarts to pick a deletion up (LM Studio today, whose
+    // /v1/models index is built at startup) confirms first, because the restart
+    // interrupts in-flight inference. The node reports that as
+    // `delete_restarts_engine`; Ollama and every other engine report false and
+    // delete straight away. The restart itself belongs to the engine manager,
+    // not to this click.
+    const confirmBeforeDelete = reported.deleteRestartsEngine
 
     const handleAction = useCallback(
         (modelName: string, action: string) => {
@@ -123,15 +140,29 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     window.pairApi.engines.unloadModel(backendType, nodeId, modelName)
                     break
                 case 'delete':
+                    if (!reported.deleteModel) break
                     if (confirmBeforeDelete) {
-                        setModelPendingDelete(modelName)
+                        setModelPendingDelete({
+                            nodeId,
+                            engineType: backendType,
+                            modelName,
+                            displayName: displayName(modelName),
+                            engineName: backend.displayName
+                        })
                         break
                     }
                     window.pairApi.engines.deleteModel(backendType, nodeId, modelName)
                     break
             }
         },
-        [backendType, confirmBeforeDelete, nodeId]
+        [
+            backendType,
+            backend.displayName,
+            confirmBeforeDelete,
+            nodeId,
+            reported.deleteModel,
+            displayName
+        ]
     )
 
     // `ConfirmModal` closes (`onOpenChange(false)`) before it calls `onConfirm`,
@@ -140,9 +171,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     // React's state update does not mutate that binding.
     const handleConfirmDelete = useCallback(() => {
         if (modelPendingDelete) {
-            window.pairApi.engines.deleteModel(backendType, nodeId, modelPendingDelete)
+            window.pairApi.engines.deleteModel(
+                modelPendingDelete.engineType,
+                modelPendingDelete.nodeId,
+                modelPendingDelete.modelName
+            )
         }
-    }, [backendType, modelPendingDelete, nodeId])
+    }, [modelPendingDelete])
 
     const handleExpiryChange = useCallback(
         (modelName: string, value: ModelExpiry) => {
@@ -165,13 +200,13 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     )
     const isRunning = useMemo(() => backend.processStatus === 'running', [backend.processStatus])
     const supportsSearch = useMemo(
-        () => !hasModelSearchOnlyWhenRunning || isRunning,
-        [hasModelSearchOnlyWhenRunning, isRunning]
+        () => reported.pullModel && (!hasModelSearchOnlyWhenRunning || isRunning),
+        [reported.pullModel, hasModelSearchOnlyWhenRunning, isRunning]
     )
 
     const handleDownload = useCallback(
         (entries: ModelEntry[]) => {
-            if (!entries || entries.length === 0) return
+            if (!reported.pullModel || entries.length === 0) return
 
             setOpenModelHubModal(false)
 
@@ -181,7 +216,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                 }
             }
         },
-        [backendType, nodeId]
+        [backendType, nodeId, reported.pullModel]
     )
 
     return (
@@ -200,14 +235,16 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
             {!isBusy && (
                 <>
-                    {(isRunning || modelOpsWhenStopped) &&
+                    {reported.listModels &&
+                        (isRunning || modelOpsWhenStopped) &&
                         models.length === 0 &&
                         incomingSyncs.length === 0 && (
                             <Text kind="body/regular/sm" className="text-subtle-color pl-2">
                                 No model/weight files downloaded
                             </Text>
                         )}
-                    {!modelOpsWhenStopped &&
+                    {reported.listModels &&
+                        !modelOpsWhenStopped &&
                         models.length === 0 &&
                         incomingSyncs.length === 0 &&
                         backend.processStatus === 'stopped' && (
@@ -224,6 +261,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                     model={model}
                                     isRunning={isRunning}
                                     capabilities={caps}
+                                    reported={reported}
                                     progress={getProgress(nodeId, backend.type, 'pull', model.name)}
                                     pendingAction={usePendingActionsStore
                                         .getState()
@@ -244,7 +282,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     if (!open) setModelPendingDelete(null)
                 }}
                 title="Delete model?"
-                message={`Deleting ${displayName(modelPendingDelete ?? '')} requires ${backend.displayName} to be restarted.`}
+                message={`Deleting ${modelPendingDelete?.displayName ?? ''} requires ${modelPendingDelete?.engineName ?? ''} to be restarted.`}
                 confirmLabel="Delete and restart"
                 confirmColor="danger"
                 onConfirm={handleConfirmDelete}

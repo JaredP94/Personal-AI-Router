@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { EngineProcessStatus, EngineStatusData, EngineType } from '@/shared/types/engines'
+import { noEngineCapabilities } from '@/shared/utils/engines'
 import { buildOverviewNodes } from '@/ui/utils/overview-nodes'
 import {
     areWelcomeEnginesInstalled,
@@ -23,6 +24,7 @@ function engineStatus(
         engineType,
         nodeId: 'self',
         processStatus,
+        capabilities: noEngineCapabilities(),
         enginePort: null,
         proxyPort: null
     }
