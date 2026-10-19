@@ -41,8 +41,8 @@ type engineStatus struct {
 
 // enginesView manages inference engines on the selected node. Local state is
 // kept live by engine notifications; peers are refreshed through the existing
-// remote status method on selection and after lifecycle replies. Local model
-// pulls retain their name prompt and progress feed.
+// remote status method on selection and after lifecycle replies. Model inventory
+// uses normalized local snapshots or peer discovery, with capability-gated actions.
 type enginesView struct {
 	client     *rpc.Client
 	table      table.Model
@@ -52,6 +52,9 @@ type enginesView struct {
 	input      textinput.Model
 	pulling    bool
 	pullEngine string
+	pullNode   string
+	models     modelsPane
+	confirm    *confirmPrompt
 
 	// Empty target means local; peers are always keyed by hostUuid, never name.
 	target         string
@@ -92,6 +95,7 @@ func newEnginesView(client *rpc.Client) *enginesView {
 	ti.Placeholder = "model name (e.g. llama3.2)"
 	v := &enginesView{client: client, byName: map[string]engineStatus{}, input: ti}
 	v.table = newTable(nil)
+	v.models.table = newTable(nil)
 	return v
 }
 
@@ -142,12 +146,14 @@ func (v *enginesView) SetSize(w, h int) {
 	})
 	v.table.SetWidth(w)
 	v.table.SetHeight(clampWidth(h-2, 1))
+	v.sizeModels(w, h)
 }
 
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case discoverySnapshotMsg:
 		v.discovered = msg.nodes
+		v.peerModelsChanged()
 		return nil
 	case clusterNodesMsg:
 		if msg.err == nil {
@@ -179,7 +185,29 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		if v.table.Cursor() < 0 {
 			v.table.SetCursor(0)
 		}
+		v.refreshModels()
+		if v.models.open && v.target == "" {
+			return v.loadModelsCmd()
+		}
 		return nil
+
+	case modelsLoadedMsg:
+		if msg.node == v.target && msg.generation == v.models.generation {
+			v.models.err = msg.err
+			if msg.err == nil {
+				v.models.inventory = msg.inventory
+				if msg.node != "" {
+					v.discovered = msg.nodes
+				}
+			} else {
+				v.models.inventory = modelSnapshot{}
+			}
+			v.refreshModels()
+		}
+		return nil
+
+	case modelOpMsg:
+		return v.modelOperationDone(msg)
 
 	case engineOpMsg:
 		if msg.node != v.target {
@@ -201,6 +229,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			var nodes []availableNode
 			if decodeParams(msg.Msg.Params, &nodes) == nil {
 				v.discovered = nodes
+				v.peerModelsChanged()
 			}
 			return nil
 		case "nodes:changed":
@@ -219,6 +248,16 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		switch msg.Msg.Method {
+		case "engine:models-changed":
+			var p struct {
+				Models modelSnapshot `json:"models"`
+			}
+			if decodeParams(msg.Msg.Params, &p) == nil {
+				v.models.generation++
+				v.models.err = nil
+				v.models.inventory = p.Models
+				v.refreshModels()
+			}
 		case "engine:state-changed":
 			var e engineStatus
 			_ = decodeParams(msg.Msg.Params, &e)
@@ -266,9 +305,12 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (v *enginesView) CapturingInput() bool { return v.pulling }
+func (v *enginesView) CapturingInput() bool { return v.pulling || v.confirm.open() }
 
 func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if v.confirm.open() {
+		return v.confirm.Update(msg)
+	}
 	if v.pulling {
 		switch msg.String() {
 		case "enter":
@@ -285,15 +327,19 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if key.Matches(msg, engTargetKey) {
 		return v.cycleTarget()
 	}
+	if key.Matches(msg, engModelsKey) {
+		return v.toggleModels()
+	}
+	if key.Matches(msg, engDeleteModelKey) {
+		return v.confirmDeleteModel()
+	}
 	if key.Matches(msg, engPullKey) {
-		if v.target != "" {
-			return nil
-		}
 		engine := v.selectedEngine()
-		if engine == "" {
+		if engine == "" || !v.byName[engine].Capabilities.PullModel {
 			return nil
 		}
 		v.pullEngine = engine
+		v.pullNode = v.target
 		v.pulling = true
 		v.input.SetValue("")
 		v.input.Focus()
@@ -303,7 +349,11 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	var cmd tea.Cmd
-	v.table, cmd = v.table.Update(msg)
+	if v.models.open {
+		v.models.table, cmd = v.models.table.Update(msg)
+	} else {
+		v.table, cmd = v.table.Update(msg)
+	}
 	return cmd
 }
 
@@ -317,22 +367,27 @@ func pullParams(engine, model string) map[string]any {
 	return map[string]any{"engine": engine, "action": "pull_model", "params": map[string]string{"name": model, "model": model}}
 }
 
-// submitPull issues engine:action{action:"pull_model"} for the selected engine.
-// Progress is informational; the RPC reply reports completion with the long
-// operation lifetime, including any terminal error.
+// submitPull uses the node and engine captured when the name prompt opened.
+// Progress is informational; the local or remote RPC reply reports completion
+// with the long operation lifetime, including any terminal error.
 func (v *enginesView) submitPull() tea.Cmd {
 	v.pulling = false
 	v.input.Blur()
 	model := strings.TrimSpace(v.input.Value())
-	engine := v.pullEngine
+	engine, node := v.pullEngine, v.pullNode
 	if model == "" || engine == "" {
 		v.status = "model name required"
 		return nil
 	}
 	v.status = fmt.Sprintf("pull %s: %s...", engine, model)
+	method := "engine:action"
 	params := pullParams(engine, model)
-	return callWithTimeout(v.client, "engine:action", params, longOpTimeout, func(_ *rpc.Message, err error) tea.Msg {
-		return engineOpMsg{what: "pull " + model, engine: engine, err: err}
+	if node != "" {
+		method = "engine:remote-pull-model"
+		params = map[string]any{"node": node, "engine": engine, "model": model}
+	}
+	return callWithTimeout(v.client, method, params, longOpTimeout, func(_ *rpc.Message, err error) tea.Msg {
+		return modelOpMsg{node: node, action: "pull", model: model, engine: engine, err: err}
 	})
 }
 
@@ -425,13 +480,16 @@ func (v *enginesView) refreshRows() {
 }
 
 func (v *enginesView) View() string {
-	if len(v.order) == 0 {
-		if v.status != "" {
-			return statusErrStyle.Render(v.status)
-		}
-		return footerStyle.Render("No engines known on this host.")
-	}
 	out := v.table.View()
+	if len(v.order) == 0 {
+		out = footerStyle.Render("No engines known on this host.")
+	}
+	if v.models.open {
+		out = v.modelsView()
+	}
+	if v.confirm.open() {
+		out += "\n" + v.confirm.View()
+	}
 	if v.pulling {
 		out += "\npull model: " + v.input.View()
 	}
@@ -442,7 +500,10 @@ func (v *enginesView) View() string {
 }
 
 func (v *enginesView) Help() []key.Binding {
-	bindings := []key.Binding{engTargetKey, engStartKey, engStopKey}
+	if v.confirm.open() {
+		return v.confirm.Help()
+	}
+	bindings := []key.Binding{engTargetKey, engModelsKey, engStartKey, engStopKey}
 	e := v.byName[v.selectedEngine()]
 	if v.target == "" {
 		bindings = append(bindings, engRestartKey)
@@ -454,7 +515,12 @@ func (v *enginesView) Help() []key.Binding {
 		if e.Capabilities.Uninstall {
 			bindings = append(bindings, engUninstallKey)
 		}
+	}
+	if e.Capabilities.PullModel {
 		bindings = append(bindings, engPullKey)
+	}
+	if v.models.open && e.Capabilities.DeleteModel && v.selectedModel() != "" {
+		bindings = append(bindings, engDeleteModelKey)
 	}
 	return bindings
 }
@@ -486,6 +552,11 @@ func (v *enginesView) cycleTarget() tea.Cmd {
 		}
 	}
 	v.target = next
+	v.models.generation++
+	v.models.inventory = modelSnapshot{}
+	v.models.err = nil
+	v.models.open = false
+	v.refreshModels()
 	v.order = nil
 	v.byName = map[string]engineStatus{}
 	v.refreshRows()

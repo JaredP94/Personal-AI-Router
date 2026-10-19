@@ -64,6 +64,11 @@ func TestEngineOperationLifetimes(t *testing.T) {
 				} else {
 					v.Update(engineRequest(t, v.loadCmd(), c, "engine:get-installed", `null`, peerEngines))
 				}
+				if tc.key == "p" {
+					e := v.byName["custom"]
+					e.Capabilities.PullModel = true
+					v.merge(e)
+				}
 				cmd := v.Update(engineKey(tc.key))
 				if tc.key == "p" {
 					v.input.SetValue("fixture/model")
@@ -96,8 +101,14 @@ func TestEngineOperationLifetimes(t *testing.T) {
 				synctest.Wait()
 				select {
 				case result := <-done:
-					msg, ok := result.(engineOpMsg)
-					if !ok || !errors.Is(msg.err, context.DeadlineExceeded) {
+					var err error
+					switch msg := result.(type) {
+					case engineOpMsg:
+						err = msg.err
+					case modelOpMsg:
+						err = msg.err
+					}
+					if !errors.Is(err, context.DeadlineExceeded) {
 						t.Fatalf("expected deadline at %s: %#v", tc.timeout, result)
 					}
 				default:
