@@ -107,6 +107,11 @@ discover or reach it, while the application itself looks healthy. Restarting PAI
 restores it. This is a rarer problem than the others on this page, and it has only
 been seen on macOS.
 
+**Accepted and documented for this release, not fixed.** A controlled
+second-machine reproduction is still needed before choosing a remedy; no
+speculative fix has been made. Until then, restart PAIR on the affected Mac.
+This remains open in [release readiness](release-readiness.mdx#known-limitations-spec-9).
+
 ## The Terminal Interface Cannot Do Everything the Desktop App Can
 
 **Implemented in source, pending release testing.** `nvpair-tui` now shows
@@ -129,10 +134,21 @@ Use the owning host for local-only engine operations. Refer to
 
 ## Engine Binaries Are Not on Your PATH
 
-PAIR does not add the engines it installs to your `PATH`, so running an engine's
-CLI means using the full path. Refer to
-[Using an engine's own command line](getting-started.mdx#using-an-engines-own-command-line)
-for the locations. This is on the roadmap.
+**Implemented in source via `nvpair engine`, pending release testing.** Engine
+directories are intentionally not added to `PATH`. Use `nvpair engine ollama list`
+or `nvpair engine <engine> [args...]`; the command resolves the executable and
+required environment without starting a second broker or dashboard.
+
+The residual limitation is that **`nvpair` itself may not be on `PATH`**:
+headless/source builds and standalone service installers provide no wrapper,
+and desktop first-run creation is best-effort (notably when macOS's
+`/usr/local/bin` is unwritable). A Linux wrapper directory may also be outside
+your shell's `PATH`. Run `nvpair-tui` by its full path with the same `engine`
+subcommand, keeping engine-manager beside it, or use the
+[engine full-path table](getting-started.mdx#if-nvpair-is-not-on-path).
+See [wrapper availability](terminal-interface.mdx#nvpair-and-nvpair-tui-commands).
+Windows console/Ctrl-C behavior is not runtime-tested on this verification host.
+An external HTTP service with no local executable cannot provide a CLI.
 
 ## Platform Limits Worth Knowing
 

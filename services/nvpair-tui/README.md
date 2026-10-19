@@ -139,7 +139,11 @@ tab, not on the terminal), so it never corrupts the full-screen UI.
 ## Managed engine CLIs
 
 The installed `nvpair` wrapper forwards to this executable. Use `nvpair-tui`
-directly instead if the wrapper is not installed:
+by its full path instead if the wrapper is absent or outside PATH. Headless/source
+builds and standalone service installers provide no wrapper; packaged desktop
+startup is best-effort, and macOS skips it when `/usr/local/bin` is unwritable.
+See [wrapper availability](../../docs/terminal-interface.mdx#nvpair-and-nvpair-tui-commands)
+and the [engine full-path fallback](../../docs/getting-started.mdx#if-nvpair-is-not-on-path):
 
 ```sh
 nvpair engine                         # ENGINE, NAME, INSTALLED, SUPPORTED table
@@ -169,7 +173,9 @@ On Windows it runs in the same console with inherited stdio; Ctrl-C reaches the
 engine directly, the waiting parent stays alive, and the engine's exit code is
 returned. Resolver or launch failures print one `nvpair: <message>` stderr line
 and exit 2 (including unavailable engines or external services without a local
-executable).
+executable). Windows console/Ctrl-C behavior is statically checked but remains
+runtime-untested on the macOS verification host; these semantics are not release
+certification.
 
 Unlike dashboard mode, this dispatch can run alongside the desktop app: it only
 invokes engine-manager's read-only one-shot resolver and the chosen CLI, without

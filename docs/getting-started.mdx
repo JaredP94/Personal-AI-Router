@@ -350,13 +350,48 @@ current URL.
 
 ### Using an Engine's Own Command Line
 
-An engine PAIR installed for you is a normal installation, and you can drive it
-with its own command-line interface (CLI). Two things make that less obvious:
+Use `nvpair engine` to run an installed engine's own command-line interface
+(CLI), without adding engine directories to `PATH`:
 
-- The binaries are not on your `PATH` yet.
-- The engine is not on the port its CLI expects by default.
+```bash
+nvpair engine                         # List engines, installation and platform support
+nvpair engine ollama list
+nvpair engine ollama --version
+nvpair engine lmstudio --help
+```
 
-**Ollama** is installed inside PAIR's own data directory:
+PAIR resolves the executable and required environment through engine-manager's
+read-only one-shot mode, using the effective manifests and user overrides.
+Ollama receives `OLLAMA_HOST=127.0.0.1:<engine port>` (normally `11435`, not the
+proxy's `11434`), and Linux retains the required library path. Arguments after
+the engine name are passed untouched, including `--version`, `-h`, `--`, and
+quoted spaces. The CLI inherits your terminal, working directory and environment,
+with the resolver's additions applied only to the child; the shell is unchanged.
+
+This command starts no broker, workers or dashboard and writes no PAIR settings,
+so it can run alongside the desktop app. **The engine CLI can still change or
+delete data when you ask it to**; it is not a sandbox. Unknown, unsupported or
+missing engines fail with a one-line `nvpair: <reason>` message and exit 2 rather
+than guessing a vendor path. A service reachable only over HTTP, with no local
+executable, fails with `<engine> is running as an external service; PAIR has no
+executable for it`. Detecting that case may require one loopback-only readiness
+probe with a 500 ms deadline; an unhealthy or unidentified endpoint is reported
+as not installed. Windows console and Ctrl-C behavior remains runtime-untested
+on this verification host. See the
+[command reference](terminal-interface.mdx#nvpair-and-nvpair-tui-commands).
+
+#### If `nvpair` Is Not on PATH
+
+The wrapper may be absent on headless/source installs or when macOS's
+`/usr/local/bin` is unwritable. Run the bundled `nvpair-tui` by its full path with
+`engine <engine> [args...]`, keeping `nvpair-engine-manager` beside it. Standalone
+service installers do not install a `nvpair` wrapper. See
+[wrapper availability](terminal-interface.mdx#nvpair-and-nvpair-tui-commands).
+
+Alternatively, use the engine's full path. The table and examples below describe
+default installations, not custom manifest overrides or every platform; use the
+effective manifest if you changed the location. **Ollama** is installed inside
+PAIR's own data directory:
 
 | Platform | Path |
 | --- | --- |
@@ -393,8 +428,8 @@ It defaults to `11435` for Ollama and `1235` for LM Studio.
 Use the proxy port to check what your cluster can serve. Use the engine port to
 check what is installed on the local machine.
 
-PAIR does not put these binaries on `PATH` yet. Until then, use the full path or
-add an alias yourself.
+These full-path examples require you to supply the current engine port and any
+library environment yourself; `nvpair engine` handles those for you.
 
 ## Use PAIR with Existing Applications
 

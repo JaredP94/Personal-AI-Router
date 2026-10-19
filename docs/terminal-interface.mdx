@@ -24,24 +24,54 @@ and it is worth reading before you depend on it.
 > broker and full worker tree, so two sets of services would fight over the same
 > proxy ports, try to manage the same engines, and write the same settings files.
 > Expect port conflicts, engines that refuse to start, and confusing state on both
-> sides. Quit one before starting the other.
+> sides. Quit one before starting the other. This warning applies to dashboard
+> mode, **not `nvpair engine`**, which starts no service tree.
 
 Within its scope it is self-contained. It starts its own service process tree, so
 you do not run anything else first.
 
-## `nvpair` and `nvpair-tui` Both Start It
+## `nvpair` and `nvpair-tui` Commands
 
-An installed PAIR puts `nvpair` on your `PATH` as a small wrapper that runs
-`nvpair-tui`, so either command opens this interface.
+The `nvpair` wrapper runs `nvpair-tui`. With no subcommand, either opens the
+full-screen dashboard. The separate `engine` subcommand runs an engine's CLI
+without opening the dashboard:
+
+```bash
+nvpair engine                         # ENGINE, NAME, INSTALLED, SUPPORTED table and usage
+nvpair engine ollama list
+nvpair engine lmstudio --help
+./nvpair-tui engine ollama --version  # No wrapper required
+```
+
+Keep `nvpair-engine-manager` beside `nvpair-tui`. The command asks that sibling
+for `--list-engines` or `--resolve <engine>`; it never searches `PATH` for an
+engine or guesses vendor locations. All arguments after the engine name pass
+through unchanged, even `--version`, `-h`, `--`, and quoted spaces. The CLI
+inherits stdin/stdout/stderr, working directory and environment, overlaid with
+the resolver's required environment. Ollama targets the effective engine port,
+not the PAIR proxy; Linux retains its library paths. Neither your shell's
+`PATH` nor its environment is changed.
+
+Unlike dashboard mode, **`nvpair engine` may run alongside the desktop app**:
+resolution starts no broker or workers and writes no settings. The chosen CLI
+can still perform user-requested mutations. On Unix it replaces the launcher;
+on Windows it runs in the same console with inherited stdio. The engine's exit
+code is returned. Windows console/Ctrl-C behavior remains runtime-untested on
+this macOS verification host. Resolution or launch failures print one
+`nvpair: <reason>` stderr line and exit 2. An external HTTP service without a
+local executable cannot be launched; see
+[engine CLI usage and fallback paths](getting-started.mdx#using-an-engines-own-command-line).
 
 **Do not count on `nvpair` existing on a headless machine.** Only the Debian
-package writes the wrapper at install time. On Windows and macOS the desktop
-application writes it when it starts, so on a machine where you never open the
-desktop application — the case this interface exists for — it may never appear.
-On macOS it is also skipped when `/usr/local/bin` is not writable. Run
-`nvpair-tui` directly when `nvpair` is not found, and do the same for a source
-build, which has no wrapper at all. Refer to
-[Building PAIR](building.mdx#run-without-the-desktop-application).
+desktop package writes the wrapper at install time. On Windows and macOS the
+desktop application creates it at startup on a best-effort basis; it may never
+appear if you never open the packaged app. macOS skips it when `/usr/local/bin`
+is unwritable. Linux desktop startup tries `~/.local/bin`, then `/usr/local/bin`,
+but does not ensure that the chosen directory is on your shell's `PATH`.
+Standalone service installers and source builds install no wrapper. Use the
+full path to `nvpair-tui` (with `engine` for CLI mode), or the
+[engine full-path table](getting-started.mdx#if-nvpair-is-not-on-path).
+Refer to [Building PAIR](building.mdx#run-without-the-desktop-application).
 
 ## Start It
 

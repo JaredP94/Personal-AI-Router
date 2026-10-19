@@ -33,6 +33,11 @@ namespace is the surface the orchestrator/broker forwards from the UI.
 
 ## One-shot executable resolution
 
+For normal CLI use, prefer [`nvpair engine <engine> [args...]`](../../docs/getting-started.mdx#using-an-engines-own-command-line),
+which consumes these modes and launches the resolved executable. If the `nvpair`
+wrapper is unavailable, invoke the bundled `nvpair-tui` by its full path with
+`engine`; keep this binary beside it. No engine directory is added to PATH.
+
 These read-only modes may run alongside the desktop application's engine-manager:
 
 ```sh
@@ -85,7 +90,9 @@ command-mode engines still require a filesystem installation. A successful probe
 without an executable returns
 `<engine> is running as an external service; PAIR has no executable for it`.
 An unresponsive, unhealthy, non-loopback, or otherwise unidentified service is
-reported as not installed, not guessed to be an installation.
+reported as not installed, not guessed to be an installation. Listing applies
+the same criterion and may spend up to 500 ms sequentially per missing supported
+process-mode engine.
 
 ## JSON-RPC surface
 
