@@ -32,7 +32,7 @@ Tabs:
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
 | **Proxies** | Ollama, LM Studio and oMLX reverse proxies: status, cache-affinity selection rate, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
 | **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`), with separate origin and destination columns. |
-| **Engines** | Local and paired-peer engines (`n` selects target): install/start (`i`), start (`s`), stop (`x`), models (`m`), pull (`p`), confirmed model delete (`d`). Local-only: restart (`r`), confirmed uninstall (`u`), update/reinstall (`U`), engine server port (`e`). Capability-gated keys appear only when supported. |
+| **Engines** | Local and paired-peer engines (`n` selects target): local install (`i`, then `s` to start), peer install and start (`i`), start (`s`), stop (`x`), models (`m`), pull (`p`), confirmed model delete (`d`). Local-only: restart (`r`), confirmed uninstall (`u`), update/reinstall (`U`), engine server port (`e`). Capability-gated keys appear only when supported. |
 | **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, confirm member removal (`r`) or leave (`L`). |
 | **Manual** | User-added nodes: add by address (`a`), confirm removal (`r`). |
 | **Settings** | The node-settings store (force-ports, cluster auto-sync, cluster id/name). |
@@ -71,6 +71,8 @@ listing but never pull/delete, and its server port is not editable.
 `n` cycles This node, trusted discovered peers, and cluster members with a host
 UUID. Peer status uses `engine:remote-get-installed {node:<hostUuid>}`, refreshed
 on selection and after remote actions. Transport/trust errors remain visible.
+Local `i` sends `engine:install {engine}` without `start`; press `s` after
+installation to start it. Peer `i` installs and starts (`start:true`).
 Only the existing `engine:remote-start`, `engine:remote-stop`,
 `engine:remote-install` (`start:true`), `engine:remote-pull-model` and
 `engine:remote-delete-model` methods perform peer mutations.

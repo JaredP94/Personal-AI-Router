@@ -86,9 +86,10 @@ interface DynamicSite {
 
 interface BinarySurface {
     dir: string
-    emits: Set<string>
-    handles: Set<string>
+    notifications: Set<string>
+    requests: Set<string>
     dynamic: DynamicSite[]
+    dynamicRequests?: DynamicSite[]
 }
 
 const METHOD_RE = /^(?:[a-z][a-zA-Z0-9]*(?:[:/][a-zA-Z0-9.-]+)+|ready|error|heartbeat)$/
@@ -145,7 +146,12 @@ const DOC_COMPONENT_ROW_RE = /^\|\s*`([a-z0-9-]+)`\s*\|\s*(\d+\.\d+\.\d+)\s*\|/g
 const DOC_PRODUCT_VERSION_RE = /(?:backend product|product version)[^\d\n]{0,4}(\d+\.\d+\.\d+)/gi
 
 function extractSurface(dir: string): BinarySurface {
-    const surface: BinarySurface = { dir, emits: new Set(), handles: new Set(), dynamic: [] }
+    const surface: BinarySurface = {
+        dir,
+        notifications: new Set(),
+        requests: new Set(),
+        dynamic: []
+    }
     const files = listGoFiles(dir)
     const constMap = buildConstMap(files)
 
@@ -156,14 +162,14 @@ function extractSurface(dir: string): BinarySurface {
             const lineNo = idx + 1
             if (!line.includes('signal.Notify')) {
                 for (const m of line.matchAll(NOTIFY_LITERAL_RE)) {
-                    if (isMethodish(m[1])) surface.emits.add(m[1])
+                    if (isMethodish(m[1])) surface.notifications.add(m[1])
                 }
                 const concat = line.match(NOTIFY_PREFIX_CONCAT_RE)
                 if (concat)
                     surface.dynamic.push({ label: `${concat[1]}*`, file: rel, line: lineNo })
                 for (const m of line.matchAll(NOTIFY_IDENT_RE)) {
                     const resolved = constMap.get(m[1])
-                    if (resolved) surface.emits.add(resolved)
+                    if (resolved) surface.notifications.add(resolved)
                     else if (!concat && !line.includes('func(')) {
                         surface.dynamic.push({ label: `${m[1]} (var)`, file: rel, line: lineNo })
                     }
@@ -171,14 +177,107 @@ function extractSurface(dir: string): BinarySurface {
             }
             if (/^\s*case\s+/.test(line)) {
                 for (const m of line.matchAll(QUOTED_RE)) {
-                    if (isMethodish(m[1])) surface.handles.add(m[1])
+                    if (isMethodish(m[1])) surface.requests.add(m[1])
                 }
                 for (const m of line.matchAll(IDENT_RE)) {
                     const resolved = constMap.get(m[1])
-                    if (resolved) surface.handles.add(resolved)
+                    if (resolved) surface.requests.add(resolved)
                 }
             }
         })
+    }
+    return surface
+}
+
+/**
+ * TUI is a client, unlike the workers: method switches consume notifications,
+ * while call/callWithTimeout, snapshotQuery and Client.Call send requests.
+ * Keep variable resolution function-local: the generic Notify(method, params)
+ * transport wrapper must never inherit an unrelated view's `method` assignment.
+ * This remains a lexical inventory; computed methods are reported for review,
+ * not silently guessed or classified as notifications.
+ */
+function extractTuiSurface(dir: string): BinarySurface {
+    const surface: BinarySurface = {
+        dir,
+        notifications: new Set(),
+        requests: new Set(),
+        dynamic: [],
+        dynamicRequests: []
+    }
+    for (const file of listGoFiles(dir)) {
+        const source = readFileSync(file, 'utf8').replace(
+            /"(?:\\.|[^"\\])*"|`[^`]*`|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+            token =>
+                token.startsWith('//') || token.startsWith('/*')
+                    ? token.replace(/[^\n]/g, ' ')
+                    : token
+        )
+        let depth = 0
+        const methodSwitches: number[] = []
+        source.split('\n').forEach(line => {
+            if (/\bswitch\s+[\w.]*Method\s*\{/.test(line)) methodSwitches.push(depth + 1)
+            if (methodSwitches.includes(depth)) {
+                const cases = /^\s*case\s+((?:"[^"]+"\s*,?\s*)+):/.exec(line)
+                if (cases) {
+                    for (const match of cases[1].matchAll(QUOTED_RE)) {
+                        if (isMethodish(match[1])) surface.notifications.add(match[1])
+                    }
+                }
+            }
+            for (const match of line.matchAll(/\b(?:[\w.]*Method|method)\s*==\s*"([^"]+)"/g)) {
+                if (isMethodish(match[1])) surface.notifications.add(match[1])
+            }
+            const braces = line.replace(/"(?:\\.|[^"\\])*"|`[^`]*`/g, '')
+            depth += [...braces.matchAll(/\{/g)].length - [...braces.matchAll(/\}/g)].length
+            while (methodSwitches.length && methodSwitches[methodSwitches.length - 1] > depth)
+                methodSwitches.pop()
+        })
+
+        let offset = 0
+        for (const chunk of source.split(/(?=^func\b)/m)) {
+            const bodyStart = chunk.indexOf('{') + 1
+            const body = chunk.slice(bodyStart)
+            const signature = chunk.slice(0, bodyStart)
+            for (const call of body.matchAll(
+                /\b(?:call|callWithTimeout|snapshotQuery|Call)\(\s*[^,\n]+,\s*([^,\n]+)/g
+            )) {
+                const expression = call[1].trim()
+                const values: string[] = []
+                if (/^[A-Za-z_]\w*$/.test(expression)) {
+                    const assignments = new RegExp(
+                        `\\b${expression}(?:\\s*,\\s*\\w+)*\\s*(?::=|=)\\s*("[^"\\n]+"(?:\\s*\\+\\s*[\\w.]+)?)`,
+                        'g'
+                    )
+                    for (const match of body.matchAll(assignments)) values.push(match[1])
+                    // Generic forwarding helpers have no concrete method site.
+                    if (
+                        !values.length &&
+                        new RegExp(`\\b${expression}\\s+string\\b`).test(signature)
+                    )
+                        continue
+                }
+                if (!values.length) values.push(expression)
+                for (const value of values) {
+                    const literal = /^"([^"]+)"$/.exec(value)
+                    if (literal) {
+                        // Calls already identify the wire argument; unnamespaced
+                        // methods such as ping and shutdown are requests too.
+                        surface.requests.add(literal[1])
+                    } else {
+                        const prefix = /^"([^"]+)"\s*\+/.exec(value)
+                        surface.dynamicRequests?.push({
+                            label: prefix ? `${prefix[1]}*` : value,
+                            file: path.basename(file),
+                            line: source
+                                .slice(0, offset + bodyStart + (call.index ?? 0))
+                                .split('\n').length
+                        })
+                    }
+                }
+            }
+            offset += chunk.length
+        }
     }
     return surface
 }
@@ -220,6 +319,7 @@ interface BinaryReport {
     integrated: boolean
     rows: MethodRow[]
     dynamic: DynamicSite[]
+    dynamicRequests?: DynamicSite[]
 }
 
 interface Drift {
@@ -269,22 +369,31 @@ function buildReports(
             reports.push({ dir, integrated, rows: [], dynamic: [] })
             continue
         }
-        const surface = extractSurface(abs)
+        const isClient = dir === 'nvpair-tui'
+        const surface = isClient ? extractTuiSurface(abs) : extractSurface(abs)
         const rows: MethodRow[] = []
-        for (const method of [...surface.emits].sort()) {
+        for (const method of [...surface.notifications].sort()) {
             const referenced = uiText.includes(method)
             const isIgnored = method in ignored
             rows.push({ method, direction: 'notification', referenced, ignored: isIgnored })
-            if (!referenced && !isIgnored) drift.missingNotifications.push(`${dir} → ${method}`)
+            if (!isClient && !referenced && !isIgnored)
+                drift.missingNotifications.push(`${dir} → ${method}`)
         }
-        for (const method of [...surface.handles].sort()) {
-            if (surface.emits.has(method)) continue
+        for (const method of [...surface.requests].sort()) {
+            if (!isClient && surface.notifications.has(method)) continue
             const referenced = uiText.includes(method)
             const isIgnored = method in ignored
             rows.push({ method, direction: 'request', referenced, ignored: isIgnored })
-            if (!referenced && !isIgnored) drift.unusedRequests.push(`${dir} → ${method}`)
+            if (!isClient && !referenced && !isIgnored)
+                drift.unusedRequests.push(`${dir} → ${method}`)
         }
-        reports.push({ dir, integrated, rows, dynamic: surface.dynamic })
+        reports.push({
+            dir,
+            integrated,
+            rows,
+            dynamic: surface.dynamic,
+            dynamicRequests: surface.dynamicRequests
+        })
     }
 
     return { reports, drift }
@@ -361,6 +470,12 @@ function renderApiDoc(reports: BinaryReport[], drift: Drift): string {
         const tag = report.integrated ? '' : ' — ❌ NOT in modular-binaries.ts'
         L.push(`## ${report.dir}${tag}`)
         L.push('')
+        if (report.dir === 'nvpair-tui') {
+            L.push(
+                'Client surface: requests are sent to the broker; notifications are consumed from it. Bridge references are informational, not worker/bridge drift.'
+            )
+            L.push('')
+        }
         if (report.rows.length === 0) {
             L.push('_No JSON-RPC methods detected (HTTP-only binary, or source not present)._')
             L.push('')
@@ -369,9 +484,13 @@ function renderApiDoc(reports: BinaryReport[], drift: Drift): string {
             L.push('|---|---|---|')
             for (const row of report.rows) {
                 const dir =
-                    row.direction === 'notification'
-                        ? 'notification (we consume)'
-                        : 'request (we call)'
+                    report.dir === 'nvpair-tui'
+                        ? row.direction === 'notification'
+                            ? 'notification (TUI consumes)'
+                            : 'request (TUI sends)'
+                        : row.direction === 'notification'
+                          ? 'notification (we consume)'
+                          : 'request (we call)'
                 L.push(`| \`${row.method}\` | ${dir} | ${mark(row)} |`)
             }
             L.push('')
@@ -381,6 +500,16 @@ function renderApiDoc(reports: BinaryReport[], drift: Drift): string {
                 '**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**'
             )
             for (const group of groupDynamicSites(report.dynamic)) {
+                const sites = group.count > 1 ? `, ${group.count} sites` : ''
+                L.push(`- \`${group.label}  (${group.file}${sites})\``)
+            }
+            L.push('')
+        }
+        if (report.dynamicRequests?.length) {
+            L.push(
+                '**Dynamic / unresolved request sites (TUI sends; verify computed methods by hand):**'
+            )
+            for (const group of groupDynamicSites(report.dynamicRequests)) {
                 const sites = group.count > 1 ? `, ${group.count} sites` : ''
                 L.push(`- \`${group.label}  (${group.file}${sites})\``)
             }
@@ -417,12 +546,17 @@ function printDrift(drift: Drift): void {
  * site gets a pointer to jump to.
  */
 function printDynamicSites(reports: BinaryReport[]): void {
-    const withSites = reports.filter(report => report.dynamic.length > 0)
+    const withSites = reports.filter(
+        report => report.dynamic.length || report.dynamicRequests?.length
+    )
     if (withSites.length === 0) return
-    console.log('\n── Dynamic / unresolved notify sites (verify by hand) ──────────')
+    console.log('\n── Dynamic / unresolved notify/request sites (verify by hand) ──')
     for (const report of withSites) {
         for (const site of report.dynamic) {
             console.log(`  - ${report.dir} → ${site.label}  (${site.file}:${site.line})`)
+        }
+        for (const site of report.dynamicRequests ?? []) {
+            console.log(`  - ${report.dir} request → ${site.label}  (${site.file}:${site.line})`)
         }
     }
 }

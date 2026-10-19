@@ -220,20 +220,69 @@
 
 ## nvpair-tui
 
+Client surface: requests are sent to the broker; notifications are consumed from it. Bridge references are informational, not worker/bridge drift.
+
 | Method | Direction | In bridge? |
 |---|---|---|
-| `engine:remote-delete-model` | notification (we consume) | ✅ yes |
-| `cluster:identity-changed` | request (we call) | ✅ yes |
-| `cluster:invite-received` | request (we call) | ✅ yes |
-| `discovery:nodes-changed` | request (we call) | ✅ yes |
-| `engine:install-progress` | request (we call) | ✅ yes |
-| `engine:models-changed` | request (we call) | ✅ yes |
-| `engine:pull-progress` | request (we call) | ✅ yes |
-| `engine:state-changed` | request (we call) | ✅ yes |
-| `error` | request (we call) | ✅ yes |
-| `nodes:changed` | request (we call) | ✅ yes |
-| `workloads:remove` | request (we call) | ✅ yes |
-| `workloads:upsert` | request (we call) | ✅ yes |
+| `app:ready` | notification (TUI consumes) | ✅ yes |
+| `cluster:identity-changed` | notification (TUI consumes) | ✅ yes |
+| `cluster:invite-received` | notification (TUI consumes) | ✅ yes |
+| `discovery:nodes-changed` | notification (TUI consumes) | ✅ yes |
+| `engine:install-progress` | notification (TUI consumes) | ✅ yes |
+| `engine:models-changed` | notification (TUI consumes) | ✅ yes |
+| `engine:pull-progress` | notification (TUI consumes) | ✅ yes |
+| `engine:state-changed` | notification (TUI consumes) | ✅ yes |
+| `errors:update` | notification (TUI consumes) | ✅ yes |
+| `nodes:changed` | notification (TUI consumes) | ✅ yes |
+| `workers:update` | notification (TUI consumes) | ✅ yes |
+| `workloads:remove` | notification (TUI consumes) | ✅ yes |
+| `workloads:upsert` | notification (TUI consumes) | ✅ yes |
+| `broker:resync` | request (TUI sends) | ✅ yes |
+| `cluster:get-node-id` | request (TUI sends) | ✅ yes |
+| `cluster:invite-node` | request (TUI sends) | ✅ yes |
+| `cluster:leave` | request (TUI sends) | ✅ yes |
+| `cluster:respond-to-invite` | request (TUI sends) | ✅ yes |
+| `discovery:get-nodes` | request (TUI sends) | ✅ yes |
+| `discovery:subscribe` | request (TUI sends) | ✅ yes |
+| `engine:action` | request (TUI sends) | ✅ yes |
+| `engine:get-installed` | request (TUI sends) | ✅ yes |
+| `engine:install` | request (TUI sends) | ✅ yes |
+| `engine:models` | request (TUI sends) | ✅ yes |
+| `engine:remote-delete-model` | request (TUI sends) | ✅ yes |
+| `engine:remote-get-installed` | request (TUI sends) | ✅ yes |
+| `engine:remote-pull-model` | request (TUI sends) | ✅ yes |
+| `engine:restart` | request (TUI sends) | ⚠️ not called |
+| `engine:set-port` | request (TUI sends) | ✅ yes |
+| `engine:start` | request (TUI sends) | ✅ yes |
+| `engine:stop` | request (TUI sends) | ✅ yes |
+| `engine:subscribe` | request (TUI sends) | ✅ yes |
+| `engine:uninstall` | request (TUI sends) | ✅ yes |
+| `errors:clear` | request (TUI sends) | ✅ yes |
+| `errors:get-initial` | request (TUI sends) | ✅ yes |
+| `node/add` | request (TUI sends) | ✅ yes |
+| `node/remove` | request (TUI sends) | ✅ yes |
+| `nodes/list` | request (TUI sends) | ✅ yes |
+| `nodes:get-initial` | request (TUI sends) | ✅ yes |
+| `nodes:remove` | request (TUI sends) | ✅ yes |
+| `ping` | request (TUI sends) | ✅ yes |
+| `shutdown` | request (TUI sends) | ✅ yes |
+| `workers:get-status` | request (TUI sends) | ✅ yes |
+| `workers:restart` | request (TUI sends) | ✅ yes |
+| `workloads:get-initial` | request (TUI sends) | ✅ yes |
+| `workloads:subscribe` | request (TUI sends) | ✅ yes |
+
+**Dynamic / unresolved request sites (TUI sends; verify computed methods by hand):**
+- `engine:remote-*  (engines.go)`
+- `applog.SetLevelMethod  (logs.go)`
+- `e.prefix+":subscribe"  (proxies.go)`
+- `e.prefix+":get-status"  (proxies.go)`
+- `e.prefix+":nodes/list"  (proxies.go)`
+- `e.prefix+":node/selected"  (proxies.go)`
+- `e.prefix+":node/select"  (proxies.go)`
+- `e.prefix+":set-port"  (proxies.go)`
+- `method  (recovery.go)`
+- `settings/get-*  (settings.go)`
+- `settings/set-*  (settings.go, 2 sites)`
 
 ## nvpair-ui-broker
 
