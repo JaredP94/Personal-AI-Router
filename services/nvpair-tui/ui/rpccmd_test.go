@@ -49,7 +49,7 @@ func TestEngineOperationLifetimes(t *testing.T) {
 		{"local start", "s", false, 11 * time.Minute},
 		{"local stop", "x", false, 11 * time.Minute},
 		{"local restart", "r", false, 11 * time.Minute},
-		{"local uninstall", "u", false, 35 * time.Second},
+		{"local uninstall", "u", false, 11 * time.Minute},
 		{"local install", "i", false, 31 * time.Minute},
 		{"local pull", "p", false, 31 * time.Minute},
 		{"peer start", "s", true, 11 * time.Minute},
@@ -70,6 +70,9 @@ func TestEngineOperationLifetimes(t *testing.T) {
 					v.merge(e)
 				}
 				cmd := v.Update(engineKey(tc.key))
+				if tc.key == "u" {
+					cmd = v.Update(engineKey("y"))
+				}
 				if tc.key == "p" {
 					v.input.SetValue("fixture/model")
 					cmd = v.submitPull()

@@ -347,7 +347,11 @@ func TestEngineLocalActionsKeepWireContract(t *testing.T) {
 	v, c := engineWire(t)
 	v.Update(engineRequest(t, v.loadCmd(), c, "engine:get-installed", `null`, peerEngines))
 	for _, a := range []struct{ key, method string }{{"s", "engine:start"}, {"x", "engine:stop"}, {"r", "engine:restart"}, {"i", "engine:install"}, {"u", "engine:uninstall"}} {
-		v.Update(engineRequest(t, v.Update(engineKey(a.key)), c, a.method, `{"engine":"custom"}`, `{"engine":"custom"}`))
+		cmd := v.Update(engineKey(a.key))
+		if a.key == "u" {
+			cmd = v.Update(engineKey("y"))
+		}
+		v.Update(engineRequest(t, cmd, c, a.method, `{"engine":"custom"}`, `{"engine":"custom"}`))
 	}
 	e := v.byName["custom"]
 	e.Capabilities.PullModel = true

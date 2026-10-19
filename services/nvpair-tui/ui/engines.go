@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -44,17 +45,19 @@ type engineStatus struct {
 // remote status method on selection and after lifecycle replies. Model inventory
 // uses normalized local snapshots or peer discovery, with capability-gated actions.
 type enginesView struct {
-	client     *rpc.Client
-	table      table.Model
-	order      []string
-	byName     map[string]engineStatus
-	status     string
-	input      textinput.Model
-	pulling    bool
-	pullEngine string
-	pullNode   string
-	models     modelsPane
-	confirm    *confirmPrompt
+	client      *rpc.Client
+	table       table.Model
+	order       []string
+	byName      map[string]engineStatus
+	status      string
+	input       textinput.Model
+	pulling     bool
+	pullEngine  string
+	pullNode    string
+	editingPort bool
+	portEngine  string
+	models      modelsPane
+	confirm     *confirmPrompt
 
 	// Empty target means local; peers are always keyed by hostUuid, never name.
 	target         string
@@ -77,6 +80,7 @@ type engineOpMsg struct {
 	node   string
 	what   string
 	engine string
+	status *engineStatus
 	err    error
 }
 
@@ -88,6 +92,8 @@ var (
 	engInstallKey   = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "install"))
 	engUninstallKey = key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "uninstall"))
 	engPullKey      = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pull model"))
+	engPortKey      = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "engine server port"))
+	engUpdateKey    = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update (reinstall)"))
 )
 
 func newEnginesView(client *rpc.Client) *enginesView {
@@ -136,7 +142,9 @@ func (v *enginesView) loadCmd() tea.Cmd {
 func (v *enginesView) SetSize(w, h int) {
 	v.width, v.height = w, h
 	const inst, run, heal, port = 10, 8, 8, 7
-	name := clampWidth(w-inst-run-heal-port-2, 10)
+	// Bubbles pads every column on both sides. Reserve all ten cells so the
+	// engine server port stays visible at ordinary terminal widths.
+	name := clampWidth(w-inst-run-heal-port-10, 10)
 	v.table.SetColumns([]table.Column{
 		{Title: "ENGINE", Width: name},
 		{Title: "INSTALLED", Width: inst},
@@ -217,6 +225,9 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			v.status = fmt.Sprintf("%s %s failed: %s", msg.what, msg.engine, msg.err.Error())
 		} else {
 			v.status = fmt.Sprintf("%s %s ok", msg.what, msg.engine)
+			if msg.status != nil && msg.status.Engine == msg.engine {
+				v.merge(*msg.status)
+			}
 		}
 		if msg.node != "" {
 			return v.loadCmd()
@@ -305,11 +316,26 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (v *enginesView) CapturingInput() bool { return v.pulling || v.confirm.open() }
+func (v *enginesView) CapturingInput() bool {
+	return v.pulling || v.editingPort || v.confirm.open()
+}
 
 func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if v.confirm.open() {
 		return v.confirm.Update(msg)
+	}
+	if v.editingPort {
+		switch msg.String() {
+		case "enter":
+			return v.submitPort()
+		case "esc":
+			v.editingPort = false
+			v.input.Blur()
+			return nil
+		}
+		var cmd tea.Cmd
+		v.input, cmd = v.input.Update(msg)
+		return cmd
 	}
 	if v.pulling {
 		switch msg.String() {
@@ -333,6 +359,27 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if key.Matches(msg, engDeleteModelKey) {
 		return v.confirmDeleteModel()
 	}
+	if key.Matches(msg, engPortKey) {
+		engine := v.selectedEngine()
+		if v.target != "" || engine == "" || !v.byName[engine].Capabilities.SetPort {
+			return nil
+		}
+		v.portEngine = engine
+		v.editingPort = true
+		v.input.Placeholder = "engine server port (1–65535)"
+		v.input.SetValue(strconv.Itoa(v.byName[engine].Port))
+		v.input.Focus()
+		return textinput.Blink
+	}
+	if key.Matches(msg, engUpdateKey) {
+		engine := v.selectedEngine()
+		e := v.byName[engine]
+		if v.target != "" || engine == "" || !e.Capabilities.Install || !e.Capabilities.Uninstall {
+			return nil
+		}
+		v.confirm = newConfirm("Update engine?", fmt.Sprintf("Update reinstalls %s: it is uninstalled, then installed and started. Inference stops meanwhile, and files the engine's uninstaller removes are deleted.", engine), v.updateCmd(engine))
+		return nil
+	}
 	if key.Matches(msg, engPullKey) {
 		engine := v.selectedEngine()
 		if engine == "" || !v.byName[engine].Capabilities.PullModel {
@@ -342,6 +389,7 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.pullNode = v.target
 		v.pulling = true
 		v.input.SetValue("")
+		v.input.Placeholder = "model name (e.g. llama3.2)"
 		v.input.Focus()
 		return textinput.Blink
 	}
@@ -391,6 +439,55 @@ func (v *enginesView) submitPull() tea.Cmd {
 	})
 }
 
+// submitPort edits the engine server's persistent port, not a proxy listener.
+// Capture the engine at editor creation and the port at confirmation creation.
+func (v *enginesView) submitPort() tea.Cmd {
+	port, err := strconv.Atoi(strings.TrimSpace(v.input.Value()))
+	if err != nil || port < 1 || port > 65535 {
+		v.status = "engine server port must be an integer in 1–65535"
+		return nil
+	}
+	v.editingPort = false
+	v.input.Blur()
+	engine := v.portEngine
+	cmd := callWithTimeout(v.client, "engine:set-port", map[string]any{"engine": engine, "port": port}, lifecycleOpTimeout, func(msg *rpc.Message, err error) tea.Msg {
+		var status engineStatus
+		if err == nil {
+			err = decodeParams(msg.Result, &status)
+		}
+		return engineOpMsg{what: "set-port", engine: engine, status: &status, err: err}
+	})
+	v.status = ""
+	v.confirm = newConfirm("Change engine server port?", fmt.Sprintf("%s will restart on port %d if it is running.", engine, port), cmd)
+	return nil
+}
+
+// updateCmd is a destructive reinstall, not an in-place upgrade. One update
+// deadline bounds the sequence; uninstall also retains its shorter lifecycle
+// deadline. Do not dispatch install until uninstall has replied successfully.
+func (v *enginesView) updateCmd(engine string) tea.Cmd {
+	client := v.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), longOpTimeout)
+		defer cancel()
+		uninstallCtx, uninstallCancel := context.WithTimeout(ctx, lifecycleOpTimeout)
+		_, err := client.Call(uninstallCtx, "engine:uninstall", map[string]string{"engine": engine})
+		uninstallCancel()
+		if err != nil {
+			return engineOpMsg{what: "update", engine: engine, err: fmt.Errorf("uninstall failed: %w", err)}
+		}
+		msg, err := client.Call(ctx, "engine:install", map[string]any{"engine": engine, "start": true})
+		var status engineStatus
+		if err == nil {
+			err = decodeParams(msg.Result, &status)
+		}
+		if err != nil {
+			return engineOpMsg{what: "update", engine: engine, err: fmt.Errorf("install failed: %w", err)}
+		}
+		return engineOpMsg{what: "update", engine: engine, status: &status}
+	}
+}
+
 func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 	var method, what string
 	switch {
@@ -419,7 +516,7 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 	params := map[string]any{"engine": engine}
 	timeout := callTimeout
 	switch what {
-	case "start", "stop", "restart":
+	case "start", "stop", "restart", "uninstall":
 		timeout = lifecycleOpTimeout
 	case "install":
 		timeout = longOpTimeout
@@ -434,10 +531,15 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 			params["start"] = true
 		}
 	}
-	v.status = what + " " + engine + "..."
-	return callWithTimeout(v.client, method, params, timeout, func(_ *rpc.Message, err error) tea.Msg {
+	cmd := callWithTimeout(v.client, method, params, timeout, func(_ *rpc.Message, err error) tea.Msg {
 		return engineOpMsg{node: node, what: what, engine: engine, err: err}
-	}), true
+	})
+	if what == "uninstall" {
+		v.confirm = newConfirm("Uninstall engine?", fmt.Sprintf("Uninstall %s on This node? Inference stops, and files the engine's uninstaller removes are deleted.", engine), cmd)
+		return nil, true
+	}
+	v.status = what + " " + engine + "..."
+	return cmd, true
 }
 
 func (v *enginesView) selectedEngine() string {
@@ -493,6 +595,9 @@ func (v *enginesView) View() string {
 	if v.pulling {
 		out += "\npull model: " + v.input.View()
 	}
+	if v.editingPort {
+		out += "\nengine server port: " + v.input.View()
+	}
 	if v.status != "" {
 		out += "\n" + footerStyle.Render(v.status)
 	}
@@ -514,6 +619,12 @@ func (v *enginesView) Help() []key.Binding {
 	if v.target == "" {
 		if e.Capabilities.Uninstall {
 			bindings = append(bindings, engUninstallKey)
+		}
+		if e.Capabilities.SetPort {
+			bindings = append(bindings, engPortKey)
+		}
+		if e.Capabilities.Install && e.Capabilities.Uninstall {
+			bindings = append(bindings, engUpdateKey)
 		}
 	}
 	if e.Capabilities.PullModel {

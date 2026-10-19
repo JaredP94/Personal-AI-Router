@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type manualView struct {
 	input         textinput.Model
 	adding        bool
 	status        string
+	confirm       *confirmPrompt
 	width, height int
 }
 
@@ -108,7 +110,7 @@ func (v *manualView) SetSize(w, h int) {
 	v.table.SetHeight(clampWidth(h-2, 1))
 }
 
-func (v *manualView) CapturingInput() bool { return v.adding }
+func (v *manualView) CapturingInput() bool { return v.adding || v.confirm.open() }
 
 func (v *manualView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -133,6 +135,9 @@ func (v *manualView) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *manualView) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if v.confirm.open() {
+		return v.confirm.Update(msg)
+	}
 	if v.adding {
 		switch msg.String() {
 		case "enter":
@@ -178,10 +183,12 @@ func (v *manualView) removeSelected() tea.Cmd {
 	if idx < 0 || idx >= len(v.nodes) {
 		return nil
 	}
-	id := v.nodes[idx].ID
-	return call(v.client, "node/remove", map[string]string{"id": id}, func(_ *rpc.Message, err error) tea.Msg {
-		return manualActionMsg{what: "remove " + id, err: err}
+	n := v.nodes[idx]
+	cmd := call(v.client, "node/remove", map[string]string{"id": n.ID}, func(_ *rpc.Message, err error) tea.Msg {
+		return manualActionMsg{what: "remove " + n.ID, err: err}
 	})
+	v.confirm = newConfirm("Remove manual node?", fmt.Sprintf("Remove %s (%s, %s) from manual nodes?", n.Name, n.ID, n.Address), cmd)
+	return nil
 }
 
 func (v *manualView) setNodes(nodes []manualNode) {
@@ -208,6 +215,9 @@ func (v *manualView) View() string {
 	if v.adding {
 		b.WriteString("\nadd node: " + v.input.View())
 	}
+	if v.confirm.open() {
+		b.WriteString("\n" + v.confirm.View())
+	}
 	if v.status != "" {
 		b.WriteString("\n" + footerStyle.Render(v.status))
 	}
@@ -215,5 +225,8 @@ func (v *manualView) View() string {
 }
 
 func (v *manualView) Help() []key.Binding {
+	if v.confirm.open() {
+		return v.confirm.Help()
+	}
 	return []key.Binding{manualAddKey, manualRemoveKey}
 }
