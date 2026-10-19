@@ -171,17 +171,25 @@ func runOneShot(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		return fail(err)
 	}
-	listSet, resolveSet := false, false
+	listSet, resolveSet, logLevelSet := false, false, false
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "list-engines":
 			listSet = true
 		case "resolve":
 			resolveSet = true
+		case "log-level":
+			logLevelSet = true
 		}
 	})
 	if flags.NArg() != 0 || listSet == resolveSet || (listSet && !*list) || (resolveSet && *engine == "") {
 		return fail(fmt.Errorf("use exactly one of --list-engines or --resolve <engine>, with only --log-level allowed"))
+	}
+	// Keep stdout machine-readable and stderr reserved for the single failure
+	// reason. Loader skip warnings are useful only when explicitly debugging;
+	// NVPAIR_LOG_LEVEL alone must not leak them into a wrapping CLI's output.
+	if !logLevelSet || resolveLevel() != slog.LevelDebug {
+		applog.SetOutput(io.Discard)
 	}
 	applog.Init("nvpair-engine-manager", resolveLevel())
 	manifestDir, _ := userPaths()

@@ -362,6 +362,81 @@ func TestOneShotCLI(t *testing.T) {
 			}
 		})
 	}
+	t.Run("malformed override diagnostics", func(t *testing.T) {
+		broken := filepath.Join(manifestDir, "ollama.json")
+		if err := os.WriteFile(broken, []byte(`{"engine":"ollama",`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(broken)
+		withBroken := resolutionTree(t, filepath.Dir(base))
+		for _, level := range []struct {
+			name, env string
+			args      []string
+			debug     bool
+		}{
+			{name: "default", env: "info"},
+			{name: "environment debug only", env: "debug"},
+			{name: "explicit info", env: "debug", args: []string{"--log-level=info"}},
+			{name: "explicit warn", env: "debug", args: []string{"--log-level=warn"}},
+			{name: "explicit error", env: "debug", args: []string{"--log-level=error"}},
+			{name: "explicit debug", env: "info", args: []string{"--log-level=debug"}, debug: true},
+		} {
+			t.Run(level.name, func(t *testing.T) {
+				t.Setenv("NVPAIR_LOG_LEVEL", level.env)
+				for _, mode := range []struct {
+					name string
+					args []string
+					code int
+				}{
+					{name: "resolve", args: []string{"--resolve", "test-engine"}},
+					{name: "list", args: []string{"--list-engines"}},
+					{name: "unknown", args: []string{"--resolve", "missing"}, code: 2},
+				} {
+					t.Run(mode.name, func(t *testing.T) {
+						out, stderr, code := run(append(mode.args, level.args...)...)
+						if code != mode.code {
+							t.Fatalf("exit=%d, want %d; stdout=%q stderr=%q", code, mode.code, out, stderr)
+						}
+						if level.debug {
+							if !strings.Contains(stderr, "skipping invalid override manifest") {
+								t.Fatalf("explicit debug lost loader diagnostic: %q", stderr)
+							}
+						} else if mode.code == 0 && stderr != "" {
+							t.Fatalf("successful one-shot leaked diagnostics: %q", stderr)
+						} else if mode.code != 0 && (strings.Count(stderr, "\n") != 1 || !strings.HasPrefix(stderr, "unknown engine")) {
+							t.Fatalf("failure must contain only one reason line: %q", stderr)
+						}
+						switch mode.name {
+						case "resolve":
+							var result Resolution
+							if err := json.Unmarshal([]byte(out), &result); err != nil || result.Path != binary {
+								t.Fatalf("malformed override broke valid resolution: %q, %v", out, err)
+							}
+						case "list":
+							var entries []listedEngine
+							if err := json.Unmarshal([]byte(out), &entries); err != nil {
+								t.Fatal(err)
+							}
+							found := false
+							for _, entry := range entries {
+								found = found || entry.Engine == "ollama"
+							}
+							if !found {
+								t.Fatal("malformed override removed the bundled engine")
+							}
+						case "unknown":
+							if out != "" || !strings.Contains(stderr, "unknown engine") {
+								t.Fatalf("unknown engine: stdout=%q stderr=%q", out, stderr)
+							}
+						}
+					})
+				}
+			})
+		}
+		if after := resolutionTree(t, filepath.Dir(base)); !reflect.DeepEqual(withBroken, after) {
+			t.Fatalf("one-shot modified malformed override tree: before=%v after=%v", withBroken, after)
+		}
+	})
 	if after := resolutionTree(t, filepath.Dir(base)); !reflect.DeepEqual(before, after) {
 		t.Fatalf("one-shot modified config tree: before=%v after=%v", before, after)
 	}

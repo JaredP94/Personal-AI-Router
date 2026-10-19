@@ -68,9 +68,13 @@ Both modes load the same embedded manifests and deep-merged per-user overrides
 under the service's normal config root. They accept **only `--log-level`** in
 addition to the selected mode. They never connect to stdio/IPC, bind listeners,
 open cluster identity, start watchers, execute engine commands, change PATH, or
-write settings. Logs remain on stderr; stdout contains only the JSON result.
-Failures exit 2 with a one-line reason on stderr and no JSON: unknown engine,
-unsupported platform, or engine not installed.
+write settings. Like the service, they skip malformed user overrides and keep
+the remaining effective manifests. Diagnostics are suppressed unless
+`--log-level=debug` is explicitly supplied (`NVPAIR_LOG_LEVEL=debug` alone does
+not enable them); debug diagnostics go to stderr. Stdout contains only the JSON
+result. Failures exit 2 with a one-line reason on stderr and no JSON: unknown
+engine, unsupported platform, or engine not installed. Explicit debug logging
+may add diagnostic lines before that reason.
 
 When a process-mode engine has no detected executable, a single read-only
 readiness probe checks for an externally adopted service on its configured fixed
