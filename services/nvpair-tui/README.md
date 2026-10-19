@@ -31,10 +31,10 @@ Tabs:
 | **Errors** | The service-error datastore (`errors:get-initial` + live `errors:update`); `c` clears the selected entry. |
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
 | **Proxies** | Ollama, LM Studio and oMLX reverse proxies: status, cache-affinity selection rate, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
-| **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`). |
-| **Engines** | Local inference engines: install (`i`), start (`s`), stop (`x`), restart (`r`), uninstall (`u`). |
-| **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, remove a member (`r`), leave (`L`). |
-| **Manual** | User-added nodes: add by address (`a`), remove (`r`). |
+| **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`), with separate origin and destination columns. |
+| **Engines** | Local and paired-peer engines (`n` selects target): install/start (`i`), start (`s`), stop (`x`), models (`m`), pull (`p`), confirmed model delete (`d`). Local-only: restart (`r`), confirmed uninstall (`u`), update/reinstall (`U`), engine server port (`e`). Capability-gated keys appear only when supported. |
+| **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, confirm member removal (`r`) or leave (`L`). |
+| **Manual** | User-added nodes: add by address (`a`), confirm removal (`r`). |
 | **Settings** | The node-settings store (force-ports, cluster auto-sync, cluster id/name). |
 | **Logs** | The broker's (and workers') stderr, with live log-level control (`d`/`i`/`w`/`e`). |
 
@@ -57,6 +57,65 @@ See [broker supervision](../nvpair-ui-broker/README.md#supervision--recovery).
 - Per-tab keys appear in the footer; while editing a field (port, PIN,
   address, setting) all keys go to the field until you press `enter` or
   `esc`.
+
+## Engine operations and workload attribution
+
+Engine-manager owns support policy. The TUI decodes all seven
+[`EngineStatus.capabilities`](../nvpair-engine-manager/README.md#effective-capabilities)
+flags from the target host; missing flags are false. Install, uninstall, pull,
+delete and port editing require their reported capability; update requires both
+install and uninstall. Start/stop are available locally and remotely; restart,
+uninstall, update and persistent port editing are local-only. oMLX supports
+listing but never pull/delete, and its server port is not editable.
+
+`n` cycles This node, trusted discovered peers, and cluster members with a host
+UUID. Peer status uses `engine:remote-get-installed {node:<hostUuid>}`, refreshed
+on selection and after remote actions. Transport/trust errors remain visible.
+Only the existing `engine:remote-start`, `engine:remote-stop`,
+`engine:remote-install` (`start:true`), `engine:remote-pull-model` and
+`engine:remote-delete-model` methods perform peer mutations.
+
+`m` toggles model inventory and moves table navigation to models. Local facts
+come from `engine:models` and `engine:models-changed`; peer facts come from
+cached discovery `modelsByEngine` / `loadedByEngine`, not a direct peer model
+query. Loaded models are marked. An absent engine key shows
+**Model list unavailable (engine stopped or unsupported)**; a present empty
+list shows **No models**. Pull/delete replies trigger inventory refresh;
+discovery may still lag the peer.
+
+`d` confirms the frozen node/engine/model, adding an inference-interruption
+warning when `delete_restarts_engine` is true. Local delete uses `engine:action`
+with `delete_model`; peer delete uses `engine:remote-delete-model`. A deletion
+followed by a failed engine restart is shown as **deleted, restart failed**.
+
+`e` accepts an integer server port from 1–65535, then confirms a possible running
+engine restart before `engine:set-port`. It does not change the proxy port.
+`U` confirms destructive reinstall: `engine:uninstall` must succeed before
+`engine:install {engine,start:true}` is sent. Failures identify the phase. Files
+removed by the uninstaller are deleted; update has no rollback guarantee.
+
+All destructive confirmations (including `u`, cluster remove/leave and manual
+remove) use the shared default-cancel prompt: only `y` dispatches; `n`, Esc and
+Enter cancel. Navigation/quit stay captured and target details are frozen. A
+cluster identity change cancels a pending leave rather than leaving the new
+cluster.
+
+RPC call budgets are 31 minutes for install, pull and the complete update
+sequence; 11 minutes for start, stop, restart, set-port, uninstall (including
+update's uninstall phase), and model delete; 35 seconds otherwise. Update's
+install phase gets the remainder of its overall 31-minute budget. Remote
+operations wait for the RPC reply, not progress events, to complete. A client
+deadline is not proof the engine operation was cancelled on the serving node.
+
+Workloads decode `originatedFrom` and `scheduledOn`; **DESTINATION** follows
+**ORIGIN**. Labels resolve friendly names from identity/discovery/membership,
+fall back to an eight-character UUID prefix for unknown or departed nodes, and
+show `—` for absent identifiers. Later upserts replace the destination (including
+failover); assignment alone does not prove completed inference.
+
+The TUI cannot submit inference, uninstall/update/change engine ports remotely,
+or pull/delete oMLX models. Use an inference client against a proxy and perform
+local-only engine operations on the owning host.
 
 ## Running
 

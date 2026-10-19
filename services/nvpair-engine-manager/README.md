@@ -59,6 +59,8 @@ Requests (caller → service):
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
+### Effective capabilities
+
 `EngineStatus` = `{ engine, display_name, installed, running, healthy, port?, capabilities }`.
 Every status snapshot, lifecycle result, and `engine:state-changed` notification
 includes all seven boolean capability flags, derived by Go from the effective

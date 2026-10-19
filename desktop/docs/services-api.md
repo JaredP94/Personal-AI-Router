@@ -222,18 +222,18 @@
 
 | Method | Direction | In bridge? |
 |---|---|---|
+| `engine:remote-delete-model` | notification (we consume) | ✅ yes |
 | `cluster:identity-changed` | request (we call) | ✅ yes |
 | `cluster:invite-received` | request (we call) | ✅ yes |
+| `discovery:nodes-changed` | request (we call) | ✅ yes |
 | `engine:install-progress` | request (we call) | ✅ yes |
+| `engine:models-changed` | request (we call) | ✅ yes |
 | `engine:pull-progress` | request (we call) | ✅ yes |
 | `engine:state-changed` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
 | `nodes:changed` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:upsert` | request (we call) | ✅ yes |
-
-**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (client.go)`
 
 ## nvpair-ui-broker
 

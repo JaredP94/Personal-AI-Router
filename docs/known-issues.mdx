@@ -109,17 +109,22 @@ been seen on macOS.
 
 ## The Terminal Interface Cannot Do Everything the Desktop App Can
 
-`nvpair-tui` is an operations tool for headless machines rather than a full
-replacement. It cannot do any of the following:
+**Implemented in source, pending release testing.** `nvpair-tui` now shows
+workload destinations, lists models, offers supported model pull/delete and local
+engine port/update operations, and controls supported operations on paired peers.
+Actions follow the target engine-manager's reported capabilities; absent flags
+from older peers disable capability-gated actions. This does not certify the
+published release assets or live engine/cluster behavior.
 
-- List or delete models
-- Change an engine's port
-- Update an engine
-- Control engines on other nodes
-- Show which node served a workload
+It remains an operations tool for headless machines rather than a full
+replacement. It cannot:
 
-This matters most for a genuinely headless deployment, where those operations have
-no other route on that machine. Refer to
+- Send inference requests (use `curl` or another inference client)
+- Uninstall, update or change the port of an engine on another node; these
+  operations are local-only (peer restart is also not offered)
+- Pull or delete oMLX models; the engine offers neither action
+
+Use the owning host for local-only engine operations. Refer to
 [What the Terminal Interface Cannot Do](terminal-interface.mdx#what-the-terminal-interface-cannot-do).
 
 ## Engine Binaries Are Not on Your PATH

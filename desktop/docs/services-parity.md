@@ -162,8 +162,14 @@ Personal AI Router consequences (all reflection, no security implementation):
 
 ## Engine lifecycle
 
-`nvpair-engine-manager` is authoritative for installed, running, healthy, and
-port state.
+`nvpair-engine-manager` is authoritative for installed, running, healthy, port
+state, and effective per-host `EngineStatus.capabilities`. The bridge maps the
+seven wire flags to `listModels`, `pullModel`, `deleteModel`,
+`deleteRestartsEngine`, `setPort`, `install`, and `uninstall` on each node/engine
+status. Missing flags default to false. Model list/pull/delete, engine server
+port visibility, and install/uninstall/reinstall controls consume these flags;
+no static engine capability table duplicates that policy. Remote engine ports
+remain read-only; independent proxy-port controls are unaffected.
 
 Personal AI Router supports local:
 
@@ -225,20 +231,20 @@ LM Studio's `delete_model` declares `restart_after`, so the engine manager
 restarts a running LM Studio once the files are removed — its `/v1/models` is
 served from an index built at startup and it exposes no rescan operation, so
 clients would otherwise keep being offered a deleted model. Because that makes
-Delete interrupt inference, `EngineCapabilities['lm-studio'].restartsOnModelDelete`
-tells `ModelManager.tsx` to confirm the deletion first (`ConfirmModal`). The
-restart is entirely backend-owned: PAIR sends the same `deleteModel` command as
-for any other engine and never issues `engine:restart` itself, so the bundled
-`nvpair` terminal UI and a remote peer's deletion get the same behavior.
+Delete interrupt inference, the owning node/engine's reported
+`deleteRestartsEngine` flag tells `ModelManager.tsx` to confirm the deletion first
+(`ConfirmModal`). Confirmation freezes the displayed node, engine and model.
+The restart is entirely backend-owned: PAIR sends the same `deleteModel` command
+as for any other engine and never issues `engine:restart` itself, so TUI and
+remote deletion get the same engine-manager restart behavior.
 
-**This is LM Studio only.** Ollama reflects a deletion immediately, so its
-manifest omits `restart_after` and its capability entry omits
-`restartsOnModelDelete`: no bounce, no confirmation, no interrupted inference.
-Those two facts have to stay in step across a Go manifest and a TypeScript
-constant, which nothing in either type system enforces — so
-`tests/modular/delete-model-restart.test.ts` reads the shipped manifests and
-asserts the pair agrees, and `TestBundledManifestsRestartOnlyLMStudio` guards the
-same thing from the Go side.
+**The bundled restart-after-delete policy is LM Studio only.** Ollama's manifest
+omits `restart_after`, so Go reports `delete_restarts_engine: false`: no bounce
+or desktop restart warning. TUI still confirms every model deletion. oMLX has
+neither pull nor delete actions; those controls are not offered. Desktop tests
+exercise per-node reported flags, including false/absent flags and restart
+warnings; Go tests guard bundled-manifest derivation. There is no TypeScript
+constant to keep in sync with manifest policy.
 
 Several model-action timeouts have to be ordered correctly. For a
 restart-backed delete, the reply is withheld until the engine is ready again

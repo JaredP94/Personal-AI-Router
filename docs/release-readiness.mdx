@@ -177,6 +177,34 @@ Linux AMD/Intel remain names-only.**
   in a release. Source checks do not certify published assets. See
   [GPU memory limitations](known-issues.mdx#unified-memory-systems-report-misleading-gpu-memory).
 
+### Terminal interface operations
+
+**Implemented, pending release testing.**
+
+- Engine-manager reports effective per-host capabilities from manifests, platform
+  and ownership. Desktop and TUI consume those flags; missing flags default to
+  false. oMLX pull/delete remain unsupported and its server port is not editable.
+- TUI Engines offers node selection (`n`), model inventory (`m`), supported
+  pull/delete (`p`/`d`), local server-port editing (`e`), and destructive update
+  by reinstall (`U`). Peers support install/start/stop and supported model
+  pull/delete; restart/uninstall/update/persistent port changes remain local-only.
+- Model deletion, uninstall, update, port changes, cluster removal/leave and
+  manual-node removal require default-cancel confirmation with frozen targets.
+  Update never installs after failed uninstall; it has no rollback guarantee.
+  Long-operation deadlines include an 11-minute uninstall allowance inside the
+  overall 31-minute update budget.
+- Workloads show distinct origin and destination, with friendly-name/UUID-prefix
+  fallback and destination replacement on failover. Assignment is not proof of
+  completed inference. Built-in inference submission remains out of scope.
+- Automated checks use fake engines, brokers, transports and temporary service
+  processes. **Live engines and clusters were not exercised.** Before calling
+  this resolved for a release, test packaged interactive terminals on release
+  platforms, destructive update/uninstall and file retention, port restarts,
+  model deletion/restart failures, slow remote install/pull, offline/trust
+  errors, discovery inventory lag, and multi-node workload failover. Passing
+  source checks do not certify released artifacts. See
+  [terminal interface usage](terminal-interface.mdx).
+
 ### Private Vulnerability Reporting
 
 **Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled
