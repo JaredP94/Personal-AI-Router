@@ -88,11 +88,6 @@ func (m *Model) beginRecovery() tea.Cmd {
 		}) tea.Msg {
 			return workloadsSnapshotMsg{v.Workloads}
 		}, nil),
-		snapshotQuery(client, "engine:get-installed", func(v struct {
-			Engines []engineStatus `json:"engines"`
-		}) tea.Msg {
-			return enginesLoadedMsg{engines: v.Engines}
-		}, func(err error) tea.Msg { return enginesLoadedMsg{err: err} }),
 		snapshotQuery(client, "nodes:get-initial", func(v struct {
 			Nodes []clusterNode `json:"nodes"`
 		}) tea.Msg {
@@ -117,6 +112,8 @@ func (m *Model) beginRecovery() tea.Cmd {
 	for _, view := range m.views {
 		var commands []tea.Cmd
 		switch v := view.(type) {
+		case *enginesView:
+			commands = append(commands, v.loadCmd())
 		case *proxiesView:
 			for i := range v.engines {
 				commands = append(commands, v.statusCmd(i), v.nodesCmd(i), v.selectedCmd(i))

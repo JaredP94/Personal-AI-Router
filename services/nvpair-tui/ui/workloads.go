@@ -195,26 +195,7 @@ func (v *workloadsView) refreshRows() {
 // nodeLabel resolves stable node UUIDs, never service IDs or addresses. A node
 // leaving discovery or membership cannot erase a workload's routing attribution.
 func (v *workloadsView) nodeLabel(uuid string) string {
-	if uuid == "" {
-		return "—"
-	}
-	if v.identity.NodeUUID == uuid && v.identity.Name != "" {
-		return v.identity.Name
-	}
-	for _, n := range v.discovered {
-		if n.HostUUID == uuid && n.Name != "" {
-			return n.Name
-		}
-	}
-	for _, n := range v.members {
-		if n.NodeUUID == uuid && n.Name != "" {
-			return n.Name
-		}
-	}
-	if len(uuid) > 8 {
-		return uuid[:8]
-	}
-	return uuid
+	return nodeLabel(uuid, v.identity, v.discovered, v.members)
 }
 
 func (v *workloadsView) View() string {

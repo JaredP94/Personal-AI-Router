@@ -4,8 +4,6 @@
 package ui
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,22 +16,33 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// engineStatus mirrors nvpair-engine-manager's EngineStatus snapshot, the
-// element of engine:get-installed and the engine:state-changed payload.
-type engineStatus struct {
-	Engine      string `json:"engine"`
-	DisplayName string `json:"display_name"`
-	Installed   bool   `json:"installed"`
-	Running     bool   `json:"running"`
-	Healthy     bool   `json:"healthy"`
-	Port        int    `json:"port"`
+// engineCapabilities is policy reported by Go for the engine's own host.
+// Missing capabilities on an older peer decode to all-false.
+type engineCapabilities struct {
+	ListModels           bool `json:"list_models"`
+	PullModel            bool `json:"pull_model"`
+	DeleteModel          bool `json:"delete_model"`
+	DeleteRestartsEngine bool `json:"delete_restarts_engine"`
+	SetPort              bool `json:"set_port"`
+	Install              bool `json:"install"`
+	Uninstall            bool `json:"uninstall"`
 }
 
-// enginesView manages local inference engines via the engine-manager
-// control plane: an installed/running/healthy table plus lifecycle
-// actions, kept live from engine:state-changed and engine:install-progress.
-// It can also pull a model (engine:action{action:"pull_model"}), rendering
-// the live engine:pull-progress feed the way remote pulls already show.
+// engineStatus mirrors the local or peer engine-manager's status snapshot.
+type engineStatus struct {
+	Engine       string             `json:"engine"`
+	DisplayName  string             `json:"display_name"`
+	Installed    bool               `json:"installed"`
+	Running      bool               `json:"running"`
+	Healthy      bool               `json:"healthy"`
+	Port         int                `json:"port"`
+	Capabilities engineCapabilities `json:"capabilities"`
+}
+
+// enginesView manages inference engines on the selected node. Local state is
+// kept live by engine notifications; peers are refreshed through the existing
+// remote status method on selection and after lifecycle replies. Local model
+// pulls retain their name prompt and progress feed.
 type enginesView struct {
 	client     *rpc.Client
 	table      table.Model
@@ -44,21 +53,32 @@ type enginesView struct {
 	pulling    bool
 	pullEngine string
 
+	// Empty target means local; peers are always keyed by hostUuid, never name.
+	target         string
+	discovered     []availableNode
+	members        []clusterNode
+	identity       clusterIdentity
+	loadGeneration uint64
+
 	width, height int
 }
 
 type enginesLoadedMsg struct {
-	engines []engineStatus
-	err     error
+	node       string
+	generation uint64
+	engines    []engineStatus
+	err        error
 }
 
 type engineOpMsg struct {
+	node   string
 	what   string
 	engine string
 	err    error
 }
 
 var (
+	engTargetKey    = key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "next node"))
 	engStartKey     = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start"))
 	engStopKey      = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop"))
 	engRestartKey   = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restart"))
@@ -75,7 +95,12 @@ func newEnginesView(client *rpc.Client) *enginesView {
 	return v
 }
 
-func (v *enginesView) Title() string { return "Engines" }
+func (v *enginesView) Title() string {
+	if v.target == "" {
+		return "Engines — This node"
+	}
+	return "Engines — " + nodeLabel(v.target, v.identity, v.discovered, v.members)
+}
 
 func (v *enginesView) Init() tea.Cmd {
 	return tea.Batch(
@@ -85,15 +110,22 @@ func (v *enginesView) Init() tea.Cmd {
 }
 
 func (v *enginesView) loadCmd() tea.Cmd {
-	return call(v.client, "engine:get-installed", nil, func(msg *rpc.Message, err error) tea.Msg {
-		if err != nil {
-			return enginesLoadedMsg{err: err}
-		}
+	v.loadGeneration++
+	node, generation := v.target, v.loadGeneration
+	method := "engine:get-installed"
+	var params any
+	if node != "" {
+		method = "engine:remote-get-installed"
+		params = map[string]string{"node": node}
+	}
+	return call(v.client, method, params, func(msg *rpc.Message, err error) tea.Msg {
 		var r struct {
 			Engines []engineStatus `json:"engines"`
 		}
-		_ = decodeParams(msg.Result, &r)
-		return enginesLoadedMsg{engines: r.Engines}
+		if err == nil {
+			err = decodeParams(msg.Result, &r)
+		}
+		return enginesLoadedMsg{node: node, generation: generation, engines: r.Engines, err: err}
 	})
 }
 
@@ -114,27 +146,78 @@ func (v *enginesView) SetSize(w, h int) {
 
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case discoverySnapshotMsg:
+		v.discovered = msg.nodes
+		return nil
+	case clusterNodesMsg:
+		if msg.err == nil {
+			v.members = msg.nodes
+		}
+		return nil
+	case clusterIdentityMsg:
+		if msg.err == nil {
+			v.identity = msg.id
+		}
+		return nil
 	case enginesLoadedMsg:
+		if msg.node != v.target || msg.generation != v.loadGeneration {
+			return nil
+		}
 		if msg.err != nil {
 			v.status = "load engines failed: " + msg.err.Error()
 			return nil
+		}
+		if v.status == "loading engines..." || strings.HasPrefix(v.status, "load engines failed:") {
+			v.status = ""
 		}
 		v.order = nil
 		v.byName = map[string]engineStatus{}
 		for _, e := range msg.engines {
 			v.merge(e)
 		}
+		v.refreshRows()
+		if v.table.Cursor() < 0 {
+			v.table.SetCursor(0)
+		}
 		return nil
 
 	case engineOpMsg:
+		if msg.node != v.target {
+			return nil
+		}
 		if msg.err != nil {
 			v.status = fmt.Sprintf("%s %s failed: %s", msg.what, msg.engine, msg.err.Error())
 		} else {
 			v.status = fmt.Sprintf("%s %s ok", msg.what, msg.engine)
 		}
+		if msg.node != "" {
+			return v.loadCmd()
+		}
 		return nil
 
 	case NotificationMsg:
+		switch msg.Msg.Method {
+		case "discovery:nodes-changed":
+			var nodes []availableNode
+			if decodeParams(msg.Msg.Params, &nodes) == nil {
+				v.discovered = nodes
+			}
+			return nil
+		case "nodes:changed":
+			var p struct {
+				Nodes []clusterNode `json:"nodes"`
+			}
+			if decodeParams(msg.Msg.Params, &p) == nil {
+				v.members = p.Nodes
+			}
+			return nil
+		}
+		// Local pushes must never overwrite a peer's authoritative table or
+		// operation status. Remote progress is not a completion signal; only
+		// the RPC reply completes the pending remote action.
+		if v.target != "" {
+			return nil
+		}
 		switch msg.Msg.Method {
 		case "engine:state-changed":
 			var e engineStatus
@@ -199,7 +282,13 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.input, cmd = v.input.Update(msg)
 		return cmd
 	}
+	if key.Matches(msg, engTargetKey) {
+		return v.cycleTarget()
+	}
 	if key.Matches(msg, engPullKey) {
+		if v.target != "" {
+			return nil
+		}
 		engine := v.selectedEngine()
 		if engine == "" {
 			return nil
@@ -229,10 +318,8 @@ func pullParams(engine, model string) map[string]any {
 }
 
 // submitPull issues engine:action{action:"pull_model"} for the selected engine.
-// Live download progress and the terminal result arrive as engine:pull-progress
-// notifications; the synchronous response can outlast callTimeout for a large
-// model, so a deadline error here is expected and ignored (the progress feed is
-// the real signal).
+// Progress is informational; the RPC reply reports completion with the long
+// operation lifetime, including any terminal error.
 func (v *enginesView) submitPull() tea.Cmd {
 	v.pulling = false
 	v.input.Blur()
@@ -244,11 +331,8 @@ func (v *enginesView) submitPull() tea.Cmd {
 	}
 	v.status = fmt.Sprintf("pull %s: %s...", engine, model)
 	params := pullParams(engine, model)
-	return call(v.client, "engine:action", params, func(_ *rpc.Message, err error) tea.Msg {
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			return engineOpMsg{what: "pull " + model, engine: engine, err: err}
-		}
-		return nil
+	return callWithTimeout(v.client, "engine:action", params, longOpTimeout, func(_ *rpc.Message, err error) tea.Msg {
+		return engineOpMsg{what: "pull " + model, engine: engine, err: err}
 	})
 }
 
@@ -272,9 +356,32 @@ func (v *enginesView) handleAction(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if engine == "" {
 		return nil, true
 	}
+	e := v.byName[engine]
+	if (what == "install" && !e.Capabilities.Install) || (what == "uninstall" && !e.Capabilities.Uninstall) {
+		return nil, true
+	}
+	node := v.target
+	params := map[string]any{"engine": engine}
+	timeout := callTimeout
+	switch what {
+	case "start", "stop", "restart":
+		timeout = lifecycleOpTimeout
+	case "install":
+		timeout = longOpTimeout
+	}
+	if node != "" {
+		if what != "start" && what != "stop" && what != "install" {
+			return nil, true
+		}
+		method = "engine:remote-" + what
+		params["node"] = node
+		if what == "install" {
+			params["start"] = true
+		}
+	}
 	v.status = what + " " + engine + "..."
-	return call(v.client, method, map[string]string{"engine": engine}, func(_ *rpc.Message, err error) tea.Msg {
-		return engineOpMsg{what: what, engine: engine, err: err}
+	return callWithTimeout(v.client, method, params, timeout, func(_ *rpc.Message, err error) tea.Msg {
+		return engineOpMsg{node: node, what: what, engine: engine, err: err}
 	}), true
 }
 
@@ -335,7 +442,56 @@ func (v *enginesView) View() string {
 }
 
 func (v *enginesView) Help() []key.Binding {
-	return []key.Binding{engStartKey, engStopKey, engRestartKey, engInstallKey, engUninstallKey, engPullKey}
+	bindings := []key.Binding{engTargetKey, engStartKey, engStopKey}
+	e := v.byName[v.selectedEngine()]
+	if v.target == "" {
+		bindings = append(bindings, engRestartKey)
+	}
+	if e.Capabilities.Install {
+		bindings = append(bindings, engInstallKey)
+	}
+	if v.target == "" {
+		if e.Capabilities.Uninstall {
+			bindings = append(bindings, engUninstallKey)
+		}
+		bindings = append(bindings, engPullKey)
+	}
+	return bindings
+}
+
+func (v *enginesView) cycleTarget() tea.Cmd {
+	// Membership keeps offline peers selectable so their transport/trust errors
+	// remain visible. Discovery contributes paired peers only, not strangers.
+	targets := []string{""}
+	seen := map[string]bool{"": true, v.identity.NodeUUID: true}
+	add := func(uuid string) {
+		if !seen[uuid] {
+			targets = append(targets, uuid)
+			seen[uuid] = true
+		}
+	}
+	for _, n := range v.discovered {
+		if n.Trusted {
+			add(n.HostUUID)
+		}
+	}
+	for _, n := range v.members {
+		add(n.NodeUUID)
+	}
+	next := ""
+	for i, target := range targets {
+		if target == v.target {
+			next = targets[(i+1)%len(targets)]
+			break
+		}
+	}
+	v.target = next
+	v.order = nil
+	v.byName = map[string]engineStatus{}
+	v.refreshRows()
+	v.table.SetCursor(0)
+	v.status = "loading engines..."
+	return v.loadCmd()
 }
 
 func yesNo(b bool) string {
