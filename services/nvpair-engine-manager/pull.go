@@ -126,6 +126,15 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		if len(line) == 0 || !json.Valid(line) {
 			continue
 		}
+		// Ollama can terminate an HTTP 200 stream with an engine-level
+		// failure. Return it as an error so local RPC and peer streaming
+		// handlers use their error paths instead of reporting a result.
+		var result struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(line, &result) == nil && result.Error != "" {
+			return nil, fmt.Errorf("pull %q: %s", model, result.Error)
+		}
 		last = append(json.RawMessage(nil), line...)
 		ev := pullProgressFromLine(engine, line)
 		if ev.Stage == lastStage && ev.Percent == lastPct {
