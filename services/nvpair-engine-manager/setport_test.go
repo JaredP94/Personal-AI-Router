@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -275,6 +276,151 @@ func TestSetPortPreservesCustomOverrides(t *testing.T) {
 			}
 			if string(rt["bind"]) != `"0.0.0.0"` {
 				t.Errorf("unrelated runtime field changed: %s", rt["bind"])
+			}
+		})
+	}
+}
+
+// A host-platform pin wins over top-level defaults on reload. Changing only
+// the latter would leave both a restarted manager and the CLI on the old port.
+func TestSetPortPlatformPinPreservesOverrides(t *testing.T) {
+	for _, directRevert := range []bool{false, true} {
+		t.Run("direct_revert="+strconv.FormatBool(directRevert), func(t *testing.T) {
+			resolutionRoot(t)
+			custom := filepath.Join(t.TempDir(), "custom engine")
+			resolutionFile(t, custom)
+			dir, _ := userPaths()
+			path := filepath.Join(dir, "ollama.json")
+			host := runtime.GOOS + "/" + runtime.GOARCH
+			other := "windows/amd64"
+			if host == other {
+				other = "linux/amd64"
+			}
+			topRuntime := map[string]any{"port": 22222, "bind": "0.0.0.0"}
+			hostRuntime := map[string]any{
+				"port": 23456, "env": map[string]string{"CUSTOM_ENGINE_ENV": "retained"},
+				"unknown": json.RawMessage(`{"large_number":9007199254740993}`),
+			}
+			override := map[string]any{
+				"engine": "ollama", "display_name": "Custom Ollama",
+				"runtime": topRuntime,
+				"platforms": map[string]any{
+					host:  map[string]any{"detect": []string{custom}, "runtime": hostRuntime},
+					other: json.RawMessage(`{"runtime":{"port":45678},"unknown":{"keep":true}}`),
+				},
+				"custom_metadata": json.RawMessage(`{"large_number":9007199254740993}`),
+			}
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeJSONAtomic(path, override); err != nil {
+				t.Fatal(err)
+			}
+			ex := newBundledExecutor(t, dir)
+			if got := hostPort(t, ex.reg, "ollama"); got != 23456 {
+				t.Fatalf("fixture port = %d, want 23456", got)
+			}
+			ports := []int{34567, 11434}
+			if directRevert {
+				ports = []int{11434}
+			}
+			for _, port := range ports {
+				status, err := ex.SetPort(context.Background(), "ollama", port)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if status.Port != port {
+					t.Errorf("status port = %d, want %d", status.Port, port)
+				}
+				fresh := loadWithOverrides(t, dir)
+				if got := hostPort(t, fresh, "ollama"); got != port {
+					t.Errorf("fresh registry port = %d, want %d", got, port)
+				}
+				resolved, err := resolveEngine(fresh, "ollama", runtime.GOOS, runtime.GOARCH)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resolved.Path != custom || resolved.Env["CUSTOM_ENGINE_ENV"] != "retained" || resolved.Env["OLLAMA_HOST"] != "127.0.0.1:"+strconv.Itoa(port) {
+					t.Errorf("fresh resolution for port %d: %+v", port, resolved)
+				}
+				// Update the independent expected document: setting a platform
+				// pin must not change the top-level pin; reverting removes both.
+				hostRuntime["port"] = port
+				if port == 11434 {
+					delete(hostRuntime, "port")
+					delete(topRuntime, "port")
+				}
+				assertPortOverride(t, path, override)
+			}
+		})
+	}
+}
+
+// Compare the entire persisted document, including unknown large numbers,
+// without depending on JSON formatting or losing precision through float64.
+func assertPortOverride(t *testing.T, path string, want map[string]any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(data []byte) any {
+		d := json.NewDecoder(bytes.NewReader(data))
+		d.UseNumber()
+		var v any
+		if err := d.Decode(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if !reflect.DeepEqual(decode(data), decode(expected)) {
+		t.Errorf("persisted override = %s, want %s", data, expected)
+	}
+}
+
+func TestSetPortPlatformPinPrunesOnlyEmptiedObjects(t *testing.T) {
+	host := runtime.GOOS + "/" + runtime.GOARCH
+	for _, tc := range []struct {
+		name     string
+		top      map[string]any
+		platform map[string]any
+		want     map[string]any // nil means the port-only file must disappear
+	}{
+		{"port only", map[string]any{"port": 22222}, map[string]any{"runtime": map[string]any{"port": 23456}}, nil},
+		{"keep platform fields", nil, map[string]any{"runtime": map[string]any{"port": 23456}, "unknown": true},
+			map[string]any{"engine": "ollama", "platforms": map[string]any{host: map[string]any{"unknown": true}}}},
+		{"keep preexisting empty runtime", map[string]any{}, map[string]any{"runtime": map[string]any{"port": 23456}},
+			map[string]any{"engine": "ollama", "runtime": map[string]any{}}},
+		{"keep preexisting empty platform runtime", map[string]any{"port": 22222}, map[string]any{"runtime": map[string]any{}},
+			map[string]any{"engine": "ollama", "platforms": map[string]any{host: map[string]any{"runtime": map[string]any{}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "ollama.json")
+			override := map[string]any{"engine": "ollama", "platforms": map[string]any{host: tc.platform}}
+			if tc.top != nil {
+				override["runtime"] = tc.top
+			}
+			if err := writeJSONAtomic(path, override); err != nil {
+				t.Fatal(err)
+			}
+			ex := newBundledExecutor(t, dir)
+			if _, err := ex.SetPort(context.Background(), "ollama", 11434); err != nil {
+				t.Fatal(err)
+			}
+			if got := hostPort(t, loadWithOverrides(t, dir), "ollama"); got != 11434 {
+				t.Errorf("fresh port = %d, want bundled default 11434", got)
+			}
+			if tc.want == nil {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("port-only override not removed: %v", err)
+				}
+			} else {
+				assertPortOverride(t, path, tc.want)
 			}
 		})
 	}

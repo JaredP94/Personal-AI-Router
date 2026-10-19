@@ -190,12 +190,15 @@ the op finishes.
 one-shot `engine:start {port}` override, which reverts on the next restart).
 It validates `1-65535` and atomically merges `runtime.port` into the existing
 manifest override in the per-user `engines/` dir, preserving custom detection
-paths, environment, and every unrelated field. With no existing override it
-writes only `{ engine, runtime: { port } }`. This deep-merges onto the bundled
+paths, environment, and every unrelated field. If the host's matching platform
+block already pins `runtime.port`, that pin is updated instead of the top-level
+port; other platform blocks are untouched. With no existing override it writes
+only `{ engine, runtime: { port } }`. This deep-merges onto the bundled
 manifest, making `runtime.port` the single source of truth across restarts,
 including one-shot CLI resolution. It applies the choice immediately, bouncing
 the engine onto the new port if it was running. Setting the port back to the
-bundled default removes only the `runtime.port` pin; the override file is deleted
+bundled default removes the top-level and matching host-platform `runtime.port`
+pins, pruning only objects emptied by their removal; the override file is deleted
 only if no other customizations remain. Because the chosen port lives in the
 effective manifest, restore is automatic: a normal `engine:start` (no explicit
 port) and the adopt-on-fixed-port path both come up on the retained port.
