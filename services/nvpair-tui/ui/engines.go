@@ -608,8 +608,12 @@ func (v *enginesView) Help() []key.Binding {
 	if v.confirm.open() {
 		return v.confirm.Help()
 	}
-	bindings := []key.Binding{engTargetKey, engModelsKey, engStartKey, engStopKey}
+	bindings := []key.Binding{engTargetKey, engStartKey, engStopKey}
 	e := v.byName[v.selectedEngine()]
+	// Keep the toggle visible to close an already-open unavailable pane.
+	if e.Capabilities.ListModels || v.models.open {
+		bindings = append(bindings, engModelsKey)
+	}
 	if v.target == "" {
 		bindings = append(bindings, engRestartKey)
 	}

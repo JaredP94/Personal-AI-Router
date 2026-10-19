@@ -127,6 +127,9 @@ func (v *enginesView) refreshModels() {
 }
 
 func (v *enginesView) selectedModel() string {
+	if !v.byName[v.selectedEngine()].Capabilities.ListModels {
+		return ""
+	}
 	row := v.models.table.SelectedRow()
 	if len(row) == 0 {
 		return ""
@@ -151,6 +154,9 @@ func (v *enginesView) toggleModels() tea.Cmd {
 
 func (v *enginesView) modelsView() string {
 	out := "Models — " + v.selectedEngine() + "\n"
+	if !v.byName[v.selectedEngine()].Capabilities.ListModels {
+		return out + footerStyle.Render("Model list unavailable (engine stopped or unsupported)")
+	}
 	if v.models.err != nil {
 		return out + statusErrStyle.Render("load models failed: "+v.models.err.Error())
 	}
