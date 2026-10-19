@@ -369,6 +369,21 @@ func TestOneShotCLI(t *testing.T) {
 		}
 		defer os.Remove(broken)
 		withBroken := resolutionTree(t, filepath.Dir(base))
+		t.Run("invalid explicit log level", func(t *testing.T) {
+			t.Setenv("NVPAIR_LOG_LEVEL", "debug")
+			for _, arg := range []string{"--log-level=", "--log-level=invalid"} {
+				for _, mode := range [][]string{
+					{"--resolve", "test-engine"}, {"--list-engines"}, {"--resolve", "missing"},
+				} {
+					t.Run(strings.Join(mode, " ")+" "+arg, func(t *testing.T) {
+						out, stderr, code := run(append(mode, arg)...)
+						if code != 2 || out != "" || strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "--log-level") {
+							t.Fatalf("invalid flag must be a one-line usage error, not environment debug: code=%d stdout=%q stderr=%q", code, out, stderr)
+						}
+					})
+				}
+			}
+		})
 		for _, level := range []struct {
 			name, env string
 			args      []string

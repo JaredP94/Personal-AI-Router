@@ -76,9 +76,11 @@ open cluster identity, start watchers, execute engine commands, change PATH, or
 write settings. Like the service, they skip malformed user overrides and keep
 the remaining effective manifests. Diagnostics are suppressed unless
 `--log-level=debug` is explicitly supplied (`NVPAIR_LOG_LEVEL=debug` alone does
-not enable them); debug diagnostics go to stderr. Stdout contains only the JSON
-result. Failures exit 2 with a one-line reason on stderr and no JSON: unknown
-engine, unsupported platform, or engine not installed. Explicit debug logging
+not enable them); debug diagnostics go to stderr. An empty or invalid explicit
+`--log-level` value is a one-line usage error (exit 2), never an environment
+fallback. Stdout contains only the JSON result. Failures exit 2 with a one-line
+reason on stderr and no JSON: unknown engine, unsupported platform, or engine
+not installed. Explicit debug logging
 may add diagnostic lines before that reason.
 
 When a process-mode engine has no detected executable, a single read-only

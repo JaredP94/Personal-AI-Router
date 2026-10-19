@@ -167,7 +167,7 @@ func runOneShot(args []string) int {
 	flags.SetOutput(io.Discard) // errors below are exactly one line, without usage
 	list := flags.Bool("list-engines", false, "list engines")
 	engine := flags.String("resolve", "", "engine to resolve")
-	resolveLevel := applog.RegisterFlag(flags, slog.LevelInfo)
+	logLevel := flags.String("log-level", "", "log level: debug|info|warn|error")
 	if err := flags.Parse(args); err != nil {
 		return fail(err)
 	}
@@ -185,13 +185,21 @@ func runOneShot(args []string) int {
 	if flags.NArg() != 0 || listSet == resolveSet || (listSet && !*list) || (resolveSet && *engine == "") {
 		return fail(fmt.Errorf("use exactly one of --list-engines or --resolve <engine>, with only --log-level allowed"))
 	}
+	level := applog.LevelFromEnv(slog.LevelInfo)
+	if logLevelSet {
+		var err error
+		level, err = applog.ParseLevel(*logLevel)
+		if err != nil || strings.TrimSpace(*logLevel) == "" {
+			return fail(fmt.Errorf("invalid --log-level: want debug|info|warn|error"))
+		}
+	}
 	// Keep stdout machine-readable and stderr reserved for the single failure
-	// reason. Loader skip warnings are useful only when explicitly debugging;
-	// NVPAIR_LOG_LEVEL alone must not leak them into a wrapping CLI's output.
-	if !logLevelSet || resolveLevel() != slog.LevelDebug {
+	// reason. Only a valid, explicit debug value authorizes loader diagnostics;
+	// an empty/invalid flag must never inherit debug from NVPAIR_LOG_LEVEL.
+	if !logLevelSet || level != slog.LevelDebug {
 		applog.SetOutput(io.Discard)
 	}
-	applog.Init("nvpair-engine-manager", resolveLevel())
+	applog.Init("nvpair-engine-manager", level)
 	manifestDir, _ := userPaths()
 	reg := buildRegistry(manifestDir)
 	var result any
