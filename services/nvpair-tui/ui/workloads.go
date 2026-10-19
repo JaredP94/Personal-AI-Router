@@ -18,6 +18,7 @@ type workload struct {
 	Engine         string `json:"engine"`
 	State          string `json:"state"`
 	OriginatedFrom string `json:"originatedFrom"`
+	ScheduledOn    string `json:"scheduledOn"`
 	CreatedAt      int64  `json:"createdAt"` // Unix millis
 }
 
@@ -29,6 +30,12 @@ type workloadsView struct {
 	order  []string
 	byKey  map[string]workload
 	status string
+
+	// Name sources are replaced by the same recovery snapshots and live
+	// notifications as the Nodes and Cluster tabs. Workloads retain the UUID.
+	discovered []availableNode
+	members    []clusterNode
+	identity   clusterIdentity
 
 	width, height int
 }
@@ -52,13 +59,19 @@ func (v *workloadsView) Init() tea.Cmd {
 func (v *workloadsView) SetSize(w, h int) {
 	v.width, v.height = w, h
 	const engine, state, age = 10, 10, 6
-	id := clampWidth((w-engine-state-age-2)/3, 8)
-	model := clampWidth(w-engine-state-age-id-2, 10)
+	// Each of the seven cells has two columns of horizontal padding.
+	available := w - engine - state - age - 14
+	id := clampWidth(available/5, 8)
+	origin := clampWidth(available/5, 8)
+	destination := clampWidth(available/5, len("DESTINATION"))
+	model := clampWidth(available-id-origin-destination, 10)
 	v.table.SetColumns([]table.Column{
 		{Title: "ID", Width: id},
 		{Title: "MODEL", Width: model},
 		{Title: "ENGINE", Width: engine},
 		{Title: "STATE", Width: state},
+		{Title: "ORIGIN", Width: origin},
+		{Title: "DESTINATION", Width: destination},
 		{Title: "AGE", Width: age},
 	})
 	v.table.SetWidth(w)
@@ -67,6 +80,22 @@ func (v *workloadsView) SetSize(w, h int) {
 
 func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case discoverySnapshotMsg:
+		v.discovered = msg.nodes
+		v.refreshRows()
+		return nil
+	case clusterNodesMsg:
+		if msg.err == nil {
+			v.members = msg.nodes
+			v.refreshRows()
+		}
+		return nil
+	case clusterIdentityMsg:
+		if msg.err == nil {
+			v.identity = msg.id
+			v.refreshRows()
+		}
+		return nil
 	case workloadsSnapshotMsg:
 		v.order = nil
 		v.byKey = map[string]workload{}
@@ -83,6 +112,16 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 
 	case NotificationMsg:
 		switch msg.Msg.Method {
+		case "discovery:nodes-changed":
+			_ = decodeParams(msg.Msg.Params, &v.discovered)
+			v.refreshRows()
+		case "nodes:changed":
+			var p struct {
+				Nodes []clusterNode `json:"nodes"`
+			}
+			_ = decodeParams(msg.Msg.Params, &p)
+			v.members = p.Nodes
+			v.refreshRows()
 		case "workloads:upsert":
 			var p struct {
 				WorkloadInfo workload `json:"workloadInfo"`
@@ -139,10 +178,37 @@ func (v *workloadsView) refreshRows() {
 			w.Model,
 			w.Engine,
 			w.State,
+			v.nodeLabel(w.OriginatedFrom),
+			v.nodeLabel(w.ScheduledOn),
 			ageLabel(w.CreatedAt),
 		})
 	}
 	v.table.SetRows(rows)
+}
+
+// nodeLabel resolves stable node UUIDs, never service IDs or addresses. A node
+// leaving discovery or membership cannot erase a workload's routing attribution.
+func (v *workloadsView) nodeLabel(uuid string) string {
+	if uuid == "" {
+		return "—"
+	}
+	if v.identity.NodeUUID == uuid && v.identity.Name != "" {
+		return v.identity.Name
+	}
+	for _, n := range v.discovered {
+		if n.HostUUID == uuid && n.Name != "" {
+			return n.Name
+		}
+	}
+	for _, n := range v.members {
+		if n.NodeUUID == uuid && n.Name != "" {
+			return n.Name
+		}
+	}
+	if len(uuid) > 8 {
+		return uuid[:8]
+	}
+	return uuid
 }
 
 func (v *workloadsView) View() string {
