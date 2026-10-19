@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +34,12 @@ import (
 var bundledManifests embed.FS
 
 func main() {
+	if oneShotRequested(os.Args[1:]) {
+		os.Exit(runOneShot(os.Args[1:]))
+	}
+	// Register these here too so ordinary --help advertises the one-shot modes.
+	flag.Bool("list-engines", false, "print engine availability as JSON and exit (only --log-level may accompany this flag)")
+	flag.String("resolve", "", "resolve an engine executable and runtime environment as JSON and exit (only --log-level may accompany this flag)")
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	httpPort := flag.Int("http-port", 0, "if >0, serve the LAN HTTP surface (/v1/models) on this port so peers can enrich this node's model list; 0 disables it")
 	controlPort := flag.Int("control-port", 0, "if >0 and this node is clustered, serve the cluster-scoped mTLS remote-control surface (ec: /v1/engines + remote install/pull/start/stop) on this port")
@@ -134,6 +143,63 @@ func main() {
 		log.Fatalf("manager error: %v", err)
 	}
 	log.Print("shutdown complete")
+}
+
+// oneShotRequested selects the restricted parser before any service startup.
+// Inspect all arguments so mixing service flags and one-shot flags fails closed,
+// regardless of their order, rather than connecting to a parent's IPC endpoint.
+func oneShotRequested(args []string) bool {
+	for _, arg := range args {
+		name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if strings.HasPrefix(arg, "-") && (name == "list-engines" || name == "resolve") {
+			return true
+		}
+	}
+	return false
+}
+
+func runOneShot(args []string) int {
+	fail := func(err error) int {
+		fmt.Fprintln(os.Stderr, strings.NewReplacer("\n", " ", "\r", " ").Replace(err.Error()))
+		return 2
+	}
+	flags := flag.NewFlagSet("nvpair-engine-manager", flag.ContinueOnError)
+	flags.SetOutput(io.Discard) // errors below are exactly one line, without usage
+	list := flags.Bool("list-engines", false, "list engines")
+	engine := flags.String("resolve", "", "engine to resolve")
+	resolveLevel := applog.RegisterFlag(flags, slog.LevelInfo)
+	if err := flags.Parse(args); err != nil {
+		return fail(err)
+	}
+	listSet, resolveSet := false, false
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "list-engines":
+			listSet = true
+		case "resolve":
+			resolveSet = true
+		}
+	})
+	if flags.NArg() != 0 || listSet == resolveSet || (listSet && !*list) || (resolveSet && *engine == "") {
+		return fail(fmt.Errorf("use exactly one of --list-engines or --resolve <engine>, with only --log-level allowed"))
+	}
+	applog.Init("nvpair-engine-manager", resolveLevel())
+	manifestDir, _ := userPaths()
+	reg := buildRegistry(manifestDir)
+	var result any
+	if *list {
+		result = listEngines(reg, runtime.GOOS, runtime.GOARCH)
+	} else {
+		resolution, err := resolveEngine(reg, *engine, runtime.GOOS, runtime.GOARCH)
+		if err != nil {
+			return fail(err)
+		}
+		result = resolution
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		return fail(err)
+	}
+	return 0
 }
 
 // userPaths returns the per-user manifest-override directory and the

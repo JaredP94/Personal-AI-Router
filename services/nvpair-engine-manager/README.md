@@ -31,6 +31,58 @@ domain socket or Windows named pipe instead. The service is
 same binary runs under any supervisor with zero code change. The `engine:*`
 namespace is the surface the orchestrator/broker forwards from the UI.
 
+## One-shot executable resolution
+
+These read-only modes may run alongside the desktop application's engine-manager:
+
+```sh
+nvpair-engine-manager --list-engines
+nvpair-engine-manager --resolve ollama
+```
+
+`--list-engines` prints a JSON array and exits 0. Each entry has exactly
+`engine` (string), `display_name` (string), `installed` (boolean), and
+`supported` (boolean), including engines unsupported on this OS/architecture.
+Entries are sorted by engine name. Installed means the service's filesystem
+detection succeeded or its service-only adoption criterion succeeded; it does
+not guarantee a command-mode engine's declared CLI still exists.
+
+`--resolve <engine>` prints one JSON object and exits 0:
+
+```json
+{"engine":"ollama","path":"/effective/manifest/path/to/ollama","env":{"OLLAMA_HOST":"127.0.0.1:11435"}}
+```
+
+The path must exist and not be a directory. For process-mode engines it is the
+same first matching detect path used by the service, not a PATH lookup or a
+fallback to `runtime.bin`. For command-mode engines it is the expanded
+`runtime.cli`, not an alternate detect path. `env` contains only the platform's
+declared runtime environment (an empty object if none); callers should overlay
+it onto the child process's inherited environment. Placeholders use the same
+resolver as service operations, with `{host}` always `127.0.0.1`, `{port}` the
+effective configured engine port (persisted override or manifest default), and
+`{install_dir}` the engine's managed installation directory. Thus Ollama's CLI
+targets the engine port rather than the proxy; Linux library paths are retained.
+
+Both modes load the same embedded manifests and deep-merged per-user overrides
+under the service's normal config root. They accept **only `--log-level`** in
+addition to the selected mode. They never connect to stdio/IPC, bind listeners,
+open cluster identity, start watchers, execute engine commands, change PATH, or
+write settings. Logs remain on stderr; stdout contains only the JSON result.
+Failures exit 2 with a one-line reason on stderr and no JSON: unknown engine,
+unsupported platform, or engine not installed.
+
+When a process-mode engine has no detected executable, a single read-only
+readiness probe checks for an externally adopted service on its configured fixed
+port. It reuses the service's readiness check, is loopback-only, ignores HTTP
+proxies, refuses redirects, and has a 500 ms total deadline rather than the
+manifest's startup timeout. No port or readiness definition means no probe;
+command-mode engines still require a filesystem installation. A successful probe
+without an executable returns
+`<engine> is running as an external service; PAIR has no executable for it`.
+An unresponsive, unhealthy, non-loopback, or otherwise unidentified service is
+reported as not installed, not guessed to be an installation.
+
 ## JSON-RPC surface
 
 Requests (caller → service):
@@ -267,9 +319,11 @@ its own.
 | `--loaded-poll-interval <sec>` | `5` | Seconds between loaded-model polls that drive `engine:models-changed`; `0` disables the watcher |
 | `--log-level <level>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
 | `--version` | | Print version and exit |
+| `--list-engines` | | Print engine availability as JSON and exit; only `--log-level` may accompany it |
+| `--resolve <engine>` | | Print executable path and runtime environment as JSON and exit; only `--log-level` may accompany it |
 
 Logs go to **stderr** via the shared `nvpair-shared/applog` format; stdout is
-reserved for JSON-RPC frames in stdio mode.
+reserved for JSON-RPC frames in stdio mode (or the JSON result in one-shot mode).
 
 ## Logging & errors
 
