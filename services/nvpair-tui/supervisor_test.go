@@ -19,6 +19,7 @@ import (
 // set, so Spawn can drive a real child process over stdio without needing
 // the actual broker built.
 func TestMain(m *testing.M) {
+	runEngineCommandTestHelper()
 	if os.Getenv("NVPAIR_TUI_FAKE_BROKER") == "1" {
 		runFakeBroker()
 		return

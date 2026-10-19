@@ -10,8 +10,10 @@ machine over SSH**, where the bundled graphical UI cannot run. That is its
 purpose: it is an operations tool for hosts without a desktop, not a replacement
 for the graphical UI, and it does not cover every operation the desktop does.
 
-It spawns and owns its own `nvpair-ui-broker` child over stdio; the broker in turn
-supervises the worker subprocesses, so `nvpair-tui` drives one host on its own.
+In dashboard mode it spawns and owns its own `nvpair-ui-broker` child over stdio;
+the broker in turn supervises the worker subprocesses, so `nvpair-tui` drives one
+host on its own. The separate `engine` subcommand runs an engine CLI without
+starting the dashboard, broker, or worker fleet.
 
 This file is the component reference. For task-oriented usage instructions, see
 [Using the PAIR terminal interface](../../docs/terminal-interface.mdx).
@@ -134,10 +136,52 @@ nvpair-tui --version
 Logging goes to stderr (the broker's logs are shown inside the **Logs**
 tab, not on the terminal), so it never corrupts the full-screen UI.
 
+## Managed engine CLIs
+
+The installed `nvpair` wrapper forwards to this executable. Use `nvpair-tui`
+directly instead if the wrapper is not installed:
+
+```sh
+nvpair engine                         # ENGINE, NAME, INSTALLED, SUPPORTED table
+nvpair engine ollama --version
+nvpair engine ollama list
+nvpair engine lmstudio --help
+nvpair-tui engine omlx --help
+```
+
+`nvpair engine` also prints `nvpair engine <engine> [args...]`. Engine names,
+installation status, and platform support come solely from the sibling
+`nvpair-engine-manager --list-engines`. With an engine name, this command uses
+that sibling's `--resolve <engine>` JSON result, then runs the resolved executable.
+It never searches PATH or guesses vendor locations. Sibling discovery uses the
+running executable's directory, not the wrapper's directory or the current
+working directory, matching broker discovery.
+
+Every argument after the engine name is passed untouched, including `--version`,
+`-h`, `--`, and quoted spaces; these are not TUI flags. The engine inherits stdin,
+stdout, stderr, the working directory, and the full current environment overlaid
+with the resolver's additions. For example, engine-manager supplies the effective
+engine endpoint in `OLLAMA_HOST` and required library paths, rather than targeting
+the PAIR proxy. This does not change the calling shell's environment or PATH.
+
+On Unix the engine replaces this process, owning its signals and exit status.
+On Windows it runs in the same console with inherited stdio; Ctrl-C reaches the
+engine directly, the waiting parent stays alive, and the engine's exit code is
+returned. Resolver or launch failures print one `nvpair: <message>` stderr line
+and exit 2 (including unavailable engines or external services without a local
+executable).
+
+Unlike dashboard mode, this dispatch can run alongside the desktop app: it only
+invokes engine-manager's read-only one-shot resolver and the chosen CLI, without
+starting a broker, workers, or the TUI or writing PAIR settings. The engine CLI
+itself can still perform whatever operations you request, including mutations;
+this is not a sandbox or a lifecycle operation through the broker.
+
 ## Architecture
 
 ```
 nvpair-tui (this process)
+├── enginecmd*.go      early engine CLI dispatch (no dashboard or broker)
 ├── supervisor.go      spawn/own nvpair-ui-broker over stdio, graceful teardown
 ├── rpc/               JSON-RPC 2.0 codec + id-matching client
 └── ui/                Bubble Tea root model + one file per tab
