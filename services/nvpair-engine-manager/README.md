@@ -186,13 +186,15 @@ the op finishes.
 
 `engine:set-port` is the **persistent** port setter (distinct from the
 one-shot `engine:start {port}` override, which reverts on the next restart).
-It validates `1-65535`, persists the choice as a manifest override (a
-`{ engine, runtime: { port } }` delta written
-to the per-user `engines/` dir that deep-merges onto the bundled manifest, so
-`runtime.port` becomes the single source of truth and the port is restored on
-the next start with no separate store), and applies it — bouncing the engine
-onto the new port if it was running. Setting the port back to the bundled
-default removes the override file. Because the chosen port lives in the
+It validates `1-65535` and atomically merges `runtime.port` into the existing
+manifest override in the per-user `engines/` dir, preserving custom detection
+paths, environment, and every unrelated field. With no existing override it
+writes only `{ engine, runtime: { port } }`. This deep-merges onto the bundled
+manifest, making `runtime.port` the single source of truth across restarts,
+including one-shot CLI resolution. It applies the choice immediately, bouncing
+the engine onto the new port if it was running. Setting the port back to the
+bundled default removes only the `runtime.port` pin; the override file is deleted
+only if no other customizations remain. Because the chosen port lives in the
 effective manifest, restore is automatic: a normal `engine:start` (no explicit
 port) and the adopt-on-fixed-port path both come up on the retained port.
 Moving a **running, adopted process-mode** engine, or an adopted command-mode

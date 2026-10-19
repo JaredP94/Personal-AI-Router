@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strconv"
 	"testing"
 )
@@ -163,7 +165,7 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 				t.Errorf("returned status port: got %d, want %d", st.Port, tc.port)
 			}
 
-			// The override file is the minimal port delta.
+			// With no existing customizations, the override is a minimal port delta.
 			data, err := os.ReadFile(filepath.Join(dir, tc.engine+".json"))
 			if err != nil {
 				t.Fatalf("override file not written: %v", err)
@@ -182,7 +184,7 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 				t.Errorf("restored port: got %d, want %d", p, tc.port)
 			}
 
-			// Reverting to the bundled default removes the override entirely.
+			// Reverting removes a port-only override, not unrelated customizations.
 			if _, err := ex.SetPort(context.Background(), tc.engine, tc.bundled); err != nil {
 				t.Fatalf("SetPort revert: %v", err)
 			}
@@ -191,6 +193,110 @@ func TestSetPortPersistsAndRestores(t *testing.T) {
 			}
 			if p := hostPort(t, loadWithOverrides(t, dir), tc.engine); p != tc.bundled {
 				t.Errorf("port after revert: got %d, want bundled default %d", p, tc.bundled)
+			}
+		})
+	}
+}
+
+// A port change must not discard custom paths/env, either for the one-shot
+// resolver or for a restarted manager loading its registry from disk.
+func TestSetPortPreservesCustomOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		port int
+	}{
+		{"new port", 34567},
+		{"bundled default", 11434},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolutionRoot(t)
+			custom := filepath.Join(t.TempDir(), "custom engine")
+			resolutionFile(t, custom)
+			dir, _ := userPaths()
+			path := filepath.Join(dir, "ollama.json")
+			platform := runtime.GOOS + "/" + runtime.GOARCH
+			override := map[string]any{
+				"engine": "ollama", "display_name": "Custom Ollama",
+				"runtime": map[string]any{
+					"port": 23456, "bind": "0.0.0.0",
+					"env": map[string]string{"CUSTOM_ENGINE_ENV": "retained"},
+				},
+				"platforms":       map[string]any{platform: map[string]any{"detect": []string{custom}}},
+				"custom_metadata": json.RawMessage(`{"large_number":9007199254740993}`),
+			}
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeJSONAtomic(path, override); err != nil {
+				t.Fatal(err)
+			}
+			ex := newBundledExecutor(t, dir)
+			if _, err := ex.SetPort(context.Background(), "ollama", tc.port); err != nil {
+				t.Fatal(err)
+			}
+
+			// Reload independently of the executor: this is the one-shot and
+			// engine-manager restart boundary where the old implementation lost data.
+			fresh := loadWithOverrides(t, dir)
+			m, _ := fresh.Get("ollama")
+			p, ok := m.HostPlatform()
+			if !ok || !reflect.DeepEqual(p.Detect, []string{custom}) || p.Runtime.Env["CUSTOM_ENGINE_ENV"] != "retained" || p.Runtime.Port != tc.port || m.DisplayName != "Custom Ollama" {
+				t.Errorf("reloaded registry lost overrides: name=%q platform=%+v", m.DisplayName, p)
+			}
+			got, err := resolveEngine(fresh, "ollama", runtime.GOOS, runtime.GOARCH)
+			if err != nil {
+				t.Errorf("fresh resolution: %v", err)
+			} else if got.Path != custom || got.Env["CUSTOM_ENGINE_ENV"] != "retained" || got.Env["OLLAMA_HOST"] != "127.0.0.1:"+strconv.Itoa(tc.port) {
+				t.Errorf("fresh resolution lost custom executable/env/port: %+v", got)
+			}
+
+			// Check the persisted document too, including unknown fields. Only
+			// runtime.port may change; restoring the default removes that key.
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var persisted map[string]json.RawMessage
+			if err := json.Unmarshal(data, &persisted); err != nil {
+				t.Fatal(err)
+			}
+			var metadata struct {
+				LargeNumber int64 `json:"large_number"`
+			}
+			if err := json.Unmarshal(persisted["custom_metadata"], &metadata); err != nil || metadata.LargeNumber != 9007199254740993 {
+				t.Errorf("unknown field changed: %s, %v", persisted["custom_metadata"], err)
+			}
+			var rt map[string]json.RawMessage
+			if err := json.Unmarshal(persisted["runtime"], &rt); err != nil {
+				t.Fatal(err)
+			}
+			if _, pinned := rt["port"]; pinned != (tc.port != 11434) {
+				t.Errorf("runtime.port pin present=%v, want %v", pinned, tc.port != 11434)
+			}
+			if string(rt["bind"]) != `"0.0.0.0"` {
+				t.Errorf("unrelated runtime field changed: %s", rt["bind"])
+			}
+		})
+	}
+}
+
+func TestSetPortDoesNotClobberInvalidOverride(t *testing.T) {
+	for _, invalid := range []string{`{"engine":"ollama",`, `{"engine":"ollama","runtime":"invalid"}`} {
+		t.Run(invalid, func(t *testing.T) {
+			dir := t.TempDir()
+			ex := newBundledExecutor(t, dir)
+			path := filepath.Join(dir, "ollama.json")
+			if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, port := range []int{34567, 11434} {
+				if _, err := ex.SetPort(context.Background(), "ollama", port); err == nil {
+					t.Errorf("SetPort(%d) accepted unreadable override", port)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != invalid {
+					t.Fatalf("SetPort(%d) clobbered invalid override: %q, %v", port, data, err)
+				}
 			}
 		})
 	}

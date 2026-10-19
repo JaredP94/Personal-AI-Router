@@ -399,7 +399,7 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 
 // bundledDefaultPort returns the host-platform runtime.port from the bundled
 // (un-overridden) manifest for an engine, used to decide whether a chosen
-// port is back at the default (so its override file can be dropped).
+// port is back at the default (so only its port override can be dropped).
 func (r *Registry) bundledDefaultPort(engine string) (int, bool) {
 	raw, ok := r.bundledRaw[engine]
 	if !ok {
