@@ -299,7 +299,9 @@ type Broker struct {
 	// workloadEmitMu serializes the apply→fan→notify sequence in
 	// emitWorkloadEvent so the client-visible order matches the order events
 	// are applied to the store, even when the node-loss sweep (a separate
-	// goroutine) races a relayed event for the same workload.
+	// goroutine) races a relayed event for the same workload. It also covers
+	// the demand re-assertion on a polling worker's spawn, so that read/Store/
+	// push cannot overwrite a concurrent transition.
 	workloadEmitMu sync.Mutex
 
 	// workloads is the broker's authoritative index of cluster workloads
@@ -631,6 +633,29 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 	return b.clusterMgr
 }
 
+// launchScannerProcess and launchManualNodesProcess are the launch seams the two
+// node-info pollers' spawn paths go through. Production points them at the real
+// launchers; tests substitute a fake handle to drive the whole spawn path —
+// handle publication, demand re-assertion, registration replay — without
+// starting a child process.
+var (
+	launchScannerProcess = func(b *Broker) (*scannerProcess, error) {
+		return startScanner(
+			b.scannerPath,
+			applog.LevelString(),
+			b.store,
+			b.relayDir,
+			b.failWorkloadsForNode,
+			func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
+			func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
+			b.clusterDirArgs()...,
+		)
+	}
+	launchManualNodesProcess = func(b *Broker) (*rpcWorker, error) {
+		return startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.forwardManualNodesNotification)
+	}
+)
+
 // spawnScanner / spawnNodeInfo / spawnProxy / spawnWorkloadManager are the
 // per-worker spawn closures the supervisor calls for the initial start and
 // every restart. Each starts a fresh process (which wires its own reader
@@ -639,16 +664,7 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 // spawn failure returns the error without storing a handle, leaving the
 // previous (dead) handle in place until the next successful (re)start.
 func (b *Broker) spawnScanner() (supervisedHandle, error) {
-	sp, err := startScanner(
-		b.scannerPath,
-		applog.LevelString(),
-		b.store,
-		b.relayDir,
-		b.failWorkloadsForNode,
-		func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
-		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
-		b.clusterDirArgs()...,
-	)
+	sp, err := launchScannerProcess(b)
 	if err != nil {
 		return nil, err
 	}
@@ -897,7 +913,7 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnManualNodes() (supervisedHandle, error) {
-	w, err := startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.forwardManualNodesNotification)
+	w, err := launchManualNodesProcess(b)
 	if err != nil {
 		return nil, err
 	}
@@ -1265,8 +1281,14 @@ func (b *Broker) recomputeSchedulingDemand() {
 
 // pushSchedulingDemandOnStart re-asserts the current scheduling demand to a
 // newly spawned or restarted scanner or manual-nodes worker, whose default is
-// inactive (background polls) until told otherwise.
+// inactive (background polls) until told otherwise. It takes workloadEmitMu so
+// its read/Store/push cannot interleave with a workload transition doing the
+// same: otherwise a transition that lands between the read and the Store would be
+// overwritten by this path's stale value. Callers must not already hold it.
 func (b *Broker) pushSchedulingDemandOnStart() {
+	b.workloadEmitMu.Lock()
+	defer b.workloadEmitMu.Unlock()
+
 	active := b.workloads.HasActive()
 	b.lastSchedulingDemand.Store(active)
 	b.pushSchedulingDemand(active)

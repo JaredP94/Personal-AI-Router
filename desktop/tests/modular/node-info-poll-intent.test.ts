@@ -16,14 +16,17 @@ interface FakeWindow {
     isMinimized: () => boolean
 }
 
-const mocks = vi.hoisted(() => ({
-    state: {
-        getNodeInfoPollTargets: vi.fn<BridgeState['getNodeInfoPollTargets']>(),
-        mergeNodeInfoResponse: vi.fn<BridgeState['mergeNodeInfoResponse']>()
-    },
-    windows: [] as FakeWindow[],
-    windowQueryFailed: false
-}))
+const mocks = vi.hoisted(() => {
+    const windows: FakeWindow[] = []
+    return {
+        state: {
+            getNodeInfoPollTargets: vi.fn<BridgeState['getNodeInfoPollTargets']>(),
+            mergeNodeInfoResponse: vi.fn<BridgeState['mergeNodeInfoResponse']>()
+        },
+        windows,
+        windowQueryFailed: false
+    }
+})
 
 vi.mock('electron', () => ({
     BrowserWindow: {

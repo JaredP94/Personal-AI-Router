@@ -95,11 +95,12 @@ Field notes:
 - CPU / memory fields retain their existing `omitempty` semantics; a genuinely idle CPU is still omitted.
 - Telemetry sampling cadence is lease-driven via the `X-NVPAIR-Poll` request header:
   - `foreground` (visible UI) renews the **interactive** lease (2 s interval);
-  - `scheduling` (scanner, manual nodes) renews the **scheduling** lease (5 s interval);
+  - `scheduling` renews the **scheduling** lease (5 s interval);
   - `background` renews nothing and peeks the latest snapshot without waking the collector;
   - missing or unknown headers behave as `foreground`.
   - When neither lease is active and `localExecution` is false, sampling relaxes to idle (10 s interval).
   - Leases have a 6 s TTL (`LeaseTTL`). Any renewal that raises the sampling mode wakes the collector immediately.
+- The scanner and `nvpair-manual-nodes` send `scheduling` only while the broker reports scheduling demand via `telemetry/set-scheduling-demand` `{"active": bool}`; otherwise they poll as `background` and renew no lease. The broker sends true while any workload in its store is non-terminal (queued or running, local or peer-origin) and false when the last one finishes or is removed, re-asserting the value on every worker (re)spawn. Both workers default to inactive, so an idle fleet renews no scheduling lease. Because their poll cadence is fixed, a cold start or a fresh transition can leave up to one poll interval at `background` before the next poll renews the lease; a sample from that gap is never reported as fresher than its true age.
 - The parent broker pushes `stats/set-demand` with `{"localExecution": bool}` over stdin on start and on workload change. When `localExecution` is true (at least one active non-terminal workload is scheduled on this node), sampling stays in interactive mode (2 s) regardless of incoming poll headers.
 
 ### GPU wire contract

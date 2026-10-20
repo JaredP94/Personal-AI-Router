@@ -5,10 +5,15 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"nvpair-shared/noderec"
+	"nvpair-ui-broker/relay"
 	"nvpair-ui-broker/workloadstore"
 )
 
@@ -38,6 +43,13 @@ func (s *schedulingDemandSink) frames(t *testing.T) (scanner []bool, manual []bo
 
 func (s *schedulingDemandSink) decode(t *testing.T, buf *lockedBuffer) []bool {
 	t.Helper()
+	return decodeDemandFrames(t, buf)
+}
+
+// decodeDemandFrames parses the scheduling-demand notifications a worker
+// received since the buffer was last reset, one bool per frame.
+func decodeDemandFrames(t *testing.T, buf *lockedBuffer) []bool {
+	t.Helper()
 	raw := buf.String()
 	buf.Reset()
 	if strings.TrimSpace(raw) == "" {
@@ -64,24 +76,12 @@ func (s *schedulingDemandSink) decode(t *testing.T, buf *lockedBuffer) []bool {
 func (s *schedulingDemandSink) demand(t *testing.T, want ...bool) {
 	t.Helper()
 	scanner, manual := s.frames(t)
-	if !equalBools(scanner, want) {
+	if !slices.Equal(scanner, want) {
 		t.Fatalf("scanner received %v, want %v", scanner, want)
 	}
-	if !equalBools(manual, want) {
+	if !slices.Equal(manual, want) {
 		t.Fatalf("manual-nodes received %v, want %v", manual, want)
 	}
-}
-
-func equalBools(a, b []bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func upsertJSON(t *testing.T, fields map[string]any) json.RawMessage {
@@ -222,4 +222,116 @@ func mustInnerWorkloadInfo(t *testing.T, envelope json.RawMessage) json.RawMessa
 		t.Fatalf("decode envelope: %v", err)
 	}
 	return decoded.WorkloadInfo
+}
+
+// gateWriter parks the first frame written through it until released, so a test
+// can inspect the Broker while a demand push is mid-flight.
+type gateWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	inner   *lockedBuffer
+}
+
+func (w *gateWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return w.inner.Write(p)
+}
+
+// fakeCmd is the minimum a handle needs for the spawn paths' log line, which
+// reports the child PID.
+func fakeCmd() *exec.Cmd {
+	return &exec.Cmd{Process: &os.Process{}}
+}
+
+// applyRunningWorkload seeds the store with one active peer-origin workload,
+// which is scheduling demand that the spawn push must report.
+func applyRunningWorkload(t *testing.T, b *Broker) {
+	t.Helper()
+	raw := upsertJSON(t, map[string]any{
+		"id":             "w1",
+		"originatedFrom": "peer-node",
+		"state":          "running",
+		"createdAt":      100,
+	})
+	in, ok := workloadstore.ParseIncoming(mustInnerWorkloadInfo(t, raw))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	b.workloads.Apply(in)
+}
+
+// The spawn push reads the store, records the value, and pushes it. A workload
+// transition does the same under workloadEmitMu. If the spawn side were not
+// serialized with it, a transition that lands between the spawn's read and its
+// Store would be overwritten by the stale read: the workers would be told
+// "inactive" while work is active, and unchanged anti-entropy heartbeats return
+// before recompute, so nothing would repair it. Parking the push window (the
+// tail of the critical section) and proving the emit lock is still held shows the
+// whole read/Store/push sequence is one critical section.
+func TestSchedulingDemandSpawnPushSerializesWithTransitions(t *testing.T) {
+	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
+	applyRunningWorkload(t, b)
+	gate := &gateWriter{entered: make(chan struct{}), release: make(chan struct{}), inner: &lockedBuffer{}}
+	b.setScanner(&scannerProcess{peer: NewPeer(NewCodec(writeOnlyReadWriter{gate}))})
+
+	pushed := make(chan struct{})
+	go func() {
+		b.pushSchedulingDemandOnStart()
+		close(pushed)
+	}()
+	<-gate.entered
+
+	if b.workloadEmitMu.TryLock() {
+		b.workloadEmitMu.Unlock()
+		close(gate.release)
+		<-pushed
+		t.Fatal("spawn demand push runs outside workloadEmitMu; a workload transition can interleave with its read/Store and leave the workers stale")
+	}
+
+	close(gate.release)
+	<-pushed
+	if got := decodeDemandFrames(t, gate.inner); !slices.Equal(got, []bool{true}) {
+		t.Fatalf("scanner received %v, want [true]", got)
+	}
+}
+
+// Both spawn paths reset a worker that knows nothing, so both must re-assert
+// demand. They are driven here through their launch seams, with fake handles, so
+// deleting either spawn-path call — not just the shared push — fails.
+func TestScannerSpawnReassertsSchedulingDemand(t *testing.T) {
+	sink := &lockedBuffer{}
+	b := &Broker{workloads: workloadstore.New(), nodeID: "self", regCache: relay.NewRegistrationCache()}
+	applyRunningWorkload(t, b)
+	original := launchScannerProcess
+	launchScannerProcess = func(*Broker) (*scannerProcess, error) {
+		return &scannerProcess{peer: NewPeer(NewCodec(writeOnlyReadWriter{sink})), cmd: fakeCmd()}, nil
+	}
+	t.Cleanup(func() { launchScannerProcess = original })
+
+	if _, err := b.spawnScanner(); err != nil {
+		t.Fatalf("spawnScanner: %v", err)
+	}
+	if got := decodeDemandFrames(t, sink); !slices.Equal(got, []bool{true}) {
+		t.Fatalf("scanner received %v after spawn, want [true]", got)
+	}
+}
+
+func TestManualNodesSpawnReassertsSchedulingDemand(t *testing.T) {
+	sink := &lockedBuffer{}
+	b := &Broker{workloads: workloadstore.New(), nodeID: "self"}
+	applyRunningWorkload(t, b)
+	original := launchManualNodesProcess
+	launchManualNodesProcess = func(*Broker) (*rpcWorker, error) {
+		return &rpcWorker{peer: NewPeer(NewCodec(writeOnlyReadWriter{sink})), cmd: fakeCmd()}, nil
+	}
+	t.Cleanup(func() { launchManualNodesProcess = original })
+
+	if _, err := b.spawnManualNodes(); err != nil {
+		t.Fatalf("spawnManualNodes: %v", err)
+	}
+	if got := decodeDemandFrames(t, sink); !slices.Equal(got, []bool{true}) {
+		t.Fatalf("manual-nodes received %v after spawn, want [true]", got)
+	}
 }
