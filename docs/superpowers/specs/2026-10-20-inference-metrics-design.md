@@ -395,7 +395,11 @@ State per node id:
   requests that reported a TTFT
 - a rolling window of recent completions (local arrival time, tokens,
   durations) used to compute current rates over the last 60 seconds
-- optionally a per-model breakdown of the same totals (see §10)
+- a per-model breakdown of the same totals, keyed by the workload's `model`
+  field. The workload event already carries the model, so the breakdown costs
+  one map lookup per job; it is included in v1 because "this node is slow" is
+  usually "this node is slow *for this model*", and the UI presents it behind
+  a per-node disclosure that is collapsed by default.
 
 **b. Fed by the workload stream.** The broker's existing workload-ingest path
 applies the terminal event's measurement to the accumulator for `scheduledOn`,
@@ -442,6 +446,8 @@ returns the same snapshot for hydration on connect.
 - **Node card** (`desktop/src/ui/components/NodeList/NodeCardDetails.tsx`):
   a prefill/decode section — prefill tok/s, decode tok/s, TTFT, tokens served.
   Absent phases are shown as "not reported by this engine" rather than as 0.
+  A per-node disclosure lists the per-model breakdown; it is collapsed by
+  default.
 - **Job card** (`desktop/src/ui/components/Workloads/WorkloadItemCard.tsx`):
   per-job prefill/decode tokens, phase durations, and rates, shown once the job
   is terminal.
@@ -752,14 +758,12 @@ state, which `AGENTS.md` warns against outside a controlled machine.
 - The TUI is v2, not v1.
 - Totals are "since broker start" in v1, labelled as such.
 
-**Open for the owner**
+**Owner decisions (recorded 2026-10-20)**
 
-- Should the per-node view break down by model in v1? The workload event
-  already carries `model`, so the accumulator can carry the breakdown at
-  near-zero extra cost, but it widens the node card and the snapshot. The
-  recommendation is **yes, behind a per-model toggle** — the numbers are
-  free, and "this node is slow" is usually "this node is slow *for this
-  model*". Deferring it to v2 is also defensible.
+- **The per-node view breaks down by model in v1**, behind a per-node
+  disclosure that is collapsed by default. The workload event already carries
+  `model`, so the breakdown is nearly free, and "this node is slow" is usually
+  "this node is slow *for this model*". §4.4a and §4.5.
 
 ---
 
