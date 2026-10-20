@@ -304,45 +304,38 @@ class ProcessGroup:
             self.errors["identity_unverified"] = str(error) or "leader is no longer a waitable child"
             return True
 
-    def observe(self, table=None):
+    def observe(self):
         exited = self.exited()
         try:
-            if table is None:
-                table = self.proc.snapshot()
-            # Do not adopt new identities if the leader exited during collection.
+            # The system sampling table is not a membership oracle: unrelated
+            # root-owned tasks routinely deny libproc reads. Query this group
+            # directly, then read/revalidate only its kernel-listed identities.
+            membership = self.proc.group_members(self.pid)
             exited = self.exited() or exited
             group, inaccessible = {}, []
-            for pid, process in table.items():
+            for pid, start in membership.items():
                 if pid == self.pid and exited:
                     continue  # waitid positively confirms the reserved leader exited.
-                pgid = process.get("pgid")
-                if pgid is None:
-                    inaccessible.append(dict(pid=pid, error="missing PGID"))
-                elif pgid == self.pid:
-                    if not process.get("raw", {}).get("ri_proc_start_abstime"):
-                        inaccessible.append(dict(pid=pid, error="missing start time"))
-                    else:
-                        group[pid] = process
-            for error in self.proc.errors:
-                pid = error["pid"]
-                if pid == self.pid and exited:
-                    continue
-                # A failed full read can hide a never-sampled group member.
-                # ESRCH from that read is not proof of disappearance. Even a
-                # failed PGID lookup leaves membership unverified, not absent.
                 try:
-                    pgid = os.getpgid(pid)
-                except OSError as lookup_error:
-                    inaccessible.append(dict(error, pgid_error=str(lookup_error)))
-                else:
-                    if pgid == self.pid or any(key[0] == pid for key in self.known):
-                        inaccessible.append(error)
+                    process = self.proc.info(pid)
+                    if (process.get("pgid") != self.pid or
+                            tuple(process.get("start_time", ())) != tuple(start) or
+                            not process.get("raw", {}).get("ri_proc_start_abstime")):
+                        raise ValueError("incomplete or changed member identity")
+                    group[pid] = process
+                except (OSError, ValueError, TypeError) as error:
+                    inaccessible.append(dict(pid=pid, start_time=start, error=str(error)))
+            exited = self.exited() or exited  # Full reads may outlive the leader.
             if self.pinned and not exited:
                 self.known.update({identity(p): p for p in group.values()})
             unknown = [pid for pid, p in group.items()
                        if pid != self.pid and identity(p) not in self.known]
             if unknown or inaccessible:
                 self.errors["unverified_members"] = dict(unknown=unknown, inaccessible=inaccessible)
+            else:
+                # A later authoritative empty query resolves a raced/failed
+                # member read. It does not erase signalling/reservation errors.
+                self.errors.pop("unverified_members", None)
             # Only the waitid-confirmed exited leader is exempt. Every other
             # enumerated member, including a zombie, must disappear.
             members = [p for pid, p in group.items() if pid != self.pid]
@@ -352,7 +345,13 @@ class ProcessGroup:
             return None
 
     def send(self, signum, leader_only=False):
-        self.exited()  # Revalidate the reservation immediately before signalling.
+        self.exited()
+        # Darwin can return EPERM for a zombie-only group even though its
+        # unreaped leader still reserves the number. Avoid the signal only
+        # when kernel membership + waitid establish no remaining members.
+        if self.pinned and not leader_only and self.observe() and self.pinned:
+            return
+        self.exited()  # Revalidate AFTER collection, immediately before signalling.
         if self.pinned:
             try:
                 if leader_only:
@@ -398,6 +397,10 @@ def wait_group(group, deadline):
 
 
 def finish_hook(group, evidence, timeout, stop=False):
+    # Failed verification is still finalized by reap below. The run's finally
+    # block must not retry it with a now-unreserved numeric PGID.
+    if "cleanup_ok" in evidence:
+        return
     if not stop:
         deadline = time.monotonic() + timeout
         while not group.exited():
@@ -503,9 +506,9 @@ def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancell
             if app.exited():
                 raise RuntimeError("app exited during warm-up")
             table = proc.snapshot()
-            app.observe(table)
+            app.observe()
             if pre:
-                pre.observe(table)
+                pre.observe()
             owned = owned_processes(table, root, known)
             known.update({identity(p): p for p in owned.values()})
             cancellation.sleep(min(result["interval_seconds"], max(0, warmup_end - time.monotonic())))
@@ -519,9 +522,9 @@ def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancell
                 if app.exited():
                     raise RuntimeError("app exited during steady sampling")
                 table = proc.snapshot()
-                app.observe(table)
+                app.observe()
                 if pre:
-                    pre.observe(table)
+                    pre.observe()
                 owned = owned_processes(table, root, known)
                 known.update({identity(p): p for p in owned.values()})
                 timestamp, ticks = now(), proc.absolute_time()

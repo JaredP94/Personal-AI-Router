@@ -87,20 +87,30 @@ and verifies disappearance/reaps the leader with a bounded 5 s wait.
 For both hooks and the app, exit observation uses `waitid(..., WNOWAIT)`
 (including a libc wrapper on Python 3.9 builds without `os.waitid`). The leader
 stays unreaped, even as a zombie, until group verification or escalation is
-finished, reserving its PID/PGID against reuse. Collector records include PGID
-and PID/start-time identity; new member identities are retained only while the
-leader is alive. Unknown or inaccessible members make cleanup unverified, even
-if never sampled before. Any full-read error (including ESRCH), missing start
-time or missing/failed PGID lookup is treated as present-and-unverified unless
-the PID is positively assigned to another group. Such members require the full
-termination grace and group SIGKILL while the leader remains pinned. If any
-member remains enumerated or unreadable after escalation, cleanup fails and
-subsequent runs are skipped. Only the waitid-confirmed exited leader is exempt;
-other enumerated zombies must also disappear. PGID lookup failures for otherwise
-unclassified system PIDs conservatively block verification too. If
-another path has already reaped the leader, the harness never signals that
-numeric group: only previously recorded, individually revalidated members may
-be signalled, and cleanup is always recorded as unverified.
+finished, reserving its PID/PGID against reuse. A retained `Popen` reference
+prevents subprocess destructor/background reaping; no poll/wait is used before
+verification ends. Hook cleanup is finalized once, including failed cleanup:
+the run's finalizer never retries group signalling after reaping.
+
+For both hooks and the app's leader group, the authoritative membership list
+comes from the kernel's `sysctl({CTL_KERN, KERN_PROC, KERN_PROC_PGRP, pgid})`.
+Its `kinfo_proc` PID + timeval start identity is checked against each member's
+libproc identity/PGID before accepting a full read. New fallback signal targets
+are retained only while the leader is alive. Unrelated system PIDs with denied
+libproc reads cannot block group verification. A query failure, or a listed
+member whose full read fails (including ESRCH), is not proof of disappearance.
+An inaccessible/changed member remains unverified until a later successful
+membership query resolves it; persistent uncertainty requires full grace,
+SIGKILL while pinned, and failed cleanup/skip if still unresolved. Only the
+waitid-confirmed exited leader is exempt; other enumerated zombies must vanish.
+
+No group signal is needed once waitid and the kernel membership query establish
+that only the exited leader (or no members) remains. Darwin can return EPERM
+for a zombie-only group; EPERM alone does **not** prove reuse or disappearance
+(ESRCH is the usual absent-group result). Actual signalling EPERM remains failed
+evidence, never success. If another path has already reaped the leader, the
+harness never signals that numeric group: only previously recorded, individually
+revalidated members may be signalled, and cleanup is always unverified.
 Unverified cleanup fails the run and skips subsequent runs. Hooks and their
 children must not detach into different process groups/sessions; escaped,
 unobserved descendants cannot be certified by process-group probes.
@@ -195,8 +205,11 @@ verification fails closed on collector errors. The app's new process
 group gets up to 30 s to disappear, then SIGKILL and a bounded verification/reap
 wait. Forced termination fails the run. Collector failures are retained and
 cannot prevent requesting shutdown. Orphans/unverifiable shutdowns fail the run
-and skip subsequent runs to avoid contamination. Escaped descendants outside
-the launched process group are **not automatically killed**: inspect retained
+and skip subsequent runs to avoid contamination. Recorded descendants outside
+the leader's group (including Electron helpers/workers that change groups) still
+undergo the existing descendant/orphan verification using sampled PID + mach
+start-time identities, independent of the kernel leader-group query. Those
+outside-group descendants are **not automatically killed**: inspect retained
 PIDs/start identities before manual cleanup. This is not an uninstaller and
 never replaces the installed app.
 
@@ -220,6 +233,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
 node scripts/spdx-headers.mjs
 ```
 
-Tests use fake process trees, clocks, app launchers and HTTP responses. Only one
-macOS smoke test reads the test process's own rusage; no PAIR/engine/GUI launch
-and no network requests are made by the test suite.
+Tests use fake process trees, clocks, app launchers and HTTP responses. macOS
+integration coverage reads the test process's own rusage and starts only trivial
+console children: a self-exiting `/bin/sh -c 'sleep 30 & exit 3'` hook proves
+non-reaping observation, kernel member/start-time discovery, group SIGTERM,
+verified disappearance, then final reap. No PAIR/engine/GUI launch or network
+requests are made by the test suite.

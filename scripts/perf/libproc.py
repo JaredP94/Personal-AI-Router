@@ -69,6 +69,18 @@ def child_exited(pid):
     return child_exited_libc(pid)
 
 
+class Timeval(ctypes.Structure):
+    _fields_ = [("sec", ctypes.c_long), ("usec", ctypes.c_int)]
+
+
+class KinfoProc(ctypes.Structure):
+    # Darwin LP64 sys/sysctl.h + sys/proc.h (arm64 and x86_64): sizeof 648,
+    # kp_proc.p_un.__p_starttime at 0, kp_proc.p_pid at 40. The unused tail
+    # stays opaque. Checked with sizeof/offsetof against the macOS SDK.
+    _fields_ = [("start", Timeval), ("_prefix", ctypes.c_byte * 24),
+                ("pid", ctypes.c_int), ("_tail", ctypes.c_byte * 604)]
+
+
 class Timebase(ctypes.Structure):
     _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
 
@@ -110,6 +122,11 @@ class Libproc:
         # structure itself at this address, not a pointer to allocated memory.
         self.lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
         self.lib.proc_pid_rusage.restype = ctypes.c_int
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            raise RuntimeError("KERN_PROC_PGRP requires the Darwin LP64 ABI")
+        self.system.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint,
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+        self.system.sysctl.restype = ctypes.c_int
         self.system.mach_timebase_info.argtypes = [ctypes.POINTER(Timebase)]
         self.system.mach_timebase_info.restype = ctypes.c_int
         self.system.mach_absolute_time.argtypes = []
@@ -141,6 +158,40 @@ class Libproc:
                 return [pid for pid in buffer[:received] if pid > 0]
         raise RuntimeError("process table grew repeatedly during enumeration")
 
+    def group_members(self, pgid):
+        """Authoritative membership, independent of per-process read permission.
+
+        Identities use the kernel's timeval start time, not rusage mach ticks.
+        Retry ENOMEM if the group grew between size and data queries. Never
+        turn a query error or truncated record into an empty group.
+        """
+        if pgid <= 0:
+            raise ValueError("a positive process group ID is required")
+        mib = (ctypes.c_int * 4)(1, 14, 2, pgid)  # CTL_KERN, KERN_PROC, KERN_PROC_PGRP
+        for _ in range(4):
+            size = ctypes.c_size_t()
+            if self.system.sysctl(mib, 4, None, ctypes.byref(size), None, 0) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, "KERN_PROC_PGRP size query failed")
+            buffer = (KinfoProc * (size.value // ctypes.sizeof(KinfoProc) + 16))()
+            size.value = ctypes.sizeof(buffer)
+            if self.system.sysctl(mib, 4, buffer, ctypes.byref(size), None, 0) != 0:
+                code = ctypes.get_errno()
+                if code == errno.ENOMEM:
+                    continue
+                raise OSError(code, "KERN_PROC_PGRP query failed")
+            if size.value > ctypes.sizeof(buffer) or size.value % ctypes.sizeof(KinfoProc):
+                raise RuntimeError("invalid KERN_PROC_PGRP record size")
+            result = {}
+            for entry in buffer[:size.value // ctypes.sizeof(KinfoProc)]:
+                if entry.pid <= 0 or entry.start.sec <= 0 or not 0 <= entry.start.usec < 1_000_000:
+                    raise RuntimeError("invalid KERN_PROC_PGRP identity")
+                if entry.pid in result:
+                    raise RuntimeError("duplicate KERN_PROC_PGRP PID")
+                result[entry.pid] = (entry.start.sec, entry.start.usec)
+            return result
+        raise RuntimeError("process group grew repeatedly during enumeration")
+
     def _bsd(self, pid):
         result = BsdInfo()
         size = self.lib.proc_pidinfo(pid, 3, 0, ctypes.byref(result), ctypes.sizeof(result))
@@ -160,7 +211,8 @@ class Libproc:
         if (before.start_sec, before.start_usec) != (after.start_sec, after.start_usec):
             raise ProcessLookupError(errno.ESRCH, "PID reused during read", pid)
         executable = os.fsdecode(path.value)
-        return dict(pid=pid, ppid=after.ppid, pgid=after.pgid, status=after.status, path=executable,
+        return dict(pid=pid, ppid=after.ppid, pgid=after.pgid, status=after.status,
+                    start_time=(after.start_sec, after.start_usec), path=executable,
                     name=os.path.basename(executable),
                     raw={name: getattr(raw, name) for name in RUSAGE_FIELDS})
 
