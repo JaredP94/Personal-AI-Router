@@ -89,7 +89,15 @@ For both hooks and the app, exit observation uses `waitid(..., WNOWAIT)`
 stays unreaped, even as a zombie, until group verification or escalation is
 finished, reserving its PID/PGID against reuse. Collector records include PGID
 and PID/start-time identity; new member identities are retained only while the
-leader is alive. Unknown or inaccessible members make cleanup unverified. If
+leader is alive. Unknown or inaccessible members make cleanup unverified, even
+if never sampled before. Any full-read error (including ESRCH), missing start
+time or missing/failed PGID lookup is treated as present-and-unverified unless
+the PID is positively assigned to another group. Such members require the full
+termination grace and group SIGKILL while the leader remains pinned. If any
+member remains enumerated or unreadable after escalation, cleanup fails and
+subsequent runs are skipped. Only the waitid-confirmed exited leader is exempt;
+other enumerated zombies must also disappear. PGID lookup failures for otherwise
+unclassified system PIDs conservatively block verification too. If
 another path has already reaped the leader, the harness never signals that
 numeric group: only previously recorded, individually revalidated members may
 be signalled, and cleanup is always recorded as unverified.

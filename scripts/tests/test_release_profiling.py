@@ -4,6 +4,7 @@
 """Release harness tests; never launch PAIR, engines, or GUI applications."""
 
 import ctypes
+import errno
 import os
 from pathlib import Path
 import tempfile
@@ -720,6 +721,54 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual([r["status"] for r in report["runs"]], ["failed", "skipped"])
         self.assertTrue(report["runs"][0]["hook_cleanup_unverified"])
 
+    def test_never_sampled_inaccessible_hook_member_is_killed_and_aborts_experiment(self):
+        for hook_flag in ("--pre-sample-hook", "--post-run-check"):
+            with self.subTest(hook=hook_flag):
+                clock, app, hook = FakeClock(), FakeApp(), FakeApp()
+                hook.pid = 2000
+                signals = []
+
+                class Collector(FakeProc):
+                    def snapshot(self):
+                        self.errors = [dict(pid=2001, errno=errno.EACCES, error="unreadable member")]
+                        return {p.pid: self.info(p.pid) for p in (app, hook)
+                                if p.exitcode is None}
+
+                def group_signal(pid, sig):
+                    self.assertEqual(pid, 2000)
+                    self.assertFalse(hook.reaped)
+                    signals.append((sig, clock.value))
+                    hook.exitcode = 0  # The leader exits; its unreadable child ignores SIGTERM.
+
+                proc = Collector(clock, app)
+                metadata = dict(apps={v: {"binary": "/fake"} for v in ("baseline", "candidate")})
+                with tempfile.TemporaryDirectory() as temp, \
+                     patch("scripts.perf.profile.environment_metadata", return_value=metadata), \
+                     patch("scripts.perf.profile.platform.system", return_value="Darwin"), \
+                     patch("scripts.perf.profile.platform.machine", return_value="arm64"), \
+                     patch("scripts.perf.profile.Libproc", return_value=proc), \
+                     patch("scripts.perf.profile.subprocess.Popen", side_effect=[app, hook]) as launch, \
+                     patch("scripts.perf.profile.os.getpgid", return_value=2000), \
+                     patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+                     patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+                     patch("scripts.perf.profile.time.sleep", clock.sleep):
+                    output = Path(temp) / "out"
+                    status = main(["--output", str(output), "--authorize-launch", "--scenario", "overview",
+                                   "--repetitions", "1", "--warmup", "0", "--duration", "20",
+                                   "--hook-timeout", "1", hook_flag, "/fake-hook"])
+                    report = json.loads((output / "report.json").read_text())
+                self.assertIn(signal.SIGKILL, [sig for sig, unused in signals])
+                self.assertGreaterEqual(signals[1][1] - signals[0][1], 1)
+                self.assertEqual(status, 1)
+                self.assertEqual([r["status"] for r in report["runs"]], ["failed", "skipped"])
+                self.assertEqual(launch.call_count, 2)  # Only the first fake app and hook.
+                first = report["runs"][0]
+                self.assertTrue(first["hook_cleanup_unverified"])
+                key = "pre_sample" if hook_flag == "--pre-sample-hook" else "post_run_check"
+                self.assertFalse(first["hooks"][key]["cleanup_ok"])
+                self.assertTrue(first["hooks"][key]["unverified_members"])
+                self.assertTrue(first["quit"]["ok"])
+
     def test_missing_authorization_fails_without_launch(self):
         with patch("scripts.perf.profile.subprocess.Popen", side_effect=AssertionError("must not launch")):
             with self.assertRaises(SystemExit) as caught, patch("sys.stderr"):
@@ -780,6 +829,110 @@ class GroupIdentityTests(unittest.TestCase):
                 evidence = clean_quit(Collector(), group, (1000, 1), {(1001, 2): child}, timeout=1)
                 ok = evidence["ok"]
         return ok, events, leader.reaped
+
+    def test_incomplete_members_force_pinned_group_kill_and_fail_cleanup(self):
+        cases = [
+            ("permission", errno.EACCES, 1000, None),
+            ("read race", errno.ESRCH, 1000, None),
+            ("other read error", errno.EIO, 1000, None),
+            ("pgid permission", errno.EACCES, PermissionError("PGID denied"), None),
+            ("pgid race", errno.ESRCH, ProcessLookupError("PGID race"), None),
+            ("missing start", None, 1000, dict(sample(1001, 2), raw={})),
+            ("zero start", None, 1000, sample(1001, 0)),
+            ("null start", None, 1000, sample(1001, None)),
+            ("missing pgid", None, 1000, sample(1001, 2)),
+        ]
+        for kind in ("hook", "app"):
+            for name, code, pgid, partial in cases:
+                with self.subTest(kind=kind, member=name):
+                    clock, leader = FakeClock(), FakeApp()
+                    signals = []
+                    if partial is not None and name != "missing pgid":
+                        partial["pgid"] = 1000
+
+                    class Collector(FakeProc):
+                        def snapshot(self):
+                            self.errors = ([dict(pid=1001, errno=code, error=name)]
+                                           if code is not None else [])
+                            table = super().snapshot()
+                            if partial is not None:
+                                table[1001] = partial
+                            return table
+
+                    def group_signal(pid, sig):
+                        self.assertEqual(pid, 1000)
+                        self.assertFalse(leader.reaped)
+                        signals.append((sig, clock.value))
+                        leader.exitcode = 0
+
+                    proc = Collector(clock, leader)
+                    with patch("scripts.perf.profile.child_exited", side_effect=fake_child_exited), \
+                         patch("scripts.perf.profile.os.kill", side_effect=fake_kill), \
+                         patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+                         patch("scripts.perf.profile.os.getpgid", side_effect=(pgid if isinstance(pgid, Exception)
+                               else lambda pid: pgid)), \
+                         patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+                         patch("scripts.perf.profile.time.sleep", clock.sleep):
+                        group = profile.ProcessGroup(leader, proc)
+                        self.assertNotIn((1001, 0), group.known)
+                        self.assertNotIn((1001, None), group.known)
+                        if kind == "hook":
+                            evidence = {}
+                            profile.finish_hook(group, evidence, 1, stop=True)
+                            ok = evidence["cleanup_ok"]
+                        else:
+                            evidence = clean_quit(proc, group, (1000, 1), {}, timeout=1)
+                            ok = evidence["ok"]
+                    self.assertIn(signal.SIGKILL, [sig for sig, unused in signals])
+                    self.assertGreaterEqual(signals[-1][1], 1)
+                    self.assertFalse(ok)
+                    self.assertTrue(evidence.get("unverified_members"))
+                    self.assertTrue(leader.reaped)
+
+    def test_enumerated_members_still_present_after_kill_fail_cleanup(self):
+        for status in (1, 5):
+            with self.subTest(status=status):
+                clock, leader = FakeClock(), FakeApp()
+                child = dict(sample(1001, 2), pgid=1000, status=status)
+                proc = FakeProc(clock, leader)
+                proc.snapshot = lambda: {1001: child}
+                signals = []
+                def group_signal(pid, sig):
+                    self.assertEqual(pid, 1000)
+                    self.assertFalse(leader.reaped)
+                    signals.append(sig)
+                with patch("scripts.perf.profile.child_exited", side_effect=fake_child_exited), \
+                     patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+                     patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+                     patch("scripts.perf.profile.time.sleep", clock.sleep):
+                    group = profile.ProcessGroup(leader, proc)
+                    leader.exitcode = 0
+                    evidence = {}
+                    profile.finish_hook(group, evidence, 1)
+                self.assertEqual(signals, [signal.SIGTERM, signal.SIGKILL])
+                self.assertFalse(evidence["cleanup_ok"])
+
+    def test_read_errors_positively_outside_group_do_not_force_kill(self):
+        clock, leader = FakeClock(), FakeApp()
+        proc = FakeProc(clock, leader)
+        proc.errors = [dict(pid=2001, errno=code, error="unrelated read error")
+                       for code in (errno.EACCES, errno.ESRCH)]
+        signals = []
+        def group_signal(pid, sig):
+            self.assertEqual(pid, 1000)
+            self.assertFalse(leader.reaped)
+            signals.append(sig)
+            leader.exitcode = 0
+        with patch("scripts.perf.profile.child_exited", side_effect=fake_child_exited), \
+             patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+             patch("scripts.perf.profile.os.getpgid", return_value=2000), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            group = profile.ProcessGroup(leader, proc)
+            evidence = {}
+            profile.finish_hook(group, evidence, 1, stop=True)
+        self.assertEqual(signals, [signal.SIGTERM])
+        self.assertTrue(evidence["cleanup_ok"])
 
     def test_app_orphan_ledger_cannot_seed_signal_targets_after_leader_reap(self):
         clock, leader = FakeClock(), FakeApp()

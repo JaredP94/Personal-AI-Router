@@ -311,18 +311,41 @@ class ProcessGroup:
                 table = self.proc.snapshot()
             # Do not adopt new identities if the leader exited during collection.
             exited = self.exited() or exited
-            group = {pid: p for pid, p in table.items() if p["pgid"] == self.pid}
+            group, inaccessible = {}, []
+            for pid, process in table.items():
+                if pid == self.pid and exited:
+                    continue  # waitid positively confirms the reserved leader exited.
+                pgid = process.get("pgid")
+                if pgid is None:
+                    inaccessible.append(dict(pid=pid, error="missing PGID"))
+                elif pgid == self.pid:
+                    if not process.get("raw", {}).get("ri_proc_start_abstime"):
+                        inaccessible.append(dict(pid=pid, error="missing start time"))
+                    else:
+                        group[pid] = process
+            for error in self.proc.errors:
+                pid = error["pid"]
+                if pid == self.pid and exited:
+                    continue
+                # A failed full read can hide a never-sampled group member.
+                # ESRCH from that read is not proof of disappearance. Even a
+                # failed PGID lookup leaves membership unverified, not absent.
+                try:
+                    pgid = os.getpgid(pid)
+                except OSError as lookup_error:
+                    inaccessible.append(dict(error, pgid_error=str(lookup_error)))
+                else:
+                    if pgid == self.pid or any(key[0] == pid for key in self.known):
+                        inaccessible.append(error)
             if self.pinned and not exited:
                 self.known.update({identity(p): p for p in group.values()})
             unknown = [pid for pid, p in group.items()
                        if pid != self.pid and identity(p) not in self.known]
-            inaccessible = [e for e in self.proc.errors if e["errno"] != errno.ESRCH
-                and any(key[0] == e["pid"] for key in self.known)
-                and not (e["pid"] == self.pid and exited)]
             if unknown or inaccessible:
                 self.errors["unverified_members"] = dict(unknown=unknown, inaccessible=inaccessible)
-            # Darwin SZOMB == 5. The reserved zombie leader is not a survivor.
-            members = [p for pid, p in group.items() if pid != self.pid and p.get("status") != 5]
+            # Only the waitid-confirmed exited leader is exempt. Every other
+            # enumerated member, including a zombie, must disappear.
+            members = [p for pid, p in group.items() if pid != self.pid]
             return exited and not members and not inaccessible
         except Exception as error:
             self.errors["collector_error"] = type(error).__name__ + ": " + str(error)
@@ -367,8 +390,8 @@ class ProcessGroup:
 def wait_group(group, deadline):
     while True:
         gone = group.observe()
-        if gone or (gone is None and group.exited()):
-            return bool(gone)
+        if gone:
+            return True
         if time.monotonic() >= deadline:
             return False
         time.sleep(min(0.1, max(0, deadline - time.monotonic())))
