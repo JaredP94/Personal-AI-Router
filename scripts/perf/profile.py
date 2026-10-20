@@ -305,13 +305,13 @@ class ProcessGroup:
             return True
 
     def observe(self):
-        exited = self.exited()
+        exited_before_query = self.exited()
         try:
             # The system sampling table is not a membership oracle: unrelated
             # root-owned tasks routinely deny libproc reads. Query this group
             # directly, then read/revalidate only its kernel-listed identities.
             membership = self.proc.group_members(self.pid)
-            exited = self.exited() or exited
+            exited = self.exited() or exited_before_query
             group, inaccessible = {}, []
             for pid, start in membership.items():
                 if pid == self.pid and exited:
@@ -336,10 +336,11 @@ class ProcessGroup:
                 # A later authoritative empty query resolves a raced/failed
                 # member read. It does not erase signalling/reservation errors.
                 self.errors.pop("unverified_members", None)
-            # Only the waitid-confirmed exited leader is exempt. Every other
-            # enumerated member, including a zombie, must disappear.
+            # Only a query AFTER observing leader exit can certify absence:
+            # a living leader could fork after an earlier membership snapshot.
+            # Every other enumerated member, including a zombie, must disappear.
             members = [p for pid, p in group.items() if pid != self.pid]
-            return exited and not members and not inaccessible
+            return exited_before_query and not members and not inaccessible
         except Exception as error:
             self.errors["collector_error"] = type(error).__name__ + ": " + str(error)
             return None

@@ -129,6 +129,52 @@ class GroupMembershipTests(unittest.TestCase):
             group = profile.ProcessGroup(leader, Collector())
         self.assertEqual(group.known, {})
 
+    def test_hook_fork_then_exit_requires_post_exit_membership_before_reap(self):
+        for transition in ("membership query", "member read"):
+            with self.subTest(transition=transition):
+                leader, clock = FakeApp(), FakeClock()
+                class Collector:
+                    armed = False
+                    child_alive = False
+                    def fork_then_exit(self):
+                        if self.armed and leader.exitcode is None:
+                            self.child_alive = True
+                            leader.exitcode = 3
+                    def group_members(self, pgid):
+                        members = {1000: (10, 20)}
+                        if self.child_alive:
+                            members[1001] = (11, 20)
+                        if transition == "membership query":
+                            self.fork_then_exit()  # Snapshot predates the fork.
+                        return members
+                    def info(self, pid):
+                        if transition == "member read":
+                            self.fork_then_exit()
+                        return dict(sample(pid, 1 if pid == 1000 else 2), pgid=1000,
+                                    start_time=(10, 20) if pid == 1000 else (11, 20))
+                collector = Collector()
+                def group_signal(pgid, signum):
+                    self.assertEqual(pgid, 1000)
+                    self.assertFalse(leader.reaped, "group signalled after reap")
+                    if signum == signal.SIGTERM:
+                        collector.armed = True
+                    elif signum == signal.SIGKILL:
+                        collector.child_alive = False
+                with patch.object(profile, "child_exited", side_effect=fake_child_exited), \
+                     patch.object(profile.os, "killpg", side_effect=group_signal), \
+                     patch.object(profile.os, "kill", side_effect=AssertionError("unexpected individual signal")), \
+                     patch.object(profile.time, "monotonic", clock.monotonic), \
+                     patch.object(profile.time, "sleep", clock.sleep):
+                    group = profile.ProcessGroup(leader, collector)
+                    evidence = {}
+                    profile.finish_hook(group, evidence, 1, stop=True)
+                self.assertFalse(collector.child_alive,
+                                 "cleanup reaped the leader while its raced child survived")
+                self.assertTrue(evidence["cleanup_ok"], evidence)
+                self.assertTrue(evidence.get("forced_kill"), evidence)
+                self.assertTrue(leader.reaped)
+                self.assertEqual(evidence["exit_status"], 3)
+
     def test_group_empty_after_raced_member_read_resolves_uncertainty(self):
         leader = FakeApp()
         class Collector:
