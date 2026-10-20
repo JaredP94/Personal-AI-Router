@@ -129,7 +129,52 @@ func TestSelfNotEvictedByBrowse(t *testing.T) {
 	}
 }
 
-func TestFetchNodeInfoKeepsSchedulingTelemetryActive(t *testing.T) {
+// The scanner polls every node every two seconds whether or not anything is
+// scheduling, so its poll intent — not its cadence — is what decides whether the
+// target's GPU collector keeps sampling at five seconds. With no scheduling
+// demand it must peek as a background read and hand the node its idle cadence.
+func TestFetchNodeInfoPollIntentFollowsSchedulingDemand(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		demand bool
+		want   string
+	}{
+		{"no scheduling demand", false, "background"},
+		{"scheduling demand", true, "scheduling"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			polls := make(chan string, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				polls <- r.Header.Get("X-NVPAIR-Poll")
+				_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+			}))
+			defer srv.Close()
+			host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := &daemon{http: srv.Client()}
+			d.setSchedulingDemand(tc.demand)
+
+			info, ok := d.fetchNodeInfo(host, port)
+			if !ok || info.HostUUID != "peer-uuid" {
+				t.Fatalf("fetchNodeInfo = %+v, %v; want a successful peer response", info, ok)
+			}
+			if got := <-polls; got != tc.want {
+				t.Fatalf("poll intent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A freshly spawned daemon has been told nothing, and an unrenewed scheduling
+// lease is the safe default: it lets every node fall back to idle sampling until
+// the broker says a scheduler is actually waiting on fresh telemetry.
+func TestFreshDaemonPollsInTheBackground(t *testing.T) {
 	polls := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		polls <- r.Header.Get("X-NVPAIR-Poll")
@@ -145,12 +190,53 @@ func TestFetchNodeInfoKeepsSchedulingTelemetryActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &daemon{http: srv.Client()}
-	info, ok := d.fetchNodeInfo(host, port)
-	if !ok || info.HostUUID != "peer-uuid" {
-		t.Fatalf("fetchNodeInfo = %+v, %v; want a successful peer response", info, ok)
+
+	if _, ok := d.fetchNodeInfo(host, port); !ok {
+		t.Fatal("fetchNodeInfo failed")
 	}
-	if got := <-polls; got != "scheduling" {
-		t.Fatalf("scheduling telemetry poll = %q, want scheduling to retain scheduling sampling lease", got)
+	if got := <-polls; got != "background" {
+		t.Fatalf("poll intent = %q, want background before the broker pushes any demand", got)
+	}
+}
+
+// The demand decision arrives as a broker notification, so dispatch must accept
+// it and change what the next poll renews.
+func TestHandleSetSchedulingDemand(t *testing.T) {
+	polls := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls <- r.Header.Get("X-NVPAIR-Poll")
+		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
+	}))
+	defer srv.Close()
+	host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &daemon{http: srv.Client()}
+
+	for _, tc := range []struct {
+		name string
+		json string
+		want string
+	}{
+		{"demand on", `{"active":true}`, "scheduling"},
+		{"demand off", `{"active":false}`, "background"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !d.handle(&Message{Method: noderec.MethodSetSchedulingDemand, Params: json.RawMessage(tc.json)}) {
+				t.Fatal("daemon did not claim the scheduling-demand method")
+			}
+			if _, ok := d.fetchNodeInfo(host, port); !ok {
+				t.Fatal("fetchNodeInfo failed")
+			}
+			if got := <-polls; got != tc.want {
+				t.Fatalf("poll intent after %s = %q, want %q", tc.name, got, tc.want)
+			}
+		})
 	}
 }
 

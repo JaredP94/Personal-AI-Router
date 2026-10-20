@@ -93,20 +93,138 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 	return m, rw, rt
 }
 
-func TestProbeNodeInfoKeepsSchedulingTelemetryActive(t *testing.T) {
-	m, _, rt := newTestManager()
-	var poll string
-	rt.set(http.MethodGet, "node.local:14318", "/v1/node-info", func(req *http.Request) (*http.Response, error) {
-		poll = req.Header.Get("X-NVPAIR-Poll")
-		return httpJSON(http.StatusOK, `{"hostUuid":"peer-uuid"}`)
+// newPollRecordingServer starts a real node-info endpoint that records the
+// X-NVPAIR-Poll intent of each request, and returns it with the address split the
+// way a manual node carries it. A TLS server stands in for a node whose manual
+// entry names a TLS node-info port, which is the only way that loop's target port
+// is not the fixed 14318.
+func newPollRecordingServer(t *testing.T, polls chan<- string, tls bool) (host string, port int, client *http.Client) {
+	t.Helper()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls <- r.Header.Get("X-NVPAIR-Poll")
+		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
 	})
-
-	up, info := m.probeNodeInfo(m.client, "http", "node.local", 14318)
-	if !up || info.HostUUID != "peer-uuid" {
-		t.Fatalf("probeNodeInfo = %v, %+v; want a successful peer response", up, info)
+	var srv *httptest.Server
+	if tls {
+		srv = httptest.NewTLSServer(handler)
+	} else {
+		srv = httptest.NewServer(handler)
 	}
-	if poll != "scheduling" {
-		t.Fatalf("scheduling telemetry poll = %q, want scheduling to retain scheduling sampling lease", poll)
+	t.Cleanup(srv.Close)
+	h, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener address: %v", err)
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse listener port: %v", err)
+	}
+	return h, p, srv.Client()
+}
+
+// Manual nodes are probed every couple of seconds regardless of whether
+// anything is scheduled, so the poll intent is the only thing that decides
+// whether a manual peer's GPU collector keeps its scheduling lease. With no
+// demand it must read as background and let the peer idle.
+func TestProbeNodeInfoPollIntentFollowsSchedulingDemand(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		demand bool
+		want   string
+	}{
+		{"no scheduling demand", false, "background"},
+		{"scheduling demand", true, "scheduling"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _ := newTestManager()
+			polls := make(chan string, 1)
+			host, port, client := newPollRecordingServer(t, polls, false)
+			m.setSchedulingDemand(tc.demand)
+
+			up, info := m.probeNodeInfo(client, "http", host, port)
+			if !up || info.HostUUID != "peer-uuid" {
+				t.Fatalf("probeNodeInfo = %v, %+v; want a successful peer response", up, info)
+			}
+			if got := <-polls; got != tc.want {
+				t.Fatalf("poll intent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The telemetry loop is the poll that actually feeds the scheduler, and it must
+// follow the same demand state as the health probe it shares a client with.
+func TestProbeNodeTelemetryPollIntentFollowsSchedulingDemand(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		demand bool
+		want   string
+	}{
+		{"no scheduling demand", false, "background"},
+		{"scheduling demand", true, "scheduling"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _ := newTestManager()
+			polls := make(chan string, 1)
+			host, port, client := newPollRecordingServer(t, polls, true)
+			m.telemetryTLSClient = client
+			m.setSchedulingDemand(tc.demand)
+			// Registered directly rather than through addNode: addNode probes in
+			// the background, and that probe would race this one for the header.
+			const id = "manual:node.local"
+			entry := ManualEntry{Address: host, TLSPort: port}
+			m.mu.Lock()
+			m.nodes[id] = &trackedNode{
+				entry:  entry,
+				status: ManualNodeStatus{ID: id},
+			}
+			m.mu.Unlock()
+
+			m.probeNodeTelemetry(context.Background(), id, entry)
+			if got := <-polls; got != tc.want {
+				t.Fatalf("poll intent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A freshly spawned worker has been told nothing; an unrenewed scheduling lease
+// is the safe default until the broker says a scheduler is waiting on telemetry.
+func TestFreshManagerProbesInTheBackground(t *testing.T) {
+	m, _, _ := newTestManager()
+	polls := make(chan string, 1)
+	host, port, client := newPollRecordingServer(t, polls, false)
+
+	if up, _ := m.probeNodeInfo(client, "http", host, port); !up {
+		t.Fatal("probeNodeInfo failed")
+	}
+	if got := <-polls; got != "background" {
+		t.Fatalf("poll intent = %q, want background before the broker pushes any demand", got)
+	}
+}
+
+// The demand decision arrives as a broker notification, so dispatch must accept
+// it (rather than dropping it as an unknown notification) and apply it.
+func TestHandleSetSchedulingDemand(t *testing.T) {
+	m, _, _ := newTestManager()
+	for _, tc := range []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"demand on", `{"active":true}`, true},
+		{"demand off", `{"active":false}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m.handleMessage(&Message{
+				JSONRPC: "2.0",
+				Method:  noderec.MethodSetSchedulingDemand,
+				Params:  json.RawMessage(tc.json),
+			})
+			if got := m.schedulingDemand.Load(); got != tc.want {
+				t.Fatalf("scheduling demand = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1302,8 +1420,10 @@ func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T)
 	if telem.SampleSeq != 42 {
 		t.Errorf("expected SampleSeq = 42, got %d", telem.SampleSeq)
 	}
-	if pollHeader != "scheduling" {
-		t.Errorf("expected X-NVPAIR-Poll = scheduling, got %q", pollHeader)
+	// No workload is queued or running in this test, so the broker has pushed no
+	// scheduling demand and every poll is a background read.
+	if pollHeader != "background" {
+		t.Errorf("expected X-NVPAIR-Poll = background, got %q", pollHeader)
 	}
 
 	// Remove reachable node and drain frames so its loop stops

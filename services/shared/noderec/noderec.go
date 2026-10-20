@@ -367,6 +367,19 @@ const (
 	// working over the silence of a timed-out probe.
 	MethodNodeActivity = "discovery:node-activity"
 
+	// MethodSetSchedulingDemand is broker -> nvpair-node-scanner and
+	// nvpair-manual-nodes: whether scheduling consumers currently need fresh
+	// node telemetry, so their outbound /v1/node-info polls renew the scheduling
+	// lease only while it is true and otherwise peek as "background".
+	//
+	// The decision belongs to the broker because it is the only process that sees
+	// every workload, local and peer-origin, while both pollers run at a fixed 2 s
+	// cadence regardless of load and so cannot tell an idle fleet from a busy one
+	// themselves. Sent on every (re)spawn, defaulting to inactive: an unrenewed
+	// lease lets each node fall back to idle sampling, which is the safe direction
+	// while the broker has said nothing.
+	MethodSetSchedulingDemand = "telemetry/set-scheduling-demand"
+
 	// Consumer -> broker.
 	MethodGetNodes  = "discovery:get-nodes"
 	MethodSubscribe = "discovery:subscribe"
@@ -412,6 +425,17 @@ type ClusterIdentityParams struct {
 // for MethodSetDemand ("stats/set-demand").
 type DemandParams struct {
 	LocalExecution bool `json:"localExecution"`
+}
+
+// SchedulingDemandParams carries whether scheduling consumers need fresh node
+// telemetry, for MethodSetSchedulingDemand.
+//
+// It is deliberately not the same flag as DemandParams: local execution is
+// reported by the node doing the work and raises that node to interactive
+// sampling, while scheduling demand is fleet-wide and only raises every node to
+// the scheduling cadence.
+type SchedulingDemandParams struct {
+	Active bool `json:"active"`
 }
 
 // ObservedAddressesParams carries the local addresses remote peers have reached

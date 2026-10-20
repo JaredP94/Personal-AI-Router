@@ -29,6 +29,18 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
     getModularBridgeState: () => mocks.state
 }))
 
+// These tests are about what the poller does to node-info, not how often: one
+// visible window keeps it on the two-second foreground cadence they advance
+// timers by. Poll intent and the tray-only cadence have their own test
+// (node-info-poll-intent.test.ts).
+vi.mock('electron', () => ({
+    BrowserWindow: {
+        getAllWindows: () => [
+            { isDestroyed: () => false, isVisible: () => true, isMinimized: () => false }
+        ]
+    }
+}))
+
 vi.mock('@/shared/utils/log', () => {
     const record =
         (level: string) =>

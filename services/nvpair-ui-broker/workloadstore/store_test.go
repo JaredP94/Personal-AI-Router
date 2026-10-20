@@ -522,3 +522,38 @@ func TestActiveScheduledOnCountsExecutorNotOrigin(t *testing.T) {
 		t.Fatalf("ActiveScheduledOn(nodeA) = %d, want 0 (origin only, none scheduled on nodeA)", got)
 	}
 }
+
+// HasActive answers the scheduling-demand question, which is cluster-wide rather
+// than host-scoped: the scheduler weighs peer nodes' free capacity too, so a
+// queued remote workload is demand even when nothing runs here. Only the
+// terminal records are excluded.
+func TestHasActiveCountsAnyNonTerminalWorkload(t *testing.T) {
+	s := New()
+	if s.HasActive() {
+		t.Fatal("empty store reports demand")
+	}
+
+	if !s.Apply(mkIn("q", "laptop", "queued", "", 100)) {
+		t.Fatal("queued workload rejected")
+	}
+	if !s.HasActive() {
+		t.Fatal("a queued, unscheduled workload is demand")
+	}
+
+	if !s.Apply(mkIn("r", "laptop", "running", "pc", 200)) {
+		t.Fatal("running workload rejected")
+	}
+	if !s.HasActive() {
+		t.Fatal("a peer's running workload is demand")
+	}
+
+	if !s.Apply(mkIn("r", "laptop", "completed", "pc", 200)) || !s.HasActive() {
+		t.Fatal("one terminal transition does not clear demand while another workload is active")
+	}
+	if !s.Apply(mkIn("q", "laptop", "failed", "", 100)) {
+		t.Fatal("terminal for the last workload rejected")
+	}
+	if s.HasActive() {
+		t.Fatal("all-terminal store still reports demand")
+	}
+}

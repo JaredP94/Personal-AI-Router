@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nvpair-shared/clustertrust"
@@ -144,6 +145,14 @@ type daemon struct {
 	// address works from somewhere other than this machine.
 	observedMu sync.Mutex
 	observed   map[string]bool
+
+	// schedulingDemand is whether the broker has told us a scheduling consumer is
+	// waiting on fresh telemetry. It decides the poll intent of every outbound
+	// node-info GET: with demand, the read renews the target's scheduling lease;
+	// without it, the read peeks as background and the target keeps its idle
+	// cadence. False until the broker says otherwise, so a daemon that has just
+	// (re)spawned never holds the fleet at a faster cadence on its own.
+	schedulingDemand atomic.Bool
 }
 
 // nodeInfoFetchTimeout bounds each node-info enrichment HTTP(S) GET, shared by
@@ -1258,6 +1267,30 @@ func (d *daemon) noteNodeInfo(hostUUID, endpoint string, ok bool) {
 	}
 }
 
+// Poll intents for the X-NVPAIR-Poll header. There is no shared constant for
+// these: they are node-info's inbound vocabulary, and a consumer that renames one
+// only breaks sampling silently.
+const (
+	pollIntentScheduling = "scheduling"
+	pollIntentBackground = "background"
+)
+
+// pollIntent is the header value for the next node-info GET. The two-second
+// telemetry cadence is ours to keep; what the header decides is the target's, and
+// an unnecessary scheduling lease is what kept every node sampling at five
+// seconds with nothing scheduled anywhere.
+func (d *daemon) pollIntent() string {
+	if d.schedulingDemand.Load() {
+		return pollIntentScheduling
+	}
+	return pollIntentBackground
+}
+
+// setSchedulingDemand records the broker's scheduling-demand decision.
+func (d *daemon) setSchedulingDemand(active bool) {
+	d.schedulingDemand.Store(active)
+}
+
 // fetchNodeInfo does one GET of a node's /v1/node-info, returning the parsed
 // inventory and whether it succeeded. It uses plain HTTP by default; when the
 // operator configured a TLS client (--client-cert/--client-key/--ca-bundle) it
@@ -1293,8 +1326,10 @@ func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (
 		slog.Debug("node-info request build failed", "ip", ip, "url", url, "err", err)
 		return NodeInfoResponse{}, false
 	}
-	// Scheduling telemetry requests renew the scheduling lease on the target node.
-	req.Header.Set("X-NVPAIR-Poll", "scheduling")
+	// A scheduling read renews the target's scheduling lease; a background one
+	// renews nothing, so an idle fleet lets every node fall back to idle sampling
+	// while we keep this loop at its two-second cadence.
+	req.Header.Set("X-NVPAIR-Poll", d.pollIntent())
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("node-info fetch failed", "ip", ip, "url", url, "err", err)
@@ -2017,6 +2052,20 @@ func (d *daemon) handle(msg *Message) bool {
 			return true
 		}
 		d.noteActivity(p.HostUUID, p.MSSince)
+		if msg.IsRequest() {
+			_ = d.codec.Respond(msg.ID, map[string]bool{"ok": true})
+		}
+		return true
+
+	case noderec.MethodSetSchedulingDemand:
+		var p noderec.SchedulingDemandParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil {
+			if msg.IsRequest() {
+				_ = d.codec.RespondError(msg.ID, -32602, err.Error())
+			}
+			return true
+		}
+		d.setSchedulingDemand(p.Active)
 		if msg.IsRequest() {
 			_ = d.codec.Respond(msg.ID, map[string]bool{"ok": true})
 		}

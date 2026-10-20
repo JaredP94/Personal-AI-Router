@@ -568,6 +568,13 @@ func (s *scannerProcess) reloadTrust() {
 	}
 }
 
+// setSchedulingDemand tells the daemon whether its node-info polls should renew
+// the scheduling lease on each target. A notification rather than a request: the
+// daemon only records it, and the value is re-sent on every respawn.
+func (s *scannerProcess) setSchedulingDemand(active bool) error {
+	return s.peer.Notify(noderec.MethodSetSchedulingDemand, noderec.SchedulingDemandParams{Active: active})
+}
+
 // pushObservedAddresses relays the local addresses peers have reached this node
 // on down to the daemon, which ranks a peer-proven address above one it inferred
 // from local link state alone.

@@ -163,6 +163,21 @@ Changes the log level at runtime. Accepted as either a request (answered with `{
 {"jsonrpc":"2.0","id":5,"method":"log/set-level","params":{"level":"debug"}}
 ```
 
+### `telemetry/set-scheduling-demand`
+
+Broker → manager, as a notification: whether there is queued or running work
+anywhere, local or on a peer. It sets the `X-NVPAIR-Poll` intent of every
+outbound `/v1/node-info` probe — both the two-second telemetry poll and the
+ten-second health probe — to `scheduling` while true, and `background` while
+false, which renews no lease and lets the peer keep its ten-second idle cadence.
+Probe cadence is unchanged either way. A freshly spawned manager starts inactive
+until the broker pushes, so a respawn never pins a peer to a faster cadence on its
+own.
+
+```json
+{"jsonrpc":"2.0","method":"telemetry/set-scheduling-demand","params":{"active":true}}
+```
+
 ## Probing
 
 Each manual node is probed every 10 seconds, with a 3-second timeout per leg, for:

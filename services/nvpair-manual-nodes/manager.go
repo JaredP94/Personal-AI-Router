@@ -261,6 +261,14 @@ type Manager struct {
 
 	telemetryInterval func(nodeKey string) time.Duration
 
+	// schedulingDemand is whether the broker has told us a scheduling consumer is
+	// waiting on fresh telemetry. Every outbound node-info GET carries it as
+	// X-NVPAIR-Poll: with demand the read renews the target's scheduling lease,
+	// without it the read peeks as background and the target keeps its idle
+	// cadence. False until the broker says otherwise, so a worker that has just
+	// (re)spawned never pins a peer to a faster cadence on its own.
+	schedulingDemand atomic.Bool
+
 	mu    sync.RWMutex
 	nodes map[string]*trackedNode
 }
@@ -1138,8 +1146,32 @@ func (m *Manager) fetchOllamaModels(addr string, port int) []string {
 	return names
 }
 
+// Poll intents for the X-NVPAIR-Poll header. There is no shared constant for
+// these: they are node-info's inbound vocabulary, and a consumer that renames one
+// only breaks sampling silently.
+const (
+	pollIntentScheduling = "scheduling"
+	pollIntentBackground = "background"
+)
+
+// pollIntent is the header value for the next node-info GET. The two-second
+// telemetry cadence is ours to keep; the header decides the target's, and a
+// scheduling lease renewed with nothing scheduled kept every manual peer sampling
+// at five seconds instead of idling.
+func (m *Manager) pollIntent() string {
+	if m.schedulingDemand.Load() {
+		return pollIntentScheduling
+	}
+	return pollIntentBackground
+}
+
+// setSchedulingDemand records the broker's scheduling-demand decision.
+func (m *Manager) setSchedulingDemand(active bool) {
+	m.schedulingDemand.Store(active)
+}
+
 func (m *Manager) probeNodeInfo(client *http.Client, scheme, addr string, port int) (bool, NodeInfoResponse) {
-	return m.probeNodeInfoWithPoll(m.ctx, client, scheme, addr, port, "scheduling")
+	return m.probeNodeInfoWithPoll(m.ctx, client, scheme, addr, port, m.pollIntent())
 }
 
 func (m *Manager) probeNodeInfoWithPoll(ctx context.Context, client *http.Client, scheme, addr string, port int, poll string) (bool, NodeInfoResponse) {
@@ -1251,7 +1283,7 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 	}
 	m.mu.RUnlock()
 
-	nodeInfoUp, info := m.probeNodeInfoWithPoll(ctx, probeClient, scheme, addr, nodeInfoPort, "scheduling")
+	nodeInfoUp, info := m.probeNodeInfoWithPoll(ctx, probeClient, scheme, addr, nodeInfoPort, m.pollIntent())
 	nodeInfoReceived := m.clockNow()
 	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() && ctx.Err() == nil {
 		m.mesh.Refresh()
@@ -1266,7 +1298,7 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 		}
 		if tlsClient != nil {
 			for _, port := range []int{14319, 14318} {
-				if up, tlsInfo := m.probeNodeInfoWithPoll(ctx, tlsClient, "https", addr, port, "scheduling"); up {
+				if up, tlsInfo := m.probeNodeInfoWithPoll(ctx, tlsClient, "https", addr, port, m.pollIntent()); up {
 					nodeInfoUp = true
 					info = tlsInfo
 					nodeInfoReceived = m.clockNow()
@@ -1478,6 +1510,23 @@ func (m *Manager) handleMessage(msg *Message) {
 			slog.Warn("log/set-level rejected", "err", err)
 		} else {
 			slog.Info("log level changed", "level", resolved)
+		}
+		return
+	}
+
+	// The broker's scheduling-demand decision is a notification: there is nothing
+	// to answer, and the value is state it re-sends on every respawn.
+	if msg.Method == noderec.MethodSetSchedulingDemand {
+		var params noderec.SchedulingDemandParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			if msg.IsRequest() {
+				m.codec.RespondError(msg.ID, -32602, err.Error())
+			}
+			return
+		}
+		m.setSchedulingDemand(params.Active)
+		if msg.IsRequest() {
+			_ = m.codec.Respond(msg.ID, map[string]bool{"ok": true})
 		}
 		return
 	}

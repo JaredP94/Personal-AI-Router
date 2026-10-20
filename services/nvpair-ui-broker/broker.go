@@ -299,7 +299,9 @@ type Broker struct {
 	// workloadEmitMu serializes the apply→fan→notify sequence in
 	// emitWorkloadEvent so the client-visible order matches the order events
 	// are applied to the store, even when the node-loss sweep (a separate
-	// goroutine) races a relayed event for the same workload.
+	// goroutine) races a relayed event for the same workload. It also covers
+	// the demand re-assertion on a polling worker's spawn, so that read/Store/
+	// push cannot overwrite a concurrent transition.
 	workloadEmitMu sync.Mutex
 
 	// workloads is the broker's authoritative index of cluster workloads
@@ -311,6 +313,12 @@ type Broker struct {
 	// failWorkloadsForNode); it is internally synchronized.
 	workloads       *workloadstore.Store
 	lastLocalDemand atomic.Bool
+	// lastSchedulingDemand is the last demand value pushed to the scanner and
+	// manual-nodes, so a workload heartbeat that changes nothing does not re-push.
+	// Separate from lastLocalDemand because the two describe different scopes:
+	// local execution raises THIS node to interactive sampling, while scheduling
+	// demand covers work anywhere and raises every node to the scheduling cadence.
+	lastSchedulingDemand atomic.Bool
 
 	// engineMu guards engineSubscribed. The engine:<event> stream is
 	// opt-in like proxy's: forwardEngineNotification (engine-manager reader
@@ -625,6 +633,29 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 	return b.clusterMgr
 }
 
+// launchScannerProcess and launchManualNodesProcess are the launch seams the two
+// node-info pollers' spawn paths go through. Production points them at the real
+// launchers; tests substitute a fake handle to drive the whole spawn path —
+// handle publication, demand re-assertion, registration replay — without
+// starting a child process.
+var (
+	launchScannerProcess = func(b *Broker) (*scannerProcess, error) {
+		return startScanner(
+			b.scannerPath,
+			applog.LevelString(),
+			b.store,
+			b.relayDir,
+			b.failWorkloadsForNode,
+			func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
+			func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
+			b.clusterDirArgs()...,
+		)
+	}
+	launchManualNodesProcess = func(b *Broker) (*rpcWorker, error) {
+		return startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.forwardManualNodesNotification)
+	}
+)
+
 // spawnScanner / spawnNodeInfo / spawnProxy / spawnWorkloadManager are the
 // per-worker spawn closures the supervisor calls for the initial start and
 // every restart. Each starts a fresh process (which wires its own reader
@@ -633,20 +664,16 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 // spawn failure returns the error without storing a handle, leaving the
 // previous (dead) handle in place until the next successful (re)start.
 func (b *Broker) spawnScanner() (supervisedHandle, error) {
-	sp, err := startScanner(
-		b.scannerPath,
-		applog.LevelString(),
-		b.store,
-		b.relayDir,
-		b.failWorkloadsForNode,
-		func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
-		func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
-		b.clusterDirArgs()...,
-	)
+	sp, err := launchScannerProcess(b)
 	if err != nil {
 		return nil, err
 	}
 	b.setScanner(sp)
+	// A fresh daemon holds no demand state, so tell it what the workload store
+	// says before it starts polling: an unrenewed scheduling lease is the safe
+	// default, but a fleet that is already busy should not wait for the next
+	// workload transition to recover its scheduling cadence.
+	b.pushSchedulingDemandOnStart()
 	// Replay cached registrations to the (re)started daemon so it re-advertises
 	// this node's services without any worker reconnect logic (epoch replay).
 	for _, p := range b.regCache.Snapshot() {
@@ -886,11 +913,15 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnManualNodes() (supervisedHandle, error) {
-	w, err := startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.forwardManualNodesNotification)
+	w, err := launchManualNodesProcess(b)
 	if err != nil {
 		return nil, err
 	}
 	b.setManualNodes(w)
+	// Same reason as the scanner: the new worker has been told nothing, and its
+	// default is background, so re-assert demand now rather than at the next
+	// transition.
+	b.pushSchedulingDemandOnStart()
 	slog.Info("manual-nodes started", "path", b.manualNodesPath, "pid", w.cmd.Process.Pid)
 	return w, nil
 }
@@ -1233,6 +1264,49 @@ func (b *Broker) pushDemandToNodeInfo(active bool) {
 	}
 	if err := np.SetDemand(active); err != nil {
 		slog.Warn("failed to push demand to node-info", "err", err)
+	}
+}
+
+// recomputeSchedulingDemand evaluates whether any workload still needs the fleet
+// to deliver fresh telemetry — queued, running, local, or on a peer, because the
+// scheduler weighs all of them — and pushes a change to the two workers that poll
+// node-info on a fixed cadence.
+func (b *Broker) recomputeSchedulingDemand() {
+	active := b.workloads.HasActive()
+	if b.lastSchedulingDemand.Swap(active) == active {
+		return
+	}
+	b.pushSchedulingDemand(active)
+}
+
+// pushSchedulingDemandOnStart re-asserts the current scheduling demand to a
+// newly spawned or restarted scanner or manual-nodes worker, whose default is
+// inactive (background polls) until told otherwise. It takes workloadEmitMu so
+// its read/Store/push cannot interleave with a workload transition doing the
+// same: otherwise a transition that lands between the read and the Store would be
+// overwritten by this path's stale value. Callers must not already hold it.
+func (b *Broker) pushSchedulingDemandOnStart() {
+	b.workloadEmitMu.Lock()
+	defer b.workloadEmitMu.Unlock()
+
+	active := b.workloads.HasActive()
+	b.lastSchedulingDemand.Store(active)
+	b.pushSchedulingDemand(active)
+}
+
+// pushSchedulingDemand tells the scanner and manual-nodes whether their node-info
+// polls should renew the scheduling lease. Best-effort on a worker that is not
+// running (never spawned, or mid-restart): its next spawn re-asserts the value.
+func (b *Broker) pushSchedulingDemand(active bool) {
+	if sc := b.getScanner(); sc != nil {
+		if err := sc.setSchedulingDemand(active); err != nil {
+			slog.Warn("failed to push scheduling demand to scanner", "active", active, "err", err)
+		}
+	}
+	if mn := b.getManualNodes(); mn != nil {
+		if err := mn.Notify(noderec.MethodSetSchedulingDemand, noderec.SchedulingDemandParams{Active: active}); err != nil {
+			slog.Warn("failed to push scheduling demand to manual-nodes", "active", active, "err", err)
+		}
 	}
 }
 
@@ -2469,6 +2543,7 @@ func (b *Broker) emitWorkloadEventProvenance(method string, params json.RawMessa
 		return
 	}
 	b.recomputeDemand()
+	b.recomputeSchedulingDemand()
 
 	// The scheduler is fanned every real transition (independent of the
 	// external client's opt-in) so it can keep its own catalog.

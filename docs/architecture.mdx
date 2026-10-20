@@ -341,8 +341,11 @@ Local hardware GPU and CPU telemetry is lease-driven via `X-NVPAIR-Poll` request
 headers:
 - `foreground` (visible UI or local active workload) renews the interactive lease,
   sampling every 2 seconds.
-- `scheduling` (discovery scanner and manual node telemetry) renews the scheduling
-  lease, sampling every 5 seconds.
+- `scheduling` renews the scheduling lease, sampling every 5 seconds. The broker
+  reports this intent via `telemetry/set-scheduling-demand`; the discovery scanner
+  and manual-node telemetry use it only while that demand is active and poll as
+  `background` otherwise. Both workers default to inactive on start, so an idle
+  fleet renews no scheduling lease.
 - `background` (minimized UI or internal queries) peeks the latest cached snapshot
   without waking the hardware collector or renewing any lease.
 - When no lease is active and no active local workloads exist, sampling relaxes to
@@ -351,12 +354,21 @@ headers:
 
 The broker coordinates local demand by pushing `stats/set-demand` notifications
 with `localExecution: bool` to `nvpair-node-info` over stdin whenever local
-workloads are queued, active, or complete. A 1-second collection timeout bounds
-sampling latency. At the scheduler's decision point, sample age across all lease
-transitions is mathematically and empirically proven <= 8.5 seconds, strictly
-within the scheduler's 10-second freshness budget. Each sample carries a monotonic
-`sampleSeq` counter; repeated observations carrying an identical sequence number
-do not re-weight the scheduler's EWMA.
+workloads are queued, active, or complete. Separately, it pushes
+`telemetry/set-scheduling-demand` with `active: bool` to `nvpair-node-scanner`
+and `nvpair-manual-nodes` whenever the fleet-wide demand changes: true on the
+first non-terminal workload in its store (queued or running, local or
+peer-origin) and false when the last one finishes or is removed. Both workers
+start inactive and are re-told the current value on every (re)spawn. Because they
+poll on a fixed cadence, a transition can leave at most one poll interval where
+an active fleet still peeks; the next poll renews the lease and the scheduler
+treats that gap like any other stale sample, never as fresher than it is. A
+1-second collection timeout bounds sampling latency. At the scheduler's decision
+point, sample age across all lease transitions is mathematically and empirically
+proven <= 8.5 seconds, strictly within the scheduler's 10-second freshness
+budget. Each sample carries a monotonic `sampleSeq` counter; repeated
+observations carrying an identical sequence number do not re-weight the
+scheduler's EWMA.
 
 Separately, `nvpair-manual-nodes` delivers compact scheduling telemetry via
 `node/telemetry` notifications every ~2 seconds (± 250 ms jitter) over persistent
