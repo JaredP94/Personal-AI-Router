@@ -113,13 +113,29 @@ interface ReportedOutage {
  */
 const failingNodes = new Map<string, ReportedOutage>()
 
+/**
+ * Whether any window is actually in front of the user.
+ *
+ * It decides two things, and they pull in opposite directions: the poll cadence a
+ * visible window justifies, and whether the poll renews node-info's interactive
+ * GPU sampling lease. A tray-only session has no window at all — the tray icon is
+ * not one — and reading that as visible kept the hardware collector at its
+ * two-second rate for a UI nobody had open. The tray popup is a real window and
+ * counts only while it is shown: hidden, it is a renderer kept warm at
+ * `show: false`, and nothing on screen is reading the numbers.
+ *
+ * A failed window query fails toward background for the same reason. Electron's
+ * window list is unavailable in some environments, and a wrong `foreground` buys
+ * collection the user did not ask for, while a wrong `background` only means the
+ * next poll is later than it could have been.
+ */
 function hasVisibleUiWindow(): boolean {
     try {
-        const windows = BrowserWindow.getAllWindows()
-        if (windows.length === 0) return true
-        return windows.some(w => !w.isDestroyed() && w.isVisible() && !w.isMinimized())
+        return BrowserWindow.getAllWindows().some(
+            w => !w.isDestroyed() && w.isVisible() && !w.isMinimized()
+        )
     } catch {
-        return true
+        return false
     }
 }
 
