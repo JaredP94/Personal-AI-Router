@@ -42,6 +42,33 @@ class BsdInfo(ctypes.Structure):
         ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
 
 
+def child_exited_libc(pid):
+    """Darwin waitid for Python 3.9 builds that do not expose os.waitid.
+
+    Darwin siginfo_t starts with four ints (signo, errno, code, pid). An
+    oversized, int-aligned buffer accommodates the rest without depending on
+    its union layout. WNOWAIT keeps the child PID/PGID reserved, even at exit.
+    """
+    if platform.system() != "Darwin":
+        raise RuntimeError("libc waitid fallback requires Darwin")
+    libc = ctypes.CDLL(None, use_errno=True)
+    waitid = libc.waitid
+    waitid.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    info = (ctypes.c_int * 128)()
+    if waitid(os.P_PID, pid, info, os.WEXITED | os.WNOHANG | os.WNOWAIT) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+    return info[3] != 0
+
+
+def child_exited(pid):
+    """Observe exit without reaping; ECHILD means group signalling is unsafe."""
+    if hasattr(os, "waitid"):
+        return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    return child_exited_libc(pid)
+
+
 class Timebase(ctypes.Structure):
     _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
 
@@ -133,7 +160,7 @@ class Libproc:
         if (before.start_sec, before.start_usec) != (after.start_sec, after.start_usec):
             raise ProcessLookupError(errno.ESRCH, "PID reused during read", pid)
         executable = os.fsdecode(path.value)
-        return dict(pid=pid, ppid=after.ppid, path=executable,
+        return dict(pid=pid, ppid=after.ppid, pgid=after.pgid, status=after.status, path=executable,
                     name=os.path.basename(executable),
                     raw={name: getattr(raw, name) for name in RUSAGE_FIELDS})
 

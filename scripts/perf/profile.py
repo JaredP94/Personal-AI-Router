@@ -29,7 +29,9 @@ from scripts.perf.accounting import (
     Accounting, ENERGY_LABEL, LIMITS, aggregate_runs, alternating_order, identity,
     render_markdown,
 )
-from scripts.perf.libproc import Libproc, find_orphans, owned_processes
+from scripts.perf.libproc import (
+    Libproc, child_exited, find_orphans, owned_processes,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -265,92 +267,150 @@ def hook_environment(env, run_dir, sandbox, app_pid, scenario):
                 PAIR_PERF_APP_PID=str(app_pid), PAIR_PERF_SCENARIO=scenario)
 
 
-def start_hook(command, name, run_dir, env, handles):
+def start_hook(command, name, run_dir, env, handles, proc):
     stdout = (run_dir / (name + ".stdout.txt")).open("w", encoding="utf-8")
     handles.append(stdout)
     stderr = (run_dir / (name + ".stderr.txt")).open("w", encoding="utf-8")
     handles.append(stderr)
     process = subprocess.Popen(shlex.split(command), cwd=env["HOME"], env=env,
                                stdout=stdout, stderr=stderr, start_new_session=True)
-    return process, dict(command=command, pid=process.pid, started=now(),
+    return ProcessGroup(process, proc), dict(command=command, pid=process.pid, started=now(),
                          stdout=stdout.name, stderr=stderr.name)
 
 
-def signal_group(pid, signum, evidence):
-    try:
-        os.killpg(pid, signum)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError as error:
-        evidence.setdefault("group_errors", []).append(str(error))
-        return True  # Fail closed: absence has not been established.
+class ProcessGroup:
+    """A new-session child whose unreaped leader reserves the numeric PGID.
 
+    This is the sole owner of reaping. Never call Popen.poll/wait/send_signal
+    elsewhere: even poll and send_signal can reap an exited child. Identities
+    are collected only while the leader is alive; after loss of the reservation
+    only those individually revalidated identities may be signalled.
+    """
+    def __init__(self, process, proc):
+        self.process, self.proc = process, proc
+        self.pid = process.pid
+        self.known = {}
+        self.pinned = True
+        self.errors = {}
+        self.observe()
 
-def wait_group(process, deadline, evidence):
-    while True:
-        process.poll()  # Reap a dead leader before probing group existence.
-        present = signal_group(process.pid, 0, evidence)
-        if not present and process.returncode is not None:
+    def exited(self):
+        try:
+            if self.process.returncode is not None:
+                raise ChildProcessError("leader already reaped")
+            return child_exited(self.pid)
+        except OSError as error:
+            self.pinned = False
+            self.errors["identity_unverified"] = str(error) or "leader is no longer a waitable child"
             return True
+
+    def observe(self, table=None):
+        exited = self.exited()
+        try:
+            if table is None:
+                table = self.proc.snapshot()
+            # Do not adopt new identities if the leader exited during collection.
+            exited = self.exited() or exited
+            group = {pid: p for pid, p in table.items() if p["pgid"] == self.pid}
+            if self.pinned and not exited:
+                self.known.update({identity(p): p for p in group.values()})
+            unknown = [pid for pid, p in group.items()
+                       if pid != self.pid and identity(p) not in self.known]
+            inaccessible = [e for e in self.proc.errors if e["errno"] != errno.ESRCH
+                and any(key[0] == e["pid"] for key in self.known)
+                and not (e["pid"] == self.pid and exited)]
+            if unknown or inaccessible:
+                self.errors["unverified_members"] = dict(unknown=unknown, inaccessible=inaccessible)
+            # Darwin SZOMB == 5. The reserved zombie leader is not a survivor.
+            members = [p for pid, p in group.items() if pid != self.pid and p.get("status") != 5]
+            return exited and not members and not inaccessible
+        except Exception as error:
+            self.errors["collector_error"] = type(error).__name__ + ": " + str(error)
+            return None
+
+    def send(self, signum, leader_only=False):
+        self.exited()  # Revalidate the reservation immediately before signalling.
+        if self.pinned:
+            try:
+                if leader_only:
+                    os.kill(self.pid, signum)
+                else:
+                    os.killpg(self.pid, signum)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                self.errors.setdefault("group_errors", []).append(str(error))
+            return
+        # ECHILD/previous reap: never even probe the numeric PGID with signal 0.
+        for key, previous in self.known.items():
+            try:
+                current = self.proc.info(previous["pid"])
+                if identity(current) != key or current["pgid"] != self.pid:
+                    self.errors["identity_unverified"] = "recorded member identity changed"
+                    continue
+                os.kill(current["pid"], signum)
+            except ProcessLookupError:
+                pass
+            except (OSError, KeyError) as error:
+                self.errors["identity_unverified"] = str(error)
+
+    def reap(self, evidence):
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            evidence["reap_timeout"] = True
+        finally:
+            self.pinned = False
+            evidence.update(self.errors)
+
+
+def wait_group(group, deadline):
+    while True:
+        gone = group.observe()
+        if gone or (gone is None and group.exited()):
+            return bool(gone)
         if time.monotonic() >= deadline:
             return False
         time.sleep(min(0.1, max(0, deadline - time.monotonic())))
 
 
-def finish_hook(process, evidence, timeout, stop=False):
+def finish_hook(group, evidence, timeout, stop=False):
     if not stop:
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            evidence["timeout"] = True
-    # Both pre and post hooks may leave children after the leader returns.
+        deadline = time.monotonic() + timeout
+        while not group.exited():
+            group.observe()
+            if time.monotonic() >= deadline:
+                evidence["timeout"] = True
+                break
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
     evidence["termination_requested"] = True
-    signal_group(process.pid, signal.SIGTERM, evidence)
-    if not wait_group(process, time.monotonic() + timeout, evidence):
+    group.send(signal.SIGTERM)
+    gone = wait_group(group, time.monotonic() + timeout)
+    if not gone:
         evidence["forced_kill"] = True
-        signal_group(process.pid, signal.SIGKILL, evidence)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        evidence["reap_timeout"] = True
-    evidence["cleanup_ok"] = (wait_group(process, time.monotonic() + 5, evidence)
-                              and not evidence.get("group_errors"))
-    evidence.update(exit_status=process.returncode, ended=now())
+        group.send(signal.SIGKILL)
+        gone = wait_group(group, time.monotonic() + 5)
+    # Only now, after verification or escalation, release the PID/PGID number.
+    group.reap(evidence)
+    evidence["cleanup_ok"] = gone and not group.errors and not evidence.get("reap_timeout")
+    evidence.update(exit_status=group.process.returncode, ended=now())
 
 
 def clean_quit(proc, app, root, known, timeout=30):
-    """Own Popen child shutdown never depends on the measurement collector."""
+    """Shutdown a pinned child even when collection fails; fail verification closed."""
     evidence = dict(signal="SIGTERM", requested=now(), timeout_seconds=timeout)
     deadline = time.monotonic() + timeout
-    if app.poll() is None:
-        try:
-            app.terminate()
-        except ProcessLookupError:
-            pass
-        except OSError as error:
-            evidence["signal_error"] = str(error)
-    try:
-        app.wait(timeout=max(0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        pass
-    if not wait_group(app, deadline, evidence):
+    if not app.exited():
+        app.send(signal.SIGTERM, leader_only=True)
+    gone = wait_group(app, deadline)
+    if not gone:
         evidence["forced_kill"] = True
-        signal_group(app.pid, signal.SIGKILL, evidence)
-        if app.poll() is None:
-            # Still own the unreaped child, even if group signalling failed.
-            try:
-                app.kill()
-            except ProcessLookupError:
-                pass
-            except OSError as error:
-                evidence["kill_error"] = str(error)
-    try:
-        app.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        evidence["reap_timeout"] = True
-    evidence["group_gone"] = wait_group(app, time.monotonic() + 5, evidence)
-    # Collector failure is evidence, never a reason to skip terminate/kill/reap.
+        app.send(signal.SIGKILL)
+        if not app.exited():
+            app.send(signal.SIGKILL, leader_only=True)
+        gone = wait_group(app, time.monotonic() + 5)
+    evidence["group_gone"] = gone
+    app.reap(evidence)
     try:
         table = proc.snapshot()
         evidence["orphans"] = find_orphans(table, root, known)
@@ -359,10 +419,10 @@ def clean_quit(proc, app, root, known, timeout=30):
             if any(key[0] == error["pid"] for key in known) and error["errno"] != errno.ESRCH]
     except Exception as error:
         evidence["collector_error"] = type(error).__name__ + ": " + str(error)
-    evidence.update(exit_status=app.poll(), ended=now())
-    evidence["ok"] = (app.returncode is not None and evidence["group_gone"] and
+    evidence.update(exit_status=app.process.returncode, ended=now())
+    evidence["ok"] = (app.process.returncode is not None and gone and not app.errors and
         not any(evidence.get(key) for key in ("orphans", "unverified_pids", "collector_error",
-            "signal_error", "kill_error", "reap_timeout", "group_errors", "forced_kill")))
+            "reap_timeout", "forced_kill")))
     return evidence
 
 
@@ -405,6 +465,7 @@ def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancell
         app = subprocess.Popen([artifact["binary"]], cwd=sandbox, env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                start_new_session=True)
+        app = ProcessGroup(app, proc)
         cancellation.check()
         # Capture the root identity immediately; failure still requires cleanup.
         root = identity(proc.info(app.pid))
@@ -412,13 +473,16 @@ def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancell
         env = hook_environment(env, run_dir, sandbox, app.pid, scenario)
         if args.pre_sample_hook:
             pre, result["hooks"]["pre_sample"] = start_hook(
-                args.pre_sample_hook, "pre-sample", run_dir, env, handles)
+                args.pre_sample_hook, "pre-sample", run_dir, env, handles, proc)
         warmup_end = time.monotonic() + args.warmup
         while time.monotonic() < warmup_end:
             cancellation.check()
-            if app.poll() is not None:
+            if app.exited():
                 raise RuntimeError("app exited during warm-up")
             table = proc.snapshot()
+            app.observe(table)
+            if pre:
+                pre.observe(table)
             owned = owned_processes(table, root, known)
             known.update({identity(p): p for p in owned.values()})
             cancellation.sleep(min(result["interval_seconds"], max(0, warmup_end - time.monotonic())))
@@ -429,9 +493,12 @@ def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancell
         with (run_dir / "samples.jsonl").open("w", encoding="utf-8") as stream:
             while True:
                 cancellation.check()
-                if app.poll() is not None:
+                if app.exited():
                     raise RuntimeError("app exited during steady sampling")
                 table = proc.snapshot()
+                app.observe(table)
+                if pre:
+                    pre.observe(table)
                 owned = owned_processes(table, root, known)
                 known.update({identity(p): p for p in owned.values()})
                 timestamp, ticks = now(), proc.absolute_time()
@@ -477,7 +544,7 @@ def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancell
                 raise RuntimeError("Pre-sample hook cleanup unverified")
         cancellation.check()
         if args.post_run_check:
-            post, evidence = start_hook(args.post_run_check, "post-run-check", run_dir, env, handles)
+            post, evidence = start_hook(args.post_run_check, "post-run-check", run_dir, env, handles, proc)
             result["hooks"]["post_run_check"] = evidence
             evidence["phase"] = "after steady sampling, before app quit"
             finish_hook(post, evidence, args.hook_timeout)

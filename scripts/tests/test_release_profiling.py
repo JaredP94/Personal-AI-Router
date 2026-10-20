@@ -20,7 +20,9 @@ from scripts.perf.accounting import (
     Accounting, aggregate_runs, alternating_order, classify, render_markdown,
     spread, ticks_to_seconds,
 )
-from scripts.perf.libproc import Libproc, RusageV4, owned_processes, find_orphans
+from scripts.perf.libproc import (
+    Libproc, RusageV4, owned_processes, find_orphans, child_exited, child_exited_libc,
+)
 from scripts.perf.profile import (
     sandbox_environment, prepare_sandbox, build_parser, app_metadata,
     parse_low_power_modes, clean_quit, run_once, main,
@@ -182,6 +184,23 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(ctypes.sizeof(RusageV4), 296)
 
 
+class ChildWaitTests(unittest.TestCase):
+    def test_native_and_darwin_fallback_wait_leave_own_child_unreaped(self):
+        # These tiny console children are the only subprocesses this test starts.
+        for probe in ([child_exited, child_exited_libc] if sys.platform == "darwin" else [child_exited]):
+            with self.subTest(probe=probe.__name__), \
+                 subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+                deadline = time.monotonic() + 5
+                while not probe(child.pid):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                self.assertTrue(probe(child.pid))  # Still waitable, not reaped.
+                self.assertIsNone(child.returncode)
+                self.assertEqual(child.wait(timeout=5), 0)
+                with self.assertRaises(ChildProcessError):
+                    probe(child.pid)
+
+
 class FakeClock:
     def __init__(self):
         self.value = 0
@@ -192,18 +211,44 @@ class FakeClock:
 
 
 class FakeApp:
+    instances = []
     pid = 1000
-    returncode = None
+    def __init__(self):
+        self.returncode = None
+        self.exitcode = None
+        self.reaped = False
+        self.instances.append(self)
     def poll(self):
+        if self.exitcode is not None:
+            self.wait()
         return self.returncode
     def terminate(self):
-        self.returncode = 0
+        self.exitcode = 0
     def wait(self, timeout=None):
-        if self.returncode is None:
+        if self.exitcode is None:
             raise subprocess.TimeoutExpired("fake app", timeout)
+        self.reaped = True
+        self.returncode = self.exitcode
         return self.returncode
     def kill(self):
-        self.returncode = -signal.SIGKILL
+        self.exitcode = -signal.SIGKILL
+
+
+def fake_child_exited(pid):
+    app = next(app for app in reversed(FakeApp.instances) if app.pid == pid)
+    if app.reaped:
+        raise ChildProcessError
+    return app.exitcode is not None
+
+
+def fake_kill(pid, signum):
+    app = next(app for app in reversed(FakeApp.instances) if app.pid == pid)
+    if app.reaped:
+        raise AssertionError("signal sent after reap")
+    if signum == signal.SIGTERM:
+        app.terminate()
+    elif signum == signal.SIGKILL:
+        app.kill()
 
 
 class FakeProc:
@@ -212,9 +257,9 @@ class FakeProc:
     def __init__(self, clock, app):
         self.clock, self.app = clock, app
     def info(self, pid):
-        return sample(pid, 1, user=int(self.clock.value * 1e9))
+        return dict(sample(pid, 1, user=int(self.clock.value * 1e9)), pgid=pid)
     def snapshot(self):
-        return {} if self.app.returncode is not None else {1000: self.info(1000)}
+        return {} if self.app.exitcode is not None else {1000: self.info(1000)}
     def absolute_time(self):
         return 100 + int(self.clock.value * 1e9)
     def seconds(self, ticks):
@@ -223,6 +268,10 @@ class FakeProc:
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
+        for target, replacement in (("child_exited", fake_child_exited), ("os.kill", fake_kill)):
+            guard = patch("scripts.perf.profile." + target, side_effect=replacement)
+            guard.start()
+            self.addCleanup(guard.stop)
         probe = patch("scripts.perf.profile.command_evidence",
                       return_value=dict(exit_status=0, stdout="fixture state", stderr=""))
         probe.start()
@@ -287,7 +336,7 @@ class LifecycleTests(unittest.TestCase):
         proc = FakeProc(clock, app)
         original = proc.snapshot
         def failing():
-            if clock.value >= 20 and app.poll() is None:
+            if clock.value >= 20 and app.exitcode is None:
                 raise OSError("fake collector failed")
             return original()
         proc.snapshot = failing
@@ -312,7 +361,7 @@ class LifecycleTests(unittest.TestCase):
         proc.snapshot = lambda: {2000: child}
         with patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
              patch("scripts.perf.profile.time.sleep", clock.sleep):
-            result = clean_quit(proc, app, (1000, 1), {(2000, 20): child}, timeout=1)
+            result = clean_quit(proc, profile.ProcessGroup(app, proc), (1000, 1), {(2000, 20): child}, timeout=1)
         self.assertFalse(result["ok"])
         self.assertEqual(result["orphans"][0]["pid"], 2000)
         self.assertEqual(app.returncode, 0)
@@ -406,7 +455,7 @@ class LifecycleTests(unittest.TestCase):
                 def terminate_with_repeated_signals():
                     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                         handlers[sig](sig, None)
-                    app.returncode = 0
+                    app.exitcode = 0
                 app.terminate = terminate_with_repeated_signals
                 with patch("scripts.perf.profile.signal.signal", side_effect=install):
                     original_sleep = clock.sleep
@@ -455,11 +504,11 @@ class LifecycleTests(unittest.TestCase):
                 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     handlers[signum](signum, None)
                 hook.terminate()
-            if pid != hook.pid or hook.poll() is not None:
+            if pid != hook.pid or hook.exitcode is not None:
                 raise ProcessLookupError
         with tempfile.TemporaryDirectory() as temp, \
              patch("scripts.perf.profile.signal.signal", side_effect=install), \
-             patch("scripts.perf.profile.start_hook", return_value=(hook, {"pid": hook.pid})), \
+             patch("scripts.perf.profile.start_hook", side_effect=lambda *args: (profile.ProcessGroup(hook, FakeProc(clock, hook)), {"pid": hook.pid})), \
              patch("scripts.perf.profile.os.killpg", side_effect=group_signal):
             result = self.fake_run(temp, app, FakeProc(clock, app), clock,
                                    ["--pre-sample-hook", "/fake-hook"])
@@ -486,7 +535,7 @@ class LifecycleTests(unittest.TestCase):
         def unavailable(*unused):
             raise OSError("collector unavailable")
         proc.info = proc.snapshot = unavailable
-        result = clean_quit(proc, app, (1000, 1), {})
+        result = clean_quit(proc, profile.ProcessGroup(app, proc), (1000, 1), {})
         self.assertEqual(app.wait(), 0)
         self.assertFalse(result["ok"])
         self.assertIn("collector unavailable", result["collector_error"])
@@ -568,15 +617,9 @@ class LifecycleTests(unittest.TestCase):
         clock, hook = FakeClock(), FakeApp()
         terminated_at = None
         killed_at = None
-        def wait(timeout=None):
-            if hook.returncode is None:
-                clock.value += timeout
-                raise subprocess.TimeoutExpired("fake hook", timeout)
-            return hook.returncode
-        hook.wait = wait
         def group_signal(pid, sig):
             nonlocal terminated_at, killed_at
-            if hook.returncode is not None:
+            if hook.exitcode is not None:
                 raise ProcessLookupError
             if sig == signal.SIGTERM:
                 terminated_at = clock.value
@@ -586,18 +629,18 @@ class LifecycleTests(unittest.TestCase):
         with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
              patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
              patch("scripts.perf.profile.time.sleep", clock.sleep):
-            profile.finish_hook(hook, {}, 1)
+            profile.finish_hook(profile.ProcessGroup(hook, FakeProc(clock, hook)), {}, 1)
         self.assertGreaterEqual(killed_at - terminated_at, 1)
         self.assertEqual(hook.wait(), -signal.SIGKILL)
 
     def test_hook_group_permission_failure_is_unverified_even_if_leader_exits_zero(self):
         clock, hook = FakeClock(), FakeApp()
-        hook.returncode = 0
+        hook.exitcode = 0
         evidence = {}
         with patch("scripts.perf.profile.os.killpg", side_effect=PermissionError("denied")), \
              patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
              patch("scripts.perf.profile.time.sleep", clock.sleep):
-            profile.finish_hook(hook, evidence, 1)
+            profile.finish_hook(profile.ProcessGroup(hook, FakeProc(clock, hook)), evidence, 1)
         self.assertFalse(evidence["cleanup_ok"])
         self.assertTrue(evidence["group_errors"])
 
@@ -612,12 +655,12 @@ class LifecycleTests(unittest.TestCase):
             signals.append(sig)
             if sig == signal.SIGKILL:
                 app.kill()
-            if app.poll() is not None:
+            if app.exitcode is not None:
                 raise ProcessLookupError
         with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
              patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
              patch("scripts.perf.profile.time.sleep", clock.sleep):
-            result = clean_quit(proc, app, (1000, 1), {}, timeout=1)
+            result = clean_quit(proc, profile.ProcessGroup(app, proc), (1000, 1), {}, timeout=1)
         self.assertEqual(app.wait(), -signal.SIGKILL)
         self.assertIn(signal.SIGKILL, signals)
         self.assertFalse(result["ok"])
@@ -626,7 +669,6 @@ class LifecycleTests(unittest.TestCase):
         for stop in (False, True):
             with self.subTest(pre_hook=stop):
                 clock, hook = FakeClock(), FakeApp()
-                hook.returncode = 0  # leader exited; descendant is still running
                 living = True
                 signals = []
                 def group_signal(pid, sig):
@@ -638,10 +680,15 @@ class LifecycleTests(unittest.TestCase):
                     if sig == signal.SIGKILL:
                         living = False
                 evidence = {}
+                proc = FakeProc(clock, hook)
+                child = dict(sample(1001, 2), pgid=1000)
+                proc.snapshot = lambda: {1001: child} if living else {}
                 with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
                      patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
                      patch("scripts.perf.profile.time.sleep", clock.sleep):
-                    profile.finish_hook(hook, evidence, 1, stop=stop)
+                    group = profile.ProcessGroup(hook, proc)
+                    hook.exitcode = 0  # observed descendant survives its leader
+                    profile.finish_hook(group, evidence, 1, stop=stop)
                 self.assertFalse(living)
                 self.assertIn(signal.SIGTERM, signals)
                 self.assertIn(signal.SIGKILL, signals)
@@ -678,6 +725,149 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught, patch("sys.stderr"):
                 main(["--output", "/unused"])
         self.assertEqual(caught.exception.code, 2)
+
+
+class GroupIdentityTests(unittest.TestCase):
+    """Only fake signals: a reused numeric group must never be targeted."""
+
+    def exercise(self, kind, reaped=False):
+        clock, leader = FakeClock(), FakeApp()
+        events = []
+        child = dict(sample(1001, 2), pgid=1000)
+        reused = dict(sample(1000, 99), pgid=1000)
+        living = True
+
+        class Collector:
+            errors = []
+            def snapshot(self):
+                return {1000: reused} if leader.reaped else ({1001: child} if living else {})
+            def info(self, pid):
+                return dict(sample(pid, 1), pgid=1000)
+
+        def exited(pid):
+            if leader.reaped:
+                raise ChildProcessError
+            return leader.exitcode is not None
+
+        def wait(timeout=None):
+            events.append(("reap", leader.reaped))
+            leader.reaped = True
+            leader.returncode = leader.exitcode
+            return leader.returncode
+
+        def group_signal(pid, signum):
+            nonlocal living
+            if signum:
+                events.append((signum, leader.reaped))
+                living = False
+            elif not living:
+                raise ProcessLookupError
+
+        leader.wait = wait
+        with patch.object(profile, "child_exited", side_effect=exited), \
+             patch("scripts.perf.profile.os.kill", side_effect=AssertionError("unexpected individual signal")), \
+             patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            group = profile.ProcessGroup(leader, Collector())
+            leader.exitcode = 0
+            leader.reaped = reaped
+            if kind == "hook":
+                evidence = {}
+                profile.finish_hook(group, evidence, 1)
+                ok = evidence["cleanup_ok"]
+            else:
+                evidence = clean_quit(Collector(), group, (1000, 1), {(1001, 2): child}, timeout=1)
+                ok = evidence["ok"]
+        return ok, events, leader.reaped
+
+    def test_app_orphan_ledger_cannot_seed_signal_targets_after_leader_reap(self):
+        clock, leader = FakeClock(), FakeApp()
+        leader.returncode = leader.exitcode = 0
+        leader.reaped = True
+        reused_member = dict(sample(1001, 99), pgid=1000)
+        signals = []
+
+        class Collector:
+            errors = []
+            def snapshot(self):
+                return {1001: reused_member}
+            def info(self, pid):
+                return reused_member
+
+        with patch("scripts.perf.profile.os.kill",
+                   side_effect=lambda pid, sig: signals.append((pid, sig))), \
+             patch("scripts.perf.profile.os.killpg",
+                   side_effect=AssertionError("must not signal reused group")), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            collector = Collector()
+            group = profile.ProcessGroup(leader, collector)
+            # The orphan ledger is not proof this identity was recorded in the
+            # original group while its leader was alive.
+            evidence = clean_quit(collector, group, (1000, 1),
+                                  {(1001, 99): reused_member}, timeout=1)
+        self.assertEqual(signals, [])
+        self.assertFalse(evidence["ok"])
+        self.assertEqual(evidence["orphans"], [reused_member])
+
+    def test_reaped_leader_fallback_only_signals_revalidated_member_identities(self):
+        for current, expected in (
+            (dict(sample(1001, 2), pgid=1000), [(1001, signal.SIGTERM)]),
+            (dict(sample(1001, 99), pgid=1000), []),
+            (dict(sample(1001, 2), pgid=999), []),
+            (PermissionError("cannot verify member"), []),
+        ):
+            with self.subTest(current=current):
+                leader = FakeApp()
+                known = dict(sample(1001, 2), pgid=1000)
+                signals, group_signals = [], []
+
+                class Collector:
+                    errors = []
+                    def snapshot(self):
+                        return {} if leader.reaped else {1001: known}
+                    def info(self, pid):
+                        if isinstance(current, Exception):
+                            raise current
+                        return current
+
+                with patch("scripts.perf.profile.child_exited", side_effect=fake_child_exited), \
+                     patch("scripts.perf.profile.os.kill",
+                           side_effect=lambda pid, sig: signals.append((pid, sig))), \
+                     patch("scripts.perf.profile.os.killpg",
+                           side_effect=lambda pid, sig: group_signals.append((pid, sig))):
+                    group = profile.ProcessGroup(leader, Collector())
+                    leader.returncode = leader.exitcode = 0
+                    leader.reaped = True
+                    evidence = {}
+                    profile.finish_hook(group, evidence, 1, stop=True)
+                self.assertEqual(signals, expected)
+                self.assertEqual(group_signals, [])
+                self.assertFalse(evidence["cleanup_ok"])
+                self.assertIn("identity_unverified", evidence)
+
+    def test_reaped_hook_never_signals_reused_group_or_reports_success(self):
+        ok, events, unused = self.exercise("hook", reaped=True)
+        self.assertEqual([event for event in events if event[0] != "reap"], [])
+        self.assertFalse(ok)
+
+    def test_reaped_app_never_signals_reused_group_or_reports_success(self):
+        ok, events, unused = self.exercise("app", reaped=True)
+        self.assertEqual([event for event in events if event[0] != "reap"], [])
+        self.assertFalse(ok)
+
+    def test_hook_signals_with_zombie_leader_pinned_then_reaps(self):
+        ok, events, reaped = self.exercise("hook")
+        self.assertTrue(ok)
+        self.assertEqual(events, [(signal.SIGTERM, False), ("reap", False)])
+        self.assertTrue(reaped)
+
+    def test_app_signals_with_zombie_leader_pinned_then_reaps(self):
+        ok, events, reaped = self.exercise("app")
+        self.assertFalse(ok)  # app needed forced cleanup of a surviving member
+        self.assertEqual(events, [(signal.SIGKILL, False), ("reap", False)])
+        self.assertTrue(reaped)
 
 
 class MetadataAndHookTests(unittest.TestCase):

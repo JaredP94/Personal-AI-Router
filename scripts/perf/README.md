@@ -84,6 +84,15 @@ process-group ownership through cleanup, even if the leader exits first. The
 harness sends group SIGTERM, allows `--hook-timeout` seconds of termination
 grace (separate from a post-hook's execution timeout), escalates to SIGKILL,
 and verifies disappearance/reaps the leader with a bounded 5 s wait.
+For both hooks and the app, exit observation uses `waitid(..., WNOWAIT)`
+(including a libc wrapper on Python 3.9 builds without `os.waitid`). The leader
+stays unreaped, even as a zombie, until group verification or escalation is
+finished, reserving its PID/PGID against reuse. Collector records include PGID
+and PID/start-time identity; new member identities are retained only while the
+leader is alive. Unknown or inaccessible members make cleanup unverified. If
+another path has already reaped the leader, the harness never signals that
+numeric group: only previously recorded, individually revalidated members may
+be signalled, and cleanup is always recorded as unverified.
 Unverified cleanup fails the run and skips subsequent runs. Hooks and their
 children must not detach into different process groups/sessions; escaped,
 unobserved descendants cannot be certified by process-group probes.
@@ -172,8 +181,9 @@ measurements and cancellation evidence, and skips remaining runs. SIGKILL,
 host failure and deliberately detached/unobserved children are outside this
 guarantee.
 
-On quit, the harness signals its own Popen child directly with SIGTERM and
-waits/reaps independently of the measurement collector. The app's new process
+On quit, the harness signals its own unreaped child directly with SIGTERM.
+Shutdown requests and final reaping do not depend on collector success, but
+verification fails closed on collector errors. The app's new process
 group gets up to 30 s to disappear, then SIGKILL and a bounded verification/reap
 wait. Forced termination fails the run. Collector failures are retained and
 cannot prevent requesting shutdown. Orphans/unverifiable shutdowns fail the run
