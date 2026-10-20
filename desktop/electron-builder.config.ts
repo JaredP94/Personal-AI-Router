@@ -34,6 +34,7 @@ import {
 import type { JsonValue } from './src/shared/types/json'
 import type { SupportedPlatform } from './src/shared/types/platform'
 import { macAfterAllArtifactBuild, macAfterPack } from './scripts/build/macos/hooks'
+import { assertPackedElectronLicenses } from './scripts/build/electron-licenses'
 
 // electron-builder's `directories` is a root-only field — there is no
 // per-platform override. To keep OS-scoped release folders
@@ -422,6 +423,19 @@ const config: Configuration = {
         // runtime + entitlements) is layered on by internal-build.
         identity: null,
         extraResources: [
+            // On macOS electron-builder copies only Electron.app (or removes
+            // these top-level distribution files after extraction). Windows and
+            // Linux already retain both beside the executable, renaming LICENSE
+            // to LICENSE.electron.txt. Source the macOS copies from the installed
+            // Electron distribution, not vendored notices.
+            {
+                from: 'node_modules/electron/dist/LICENSES.chromium.html',
+                to: 'LICENSES.chromium.html'
+            },
+            {
+                from: 'node_modules/electron/dist/LICENSE',
+                to: 'LICENSE.electron.txt'
+            },
             {
                 from: 'scripts/build/macos/uninstall.sh',
                 to: 'installer-tools/uninstall-macos.sh'
@@ -450,7 +464,14 @@ const config: Configuration = {
     dmg: {
         title: `${APP_DISPLAY_NAME} \${version}`
     },
-    afterPack: macAfterPack,
+    afterPack: async context => {
+        assertPackedElectronLicenses(
+            context.appOutDir,
+            context.electronPlatformName,
+            context.packager.appInfo.productFilename
+        )
+        await macAfterPack(context)
+    },
     afterAllArtifactBuild: macAfterAllArtifactBuild
 }
 
