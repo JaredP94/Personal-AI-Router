@@ -88,11 +88,6 @@ func (m *Model) beginRecovery() tea.Cmd {
 		}) tea.Msg {
 			return workloadsSnapshotMsg{v.Workloads}
 		}, nil),
-		snapshotQuery(client, "engine:get-installed", func(v struct {
-			Engines []engineStatus `json:"engines"`
-		}) tea.Msg {
-			return enginesLoadedMsg{engines: v.Engines}
-		}, func(err error) tea.Msg { return enginesLoadedMsg{err: err} }),
 		snapshotQuery(client, "nodes:get-initial", func(v struct {
 			Nodes []clusterNode `json:"nodes"`
 		}) tea.Msg {
@@ -104,6 +99,11 @@ func (m *Model) beginRecovery() tea.Cmd {
 			raw, _ := json.Marshal(v)
 			return NotificationMsg{&rpc.Message{Method: "errors:update", Params: raw}}
 		}, func(err error) tea.Msg { return errorsLoadedMsg{err: err} }),
+		snapshotQuery(client, "workers:get-status", func(v struct {
+			Workers []workerStatus `json:"workers"`
+		}) tea.Msg {
+			return workersLoadedMsg{workers: v.Workers}
+		}, func(err error) tea.Msg { return workersLoadedMsg{err: err} }),
 	}
 	// Other actual cached getters consumed by tabs, once each. These commands
 	// only decode; results are retained here, never applied off the update loop.
@@ -112,6 +112,8 @@ func (m *Model) beginRecovery() tea.Cmd {
 	for _, view := range m.views {
 		var commands []tea.Cmd
 		switch v := view.(type) {
+		case *enginesView:
+			commands = append(commands, v.loadCmd())
 		case *proxiesView:
 			for i := range v.engines {
 				commands = append(commands, v.statusCmd(i), v.nodesCmd(i), v.selectedCmd(i))
@@ -177,7 +179,7 @@ func (m Model) recoveryResultSuperseded(result tea.Msg) bool {
 func recoveryPushKey(msg NotificationMsg) string {
 	method := msg.Msg.Method
 	// This classifies cached snapshots for replay, not inbound RPC methods.
-	if method == "discovery:nodes-changed" || method == "nodes:changed" || method == "errors:update" || method == "cluster:identity-changed" {
+	if method == "discovery:nodes-changed" || method == "nodes:changed" || method == "errors:update" || method == "cluster:identity-changed" || method == "workers:update" {
 		return method
 	}
 	switch method {

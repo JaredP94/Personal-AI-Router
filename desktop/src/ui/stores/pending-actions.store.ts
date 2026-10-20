@@ -28,7 +28,6 @@
  * state.
  */
 import { create } from 'zustand'
-import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import type { EngineCommandPayload, EngineCommandType } from '@/shared/types/engine-api'
 import type { EngineProcessStatus, EngineType } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
@@ -40,12 +39,12 @@ const PENDING_TIMEOUT_MS = 60_000
 /** Keep Ollama Load locked one safety-net interval beyond the longest (11m) backend path. */
 const OLLAMA_LOAD_PENDING_TIMEOUT_MS = 12 * 60_000
 /**
- * Safety net for a delete on an engine whose backend restarts to pick the
- * deletion up (`EngineCaps.restartsOnModelDelete` / the manifest's
- * `restart_after`). That delete does not reply until the engine has stopped and
- * passed its readiness probe again — for LM Studio, `ready.timeout_s` alone is
- * 60s — so the default net would expire mid-flight and drop the spinner while
- * the operation is still running. Keep this above
+ * Safety net for a delete on an engine whose node reports that the delete
+ * bounces the engine (`EngineStatus.capabilities.delete_restarts_engine`, the
+ * manifest's `restart_after`). That delete does not reply until the engine has
+ * stopped and passed its readiness probe again — for LM Studio,
+ * `ready.timeout_s` alone is 60s — so the default net would expire mid-flight
+ * and drop the spinner while the operation is still running. Keep this above
  * `MODULAR_MODEL_ACTION_TIMEOUT_MS` (120s) so the real result, success or
  * failure, always wins the race against the net.
  */
@@ -86,13 +85,19 @@ interface PendingAction {
 /**
  * How long the safety net waits for a command before re-enabling its control.
  * Slow Ollama loads and restart-backed deletes outlast the default net; every
- * other command keeps 60 seconds.
+ * other command keeps 60 seconds. The restart-backed delete is recognised from
+ * the flags the node that owns the engine reports, so a remote node's row is
+ * gated on what that peer reported.
  */
-function timeoutFor(command: EngineCommandType, engineType: EngineType): number {
+function timeoutFor(command: EngineCommandType, engineType: EngineType, nodeId: string): number {
     if (command === 'loadModel' && engineType === 'ollama') {
         return OLLAMA_LOAD_PENDING_TIMEOUT_MS
     }
-    if (command === 'deleteModel' && EngineCapabilities[engineType]?.restartsOnModelDelete) {
+    if (
+        command === 'deleteModel' &&
+        useEngineStatusStore.getState().getStatus(nodeId, engineType).capabilities
+            .deleteRestartsEngine
+    ) {
         return RESTART_DELETE_TIMEOUT_MS
     }
     return PENDING_TIMEOUT_MS
@@ -179,7 +184,7 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
         if (connectorStatus === 'disconnected') return
 
         const { command, engineType, nodeId, model } = payload
-        const expiresAt = Date.now() + timeoutFor(command, engineType)
+        const expiresAt = Date.now() + timeoutFor(command, engineType, nodeId)
 
         if (LIFECYCLE_COMMANDS.has(command)) {
             const baselineStatus = useEngineStatusStore

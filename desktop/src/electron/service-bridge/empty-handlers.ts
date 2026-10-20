@@ -26,9 +26,11 @@ import {
     isProxyEngine,
     isUpstreamUnreachableError,
     parseServiceErrors,
+    parseWorkerStatus,
     parseWorkloadsInitial
 } from './modular-state'
 import type { ProxyEngine } from './modular-state'
+import type { WorkerStatus } from '@/shared/types/workers'
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { removeManualNodeEntry, resolveManualNodeKey } from './manual-nodes-store'
@@ -803,6 +805,38 @@ async function handleWorkloadsGetInitial(): Promise<WsInvokeResponse<'workloads:
     return state.getWorkloads()
 }
 
+/**
+ * Worker lifecycle snapshot for the renderer. The broker owns every health and
+ * retry decision; this only relays the rows it reported. On a broker that is not
+ * up, the last relayed snapshot answers rather than an invented empty list.
+ */
+async function handleWorkersGetStatus(): Promise<WorkerStatus[]> {
+    const supervisor = getModularSupervisor()
+    if (supervisor.hasProcess('broker')) {
+        try {
+            return await supervisor.readWorkersSnapshot()
+        } catch {
+            return getModularBridgeState().getWorkers()
+        }
+    }
+    return getModularBridgeState().getWorkers()
+}
+
+/**
+ * Relay an operator-requested restart. The broker decides whether the worker is
+ * eligible and what the restart does; the renderer only asks.
+ */
+async function handleWorkersRestart(
+    payload?: WsInvokeRequest<'workers:restart'>
+): Promise<WorkerStatus> {
+    const name = payload?.name
+    if (!name) throw new Error('A worker name is required')
+    const result = await getModularSupervisor().callProcess('broker', 'workers:restart', { name })
+    const worker = parseWorkerStatus(result)
+    if (!worker) throw new Error('The service returned an unreadable worker status')
+    return worker
+}
+
 function handleErrorsClear(id: string): null {
     const supervisor = getModularSupervisor()
     if (supervisor.hasProcess('broker')) {
@@ -1131,6 +1165,9 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'errors:clear': payload => (payload ? handleErrorsClear(payload) : null),
 
     'workloads:get-initial': () => handleWorkloadsGetInitial(),
+
+    'workers:get-status': () => handleWorkersGetStatus(),
+    'workers:restart': payload => handleWorkersRestart(payload),
 
     'telemetry:get-status': () => handleTelemetryGetStatus(),
     'telemetry:start': () => handleTelemetryStart(),

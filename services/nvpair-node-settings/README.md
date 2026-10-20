@@ -35,6 +35,13 @@ SPDX-License-Identifier: Apache-2.0
 >   the consumer when the security model is settled, without a
 >   wire-format change here.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Purpose
 
 A typed key-value store for per-node NVPAIR preferences, persisted to a
@@ -147,6 +154,9 @@ No notification is emitted on startup, unchanged sets, invalid requests, or save
 failures. Call `settings/get-telemetry-config` to fetch the initial snapshot.
 
 ## JSON-RPC Methods (caller → manager)
+
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
 
 Non-telemetry settings have symmetric individual get/set pairs. The cluster-id
 and cluster-auto-sync setters also trigger the matching

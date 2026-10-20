@@ -22,8 +22,8 @@ import (
 func TestRefreshNodeTelemetryEmitsFreshnessAndUtilization(t *testing.T) {
 	response := NodeInfoResponse{
 		GPUs: []GPUInfo{
-			{Name: "GPU 0", UtilizationPercent: 0},
-			{Name: "GPU 1", UtilizationPercent: 84},
+			{Name: "GPU 0", UtilizationPercent: gpuReading(uint32(0))},
+			{Name: "GPU 1", UtilizationPercent: gpuReading(uint32(84))},
 		},
 		TelemetryValid: true,
 		MSSince:        137,
@@ -112,7 +112,7 @@ func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
 			HostUUID:       "node-a",
 			TelemetryValid: true,
-			GPUs:           []GPUInfo{{Name: "GPU 0", UtilizationPercent: 61}},
+			GPUs:           []GPUInfo{{Name: "GPU 0", UtilizationPercent: gpuReading(uint32(61))}},
 		})
 	}))
 	defer server.Close()

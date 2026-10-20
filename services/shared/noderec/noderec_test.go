@@ -234,6 +234,7 @@ func TestDirectoryNodeHelpers(t *testing.T) {
 }
 
 func TestDirectoryNodeJSONRoundTrip(t *testing.T) {
+	capacity := uint64(1 << 30)
 	orig := DirectoryNode{
 		HostUUID: "host-1", Name: "host", IP: "192.168.1.10", ClusterUUID: "clu",
 		Trusted: true,
@@ -242,7 +243,7 @@ func TestDirectoryNodeJSONRoundTrip(t *testing.T) {
 			ServiceErrors:   {Port: 14319, Probe: ProbeInaccessible},
 			ServiceNodeInfo: {Port: 14318},
 		},
-		GPUs:     []GPUInfo{{Name: "RTX", VramBytes: 1 << 30}},
+		GPUs:     []GPUInfo{{Name: "RTX", MemoryKind: MemoryDedicated, VRAMBytes: &capacity}},
 		CPU:      &CPUInfo{Name: "cpu", Cores: 8},
 		Memory:   &MemoryInfo{TotalBytes: 1 << 34},
 		LastSeen: 1234567890,

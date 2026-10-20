@@ -5,6 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-workload-manager
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Purpose
 
 Propagates inference-workload lifecycle events across the cluster, so every node
@@ -58,6 +65,15 @@ after it joins without a rebind or a restart.
 Workload state is therefore only ever exchanged between paired members. See the
 repository [`SECURITY.md`](../../SECURITY.md) for the surrounding trust
 boundaries.
+
+## Local control requests
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `worker/health` | — | `{"ok":true}` — control-loop responsiveness only |
+
+See [Worker control health](#worker-control-health). Health is a local stdio
+request, not an inter-node lifecycle event.
 
 ## Lifecycle events
 

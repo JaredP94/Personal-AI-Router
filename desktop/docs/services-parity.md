@@ -81,7 +81,27 @@ at startup and resolved as soon as the broker is ready, so self is identified by
 the same UUID key rather than a hostname guess.
 
 The broker discovery surface does not include full dynamic telemetry, so
-Electron polls `/v1/node-info` for CPU, memory, GPU, and VRAM values.
+Electron polls `/v1/node-info` for CPU, system memory, and per-adapter GPU values.
+
+Go classifies each GPU's `memory_kind`; the bridge preserves it as `memoryKind`
+without name-based inference. Dedicated, unified, shared, and unavailable memory
+render as **VRAM**, **Unified memory**, **Shared memory**, and **Memory unavailable**.
+Missing/empty legacy kinds and unrecognized kinds render unavailable, not VRAM.
+The [node-info wire contract](../../services/nvpair-node-info/README.md#gpu-wire-contract)
+defines capacity and usage sources per platform. Linux AMD/Intel remain names-only
+with no memory/utilization readings; no new driver support is implied.
+
+The bridge carries nullable primary capacity (`vramTotal`), Windows dedicated
+adapters' separate shared budget (`sharedTotal`), per-adapter usage percentages,
+and shared usage in bytes. Unknown readings stay null through history, current
+values show `—`, and charts break at nulls rather than plotting zero. A measured
+idle `0` remains visible, and an unknown adapter does not hide another adapter's
+measured values. Unavailable memory has no numerical memory plot. Card legends,
+performance details, and tray rows share the kind labels; Windows dedicated
+adapters show their shared budget/usage on an independent **Shared memory** line.
+Unified detail uses `<used> used of <total> unified memory` on every platform; on Linux
+NVIDIA unified adapters, used bytes come from **system-used RAM**, not GPU-only
+allocations. No capacities or usages are added across adapters or memory pools.
 
 Two limitations follow from the current discovery and node-info contract:
 
@@ -109,7 +129,8 @@ proxy ordering. Personal AI Router leaves proxies in automatic mode.
 
 `nvpair-job-scheduler` combines total queued and running workload across both
 engines with a smoothed 0–3 GPU-pressure signal. The backend scanner and manual
-node worker provide maximum-GPU utilization, while invalid, missing, or
+node worker provide maximum utilization over adapters with measured readings
+(ignoring unknown readings), while invalid, missing, or
 older-than-10-second samples receive neutral pressure. The scheduler emits order,
 pending count, and pressure; the broker forwards each `schedule:priority`
 snapshot to the matching proxy through `node/set-priority`. Each proxy adds
@@ -141,8 +162,14 @@ Personal AI Router consequences (all reflection, no security implementation):
 
 ## Engine lifecycle
 
-`nvpair-engine-manager` is authoritative for installed, running, healthy, and
-port state.
+`nvpair-engine-manager` is authoritative for installed, running, healthy, port
+state, and effective per-host `EngineStatus.capabilities`. The bridge maps the
+seven wire flags to `listModels`, `pullModel`, `deleteModel`,
+`deleteRestartsEngine`, `setPort`, `install`, and `uninstall` on each node/engine
+status. Missing flags default to false. Model list/pull/delete, engine server
+port visibility, and install/uninstall/reinstall controls consume these flags;
+no static engine capability table duplicates that policy. Remote engine ports
+remain read-only; independent proxy-port controls are unaffected.
 
 Personal AI Router supports local:
 
@@ -204,20 +231,20 @@ LM Studio's `delete_model` declares `restart_after`, so the engine manager
 restarts a running LM Studio once the files are removed — its `/v1/models` is
 served from an index built at startup and it exposes no rescan operation, so
 clients would otherwise keep being offered a deleted model. Because that makes
-Delete interrupt inference, `EngineCapabilities['lm-studio'].restartsOnModelDelete`
-tells `ModelManager.tsx` to confirm the deletion first (`ConfirmModal`). The
-restart is entirely backend-owned: PAIR sends the same `deleteModel` command as
-for any other engine and never issues `engine:restart` itself, so the bundled
-`nvpair` terminal UI and a remote peer's deletion get the same behavior.
+Delete interrupt inference, the owning node/engine's reported
+`deleteRestartsEngine` flag tells `ModelManager.tsx` to confirm the deletion first
+(`ConfirmModal`). Confirmation freezes the displayed node, engine and model.
+The restart is entirely backend-owned: PAIR sends the same `deleteModel` command
+as for any other engine and never issues `engine:restart` itself, so TUI and
+remote deletion get the same engine-manager restart behavior.
 
-**This is LM Studio only.** Ollama reflects a deletion immediately, so its
-manifest omits `restart_after` and its capability entry omits
-`restartsOnModelDelete`: no bounce, no confirmation, no interrupted inference.
-Those two facts have to stay in step across a Go manifest and a TypeScript
-constant, which nothing in either type system enforces — so
-`tests/modular/delete-model-restart.test.ts` reads the shipped manifests and
-asserts the pair agrees, and `TestBundledManifestsRestartOnlyLMStudio` guards the
-same thing from the Go side.
+**The bundled restart-after-delete policy is LM Studio only.** Ollama's manifest
+omits `restart_after`, so Go reports `delete_restarts_engine: false`: no bounce
+or desktop restart warning. TUI still confirms every model deletion. oMLX has
+neither pull nor delete actions; those controls are not offered. Desktop tests
+exercise per-node reported flags, including false/absent flags and restart
+warnings; Go tests guard bundled-manifest derivation. There is no TypeScript
+constant to keep in sync with manifest policy.
 
 Several model-action timeouts have to be ordered correctly. For a
 restart-backed delete, the reply is withheld until the engine is ready again

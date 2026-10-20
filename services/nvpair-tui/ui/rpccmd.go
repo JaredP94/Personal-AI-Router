@@ -15,7 +15,11 @@ import (
 // callTimeout bounds a single broker request. It is generous enough to
 // cover the broker's slowest relay (the 30s cluster-manager path) plus
 // headroom, so a healthy call never times out under us.
-const callTimeout = 35 * time.Second
+const (
+	callTimeout        = 35 * time.Second
+	longOpTimeout      = 31 * time.Minute
+	lifecycleOpTimeout = 11 * time.Minute
+)
 
 // NotificationMsg carries one broker server-push frame into the Bubble
 // Tea update loop. Every view receives it.
@@ -61,8 +65,14 @@ func waitForNotification(client *rpc.Client) tea.Cmd {
 // outcome back into the update loop via decode, which maps the response
 // (or error) to a view-specific message.
 func call(client *rpc.Client, method string, params any, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
+	return callWithTimeout(client, method, params, callTimeout, decode)
+}
+
+// callWithTimeout keeps long-running operations pending until their RPC reply
+// or the operation-specific deadline, independently of progress notifications.
+func callWithTimeout(client *rpc.Client, method string, params any, timeout time.Duration, decode func(*rpc.Message, error) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		msg, err := client.Call(ctx, method, params)
 		return decode(msg, err)

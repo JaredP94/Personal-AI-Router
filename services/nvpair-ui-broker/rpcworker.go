@@ -38,6 +38,10 @@ type rpcWorker struct {
 // process has exited (cmd.Wait returned).
 func (w *rpcWorker) Done() <-chan struct{} { return w.done }
 
+func (w *rpcWorker) PID() int { return w.cmd.Process.Pid }
+
+func (w *rpcWorker) Health(ctx context.Context) error { return healthCall(ctx, w.peer) }
+
 // SetLogLevel forwards an already-validated log level as a log/set-level
 // notification (through the peer's codec).
 func (w *rpcWorker) SetLogLevel(level string) error {
@@ -73,8 +77,10 @@ func (w *rpcWorker) CallNoTimeout(ctx context.Context, method string, params jso
 // eventual response, with NO broker-imposed timeout — so a long-running op
 // (engine install / model pull, minutes long with progress push events) is not
 // cut short. respond runs on a dedicated goroutine; if the worker exits before
-// responding it is invoked with jsonrpc.ErrPeerClosed. Returns an error only if
-// the request couldn't be written. Used for the transparent engine:* relay.
+// responding it is invoked with jsonrpc.ErrPeerClosed. Writes are queued in
+// submission order without blocking the client loop; write errors also reach
+// respond. Returns an error only if the peer is already closed. Used for the
+// transparent engine:* relay.
 func (w *rpcWorker) RelayRequest(method string, params json.RawMessage, respond func(result json.RawMessage, rpcErr *RPCError, err error)) error {
 	return w.peer.RelayRequest(method, params, respond)
 }

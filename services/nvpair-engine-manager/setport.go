@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 )
 
 func canMoveAdoptedEngine(rt Runtime) bool {
@@ -93,14 +95,10 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 	return e.snapshot(engine, st), nil
 }
 
-// persistPort writes (or removes) the per-engine manifest override that pins
-// runtime.port so the chosen port survives a restart. For a bundled engine it
-// writes only the {engine, runtime:{port}} delta (which deep-merges onto the
-// bundled manifest at load), and removes the override entirely when the port
-// is back at the bundled default — keeping the override set minimal. For a
-// non-bundled engine (a full manifest that lives only in the override dir) it
-// merges the port into the existing file rather than clobbering it. Atomic
-// (tmp + rename).
+// persistPort merges runtime.port into the existing per-engine override,
+// preserving all unrelated fields, including unknown fields. Restoring a
+// bundled default removes the top-level and host-platform port pins; a
+// port-only override is deleted. Writes remain atomic (tmp + rename).
 func (e *Executor) persistPort(engine string, port int) error {
 	if e.overrideDir == "" {
 		return fmt.Errorf("no config directory available to persist the port")
@@ -109,34 +107,108 @@ func (e *Executor) persistPort(engine string, port int) error {
 		return fmt.Errorf("create override dir: %w", err)
 	}
 	path := filepath.Join(e.overrideDir, engine+".json")
-	delta := map[string]any{"engine": engine, "runtime": map[string]any{"port": port}}
-
-	if def, ok := e.reg.bundledDefaultPort(engine); ok {
-		// Bundled engine: back to default ⇒ drop the override; else persist
-		// just the delta so bundled upgrades to everything else still apply.
-		if def == port {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove override: %w", err)
-			}
-			return nil
-		}
-		return writeJSONAtomic(path, delta)
-	}
-
-	// Non-bundled engine: the full manifest lives only here, so merge the
-	// port into it rather than overwriting the file with a partial.
+	// Raw messages preserve values without float64 round-tripping or dropping
+	// fields unknown to this version of the manifest schema.
+	m := map[string]json.RawMessage{}
 	existing, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return writeJSONAtomic(path, delta)
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read override: %w", err)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(existing, &m); err != nil {
+	if err == nil {
+		if err := json.Unmarshal(existing, &m); err != nil {
+			return fmt.Errorf("parse override %s: %w", path, err)
+		}
+		if m == nil {
+			return fmt.Errorf("parse override %s: expected an object", path)
+		}
+	}
+	rt, err := overrideObject(m, "runtime")
+	if err != nil {
 		return fmt.Errorf("parse override %s: %w", path, err)
 	}
-	return writeJSONAtomic(path, deepMerge(m, delta))
+	platforms, err := overrideObject(m, "platforms")
+	if err != nil {
+		return fmt.Errorf("parse override %s: %w", path, err)
+	}
+	manifest, _ := e.reg.Get(engine) // SetPort has already validated the engine.
+	key, _ := manifest.platformKeyFor(runtime.GOOS, runtime.GOARCH)
+	platform, err := overrideObject(platforms, key)
+	if err != nil {
+		return fmt.Errorf("parse override platform %s: %w", path, err)
+	}
+	platformRT, err := overrideObject(platform, "runtime")
+	if err != nil {
+		return fmt.Errorf("parse override platform %s: %w", path, err)
+	}
+	def, bundled := e.reg.bundledDefaultPort(engine)
+	restore := bundled && def == port
+	_, platformPinned := platformRT["port"]
+	if platformPinned {
+		if err := updatePortOverride(platform, platformRT, port, restore); err != nil {
+			return err
+		}
+		if err := storeOverrideObject(platforms, key, platform); err != nil {
+			return err
+		}
+		if err := storeOverrideObject(m, "platforms", platforms); err != nil {
+			return err
+		}
+	}
+	_, topPinned := rt["port"]
+	if (!restore && !platformPinned) || (restore && topPinned) {
+		if err := updatePortOverride(m, rt, port, restore); err != nil {
+			return err
+		}
+	}
+	if restore && (len(m) == 0 || (len(m) == 1 && m["engine"] != nil)) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove override: %w", err)
+		}
+		return nil
+	}
+	if _, ok := m["engine"]; !ok {
+		m["engine"] = json.RawMessage(strconv.Quote(engine))
+	}
+	return writeJSONAtomic(path, m)
+}
+
+// overrideObject decodes only the object being edited, leaving all other raw
+// values intact. Absent/null objects are allocated only in memory until changed.
+func overrideObject(parent map[string]json.RawMessage, key string) (map[string]json.RawMessage, error) {
+	object := map[string]json.RawMessage{}
+	if raw, ok := parent[key]; ok {
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	if object == nil {
+		object = map[string]json.RawMessage{}
+	}
+	return object, nil
+}
+
+func updatePortOverride(parent, rt map[string]json.RawMessage, port int, restore bool) error {
+	if restore {
+		delete(rt, "port")
+	} else {
+		rt["port"] = json.RawMessage(strconv.Itoa(port))
+	}
+	return storeOverrideObject(parent, "runtime", rt)
+}
+
+// storeOverrideObject is called only after changing a child, so pre-existing
+// empty objects elsewhere are preserved rather than swept up during pruning.
+func storeOverrideObject(parent map[string]json.RawMessage, key string, child map[string]json.RawMessage) error {
+	if len(child) == 0 {
+		delete(parent, key)
+		return nil
+	}
+	raw, err := json.Marshal(child)
+	if err != nil {
+		return fmt.Errorf("marshal override %s: %w", key, err)
+	}
+	parent[key] = raw
+	return nil
 }
 
 // writeJSONAtomic marshals v and writes it to path via a tmp file + rename so

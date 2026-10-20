@@ -8,14 +8,17 @@ import type {
     EngineProgress,
     EngineStatusData,
     EngineType,
+    EngineCapabilityFlags,
     ModelItem
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics } from '@/shared/types/metrics'
+import type { GpuMemoryKind } from '@/shared/types/hardware'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { Workload, WorkloadState } from '@/shared/types/workloads'
+import type { WorkerState, WorkerStatus } from '@/shared/types/workers'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import {
@@ -23,11 +26,17 @@ import {
     MODULAR_SUPERSEDE_MIN_AGE_MS
 } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
-import { isEngineType, emptyEngineStatus } from '@/shared/utils/engines'
+import {
+    isEngineType,
+    emptyEngineStatus,
+    noEngineCapabilities,
+    parseEngineCapabilities
+} from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { workloadKey } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
+import { createStructuredLogger } from '@/shared/utils/log'
 import { mergePullProgressPercent } from './pull-error-handling'
 import type { JsonObject, JsonRpcNotification, JsonValue } from './json-rpc-subprocess'
 import { serviceLogLevel } from './service-log-level'
@@ -92,6 +101,11 @@ interface RemoteEngineFacts {
     running: boolean
     healthy: boolean
     port: number
+    /**
+     * What that peer reports this engine can do on its own platform. Every UI
+     * gate for a remote engine row reads these, never a local engine table.
+     */
+    capabilities: EngineCapabilityFlags
 }
 
 interface ModularNode {
@@ -213,9 +227,12 @@ function anyEngineUp(node: ModularNode): boolean {
 
 interface ModularGpu {
     name: string
-    vramBytes: number
-    vramUsedBytes: number
-    utilizationPercent: number
+    memoryKind: GpuMemoryKind
+    vramBytes: number | null
+    vramUsedBytes: number | null
+    sharedBytes: number | null
+    sharedUsedBytes: number | null
+    utilizationPercent: number | null
 }
 
 interface ModularCpu {
@@ -336,6 +353,89 @@ export function parseServiceErrors(value: JsonValue | undefined): ServiceError[]
         if (error) errors.push(error)
     }
     return errors
+}
+
+const WORKER_STATES: readonly WorkerState[] = [
+    'running',
+    'degraded',
+    'restarting',
+    'exhausted',
+    'missing'
+]
+const WORKER_STATE_SET: ReadonlySet<string> = new Set(WORKER_STATES)
+
+function isWorkerState(value: string): value is WorkerState {
+    return WORKER_STATE_SET.has(value)
+}
+
+const workerLog = createStructuredLogger('service-bridge')
+
+/**
+ * Parse one broker `WorkerStatus` row. An unrecognized `state` is rejected
+ * rather than coerced: a desktop that guessed would invent a health state the
+ * broker never reported. `onRejected` reports the drop to the caller, which
+ * logs it without the payload.
+ */
+export function parseWorkerStatus(value: JsonValue | undefined): WorkerStatus | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const name = stringValue(obj.name)
+    const state = stringValue(obj.state)
+    const attempts = obj.attempts
+    const since = stringValue(obj.since)
+    if (!name || !since || !isWorkerState(state)) return null
+    if (typeof attempts !== 'number' || typeof obj.restartOnHang !== 'boolean') return null
+
+    const pid = obj.pid
+    if (pid !== undefined && typeof pid !== 'number') return null
+    const lastError = obj.lastError
+    if (lastError !== undefined && typeof lastError !== 'string') return null
+
+    const worker: WorkerStatus = {
+        name,
+        state,
+        attempts,
+        restartOnHang: obj.restartOnHang,
+        since
+    }
+    if (typeof pid === 'number') worker.pid = pid
+    if (typeof lastError === 'string' && lastError) worker.lastError = lastError
+    return worker
+}
+
+/** Parse a broker `workers:get-status` / `workers:update` snapshot envelope. */
+export function parseWorkers(value: JsonValue | undefined, onRejected: () => void): WorkerStatus[] {
+    const rows = objectValue(value)?.workers
+    if (!Array.isArray(rows)) return []
+    const workers: WorkerStatus[] = []
+    for (const row of rows) {
+        const worker = parseWorkerStatus(row)
+        if (!worker) {
+            onRejected()
+            continue
+        }
+        workers.push(worker)
+    }
+    return workers
+}
+
+/**
+ * Parse a broker worker snapshot and report what it could not read. Dropped
+ * rows are logged by count only: a worker row can carry an engine error message,
+ * and no broker payload belongs in a log sink.
+ */
+export function parseBrokerWorkers(value: JsonValue | undefined): WorkerStatus[] {
+    let dropped = 0
+    const workers = parseWorkers(value, () => {
+        dropped++
+    })
+    if (dropped > 0) {
+        workerLog.warn({
+            sublevel: 'workers',
+            message: `Discarded ${dropped} unreadable worker status row(s) from the broker`
+        })
+    }
+    return workers
 }
 
 /**
@@ -511,6 +611,12 @@ function nvidiaGpuRank(gpu: ModularGpu): number {
     return gpu.name.toLowerCase().includes('nvidia') ? 0 : 1
 }
 
+function gpuMemoryKind(value: JsonValue | undefined): GpuMemoryKind {
+    return value === 'dedicated' || value === 'unified' || value === 'shared'
+        ? value
+        : 'unavailable'
+}
+
 function gpuArrayValue(value: JsonValue | undefined): ModularGpu[] {
     if (!Array.isArray(value)) return []
     const gpus: ModularGpu[] = []
@@ -519,9 +625,12 @@ function gpuArrayValue(value: JsonValue | undefined): ModularGpu[] {
         if (!obj) continue
         gpus.push({
             name: stringValue(obj.name),
-            vramBytes: numberValue(obj.vram_bytes),
-            vramUsedBytes: numberValue(obj.vram_used_bytes),
-            utilizationPercent: numberValue(obj.utilization_percent)
+            memoryKind: gpuMemoryKind(obj.memory_kind),
+            vramBytes: nullableNumberValue(obj.vram_bytes),
+            vramUsedBytes: nullableNumberValue(obj.vram_used_bytes),
+            sharedBytes: nullableNumberValue(obj.shared_bytes),
+            sharedUsedBytes: nullableNumberValue(obj.shared_used_bytes),
+            utilizationPercent: nullableNumberValue(obj.utilization_percent)
         })
     }
     return gpus.sort((left, right) => nvidiaGpuRank(left) - nvidiaGpuRank(right))
@@ -554,8 +663,11 @@ function normalizeLastSeen(value: number): number {
 function sameGpu(left: ModularGpu, right: ModularGpu): boolean {
     return (
         left.name === right.name &&
+        left.memoryKind === right.memoryKind &&
         left.vramBytes === right.vramBytes &&
         left.vramUsedBytes === right.vramUsedBytes &&
+        left.sharedBytes === right.sharedBytes &&
+        left.sharedUsedBytes === right.sharedUsedBytes &&
         left.utilizationPercent === right.utilizationPercent
     )
 }
@@ -652,7 +764,9 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
             gpus: node.gpus.map((gpu, index) => ({
                 id: `${node.id}:gpu:${index}`,
                 name: gpu.name,
-                vramTotal: gpu.vramBytes
+                memoryKind: gpu.memoryKind,
+                vramTotal: gpu.vramBytes,
+                sharedTotal: gpu.sharedBytes
             })),
             ram: node.memory?.totalBytes ?? 0,
             storage: [],
@@ -681,7 +795,11 @@ function toMetrics(node: ModularNode): NodeItemMetrics {
         })),
         gpuVramUsage: node.gpus.map((gpu, index) => ({
             id: `${node.id}:gpu:${index}`,
-            value: gpu.vramBytes > 0 ? (gpu.vramUsedBytes / gpu.vramBytes) * 100 : 0
+            value:
+                gpu.vramBytes !== null && gpu.vramBytes > 0 && gpu.vramUsedBytes !== null
+                    ? (gpu.vramUsedBytes / gpu.vramBytes) * 100
+                    : null,
+            sharedUsed: gpu.sharedUsedBytes
         }))
     }
     return { id: node.id, current, historical: [current] }
@@ -697,6 +815,11 @@ function toEngineStatus(
         engineType: engine,
         nodeId: node.id,
         processStatus: presence.up ? 'running' : 'stopped',
+        // A proxy `node/*` event carries no engine-manager status at all, so
+        // nothing is known about what this engine supports: every action stays
+        // hidden until an `EngineStatus` (local or `engine:remote-get-installed`)
+        // reports it.
+        capabilities: noEngineCapabilities(),
         // Discovery advertises the promoted proxy port, never the engine's own
         // (now loopback-private) port, so the engine port is unknown from a
         // proxy `node/*` event; it is filled only from engine-manager facts.
@@ -933,6 +1056,7 @@ class ModularBridgeState {
     private nodes = new Map<string, ModularNode>()
     private brokerNodeIds = new Set<string>()
     private errors: ServiceError[] = []
+    private workers: WorkerStatus[] = []
     private workloads = new Map<string, Workload>()
     // Exists only during one epoch snapshot fetch, including removal tombstones.
     private workloadRecovery: Set<string> | null = null
@@ -950,7 +1074,12 @@ class ModularBridgeState {
      */
     private engineManagerFacts = new Map<
         EngineType,
-        { installed: boolean; running: boolean; port: number }
+        {
+            installed: boolean
+            running: boolean
+            port: number
+            capabilities: EngineCapabilityFlags
+        }
     >()
     /**
      * Local model lists pulled from `nvpair-engine-manager`'s `list_models` action by
@@ -1314,6 +1443,25 @@ class ModularBridgeState {
         emitBridgePush('errors:update', [...this.errors])
     }
 
+    /**
+     * Authoritative broker-reported worker lifecycle snapshot, in startup order.
+     * Desktop holds no opinion about health or retries: this is exactly what
+     * `workers:get-status` / `workers:update` last reported.
+     */
+    getWorkers(): WorkerStatus[] {
+        return [...this.workers]
+    }
+
+    /**
+     * Replace the whole snapshot from the broker's `workers:update` (or from
+     * epoch hydration). It is a complete list, including an empty one, so an
+     * authoritative empty snapshot is applied rather than merged.
+     */
+    replaceWorkers(workers: WorkerStatus[]): void {
+        this.workers = [...workers]
+        emitBridgePush('workers:update', [...this.workers])
+    }
+
     getWorkloads(): WsInvokeResponse<'workloads:get-initial'> {
         const workloads: Record<string, Workload> = {}
         for (const [key, workload] of this.workloads) {
@@ -1449,7 +1597,8 @@ class ModularBridgeState {
         this.engineManagerFacts.set(engineType, {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            capabilities: parseEngineCapabilities(obj.capabilities)
         })
         // A fresh authoritative state is the resolution of whatever op was in
         // flight (start/stop done, install `done`+installed, uninstall removed).
@@ -1814,7 +1963,9 @@ class ModularBridgeState {
                 // it for the engine port.
                 enginePort: facts.installed && facts.port > 0 ? facts.port : null,
                 // The peer's promoted proxy port, when its engine is advertised.
-                proxyPort: presence?.up && presence.port > 0 ? presence.port : null
+                proxyPort: presence?.up && presence.port > 0 ? presence.port : null,
+                // The peer's own report of what this engine supports there.
+                capabilities: facts.capabilities
             }
         } else if (node && presence?.up && !node.clustered && !node.trusted) {
             // A live advertisement means the engine is reachable and serving, so
@@ -1836,6 +1987,10 @@ class ModularBridgeState {
                   engineType: engine,
                   nodeId,
                   processStatus: pending,
+                  // An in-flight remote op knows nothing new about support, and
+                  // when it has no facts at all there is nothing to report: keep
+                  // the actions hidden rather than assume them.
+                  capabilities: facts?.capabilities ?? noEngineCapabilities(),
                   enginePort: null,
                   proxyPort: null
               }
@@ -1861,7 +2016,8 @@ class ModularBridgeState {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
                 healthy: booleanValue(engineObj.healthy),
-                port: numberValue(engineObj.port)
+                port: numberValue(engineObj.port),
+                capabilities: parseEngineCapabilities(engineObj.capabilities)
             })
             seen.add(engineType)
         }
@@ -1890,7 +2046,8 @@ class ModularBridgeState {
             installed: booleanValue(obj.installed),
             running: booleanValue(obj.running),
             healthy: booleanValue(obj.healthy),
-            port: numberValue(obj.port)
+            port: numberValue(obj.port),
+            capabilities: parseEngineCapabilities(obj.capabilities)
         })
         this.emitRemoteEngineStatus(nodeId, engineType)
     }
@@ -2146,6 +2303,7 @@ class ModularBridgeState {
                 engineType,
                 nodeId,
                 processStatus: pending,
+                capabilities: facts?.capabilities ?? noEngineCapabilities(),
                 enginePort: facts && facts.running && facts.port > 0 ? facts.port : null,
                 proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
             }
@@ -2170,7 +2328,9 @@ class ModularBridgeState {
                 // Each proxy-fronted engine has its own broker proxy
                 // (`ollama-proxy` / `lmstudio-proxy`); report that engine's bound
                 // proxy port. Loopback-only engines get null.
-                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null
+                proxyPort: isProxyEngine(engineType) ? this.getProxyPort(engineType) : null,
+                // What the local engine manager reports this engine can do here.
+                capabilities: facts.capabilities
             }
         }
 

@@ -399,7 +399,7 @@ func (r *Registry) LoadOverrideDir(dir string) error {
 
 // bundledDefaultPort returns the host-platform runtime.port from the bundled
 // (un-overridden) manifest for an engine, used to decide whether a chosen
-// port is back at the default (so its override file can be dropped).
+// port is back at the default (so only its port override can be dropped).
 func (r *Registry) bundledDefaultPort(engine string) (int, bool) {
 	raw, ok := r.bundledRaw[engine]
 	if !ok {
@@ -764,11 +764,20 @@ func probeStrings(p *Probe) []string {
 
 // PlatformFor returns the platform block for the given goos/goarch.
 func (m *Manifest) PlatformFor(goos, goarch string) (*Platform, bool) {
-	p, ok := m.Platforms[goos+"/"+goarch]
+	key, ok := m.platformKeyFor(goos, goarch)
 	if !ok {
 		return nil, false
 	}
+	p := m.Platforms[key]
 	return &p, true
+}
+
+// platformKeyFor shares the registry's matching rule with override persistence,
+// which must edit the same block that PlatformFor selects when loading it.
+func (m *Manifest) platformKeyFor(goos, goarch string) (string, bool) {
+	key := goos + "/" + goarch
+	_, ok := m.Platforms[key]
+	return key, ok
 }
 
 // HostPlatform returns the platform block for the running host.

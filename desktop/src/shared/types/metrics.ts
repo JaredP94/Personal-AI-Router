@@ -3,7 +3,11 @@
 
 export interface GpuMetricValue {
     id: string // GPU ID from topology
-    value: number // percentage
+    value: number | null // percentage, null when not measured
+}
+
+interface GpuMemoryMetricValue extends GpuMetricValue {
+    sharedUsed: number | null // Windows shared-system-memory usage, in bytes
 }
 
 export interface NodeItemMetricsEntry {
@@ -11,7 +15,7 @@ export interface NodeItemMetricsEntry {
     cpuUtilization: number // percentage
     memoryUsage: number // percentage
     gpuUtilization: GpuMetricValue[] // percentage per GPU
-    gpuVramUsage: GpuMetricValue[] // percentage per GPU
+    gpuVramUsage: GpuMemoryMetricValue[] // percentage per GPU, plus shared usage in bytes
 }
 
 export interface NodeItemMetrics {

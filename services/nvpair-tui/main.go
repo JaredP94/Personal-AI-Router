@@ -56,6 +56,10 @@ func runOwnedSessions(ctx context.Context, spawn func() (ownedSession, error)) e
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "engine" {
+		os.Exit(runEngineCommand(os.Args[2:]))
+	}
+
 	brokerPath := flag.String("broker-path", "", "path to nvpair-ui-broker binary (default: ./nvpair-ui-broker alongside this executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)

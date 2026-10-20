@@ -17,6 +17,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/schedulerwire"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -156,6 +157,11 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
+
 	case "scheduler:get-status":
 		if err := m.codec.Respond(msg.ID, m.status()); err != nil {
 			log.Printf("failed to respond to scheduler:get-status: %v", err)

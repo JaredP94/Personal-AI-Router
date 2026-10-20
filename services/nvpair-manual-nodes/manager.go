@@ -29,6 +29,8 @@ import (
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
+	"nvpair-shared/noderec"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -80,11 +82,26 @@ func telemetryIntervalForNode(nodeKey string) time.Duration {
 	return telemetryRefreshInterval + time.Duration(offsetMillis)*time.Millisecond
 }
 
+type MemoryKind = noderec.MemoryKind
+
 type GPUInfo struct {
-	Name               string `json:"name"`
-	VramBytes          uint64 `json:"vram_bytes,omitempty"`
-	VramUsedBytes      uint64 `json:"vram_used_bytes,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
+	Name               string     `json:"name"`
+	MemoryKind         MemoryKind `json:"memory_kind"`
+	VRAMBytes          *uint64    `json:"vram_bytes,omitempty"`
+	VRAMUsedBytes      *uint64    `json:"vram_used_bytes,omitempty"`
+	SharedBytes        *uint64    `json:"shared_bytes,omitempty"`
+	SharedUsedBytes    *uint64    `json:"shared_used_bytes,omitempty"`
+	UtilizationPercent *uint32    `json:"utilization_percent,omitempty"`
+}
+
+// UnmarshalJSON uses the directory contract's mixed-version normalization.
+func (g *GPUInfo) UnmarshalJSON(data []byte) error {
+	var decoded noderec.GPUInfo
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*g = GPUInfo(decoded)
+	return nil
 }
 
 // CPUInfo and MemoryInfo mirror the top-level objects nvpair-node-info
@@ -1306,8 +1323,8 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 
 	var utilization uint32
 	for i := range info.GPUs {
-		if info.GPUs[i].UtilizationPercent > utilization {
-			utilization = info.GPUs[i].UtilizationPercent
+		if reading := info.GPUs[i].UtilizationPercent; reading != nil && *reading > utilization {
+			utilization = *reading
 		}
 	}
 
@@ -1473,6 +1490,11 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
+
 	case "node/add":
 		var entry ManualEntry
 		if err := json.Unmarshal(msg.Params, &entry); err != nil {
@@ -1549,10 +1571,7 @@ func gpusEqual(a, b []GPUInfo) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Name != b[i].Name ||
-			a[i].VramBytes != b[i].VramBytes ||
-			a[i].VramUsedBytes != b[i].VramUsedBytes ||
-			a[i].UtilizationPercent != b[i].UtilizationPercent {
+		if !noderec.GPUInfo(a[i]).Equal(noderec.GPUInfo(b[i])) {
 			return false
 		}
 	}

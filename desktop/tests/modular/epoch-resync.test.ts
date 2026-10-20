@@ -52,6 +52,7 @@ const EXPECTED_RESYNC_CALLS = [
     'cluster:get-node-id',
     'engine:get-installed',
     'errors:get-initial',
+    'workers:get-status',
     'workloads:get-initial',
     'proxy:get-status',
     'lmstudio-proxy:get-status',

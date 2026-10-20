@@ -47,6 +47,7 @@ import (
 	"nvpair-shared/schedulerwire"
 	"nvpair-shared/splitlisten"
 	"nvpair-shared/telemetry"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -2140,6 +2141,11 @@ func (p *Proxy) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		if err := p.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
+
 	case "telemetry/configure":
 		p.handleTelemetryConfigure(msg)
 

@@ -156,14 +156,14 @@ func TestApplyGPUStatsRetainsLastUsableSample(t *testing.T) {
 	sampledAt := time.Unix(1_700_000_000, 0)
 	previous := statsSnapshot{
 		GPU: map[string]gpuStat{
-			"gpu-a": {VRAMUsed: 4 << 30, UtilizationPct: 73},
+			"gpu-a": {VRAMUsedValid: true, VRAMUsed: 4 << 30, UtilizationValid: true, UtilizationPct: 73},
 		},
 		GPUSampledAt: sampledAt,
 	}
 	next := &statsSnapshot{}
 
 	applyGPUStats(previous, next, map[string]gpuStat{
-		"gpu-a": {VRAMUsed: 5 << 30},
+		"gpu-a": {VRAMUsedValid: true, VRAMUsed: 5 << 30},
 	}, time.Time{})
 
 	if !reflect.DeepEqual(next.GPU, previous.GPU) {
@@ -175,7 +175,7 @@ func TestApplyGPUStatsRetainsLastUsableSample(t *testing.T) {
 }
 
 func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
-	partial := map[string]gpuStat{"gpu-a": {VRAMUsed: 2 << 30}}
+	partial := map[string]gpuStat{"gpu-a": {VRAMUsedValid: true, VRAMUsed: 2 << 30}}
 	beforeFirstSample := &statsSnapshot{}
 	applyGPUStats(statsSnapshot{}, beforeFirstSample, partial, time.Time{})
 	if !reflect.DeepEqual(beforeFirstSample.GPU, partial) || !beforeFirstSample.GPUSampledAt.IsZero() {
@@ -183,7 +183,7 @@ func TestApplyGPUStatsPublishesIdleAndPreSampleFields(t *testing.T) {
 	}
 
 	sampledAt := time.Unix(1_700_000_000, 123)
-	idle := map[string]gpuStat{"gpu-a": {UtilizationPct: 0}}
+	idle := map[string]gpuStat{"gpu-a": {UtilizationValid: true, UtilizationPct: 0}}
 	usable := &statsSnapshot{}
 	applyGPUStats(statsSnapshot{}, usable, idle, sampledAt)
 	if !reflect.DeepEqual(usable.GPU, idle) || !usable.GPUSampledAt.Equal(sampledAt) {
@@ -195,7 +195,7 @@ func TestApplyGPUStatsIncrementsSampleSeqOnlyOnUsableSample(t *testing.T) {
 	initial := statsSnapshot{}
 	first := &statsSnapshot{}
 	sampledAt1 := time.Unix(1_700_000_000, 0)
-	applyGPUStats(initial, first, map[string]gpuStat{"gpu-a": {UtilizationPct: 10}}, sampledAt1)
+	applyGPUStats(initial, first, map[string]gpuStat{"gpu-a": {UtilizationValid: true, UtilizationPct: 10}}, sampledAt1)
 	if first.GPUSampleSeq != 1 {
 		t.Fatalf("first sample seq = %d, want 1", first.GPUSampleSeq)
 	}
@@ -210,7 +210,7 @@ func TestApplyGPUStatsIncrementsSampleSeqOnlyOnUsableSample(t *testing.T) {
 	// Second usable sample increments
 	second := &statsSnapshot{}
 	sampledAt2 := time.Unix(1_700_000_002, 0)
-	applyGPUStats(*failed, second, map[string]gpuStat{"gpu-a": {UtilizationPct: 20}}, sampledAt2)
+	applyGPUStats(*failed, second, map[string]gpuStat{"gpu-a": {UtilizationValid: true, UtilizationPct: 20}}, sampledAt2)
 	if second.GPUSampleSeq != 2 {
 		t.Fatalf("second sample seq = %d, want 2", second.GPUSampleSeq)
 	}
@@ -219,11 +219,11 @@ func TestApplyGPUStatsIncrementsSampleSeqOnlyOnUsableSample(t *testing.T) {
 func TestBuildResponseSampleSeqOmittedWhenZero(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	bodyWithSeq := buildResponseAt(
-		[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
+		[]GPUInfo{{Name: "GPU 0", MemoryKind: MemoryDedicated, statsKey: "gpu-a"}},
 		nil,
 		0,
 		statsSnapshot{
-			GPU:          map[string]gpuStat{"gpu-a": {UtilizationPct: 10}},
+			GPU:          map[string]gpuStat{"gpu-a": {UtilizationValid: true, UtilizationPct: 10}},
 			GPUSampledAt: now,
 			GPUSampleSeq: 42,
 		},
@@ -241,11 +241,11 @@ func TestBuildResponseSampleSeqOmittedWhenZero(t *testing.T) {
 	}
 
 	bodyZeroSeq := buildResponseAt(
-		[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
+		[]GPUInfo{{Name: "GPU 0", MemoryKind: MemoryDedicated, statsKey: "gpu-a"}},
 		nil,
 		0,
 		statsSnapshot{
-			GPU:          map[string]gpuStat{"gpu-a": {UtilizationPct: 10}},
+			GPU:          map[string]gpuStat{"gpu-a": {UtilizationValid: true, UtilizationPct: 10}},
 			GPUSampledAt: now,
 			GPUSampleSeq: 0,
 		},
@@ -277,11 +277,11 @@ func TestBuildResponseTelemetryFreshness(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			body := buildResponseAt(
-				[]GPUInfo{{Name: "GPU 0", statsKey: "gpu-a"}},
+				[]GPUInfo{{Name: "GPU 0", MemoryKind: MemoryDedicated, statsKey: "gpu-a"}},
 				nil,
 				0,
 				statsSnapshot{
-					GPU:          map[string]gpuStat{"gpu-a": {UtilizationPct: 0}},
+					GPU:          map[string]gpuStat{"gpu-a": {UtilizationValid: true, UtilizationPct: 0}},
 					GPUSampledAt: c.sampledAt,
 				},
 				"",
@@ -331,16 +331,16 @@ func buildResponseDecode(t *testing.T, static []GPUInfo, cpu *CPUInfo, memTotal 
 }
 
 // TestBuildResponseMerge verifies the happy path: matched LUIDs get
-// dynamic fields from the stats map, unmatched LUIDs stay zero.
+// dynamic fields from the stats map, unmatched LUIDs stay unknown.
 func TestBuildResponseMerge(t *testing.T) {
 	static := []GPUInfo{
-		{Name: "GPU 0", VramBytes: 16 << 30, statsKey: "luid_a"},
-		{Name: "GPU 1", VramBytes: 8 << 30, statsKey: "luid_b"},
+		{Name: "GPU 0", MemoryKind: MemoryDedicated, VRAMBytes: byteCapacity(16 << 30), statsKey: "luid_a"},
+		{Name: "GPU 1", MemoryKind: MemoryDedicated, VRAMBytes: byteCapacity(8 << 30), statsKey: "luid_b"},
 	}
 	snap := statsSnapshot{
 		GPU: map[string]gpuStat{
-			"luid_a": {VRAMUsed: 4 << 30, UtilizationPct: 27},
-			// luid_b intentionally absent — must stay zero.
+			"luid_a": {VRAMUsedValid: true, VRAMUsed: 4 << 30, UtilizationValid: true, UtilizationPct: 27},
+			// luid_b intentionally absent — must stay unknown.
 		},
 	}
 	typed, _ := buildResponseDecode(t, static, nil, 0, snap)
@@ -348,17 +348,17 @@ func TestBuildResponseMerge(t *testing.T) {
 	if len(typed.GPUs) != 2 {
 		t.Fatalf("got %d GPUs, want 2", len(typed.GPUs))
 	}
-	if got := typed.GPUs[0].VramUsedBytes; got != 4<<30 {
-		t.Errorf("gpu 0 VramUsedBytes = %d, want %d", got, 4<<30)
+	if got := typed.GPUs[0].VRAMUsedBytes; got == nil || *got != 4<<30 {
+		t.Errorf("gpu 0 VRAMUsedBytes = %v, want %d", got, 4<<30)
 	}
-	if got := typed.GPUs[0].UtilizationPercent; got != 27 {
-		t.Errorf("gpu 0 UtilizationPercent = %d, want 27", got)
+	if got := typed.GPUs[0].UtilizationPercent; got == nil || *got != 27 {
+		t.Errorf("gpu 0 UtilizationPercent = %v, want 27", got)
 	}
-	if got := typed.GPUs[1].VramUsedBytes; got != 0 {
-		t.Errorf("gpu 1 VramUsedBytes = %d, want 0 (unmatched LUID)", got)
+	if got := typed.GPUs[1].VRAMUsedBytes; got != nil {
+		t.Errorf("gpu 1 VRAMUsedBytes = %v, want nil (unmatched LUID)", got)
 	}
-	if got := typed.GPUs[1].UtilizationPercent; got != 0 {
-		t.Errorf("gpu 1 UtilizationPercent = %d, want 0 (unmatched LUID)", got)
+	if got := typed.GPUs[1].UtilizationPercent; got != nil {
+		t.Errorf("gpu 1 UtilizationPercent = %v, want nil (unmatched LUID)", got)
 	}
 }
 
@@ -370,8 +370,8 @@ func TestBuildResponseMerge(t *testing.T) {
 func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 	const sysMemUsed uint64 = 48 << 30
 	static := []GPUInfo{{
-		Name:                  "NVIDIA GB10",
-		VramBytes:             128 << 30,
+		Name: "NVIDIA GB10", MemoryKind: MemoryUnified,
+		VRAMBytes:             byteCapacity(128 << 30),
 		statsKey:              "GPU-spark",
 		usesSystemMemoryUsage: true,
 	}}
@@ -387,7 +387,7 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 		{
 			name: "with dynamic utilization row",
 			gpuStats: map[string]gpuStat{
-				"GPU-spark": {VRAMUsed: 1 << 30, UtilizationPct: 42},
+				"GPU-spark": {VRAMUsedValid: true, VRAMUsed: 1 << 30, UtilizationValid: true, UtilizationPct: 42},
 			},
 			wantUtil: 42,
 		},
@@ -395,13 +395,13 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			snap := statsSnapshot{GPU: c.gpuStats, MemUsedBytes: sysMemUsed}
+			snap := statsSnapshot{GPU: c.gpuStats, MemUsedBytes: sysMemUsed, MemUsedValid: true}
 			typed, raw := buildResponseDecode(t, static, nil, 0, snap)
-			if got := typed.GPUs[0].VramUsedBytes; got != sysMemUsed {
-				t.Errorf("VramUsedBytes = %d, want system memory %d", got, sysMemUsed)
+			if got := typed.GPUs[0].VRAMUsedBytes; got == nil || *got != sysMemUsed {
+				t.Errorf("VRAMUsedBytes = %v, want system memory %d", got, sysMemUsed)
 			}
-			if got := typed.GPUs[0].UtilizationPercent; got != c.wantUtil {
-				t.Errorf("UtilizationPercent = %d, want %d", got, c.wantUtil)
+			if got := typed.GPUs[0].UtilizationPercent; (got == nil && c.gpuStats != nil) || (got != nil && *got != c.wantUtil) {
+				t.Errorf("UtilizationPercent = %v, want %d", got, c.wantUtil)
 			}
 
 			gpus, ok := raw["GPUs"].([]any)
@@ -424,19 +424,19 @@ func TestBuildResponseUnifiedMemoryUsesSystemSnapshot(t *testing.T) {
 // not be replaced with whole-system memory usage.
 func TestBuildResponseAppleUnifiedMemoryUsesGPUAllocation(t *testing.T) {
 	static := []GPUInfo{{
-		Name:      "Apple M3 Max",
-		VramBytes: 36 << 30,
+		Name: "Apple M3 Max", MemoryKind: MemoryUnified,
+		VRAMBytes: byteCapacity(36 << 30),
 		statsKey:  "ioreg:2a",
 	}}
 	snap := statsSnapshot{
 		GPU: map[string]gpuStat{
-			"ioreg:2a": {VRAMUsed: 8 << 30, UtilizationPct: 73},
+			"ioreg:2a": {VRAMUsedValid: true, VRAMUsed: 8 << 30, UtilizationValid: true, UtilizationPct: 73},
 		},
 		MemUsedBytes: 24 << 30,
 	}
 	typed, _ := buildResponseDecode(t, static, nil, 0, snap)
 	gpu := typed.GPUs[0]
-	if gpu.VramUsedBytes != 8<<30 || gpu.UtilizationPercent != 73 {
+	if (gpu.VRAMUsedBytes == nil || *gpu.VRAMUsedBytes != 8<<30) || (gpu.UtilizationPercent == nil || *gpu.UtilizationPercent != 73) {
 		t.Fatalf("unexpected Apple GPU metrics: %+v", gpu)
 	}
 }
@@ -444,11 +444,11 @@ func TestBuildResponseAppleUnifiedMemoryUsesGPUAllocation(t *testing.T) {
 func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
 	snap := statsSnapshot{
 		GPU: map[string]gpuStat{
-			"ioreg:2a": {VRAMUsed: 8 << 30, UtilizationPct: 73},
+			"ioreg:2a": {VRAMUsedValid: true, VRAMUsed: 8 << 30, UtilizationValid: true, UtilizationPct: 73},
 		},
 		GPUInventory: []GPUInfo{{
-			Name:      "Apple M3 Max",
-			VramBytes: 36 << 30,
+			Name: "Apple M3 Max", MemoryKind: MemoryUnified,
+			VRAMBytes: byteCapacity(36 << 30),
 			statsKey:  "ioreg:2a",
 		}},
 	}
@@ -457,24 +457,24 @@ func TestBuildResponseRecoversDarwinGPUInventory(t *testing.T) {
 		t.Fatalf("recovered GPU count = %d, want 1", len(typed.GPUs))
 	}
 	gpu := typed.GPUs[0]
-	if gpu.Name != "Apple M3 Max" || gpu.VramBytes != 36<<30 ||
-		gpu.VramUsedBytes != 8<<30 || gpu.UtilizationPercent != 73 {
+	if gpu.Name != "Apple M3 Max" || (gpu.VRAMBytes == nil || *gpu.VRAMBytes != 36<<30) ||
+		(gpu.VRAMUsedBytes == nil || *gpu.VRAMUsedBytes != 8<<30) || (gpu.UtilizationPercent == nil || *gpu.UtilizationPercent != 73) {
 		t.Fatalf("unexpected recovered GPU: %+v", gpu)
 	}
 
-	static := []GPUInfo{{Name: "Apple M3 Max", statsKey: "ioreg:2a"}}
+	static := []GPUInfo{{Name: "Apple M3 Max", MemoryKind: MemoryUnified, statsKey: "ioreg:2a"}}
 	if merged := mergeGPUInventory(static, snap.GPUInventory); len(merged) != 1 ||
-		merged[0].VramBytes != 36<<30 {
+		(merged[0].VRAMBytes == nil || *merged[0].VRAMBytes != 36<<30) {
 		t.Fatalf("matching recovered GPU did not enrich in place: %+v", merged)
 	}
 }
 
-// TestBuildResponseOmitsZero confirms that a GPU with no stats match
+// TestBuildResponseOmitsUnknown confirms that a GPU with no stats match
 // produces JSON without the dynamic fields, not with literal zeros.
 // Clients depend on this to distinguish "unknown / unavailable" from
 // "actually idle" for vram_used_bytes.
-func TestBuildResponseOmitsZero(t *testing.T) {
-	static := []GPUInfo{{Name: "GPU 0", VramBytes: 4 << 30, statsKey: "luid_a"}}
+func TestBuildResponseOmitsUnknown(t *testing.T) {
+	static := []GPUInfo{{Name: "GPU 0", MemoryKind: MemoryDedicated, VRAMBytes: byteCapacity(4 << 30), statsKey: "luid_a"}}
 	_, raw := buildResponseDecode(t, static, nil, 0, statsSnapshot{})
 
 	gpus, ok := raw["GPUs"].([]any)

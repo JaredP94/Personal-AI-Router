@@ -25,9 +25,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
+	"nvpair-shared/appdir"
 	"nvpair-shared/jsonrpc"
 )
 
@@ -113,6 +116,25 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	writePin(t, dirA, uuidB, certB) // A trusts B
 	writePin(t, dirB, uuidA, certA) // B trusts A
 
+	// Give B a peer-only manifest so A cannot derive these flags from its own
+	// registry. Isolate both nodes from real engine installs and user overrides.
+	setRemoteEngineHome(t, dirB)
+	root, err := appdir.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDir := filepath.Join(root, "engines")
+	if err := os.MkdirAll(manifestDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(`{"engine":"peer-only","display_name":"Peer only","manifest_version":1,
+		"platforms":{%q:{"runtime":{"bin":"not-executed","args":["--port={port}"]}}},
+		"actions":{"list_models":{"http":{"method":"GET","path":"/models"}},
+		"delete_model":{"http":{"method":"DELETE","path":"/models"}}}}`, runtime.GOOS+"/"+runtime.GOARCH)
+	if err := os.WriteFile(filepath.Join(manifestDir, "peer-only.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	// Node B: serve the ec surface over mTLS. Give it a live stdin so it stays
 	// up (EOF would shut it down) and drain its stdout so it can't block.
 	portB := freePort(t)
@@ -120,6 +142,7 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	t.Cleanup(bCleanup)
 	waitForPort(t, "127.0.0.1", portB, 10*time.Second)
 
+	setRemoteEngineHome(t, dirA)
 	// Node A: the client. It resolves targets from its ec peer directory, which
 	// we seed by pushing a discovery:nodes snapshot (below) rather than a broker.
 	aStdin, aMsgs, aCleanup := startEngineManagerStdio(t, dirA)
@@ -143,7 +166,8 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	}
 	var res struct {
 		Engines []struct {
-			Engine string `json:"engine"`
+			Engine       string          `json:"engine"`
+			Capabilities map[string]bool `json:"capabilities"`
 		} `json:"engines"`
 	}
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
@@ -152,7 +176,35 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	if len(res.Engines) == 0 {
 		t.Fatalf("expected B to report at least one engine, got %s", resp.Result)
 	}
-	t.Logf("node A read %d engine(s) from node B over ec mTLS", len(res.Engines))
+	found := false
+	for _, engine := range res.Engines {
+		if engine.Engine != "peer-only" {
+			continue
+		}
+		found = true
+		want := map[string]bool{
+			"list_models": true, "pull_model": false, "delete_model": true,
+			"delete_restarts_engine": false, "set_port": true, "install": true, "uninstall": false,
+		}
+		if !reflect.DeepEqual(engine.Capabilities, want) {
+			t.Fatalf("peer capabilities = %v, want %v", engine.Capabilities, want)
+		}
+	}
+	if !found {
+		t.Fatalf("peer-only manifest missing from response: %s", resp.Result)
+	}
+	t.Logf("node A read %d engine(s) and peer-derived capabilities from node B over ec mTLS", len(res.Engines))
+}
+
+// setRemoteEngineHome points the per-user data directory (and so the user
+// manifest override dir) at dir, for this process and the managers it starts.
+// Without it a developer's real ~/Library/Application Support engine manifests
+// would leak into the fixture.
+func setRemoteEngineHome(t *testing.T, dir string) {
+	t.Helper()
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"} {
+		t.Setenv(key, dir)
+	}
 }
 
 // TestRemoteEngineRejectsUntrusted verifies the ec pin gate: node A can dial B

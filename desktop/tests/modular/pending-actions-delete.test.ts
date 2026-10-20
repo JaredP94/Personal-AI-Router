@@ -4,9 +4,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ServiceError } from '@/shared/types/errors'
 import type { EngineStatePatch } from '@/shared/types/engine-api'
-import type { ModelItem } from '@/shared/types/engines'
+import type { EngineCapabilityFlags, ModelItem } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 
 /**
  * Two ways the "Deleting…" spinner used to outlive the operation:
@@ -74,17 +75,64 @@ function makeFakeWindow() {
     }
 }
 
+function capabilities(overrides: Partial<EngineCapabilityFlags> = {}): EngineCapabilityFlags {
+    return {
+        listModels: true,
+        pullModel: true,
+        deleteModel: true,
+        deleteRestartsEngine: false,
+        setPort: true,
+        install: true,
+        uninstall: true,
+        ...overrides
+    }
+}
+
+/**
+ * Publish what one node's engine manager reports for LM Studio there. The
+ * store reads the restart-on-delete flag off the owning node's status, so the
+ * net it picks follows the node rather than the engine name.
+ */
+function reportEngineStatus(
+    nodeId: string,
+    engineType: 'lm-studio',
+    reported: EngineCapabilityFlags
+): void {
+    useEngineStatusStore.setState({
+        statusByNode: new Map([
+            [
+                nodeId,
+                new Map([
+                    [
+                        engineType,
+                        {
+                            engineType,
+                            nodeId,
+                            processStatus: 'running',
+                            capabilities: reported,
+                            enginePort: 1235,
+                            proxyPort: 1234
+                        }
+                    ]
+                ])
+            ]
+        ])
+    })
+}
+
 describe('pending-actions store: model actions', () => {
     beforeEach(() => {
         vi.useFakeTimers()
         errorsCb = null
         stateCb = null
         vi.stubGlobal('window', makeFakeWindow())
+        useEngineStatusStore.setState({ statusByNode: new Map() })
         usePendingActionsStore.getState().initialize()
     })
 
     afterEach(() => {
         usePendingActionsStore.getState().cleanup()
+        useEngineStatusStore.setState({ statusByNode: new Map() })
         vi.unstubAllGlobals()
         vi.useRealTimers()
     })
@@ -147,7 +195,8 @@ describe('pending-actions store: model actions', () => {
         ).toBe('deleteModel')
     })
 
-    it('keeps an LM Studio delete pending past the default net, since it awaits a restart', () => {
+    it('keeps an LM Studio delete pending past the default net, since the node reports a restart', () => {
+        reportEngineStatus('node-1', 'lm-studio', capabilities({ deleteRestartsEngine: true }))
         usePendingActionsStore.getState().begin({
             command: 'deleteModel',
             engineType: 'lm-studio',
@@ -182,6 +231,24 @@ describe('pending-actions store: model actions', () => {
         vi.advanceTimersByTime(61_000)
         expect(
             usePendingActionsStore.getState().getModelPending('node-1', 'ollama', 'llama3.2')
+        ).toBeUndefined()
+    })
+
+    it('takes the restart net from the node that owns the row, not the engine name', () => {
+        // Same engine, a node that reports a delete needs no restart.
+        reportEngineStatus('node-2', 'lm-studio', capabilities({ deleteRestartsEngine: false }))
+        usePendingActionsStore.getState().begin({
+            command: 'deleteModel',
+            engineType: 'lm-studio',
+            nodeId: 'node-2',
+            model: 'publisher/demo'
+        })
+
+        vi.advanceTimersByTime(61_000)
+        expect(
+            usePendingActionsStore
+                .getState()
+                .getModelPending('node-2', 'lm-studio', 'publisher/demo')
         ).toBeUndefined()
     })
 

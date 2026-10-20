@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +21,7 @@ import (
 // API and a couple of direct kernel32 syscalls.
 //
 // This collector is responsible for every dynamic number in
-// /v1/node-info: per-adapter VRAM used and GPU busy %, overall CPU
+// /v1/node-info: per-adapter dedicated/shared usage and GPU busy %, overall CPU
 // busy %, and memory-used bytes. Static identity (GPU name, total
 // VRAM, CPU name + cores, total RAM) is detected elsewhere once at
 // startup and passed to buildResponse.
@@ -30,17 +29,19 @@ import (
 // GPU counters we use:
 //
 //   - \GPU Adapter Memory(*)\Dedicated Usage   (instantaneous gauge, int64)
+//   - \GPU Adapter Memory(*)\Shared Usage      (instantaneous gauge, int64)
 //   - \GPU Engine(*)\Utilization Percentage    (rate counter, float64)
 //
 // CPU counter:
 //
 //   - \Processor(_Total)\% Processor Time      (scalar rate counter, float64)
 //
-// All three of these are PERF_100NSEC_TIMER rate counters, meaning a
+// The engine and CPU counters are PERF_100NSEC_TIMER rate counters, so a
 // valid reading requires TWO successive PdhCollectQueryData calls with
-// enough elapsed time between them — the first call is just a
-// baseline. Opening and priming a query per HTTP request would add ~1
-// s of cold-cache latency that's incompatible with the UI's 2 s poll,
+// enough elapsed time between them — the first call is just a baseline.
+// Dedicated and shared memory are gauges valid after one collect. Opening and
+// priming a query per HTTP request would add ~1 s of cold-cache latency
+// that's incompatible with the UI's 2 s poll,
 // so we keep one persistent query warm for the life of the service:
 //
 //   - Open the query at startup.
@@ -76,6 +77,7 @@ import (
 
 const (
 	pdhCounterPathDedicated = `\GPU Adapter Memory(*)\Dedicated Usage`
+	pdhCounterPathShared    = `\GPU Adapter Memory(*)\Shared Usage`
 	pdhCounterPathEngine    = `\GPU Engine(*)\Utilization Percentage`
 	pdhCounterPathCPU       = `\Processor(_Total)\% Processor Time`
 
@@ -109,7 +111,7 @@ var (
 	procPdhGetFormattedCounterArrayW = modPDH.NewProc("PdhGetFormattedCounterArrayW")
 	procPdhCloseQuery                = modPDH.NewProc("PdhCloseQuery")
 
-	modKernel32             = windows.NewLazySystemDLL("kernel32.dll")
+	modKernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procGlobalMemoryStatusEx = modKernel32.NewProc("GlobalMemoryStatusEx")
 
 	// Per-counter "unavailable" latches. Set once on first
@@ -117,6 +119,7 @@ var (
 	// isn't present now, it isn't coming back without a reboot, and we
 	// don't want to log-spam on every retry attempt during startup.
 	pdhVRAMUnavailable   atomic.Bool
+	pdhSharedUnavailable atomic.Bool
 	pdhEngineUnavailable atomic.Bool
 	pdhCPUUnavailable    atomic.Bool
 )
@@ -180,9 +183,11 @@ func luidKey(low uint32, high int32) string {
 type statsCollector struct {
 	query         uintptr
 	vramCounter   uintptr
+	sharedCounter uintptr
 	engineCounter uintptr
 	cpuCounter    uintptr
 	hasVRAM       bool
+	hasShared     bool
 	hasEngine     bool
 	hasCPU        bool
 
@@ -241,6 +246,10 @@ func (c *statsCollector) open() error {
 		c.vramCounter = ctr
 		c.hasVRAM = true
 	}
+	if ctr, ok := c.addCounter(pdhCounterPathShared, &pdhSharedUnavailable); ok {
+		c.sharedCounter = ctr
+		c.hasShared = true
+	}
 	if ctr, ok := c.addCounter(pdhCounterPathEngine, &pdhEngineUnavailable); ok {
 		c.engineCounter = ctr
 		c.hasEngine = true
@@ -250,7 +259,7 @@ func (c *statsCollector) open() error {
 		c.hasCPU = true
 	}
 
-	if !c.hasVRAM && !c.hasEngine && !c.hasCPU {
+	if !c.hasVRAM && !c.hasShared && !c.hasEngine && !c.hasCPU {
 		procPdhCloseQuery.Call(c.query)
 		c.query = 0
 		return fmt.Errorf("no performance counters available on this host")
@@ -341,41 +350,25 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	if used, ok := readMemoryUsed(); ok {
 		snap.MemUsedBytes = used
+		snap.MemUsedValid = true
 	}
 
 	return snap
 }
 
 func (c *statsCollector) decodeGPU() (map[string]gpuStat, bool) {
-	out := make(map[string]gpuStat)
+	var dedicated, shared map[string]int64
+	var engines map[string]float64
 	if c.hasVRAM {
-		for name, v := range readCounterLarge(c.vramCounter) {
-			if v < 0 {
-				continue
-			}
-			// PDH can return mixed-case hex for the LUID depending on
-			// the Windows build; normalize to lowercase to match the
-			// %08x format used by luidKey() on the DXGI side.
-			lname := strings.ToLower(name)
-			if !strings.HasPrefix(lname, "luid_") {
-				continue
-			}
-			s := out[lname]
-			s.VRAMUsed = uint64(v)
-			out[lname] = s
-		}
+		dedicated = readCounterLarge(c.vramCounter)
 	}
-	utilizationSamples := 0
+	if c.hasShared {
+		shared = readCounterLarge(c.sharedCounter)
+	}
 	if c.hasEngine {
-		util := aggregateUtilization(readCounterDouble(c.engineCounter))
-		utilizationSamples = len(util)
-		for luid, pct := range util {
-			s := out[luid]
-			s.UtilizationPct = pct
-			out[luid] = s
-		}
+		engines = readCounterDouble(c.engineCounter)
 	}
-	return out, utilizationSamples > 0
+	return decodeWindowsGPUCounters(dedicated, shared, engines)
 }
 
 // decodeCPU reads the scalar \Processor(_Total)\% Processor Time

@@ -46,9 +46,28 @@ This tree builds 14 service executables: `nvpair-ui-broker`, 12 supervised
 workers, and `nvpair-tui`. The broker attempts to start available workers at
 startup. Standalone, only the scanner is required; missing default auxiliary
 binaries and initial auxiliary spawn failures are non-fatal. Invalid explicit
-worker paths are fatal. Failed initial spawns are not automatically retried;
-crash supervision applies after a successful start. Desktop also prevalidates
+worker paths and scanner initial spawn failures are fatal. Optional initial
+spawn failures retry under the same budget as crashes and eligible hang restarts:
+1 s → 16 s backoff, five replacement attempts, with reset requiring 60 s uptime
+and a successful probe since that spawn. Missing defaults stay `missing` without
+automatic retry until `workers:restart` finds the binary. Desktop also prevalidates
 broker, scanner, Ollama proxy, node-info, and node-settings binaries.
+
+Each worker answers `worker/health` with `{"ok":true}`. The broker probes every
+30 s (`--worker-health-interval`, minimum 1 s) with a 5 s deadline capped at the
+interval. Two consecutive failures report `degraded`; a successful probe restores
+`running` and clears the failure count. Three failures restart scanner, errors,
+settings, node-info, workload-manager, manual-nodes, cluster-manager, and scheduler.
+Engine-manager and the three proxies never auto-restart on a hang: restart them
+explicitly if needed. This checks control responsiveness, not inference readiness.
+
+`workers:get-status` and full-snapshot `workers:update` expose all twelve workers;
+`workers:restart` requests a restart or retry even after budget exhaustion.
+Desktop renders the registry under Settings → Service → Workers (including
+"Not responding — restart manually" for ineligible hung workers). TUI Overview
+shows all twelve and offers `R` with confirmation. Worker probing is separate
+from the broker's 15 s heartbeat and clients' 45 s inbound-silence handling.
+Cross-process hang tests are Unix-only; Windows hang behavior remains unproven.
 
 `nvpair-tui` launches and supervises its own broker instead of being supervised.
 Processes use newline-delimited JSON-RPC 2.0 over stdio or optional Unix socket /

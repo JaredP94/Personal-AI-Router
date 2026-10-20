@@ -33,7 +33,8 @@ namespace:
 
 For the standalone broker, scanner resolution/initial spawn is required. A
 missing default binary or failed initial spawn for another worker permits degraded
-operation; that failed initial spawn is not automatically retried. An invalid
+operation. Resolved auxiliary binaries retry failed initial spawns using the
+same budget as crashes; absent defaults stay `missing` until explicitly retried. An invalid
 **explicit** worker path is fatal. Desktop additionally validates the presence of
 broker, scanner, Ollama proxy, node-info, and node-settings before startup.
 The [worker subprocesses](#worker-subprocesses) section covers each one's link,
@@ -59,7 +60,33 @@ These responsibilities live in the broker itself rather than in a worker:
 
 ### Supervision & recovery
 
-Every worker runs under a supervisor that auto-restarts it on an unexpected exit: exponential backoff (~1 s → 16 s), a budget of 5 attempts per unhealthy streak, and a 60 s "healthy reset" window after which a restarted worker is considered recovered. A crash is surfaced as a sticky `supervisor:subprocess-crashed:<name>` entry in the error registry (so connected tools can show "this helper is down"); recovery clears it, and a worker that exhausts its restart budget leaves the entry up. The scanner is the one worker whose **initial** spawn is fatal (the broker has no job without discovery); every other worker is optional and a failed first spawn just runs the broker without it. `nvpair-errors` is a special case: it can't report its own death into itself, so its crash logs to stderr (rather than the pipeline) while still being auto-restarted.
+Every resolved worker runs under a supervisor: exponential backoff (1 s → 16 s),
+five replacement attempts per unhealthy streak, and a reset requiring both
+60 s uptime and at least one successful health probe since that spawn. Failed
+initial auxiliary spawns, crashes, and eligible hang restarts share this budget.
+Scanner's **initial** failure stays fatal; invalid explicit paths stay fatal.
+Absent default binaries have no monitor or automatic retries; `workers:restart`
+rechecks their default path. Explicit-path validation checks accessibility, not
+executable format: an existing but unlaunchable auxiliary uses bounded retries.
+
+The broker probes `worker/health` (`{"ok":true}`) every 30 s with a 5 s deadline
+(capped at the configured interval). Two consecutive failures report `degraded`;
+a successful probe restores `running`. After three failures, scanner, errors,
+settings, node-info, workload-manager, manual-nodes, cluster-manager, and scheduler
+are stopped through the existing bounded escalation and restarted. Engine-manager
+and all three proxies only degrade on a hang: restarting them automatically can
+orphan engines or interrupt inference. They still accept explicit restarts.
+Desktop Settings → Service → Workers shows all twelve workers and
+"Not responding — restart manually" for these degraded
+rows; restarting engine-manager or a proxy asks for confirmation. TUI Overview
+uses the same registry and offers `R` with confirmation for any selected worker.
+Cross-process hang tests are Unix-only; Windows hang behavior remains unproven.
+
+Crashes retain the sticky error id `supervisor:subprocess-crashed:<name>`;
+hang restarts use message `subprocess <name> stopped responding`. Proven recovery
+clears the error; exhaustion leaves it sticky. `nvpair-errors` cannot report its
+own death into itself, so its crash logs to stderr while still being supervised.
+Use the independent worker registry below even when that error sink is absent.
 
 ## Communication
 
@@ -84,6 +111,7 @@ Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other
 | `--scheduler-path <path>` | `./nvpair-job-scheduler[.exe]` in the CWD | Explicit path to the `nvpair-job-scheduler` binary the broker spawns for responsive, node-wide workload and GPU-pressure ranking. Same optional semantics as `--node-info-path` |
 | `--cluster-dir <path>` | `cluster/` in the per-user data dir (`%LocalAppData%\Nvidia Corporation\Personal AI Router` on Windows, `~/.config/Nvidia Corporation/Personal AI Router` on Linux) | Cluster config dir (`node.crt`/`node.key` + `trusted/`, minted by `nvpair-cluster-manager`). Threaded to the cluster-scoped workers (`nvpair-errors`, `nvpair-workload-manager`, `nvpair-node-scanner`, `nvpair-manual-nodes`, and `nvpair-engine-manager`), each of which derives its membership from it continuously — so a create, join, or leave takes effect in place and the broker does **not** restart them. The broker also passes the parent of this path to `nvpair-cluster-manager` as `--config-dir`, so the only writer of the cluster dir and the workers reading it cannot resolve different directories. `nvpair-node-info` is excluded — it stays plain HTTP even when clustered (see the repository-root `SECURITY.md`). Defaults so cluster mTLS auto-activates with nothing to pass; with an empty or cert-less dir this node is not a member, so it serves and dials no inter-node cluster traffic at all |
 | `--log-level <lvl>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
+| `--worker-health-interval <duration>` | `30s` | Diagnostic health interval, minimum `1s`; deadline is the smaller of `5s` and the interval |
 | `--version` | | Print version and exit |
 
 Logs go to **stderr** (shared `applog` format, same as every other NVPAIR binary). stdout is reserved for JSON-RPC frames in stdio mode, so logging there would corrupt the protocol. Every spawned worker's stderr is forwarded to the broker's stderr unmodified, so `[nvpair-node-scanner]`, `[nvpair-node-info]`, `[ollama-proxy]`, `[nvpair-workload-manager]`, and `[nvpair-cluster-manager]` lines interleave with the broker's `[nvpair-ui-broker]` lines on a single stream.
@@ -99,7 +127,7 @@ Use the reported port, not a hardcoded endpoint.
 
 **`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`om` from the engine pollers) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
 
-**`nvpair-node-info`** is spawned next. It's a server, not an event source: it stands up the local `/v1/node-info` HTTP endpoint (GPU/CPU/memory inventory). It does not advertise itself — the broker registers its `ni` port with the scanner daemon, which carries it in the node record, and a peer's daemon fetches `/v1/node-info` over plain HTTP to enrich the node. The broker doesn't read anything back from node-info's stdout (drained and discarded). Spawning it is **optional**: if the binary can't be resolved (and no `--node-info-path` override was given) the broker logs a warning and continues serving discovery without it.
+**`nvpair-node-info`** is spawned next. It's a server, not an event source: it stands up the local `/v1/node-info` HTTP endpoint (GPU/CPU/memory inventory). It does not advertise itself — the broker registers its `ni` port with the scanner daemon, which carries it in the node record, and a peer's daemon fetches `/v1/node-info` over plain HTTP to enrich the node. The broker consumes observed-address notifications and correlates health responses from node-info's stdout. Spawning it is **optional**: if the binary can't be resolved (and no `--node-info-path` override was given) the broker logs a warning and continues serving discovery without it.
 
 **Engine advertising.** The broker runs an internal 5 s poll loop against local Ollama at its configured backend port and LM Studio (`GET /v1/models`) and reconciles this node's engine registration with the scanner daemon:
 
@@ -110,7 +138,7 @@ The daemon folds those registrations into this host's single `_nvpair-node` reco
 
 **`ollama-proxy`** is a local Ollama reverse proxy: it forwards inference requests to an Ollama node it discovers on the network. Its standalone default is `:11435`; with managed port ownership enabled (the default), the broker starts settings and engine-manager first, claims `:11434` with the proxy, and only then moves a stopped default-port Ollama backend to a free port. Custom backend ports are preserved. When the inherited `OLLAMA_HOST` names a distinct local plaintext port, the broker also gives the proxy that normalized loopback-only alias so clients already using the variable enter the same routing path; `localhost` reserves both canonical loopback families atomically, while remote and HTTPS targets are ignored. The alias port is reserved against every configured engine, local or remote engine start override, both proxy control planes, and the managed Ollama and LM Studio backend port plans, so a backend that has to move can never land on the alias. A running Ollama or unknown owner on either requested port is never stopped or moved: the primary uses a safe fallback when needed, and an occupied alias remains with its owner while the broker reports a warning. For automatic model-bearing inference, both engine proxies combine scheduler pending counts and GPU pressure with short-lived local reservations under one lock before forwarding, so concurrent requests distribute without an artificial delay or a round trip through the scheduler. Manual pins, model-owner tiers, and the complete failover list keep their existing precedence. The broker otherwise treats the proxy as **optional and non-fatal**.
 
-The proxy is the one worker that announces its bound port **asynchronously**, via a `ready` notification it emits once its HTTP listener is up. The broker captures that port and exposes it through the `proxy:get-status` request. Because `ready` arrives after `app:ready` (and the proxy is optional), clients learn the proxy's port by **polling** `proxy:get-status` rather than assuming it from `app:ready`.
+The proxy announces its bound port **asynchronously**, via a `ready` notification it emits once its HTTP listener is up. The broker captures that port and exposes it through the `proxy:get-status` request. Because `ready` arrives after `app:ready` (and the proxy is optional), clients learn the proxy's port by **polling** `proxy:get-status` rather than assuming it from `app:ready`.
 
 The proxy is a full bidirectional JSON-RPC peer with a control plane (node selection, manual nodes, ...) and an event stream. The broker acts as a **generic relay** in both directions: any request a client sends under the `proxy:` namespace (other than the reserved broker-local ones) is forwarded to the proxy with the `proxy:` prefix stripped and the response relayed straight back (see `proxy:<method>` below), and every notification the proxy emits is re-emitted to subscribed clients as `proxy:<method>` (see `proxy:<event>` below). The `proxy:` prefix is the only translation in either direction — everything after it is the proxy's own native method name.
 
@@ -119,7 +147,7 @@ Two classes of proxy notification are **not** re-emitted under the `proxy:` name
 - The `workload:*` lifecycle events the proxy fires per inference request. Those are workload-manager traffic — see the workload-manager paragraph below for how they're routed.
 - `node/activity`, which a proxy raises while a peer's engine is streaming response bytes back through it. That is discovery input: the broker forwards it to `nvpair-node-scanner` as a `discovery:node-activity` notification, where it counts as proof the peer is alive and cancels the eviction it would otherwise face for failing a liveness probe it had no spare CPU to answer. No client has any use for a per-request liveness frame. The handoff is a bounded queue drained by one goroutine — reports arrive for as long as inference streams, so a wedged scanner must not be able to stall the proxy reader, and a dropped report only means the scanner falls back to probing a node that will very likely answer.
 
-**`nvpair-workload-manager`** is the cluster workload relay, and it's the only worker the broker talks to **bidirectionally over a notification-only link** (no id-bearing request/response). It supervises it the same optional, non-fatal way as node-info / proxy: a missing default sibling (and no `--workload-manager-path`) just means no cluster workload relay. The broker plays the workload **broker** role between the proxy and the manager:
+**`nvpair-workload-manager`** is the cluster workload relay. Its domain traffic is notification-based; its shared JSON-RPC peer also correlates health requests. The broker supervises it the same optional, non-fatal way as node-info / proxy: a missing default sibling (and no `--workload-manager-path`) just means no cluster workload relay. The broker plays the workload **broker** role between the proxy and the manager:
 
 - **Outbound (proxy -> broker -> manager -> peers).** When any proxy emits a `workload:started` / `workload:completed` / `workload:errored`, the broker stamps the local stable `hostUuid` onto `params.workloadInfo.originatedFrom`, applies the transition to its authoritative workload store, and fans the accepted update to the scheduler before forwarding the original lifecycle frame to the manager. The manager broadcasts it to peer nodes. With no manager supervised the event still updates local scheduling and subscribed clients, but is not broadcast.
 - **Inbound (peers -> manager -> broker).** The manager translates peer-origin lifecycle events into `workloads:upsert` and peer-origin removals into `workloads:remove` on stdout. The broker applies each accepted transition to the same store, fans it to the scheduler, and relays it to clients subscribed via `workloads:subscribe`.
@@ -136,10 +164,33 @@ Shared lifecycle for all workers:
 - Path resolution: the explicit `--scanner-path` / `--node-info-path` / `--proxy-path` / `--workload-manager-path` / `--cluster-manager-path` (and the analogous flags for lmstudio-proxy / errors / engine-manager / manual-nodes / settings) if set, otherwise the same-named `./<binary>` (with `.exe` on Windows) in the broker's current working directory. No PATH fallback — a clear "not found" beats a surprising stale binary. A missing scanner is fatal (it's the broker's core job); every other worker is optional.
 - Log level: the broker's currently resolved level is forwarded at spawn time via `--log-level <lvl>`. Runtime `log/set-level` requests are fanned out to every running child over its stdin (see `log/set-level` below).
 - Hidden console window on Windows (`CREATE_NO_WINDOW`).
-- Shutdown: when the broker exits (signal, peer EOF, or `shutdown` RPC), it first asks engine-manager to stop its engines (`engine:prepare-shutdown`) while everything is still up, then closes each running worker's stdin. The worker sees EOF and exits cleanly, and the broker waits for it to exit — no timeout and no force-kill. Each worker owns its own bounded shutdown (engine-manager bounds its engine stop internally; the HTTP workers cancel their context and drain their server on EOF), so the broker never SIGKILLs a worker mid-teardown. A grace-then-kill teardown would orphan engine processes by killing engine-manager partway through stopping them, which is why there is no timeout here.
+- Shutdown: on signal, peer EOF, or `shutdown`, the broker requests `engine:prepare-shutdown` within its teardown budget, then closes worker stdin and waits with bounded grace/terminate/kill escalation. Bounded process teardown is not proof of orphan-free engine cleanup; engine-manager remains ineligible for automatic hang restart.
 - **Auto-restart with crash surfacing** for every supervised worker (see [Supervision & recovery](#supervision--recovery)): a crash is reported as `supervisor:subprocess-crashed:<name>` and the worker is restarted with backoff, clearing the entry once it's healthy again and leaving it up if the restart budget is exhausted.
 
 ## JSON-RPC Surface
+
+### Worker lifecycle registry
+
+- `workers:get-status` (no params) → `{"workers": WorkerStatus[]}`.
+- `workers:restart` with `{"name":"scheduler"}` → the current `WorkerStatus`
+  after initiating a restart. It does not wait for Stop escalation or readiness;
+  observe subsequent `workers:update` notifications. Unknown names or invalid
+  params return `-32602`. A missing worker rechecks its default CWD path and
+  starts if present, otherwise returns its unchanged missing status. An exhausted
+  worker resets its budget and tries again. Running/degraded workers, including
+  scanner, request a restart through the same supervisor.
+- `workers:update` → `{"workers": WorkerStatus[]}`, a full snapshot on each
+  change, unconditional (no subscription), with the normal protocol v2 stamp.
+
+`WorkerStatus` contains `name`, `state` (`running`, `degraded`, `restarting`,
+`exhausted`, or `missing`), `attempts`, optional `pid` and `lastError`,
+`restartOnHang`, and `since` (RFC 3339 timestamp of the last state transition).
+Missing status names the expected binary path in `lastError`; it never applies
+to scanner. Snapshots always list all twelve names in startup order:
+`scanner`, `errors`, `settings`, `engine-manager`, `node-info`, `proxy`,
+`lmstudio-proxy`, `omlx-proxy`, `workload-manager`, `manual-nodes`,
+`cluster-manager`, `scheduler`. Clients should fetch this snapshot after epoch changes;
+worker health is distinct from broker heartbeat/channel liveness.
 
 ### Protocol v2 envelope and recovery
 

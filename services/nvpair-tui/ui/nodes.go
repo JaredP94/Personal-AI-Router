@@ -28,8 +28,10 @@ type availableNode struct {
 	// to some cluster (advertises a cluster-uuid), whether or not we're paired
 	// with it. Either one makes it non-invitable — an already-clustered peer
 	// rejects a fresh pairing (it must leave/be removed first).
-	Trusted   bool `json:"trusted"`
-	Clustered bool `json:"clustered"`
+	Trusted        bool                `json:"trusted"`
+	Clustered      bool                `json:"clustered"`
+	ModelsByEngine map[string][]string `json:"modelsByEngine"`
+	LoadedByEngine map[string][]string `json:"loadedByEngine"`
 }
 
 // key is the node's stable identity (hostUuid) for cluster actions; the name
@@ -236,6 +238,31 @@ func (v *nodesView) View() string {
 }
 
 func (v *nodesView) Help() []key.Binding { return []key.Binding{niInviteKey} }
+
+// nodeLabel resolves stable UUIDs using the shared recovery name sources.
+// Unknown or departed nodes retain an identifier rather than an empty label.
+func nodeLabel(uuid string, identity clusterIdentity, discovered []availableNode, members []clusterNode) string {
+	if uuid == "" {
+		return "—"
+	}
+	if identity.NodeUUID == uuid && identity.Name != "" {
+		return identity.Name
+	}
+	for _, n := range discovered {
+		if n.HostUUID == uuid && n.Name != "" {
+			return n.Name
+		}
+	}
+	for _, n := range members {
+		if n.NodeUUID == uuid && n.Name != "" {
+			return n.Name
+		}
+	}
+	if len(uuid) > 8 {
+		return uuid[:8]
+	}
+	return uuid
+}
 
 // ageUnix renders a Unix-seconds timestamp as a compact relative age.
 func ageUnix(sec int64) string {

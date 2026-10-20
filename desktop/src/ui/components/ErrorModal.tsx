@@ -8,7 +8,9 @@ import { errorDismissalKey } from '@/ui/utils/error-modal-dismissal'
 import { InlineErrorBanner } from './InlineErrorBanner'
 import { useErrorsStore } from '@/ui/stores/errors.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
-import { isEngineType } from '@/shared/utils/engines'
+import { isEngineType, noEngineCapabilities } from '@/shared/utils/engines'
+import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import type { EngineCapabilityFlags } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
 
@@ -99,20 +101,22 @@ function bannerStatus(severity: ServiceError['severity']): 'info' | 'warning' | 
  * `null` (no button) when the action isn't `retry` or the error lacks the
  * engine/node/model context needed to re-dispatch.
  */
-function buildRetry(error: ServiceError): (() => void) | null {
+function buildRetry(error: ServiceError, reported: EngineCapabilityFlags): (() => void) | null {
     if (error.action !== 'retry') return null
     const { engineType, nodeId, operation, modelName } = error
     if (!engineType || !isEngineType(engineType) || !nodeId) return null
     const engines = window.pairApi.engines
     switch (operation) {
         case 'install':
-            return () => engines.install(engineType, nodeId)
+            return reported.install ? () => engines.install(engineType, nodeId) : null
         case 'uninstall':
-            return () => engines.uninstall(engineType, nodeId)
+            return reported.uninstall ? () => engines.uninstall(engineType, nodeId) : null
         case 'start':
             return () => engines.toggle(engineType, nodeId)
         case 'pull':
-            return modelName ? () => engines.pullModel(engineType, nodeId, modelName) : null
+            return reported.pullModel && modelName
+                ? () => engines.pullModel(engineType, nodeId, modelName)
+                : null
         default:
             return null
     }
@@ -163,7 +167,13 @@ function ErrorBanner({
     const showNodePrefix = Boolean(error.nodeId) && !hideNodePrefix
     const displayMessage = formatErrorMessage(error, nodeLabel, showNodePrefix)
     const severity = bannerStatus(error.severity)
-    const retry = buildRetry(error)
+    const reported =
+        useEngineStatusStore(state =>
+            error.nodeId && error.engineType && isEngineType(error.engineType)
+                ? state.statusByNode.get(error.nodeId)?.get(error.engineType)?.capabilities
+                : undefined
+        ) ?? noEngineCapabilities()
+    const retry = buildRetry(error, reported)
 
     return (
         <InlineErrorBanner severity={severity} message={displayMessage}>

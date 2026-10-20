@@ -29,6 +29,7 @@
 package noderec
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -440,14 +441,59 @@ type ReadyParams struct {
 	Epoch   int64  `json:"epoch,omitempty"`
 }
 
+// MemoryKind identifies one adapter's memory pool, never an additive node total.
+type MemoryKind string
+
+const (
+	MemoryDedicated   MemoryKind = "dedicated"
+	MemoryUnified     MemoryKind = "unified"
+	MemoryShared      MemoryKind = "shared"
+	MemoryUnavailable MemoryKind = "unavailable"
+)
+
 // GPUInfo / CPUInfo / MemoryInfo are the node-info enrichment carried on a
 // directory entry. Consolidated here so the daemon, the broker relay, and
 // clients share one shape.
 type GPUInfo struct {
-	Name               string `json:"name"`
-	VramBytes          uint64 `json:"vram_bytes,omitempty"`
-	VramUsedBytes      uint64 `json:"vram_used_bytes,omitempty"`
-	UtilizationPercent uint32 `json:"utilization_percent,omitempty"`
+	Name               string     `json:"name"`
+	MemoryKind         MemoryKind `json:"memory_kind"`
+	VRAMBytes          *uint64    `json:"vram_bytes,omitempty"`
+	VRAMUsedBytes      *uint64    `json:"vram_used_bytes,omitempty"`
+	SharedBytes        *uint64    `json:"shared_bytes,omitempty"`
+	SharedUsedBytes    *uint64    `json:"shared_used_bytes,omitempty"`
+	UtilizationPercent *uint32    `json:"utilization_percent,omitempty"`
+}
+
+// UnmarshalJSON normalizes older peers without a memory kind to unavailable.
+// Optional readings retain their presence, including measured zero.
+func (g *GPUInfo) UnmarshalJSON(data []byte) error {
+	type wireGPU GPUInfo
+	var decoded wireGPU
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.MemoryKind == "" {
+		decoded.MemoryKind = MemoryUnavailable
+	}
+	*g = GPUInfo(decoded)
+	return nil
+}
+
+// Equal compares readings by presence and value, not pointer identity.
+func (g GPUInfo) Equal(other GPUInfo) bool {
+	return g.Name == other.Name && g.MemoryKind == other.MemoryKind &&
+		readingEqual(g.VRAMBytes, other.VRAMBytes) &&
+		readingEqual(g.VRAMUsedBytes, other.VRAMUsedBytes) &&
+		readingEqual(g.SharedBytes, other.SharedBytes) &&
+		readingEqual(g.SharedUsedBytes, other.SharedUsedBytes) &&
+		readingEqual(g.UtilizationPercent, other.UtilizationPercent)
+}
+
+func readingEqual[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 type CPUInfo struct {

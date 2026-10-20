@@ -179,7 +179,10 @@ func TestSchedulerRanksFreshUnknownAndStaleTelemetry(t *testing.T) {
 	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"a","gpuUtilizationPercent":0,"telemetryValid":true,"msSince":0}}`)
 	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"c","gpuUtilizationPercent":100,"telemetryValid":true,"msSince":10001}}`)
 	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"scheduler:telemetry","params":{"hostUuid":"d","gpuUtilizationPercent":90,"telemetryValid":true,"msSince":0}}`)
-	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a"},{"hostUuid":"b"},{"hostUuid":"c"},{"hostUuid":"d"}]}`)
+	// GPU memory kind/capacity is discovery inventory, not scheduling input.
+	// A small shared adapter at measured idle outranks a large dedicated busy
+	// adapter; unknown and stale telemetry still get neutral pressure.
+	writeStampedSchedulerNotification(t, stdin, &nextSeq, `{"jsonrpc":"2.0","method":"discovery:nodes-changed","params":[{"hostUuid":"a","gpus":[{"name":"Shared","memory_kind":"shared","vram_bytes":17179869184,"vram_used_bytes":0,"utilization_percent":0}]},{"hostUuid":"b","gpus":[{"name":"Old peer"}]},{"hostUuid":"c","gpus":[{"name":"Unified","memory_kind":"unified","vram_bytes":34359738368}]},{"hostUuid":"d","gpus":[{"name":"Dedicated","memory_kind":"dedicated","vram_bytes":85899345920,"shared_bytes":17179869184,"shared_used_bytes":0,"utilization_percent":90}]}]}`)
 
 	initial := waitForPriorityPair(t, msgs, 5*time.Second)
 	assertPriorityPair(t, initial, []string{"a", "b", "c", "d"}, map[string]int{

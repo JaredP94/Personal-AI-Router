@@ -28,6 +28,7 @@ import VersionsCard from './VersionsCard'
 import FirewallSetupCard from './FirewallSetupCard'
 import RoutingDiagnostics from './RoutingDiagnostics'
 import ObservabilityCard from './ObservabilityCard'
+import WorkersCard from './WorkersCard'
 import WipeAppDataCard from './WipeAppDataCard'
 import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 import { useInferenceDemoStore } from '@/ui/stores/inference-demo.store'
@@ -385,6 +386,7 @@ export default function ServiceSettings() {
             </Flex>
 
             <RoutingDiagnostics />
+            <WorkersCard />
             <ObservabilityCard />
             <FirewallSetupCard />
             <VersionsCard />

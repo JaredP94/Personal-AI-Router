@@ -9,6 +9,13 @@ A discovery-aware HTTP reverse proxy for LM Studio nodes on the local network. I
 
 > **Clone of `ollama-proxy`.** This proxy is a deliberate clone of [`ollama-proxy`](../ollama-proxy/README.md) so the two share identical routing, failover, CORS, and node-selection behavior — the CORS policy is literally the same code, `nvpair-shared/cors`, and is documented [there](../ollama-proxy/README.md#http-reverse-proxy). The differences are engine-specific: it subscribes to the discovery relay for `lm` nodes, forwards the OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), tags workloads `lmstudio`, and persists its port to its own file. It has no `--alias-address`, so its self-forward guard covers only its own listener.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Build
 
 ```bash
@@ -200,6 +207,9 @@ Entries for the `nvpair-errors` pipeline, keyed by a stable `id` so a report and
 ---
 
 ### Requests (client → proxy)
+
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
 
 Requests carry an `id` and receive a response.
 

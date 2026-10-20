@@ -4,14 +4,13 @@
 import { Text } from '@nvidia/foundations-react-core'
 import { BackendPorts } from './BackendPorts'
 import { EditState } from '@/ui/types/engine-edit-state'
-import type { EngineCaps } from '@/ui/types/engine-manifest'
 
 export function PortsSection({
     edit,
     portsChanged,
     anyLoading,
     isLocalNode,
-    caps,
+    canSetPort,
     onApplyPorts,
     onServerChange,
     onProxyChange
@@ -20,7 +19,12 @@ export function PortsSection({
     portsChanged: boolean
     anyLoading: boolean
     isLocalNode: boolean
-    caps: EngineCaps
+    /**
+     * Whether the engine's own server port can be edited, as reported by the
+     * node that owns this engine (`EngineStatus.capabilities.set_port`). False
+     * hides the field entirely — e.g. oMLX, whose start command takes no port.
+     */
+    canSetPort: boolean
     onApplyPorts: () => void
     onServerChange: (v: string) => void
     onProxyChange: (v: string) => void
@@ -37,7 +41,7 @@ export function PortsSection({
                     changed={portsChanged}
                     disabled={anyLoading}
                     isLocalNode={isLocalNode}
-                    showServerPort={caps.hasEnginePort}
+                    showServerPort={canSetPort}
                     onServerChange={onServerChange}
                     onProxyChange={onProxyChange}
                     onApply={onApplyPorts}

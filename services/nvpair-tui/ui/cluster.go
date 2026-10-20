@@ -57,14 +57,17 @@ const (
 // roster (live from nodes:changed), outbound invites (showing the PIN to
 // read to the joiner), and inbound invites (entering the PIN to accept).
 type clusterView struct {
-	client   *rpc.Client
-	table    table.Model
-	identity clusterIdentity
-	nodes    []clusterNode
-	pending  *clusterInvite // most recent inbound invite awaiting a response
-	input    textinput.Model
-	mode     clusterInputMode
-	status   string
+	client        *rpc.Client
+	table         table.Model
+	identity      clusterIdentity
+	identityReady bool
+	nodes         []clusterNode
+	pending       *clusterInvite // most recent inbound invite awaiting a response
+	input         textinput.Model
+	mode          clusterInputMode
+	status        string
+	confirm       *confirmPrompt
+	leaveIdentity *clusterIdentity
 
 	width, height int
 }
@@ -114,8 +117,8 @@ func (v *clusterView) identityCmd() tea.Cmd {
 			return clusterIdentityMsg{err: err}
 		}
 		var id clusterIdentity
-		_ = decodeParams(msg.Result, &id)
-		return clusterIdentityMsg{id: id}
+		err = decodeParams(msg.Result, &id)
+		return clusterIdentityMsg{id: id, err: err}
 	})
 }
 
@@ -147,13 +150,24 @@ func (v *clusterView) SetSize(w, h int) {
 	v.table.SetHeight(clampWidth(h-7, 1))
 }
 
-func (v *clusterView) CapturingInput() bool { return v.mode != clusterInputNone }
+func (v *clusterView) CapturingInput() bool {
+	return v.mode != clusterInputNone || v.confirm.open()
+}
 
 func (v *clusterView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case epochChangedMsg:
+		v.identityReady = false
+		if v.leaveIdentity != nil {
+			v.confirm = nil
+			v.leaveIdentity = nil
+			v.status = "cluster changed; waiting for identity before confirming leave"
+		}
+		return nil
 	case clusterIdentityMsg:
 		if msg.err == nil {
 			v.identity = msg.id
+			v.identityReady = true
 		}
 		return nil
 	case clusterNodesMsg:
@@ -204,6 +218,21 @@ func (v *clusterView) handleNotification(msg *rpc.Message) tea.Cmd {
 }
 
 func (v *clusterView) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if v.confirm.open() {
+		// cluster:leave has no target parameter. If the local principal changed,
+		// the frozen cluster can no longer be addressed: never leave its replacement.
+		if msg.String() == "y" && v.leaveIdentity != nil && (!v.identityReady || v.identity.ClusterID != v.leaveIdentity.ClusterID || v.identity.NodeUUID != v.leaveIdentity.NodeUUID) {
+			v.confirm.done = true
+			v.leaveIdentity = nil
+			v.status = "cluster changed; confirm leave again"
+			return nil
+		}
+		cmd := v.confirm.Update(msg)
+		if !v.confirm.open() {
+			v.leaveIdentity = nil
+		}
+		return cmd
+	}
 	if v.mode != clusterInputNone {
 		switch msg.String() {
 		case "enter":
@@ -315,13 +344,21 @@ func (v *clusterView) respondToInvite(accept bool, pin string) tea.Cmd {
 // (empty) + nodes:changed (empty), which refresh the view; the broker persists
 // the now-unclustered state so the node stays out after a restart.
 func (v *clusterView) leaveCluster() tea.Cmd {
+	if !v.identityReady {
+		v.status = "waiting for cluster identity; cannot confirm leave"
+		return nil
+	}
 	if v.identity.ClusterID == "" {
 		v.status = "not in a cluster"
 		return nil
 	}
-	return call(v.client, "cluster:leave", nil, func(_ *rpc.Message, err error) tea.Msg {
+	id := v.identity
+	v.leaveIdentity = &id
+	cmd := call(v.client, "cluster:leave", nil, func(_ *rpc.Message, err error) tea.Msg {
 		return clusterActionMsg{what: "leave cluster", err: err}
 	})
+	v.confirm = newConfirm("Leave cluster?", fmt.Sprintf("Leave cluster %s on %s (%s)? This removes this node's cluster trust.", id.ClusterID, id.Name, id.NodeUUID), cmd)
+	return nil
 }
 
 func (v *clusterView) removeSelected() tea.Cmd {
@@ -340,9 +377,12 @@ func (v *clusterView) removeSelected() tea.Cmd {
 	} else {
 		params["nodeId"] = n.ID
 	}
-	return call(v.client, "nodes:remove", params, func(_ *rpc.Message, err error) tea.Msg {
+	cmd := call(v.client, "nodes:remove", params, func(_ *rpc.Message, err error) tea.Msg {
 		return clusterActionMsg{what: "remove " + n.ID, err: err}
 	})
+	v.leaveIdentity = nil
+	v.confirm = newConfirm("Remove cluster member?", fmt.Sprintf("Remove %s (%s, %s) from the cluster?", n.Name, n.ID, n.NodeUUID), cmd)
+	return nil
 }
 
 func (v *clusterView) setNodes(nodes []clusterNode) {
@@ -381,6 +421,9 @@ func (v *clusterView) View() string {
 	if v.mode != clusterInputNone {
 		b.WriteString("\n" + v.input.View())
 	}
+	if v.confirm.open() {
+		b.WriteString("\n" + v.confirm.View())
+	}
 	if v.status != "" {
 		b.WriteString("\n" + footerStyle.Render(v.status))
 	}
@@ -388,5 +431,8 @@ func (v *clusterView) View() string {
 }
 
 func (v *clusterView) Help() []key.Binding {
+	if v.confirm.open() {
+		return v.confirm.Help()
+	}
 	return []key.Binding{clInviteKey, clAcceptKey, clDeclineKey, clRemoveKey, clLeaveKey}
 }

@@ -112,12 +112,27 @@ returns the epoch and `protocol: 2`. Go codecs treat envelope mismatches as
 terminal, not as recoverable malformed JSON. Keep matched clients and workers.
 
 On an epoch change, the desktop bridge rehydrates each domain from authoritative
-snapshots (discovery, membership, engines/models, errors, workloads, and proxy
-status). Sequence gaps do not trigger snapshot polling. The broker sends a
-heartbeat every 15 seconds; desktop owns a bounded stop/start recovery after
+snapshots (discovery, membership, engines/models, errors, workloads, proxy
+status, and `workers:get-status`). Sequence gaps do not trigger snapshot polling.
+The broker sends a heartbeat every 15 seconds; desktop owns bounded stop/start recovery after
 45 seconds of inbound silence, followed by readiness and snapshot recovery.
 This does not imply unconditional reconnect after an unexpected broker exit or
 heartbeat monitoring of individual workers.
+
+Worker health is a separate broker-owned layer: each worker answers
+`worker/health`; the broker probes every 30 s with a 5 s deadline, marks
+`degraded` after two failures and restarts only eligible workers after three.
+`--worker-health-interval` has a 1 s minimum; the deadline is capped at the
+interval. Optional initial-spawn retries, crashes and eligible hangs share the
+1 s → 16 s / five-replacement budget; healthy reset needs 60 s uptime and a
+successful probe since spawn. Missing defaults wait for `workers:restart`.
+`workers:update` is an unconditional full snapshot; desktop and TUI recover
+`workers:get-status` after epoch changes, render the reported state, and relay
+`workers:restart` without implementing policy. Settings → Service → Workers
+and TUI Overview (`R`, with confirmation) expose the controls. Engine-manager
+and the three proxies never auto-restart on a hang; see
+[Health and Failure Detection](architecture.mdx#health-and-failure-detection)
+for the eight eligible workers and the Unix-only cross-process test boundary.
 
 ### Adding Renderer State
 

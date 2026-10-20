@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Divider, Stack } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { EngineProcessStatus } from '@/shared/types/engines'
-import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
+import { noEngineCapabilities } from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
@@ -88,11 +88,19 @@ export function BackendRow({
     const [confirmUninstall, setConfirmUninstall] = useState(false)
     const [confirmPorts, setConfirmPorts] = useState(false)
 
-    const caps = EngineCapabilities[backend.type]
+    // Whether the engine's server port can be edited is reported by the node that
+    // owns it: only when this platform's start inputs actually take the port and
+    // a move would not be refused as an externally adopted engine (oMLX's
+    // bundled start command takes no port at all).
+    const reported =
+        useEngineStatusStore(
+            state => state.statusByNode.get(nodeId)?.get(backend.type)?.capabilities
+        ) ?? noEngineCapabilities()
+    const canSetPort = reported.setPort
 
     const serverPortChanged = useMemo(
-        () => caps.hasEnginePort && edit.serverPort !== String(backend.port ?? ''),
-        [caps.hasEnginePort, edit.serverPort, backend.port]
+        () => canSetPort && edit.serverPort !== String(backend.port ?? ''),
+        [canSetPort, edit.serverPort, backend.port]
     )
 
     const proxyPortChanged = useMemo(
@@ -272,15 +280,17 @@ export function BackendRow({
         setExpanded(prev => !prev)
     }, [isUnavailable])
 
-    // Install/start/stop and model pull work on clustered peers; uninstall,
-    // update, port edits, and model load/delete remain local-only.
+    // Install/start/stop and model actions use the owning peer's flags;
+    // uninstall, update and persistent port edits remain local-only.
     const controlsDisabled = isTransitioning
 
     const content = expanded ? (
         <Stack gap="4" className="max-w-full overflow-hidden pt-4">
             <BackendUpdateBanner
                 backend={displayBackend}
-                disabled={controlsDisabled || !isLocalNode}
+                disabled={
+                    controlsDisabled || !isLocalNode || !reported.install || !reported.uninstall
+                }
                 onUpdate={handleUpdate}
             />
 
@@ -288,13 +298,13 @@ export function BackendRow({
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
 
-            {canShowAccordions && (caps.hasEnginePort || edit.proxyPort) && (
+            {canShowAccordions && (canSetPort || edit.proxyPort) && (
                 <PortsSection
                     edit={edit}
                     portsChanged={portsChanged}
                     anyLoading={isTransitioning}
                     isLocalNode={isLocalNode}
-                    caps={caps}
+                    canSetPort={canSetPort}
                     onApplyPorts={validateAndConfirmPorts}
                     onServerChange={v => setEdit(prev => ({ ...prev, serverPort: v }))}
                     onProxyChange={v => setEdit(prev => ({ ...prev, proxyPort: v }))}
@@ -304,7 +314,7 @@ export function BackendRow({
             <BackendFooter
                 backend={displayBackend}
                 targetOs={targetOs}
-                showUninstall={isLocalNode}
+                showUninstall={isLocalNode && reported.uninstall}
                 disabled={controlsDisabled}
                 onUninstall={requestUninstall}
             />
@@ -325,6 +335,7 @@ export function BackendRow({
                         expanded={expanded}
                         isLocalNode={isLocalNode}
                         targetOs={targetOs}
+                        canInstall={reported.install}
                         onInstall={handleInstall}
                     />
                     {expanded && <Divider />}

@@ -29,6 +29,7 @@ export function BackendHeader({
     expanded,
     isLocalNode,
     targetOs,
+    canInstall,
     onInstall
 }: {
     backend: BackendInfo
@@ -41,6 +42,7 @@ export function BackendHeader({
     expanded: boolean
     isLocalNode: boolean
     targetOs: PlatformDisplayName
+    canInstall: boolean
     onInstall: () => void
 }) {
     const caps = EngineCapabilities[backend.type]
@@ -242,15 +244,18 @@ export function BackendHeader({
                     return toggle
                 })()}
 
-            {!isUnavailable && !isTransitioning && backend.processStatus === 'not-installed' && (
-                <InstallButton
-                    backend={backend}
-                    targetOs={targetOs}
-                    isLocalNode={isLocalNode}
-                    disabled={disabled}
-                    onInstall={onInstall}
-                />
-            )}
+            {canInstall &&
+                !isUnavailable &&
+                !isTransitioning &&
+                backend.processStatus === 'not-installed' && (
+                    <InstallButton
+                        backend={backend}
+                        targetOs={targetOs}
+                        isLocalNode={isLocalNode}
+                        disabled={disabled}
+                        onInstall={onInstall}
+                    />
+                )}
         </Flex>
     )
 }

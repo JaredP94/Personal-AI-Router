@@ -23,10 +23,39 @@ export type EngineType = (typeof EngineTypes)[number]
 
 export type EngineSource = (typeof EngineSources)[number]
 
+/**
+ * What one engine can actually do on the node that reports it.
+ *
+ * `nvpair-engine-manager` derives these from the effective manifest for *that*
+ * host's platform (and, for `set_port`/`uninstall`, from whether the engine is
+ * an externally adopted install), so they are the only truth about support —
+ * the desktop keeps no engine table of its own. A status that carries no
+ * capability object (an older peer) is read as all-false, which hides rather
+ * than promises an action.
+ */
+export type EngineCapabilityFlags = {
+    /** The engine declares a `list_models` action on this platform. */
+    listModels: boolean
+    /** The engine declares a `pull_model` action on this platform. */
+    pullModel: boolean
+    /** The engine declares a `delete_model` action on this platform. */
+    deleteModel: boolean
+    /** `delete_model` is declared with `restart_after`, so a delete bounces the engine. */
+    deleteRestartsEngine: boolean
+    /** The engine's port can be moved persistently (`engine:set-port` would accept it). */
+    setPort: boolean
+    /** The effective manifest has a platform block for this host OS/arch. */
+    install: boolean
+    /** An uninstall is declared and the engine is not an externally adopted install. */
+    uninstall: boolean
+}
+
 export interface EngineStatusData {
     engineType: EngineType
     nodeId: string
     processStatus: EngineProcessStatus
+    /** Reported by the node that owns this engine. See {@link EngineCapabilityFlags}. */
+    capabilities: EngineCapabilityFlags
     /**
      * Configured bind port for the engine HTTP server when installed (same value when stopped vs running).
      * Null when not installed, or for an engine with no server port.

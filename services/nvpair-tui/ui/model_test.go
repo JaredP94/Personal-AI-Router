@@ -66,6 +66,7 @@ type recoveryBroker struct {
 	writes     sync.Mutex
 	mu         sync.Mutex
 	epoch      string
+	clusterID  string
 	counts     map[string]int
 	order      []string
 	holdMethod string
@@ -74,6 +75,28 @@ type recoveryBroker struct {
 	fail       string
 	broken     func(method string) bool // permanently failing getters
 	workloads  []workload
+	workers    []workerStatus
+	restarts   []map[string]string // params of every workers:restart received
+}
+
+// fixtureWorkers is a full broker lifecycle snapshot in the startup order the
+// registry publishes, so recovery tests can assert all twelve rows appear.
+func fixtureWorkers() []workerStatus {
+	names := []string{
+		"scanner", "errors", "settings", "engine-manager", "node-info", "proxy",
+		"lmstudio-proxy", "omlx-proxy", "workload-manager", "manual-nodes",
+		"cluster-manager", "scheduler",
+	}
+	workers := make([]workerStatus, 0, len(names))
+	for _, name := range names {
+		workers = append(workers, workerStatus{
+			Name:          name,
+			State:         "running",
+			RestartOnHang: name != "engine-manager" && name != "proxy" && name != "lmstudio-proxy" && name != "omlx-proxy",
+			PID:           1000,
+		})
+	}
+	return workers
 }
 
 func newRecoverySession(t *testing.T) (*recoveryBroker, *loop) {
@@ -92,7 +115,7 @@ func newRecoveryBroker(t *testing.T) (*recoveryBroker, *loop) {
 	c := rpc.NewClient(cli, cli)
 	ctx, cancel := context.WithCancel(context.Background())
 	go c.Run(ctx)
-	b := &recoveryBroker{conn: srv, codec: rpc.NewCodec(srv), epoch: "A", counts: map[string]int{}}
+	b := &recoveryBroker{conn: srv, codec: rpc.NewCodec(srv), epoch: "A", counts: map[string]int{}, workers: fixtureWorkers()}
 	t.Cleanup(func() {
 		cancel()
 		cli.Close()
@@ -116,8 +139,9 @@ func (b *recoveryBroker) serve() {
 		b.mu.Lock()
 		b.counts[q.Method]++
 		b.order = append(b.order, q.Method)
-		epoch := b.epoch
+		epoch, clusterID := b.epoch, b.clusterID
 		workloads := append([]workload{}, b.workloads...)
+		workers := append([]workerStatus{}, b.workers...)
 		gate := b.release
 		if q.Method != b.holdMethod {
 			gate = nil
@@ -139,7 +163,7 @@ func (b *recoveryBroker) serve() {
 		var result any = map[string]any{}
 		switch q.Method {
 		case "cluster:get-node-id":
-			result = map[string]string{"nodeUuid": epoch, "nodeId": epoch + "-host"}
+			result = map[string]string{"nodeUuid": epoch, "nodeId": epoch + "-host", "clusterId": clusterID}
 		case "discovery:get-nodes", "nodes:get-initial", "nodes/list", "proxy:nodes/list", "lmstudio-proxy:nodes/list", "omlx-proxy:nodes/list":
 			result = map[string]any{"nodes": []any{}}
 		case "engine:get-installed":
@@ -149,6 +173,15 @@ func (b *recoveryBroker) serve() {
 		case "workloads:get-initial":
 			// The broker's real shape: workloadsInitialResult{Workloads}.
 			result = map[string]any{"workloads": workloads}
+		case "workers:get-status":
+			result = map[string]any{"workers": workers}
+		case "workers:restart":
+			var params map[string]string
+			_ = json.Unmarshal(q.Params, &params)
+			b.mu.Lock()
+			b.restarts = append(b.restarts, params)
+			b.mu.Unlock()
+			result = map[string]any{"name": params["name"], "state": "restarting"}
 		}
 		b.writes.Lock()
 		if fail {
@@ -201,6 +234,13 @@ func (b *recoveryBroker) count(method string) int {
 	defer b.mu.Unlock()
 	return b.counts[method]
 }
+
+// restartParams returns the params of every workers:restart the broker saw.
+func (b *recoveryBroker) restartParams() []map[string]string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]map[string]string(nil), b.restarts...)
+}
 func (b *recoveryBroker) hold(method string) <-chan struct{} {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -236,14 +276,13 @@ func TestRecoveryReplacesEveryOwningViewAndReinstallsConnectionSubscriptions(t *
 		n.setNodes([]availableNode{{HostUUID: "stale"}})
 		w.upsert(workload{ID: "stale", OriginatedFrom: "old"})
 		cl.identity.NodeUUID = "old"
-		h.localNodeUUID = "old"
-		old := []svcerrors.ServiceError{{ID: crashPrefix + "scanner", NodeID: "old"}}
-		h.rebuildCrashes(old)
+		old := []svcerrors.ServiceError{{ID: "worker-error", NodeID: "old"}}
+		h.setWorkers([]workerStatus{{Name: "stale-worker", State: "exhausted"}})
 		e.setErrors(old)
 		b.push(t, "B", 1, "heartbeat", map[string]any{})
 		l.until(t, func() bool { return l.m.hydratedEpoch == "B" })
-		if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "B" || h.localNodeUUID != "B" || len(h.crashed) != 0 || len(e.errs) != 0 {
-			t.Fatalf("stale consumers: nodes %v workloads %v identity %v/%v crash %v errors %v", n.nodes, w.byKey, cl.identity, h.localNodeUUID, h.crashed, e.errs)
+		if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "B" || len(h.workers) != 12 || len(e.errs) != 0 {
+			t.Fatalf("stale consumers: nodes %v workloads %v identity %v workers %v errors %v", n.nodes, w.byKey, cl.identity, h.workers, e.errs)
 		}
 		b.mu.Lock()
 		order := append([]string(nil), b.order...)
@@ -260,7 +299,7 @@ func TestRecoveryReplacesEveryOwningViewAndReinstallsConnectionSubscriptions(t *
 				t.Errorf("%s queried %d times", method, count)
 			}
 		}
-		for _, method := range []string{"broker:resync", "discovery:get-nodes", "workloads:get-initial", "engine:get-installed", "nodes:get-initial", "cluster:get-node-id", "errors:get-initial", "nodes/list", "settings/get-force-ports", "proxy:get-status", "proxy:nodes/list", "proxy:node/selected"} {
+		for _, method := range []string{"broker:resync", "discovery:get-nodes", "workloads:get-initial", "engine:get-installed", "nodes:get-initial", "cluster:get-node-id", "errors:get-initial", "workers:get-status", "nodes/list", "settings/get-force-ports", "proxy:get-status", "proxy:nodes/list", "proxy:node/selected"} {
 			if counts[method] != 1 {
 				t.Errorf("%s not fetched once: %v", method, counts)
 			}
@@ -370,9 +409,8 @@ func TestRecoveryAppliesHealthyDomainsAndStaysSilentWhenOptionalGettersFail(t *t
 	n.setNodes([]availableNode{{HostUUID: "stale"}})
 	w.upsert(workload{ID: "stale", OriginatedFrom: "old"})
 	cl.identity.NodeUUID = "old"
-	h.localNodeUUID = "old"
-	old := []svcerrors.ServiceError{{ID: crashPrefix + "scanner", NodeID: "old"}}
-	h.rebuildCrashes(old)
+	h.setWorkers([]workerStatus{{Name: "stale-worker", State: "exhausted"}})
+	old := []svcerrors.ServiceError{{ID: "worker-error", NodeID: "old"}}
 	e.setErrors(old)
 
 	b.push(t, "A", 1, "heartbeat", map[string]any{})
@@ -382,8 +420,8 @@ func TestRecoveryAppliesHealthyDomainsAndStaysSilentWhenOptionalGettersFail(t *t
 	if l.m.hydratedEpoch != "A" {
 		t.Errorf("epoch not hydrated after a successful resync with optional getter failures: %q", l.m.hydratedEpoch)
 	}
-	if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "A" || h.localNodeUUID != "A" || len(h.crashed) != 0 || len(e.errs) != 0 {
-		t.Errorf("healthy domains not applied: nodes %v workloads %v identity %v/%v crash %v errors %v", n.nodes, w.byKey, cl.identity, h.localNodeUUID, h.crashed, e.errs)
+	if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "A" || len(h.workers) != 12 || len(e.errs) != 0 {
+		t.Errorf("healthy domains not applied: nodes %v workloads %v identity %v workers %v errors %v", n.nodes, w.byKey, cl.identity, h.workers, e.errs)
 	}
 	// A failed getter reaches its own view as that view's ordinary error result.
 	if eng := l.m.views[5].(*enginesView); !strings.Contains(eng.status, "load engines failed") {
@@ -449,5 +487,208 @@ func TestSetupFailureRetriesAreBounded(t *testing.T) {
 	}
 	if got := b.count("broker:resync"); got != 0 {
 		t.Fatalf("broker:resync sent %d times without subscriptions", got)
+	}
+}
+
+// newHydratedSession drives the fixture through one epoch recovery so the
+// Overview holds the broker's full worker snapshot.
+func newHydratedSession(t *testing.T) (*recoveryBroker, *loop) {
+	t.Helper()
+	b, l := newRecoverySession(t)
+	b.push(t, "A", 1, "heartbeat", map[string]any{})
+	l.until(t, func() bool { return l.m.hydratedEpoch == "A" })
+	l.settle(t)
+	return b, l
+}
+
+// The Overview is hydrated by the root epoch recovery path, not by a view's
+// Init: the shell never calls Init for this tab, so a getter that lives there
+// would leave the real program blank.
+func TestOverviewHydratesAllTwelveWorkersFromEpochRecovery(t *testing.T) {
+	b, l := newHydratedSession(t)
+	if got := b.count("workers:get-status"); got != 1 {
+		t.Fatalf("workers:get-status sent %d times, want exactly one recovery read", got)
+	}
+	h := l.m.views[0].(*healthView)
+	if len(h.workers) != 12 {
+		t.Fatalf("hydrated %d workers, want all 12 the broker supervises: %v", len(h.workers), h.workers)
+	}
+	rows := h.table.Rows()
+	if len(rows) != 12 {
+		t.Fatalf("table has %d rows, want 12", len(rows))
+	}
+	want := []string{"scanner", "errors", "settings", "engine-manager", "node-info", "proxy", "lmstudio-proxy", "omlx-proxy", "workload-manager", "manual-nodes", "cluster-manager", "scheduler"}
+	for i, name := range want {
+		if rows[i][0] != name {
+			t.Errorf("row %d is %q, want %q in the broker's startup order", i, rows[i][0], name)
+		}
+	}
+}
+
+// workers:update is relayed unconditionally, so a change replaces the rows
+// without another getter.
+func TestOverviewAppliesWorkersUpdatePush(t *testing.T) {
+	b, l := newHydratedSession(t)
+	b.push(t, "A", 2, "workers:update", map[string]any{"workers": []map[string]any{
+		{"name": "scanner", "state": "running", "attempts": 1, "pid": 77},
+		{"name": "proxy", "state": "degraded", "attempts": 3, "restartOnHang": false, "lastError": "subprocess proxy stopped responding"},
+	}})
+	l.until(t, func() bool { return len(l.m.views[0].(*healthView).workers) == 2 })
+	h := l.m.views[0].(*healthView)
+	rows := h.table.Rows()
+	if len(rows) != 2 || rows[1][0] != "proxy" || rows[1][1] != "degraded" {
+		t.Fatalf("push did not replace the rows: %v", rows)
+	}
+	if got := b.count("workers:get-status"); got != 1 {
+		t.Errorf("a workers:update push triggered %d extra getters", got-1)
+	}
+}
+
+// The confirmation is the gate: n issues nothing at all.
+func TestOverviewRestartCancelledSendsNoRPC(t *testing.T) {
+	b, l := newHydratedSession(t)
+	l.turn(t, keyRunes('R'))
+	if !l.m.views[0].(*healthView).confirm.open() {
+		t.Fatal("R on the selected worker did not open a confirmation")
+	}
+	if got := b.count("workers:restart"); got != 0 {
+		t.Fatalf("R sent %d calls before confirmation", got)
+	}
+	l.turn(t, keyRunes('n'))
+	l.settle(t)
+	if got := b.count("workers:restart"); got != 0 {
+		t.Errorf("cancelled restart sent %d workers:restart calls, want 0", got)
+	}
+	if l.m.views[0].(*healthView).confirm.open() {
+		t.Error("n left the confirmation open")
+	}
+}
+
+// y sends exactly one workers:restart, for the worker that was selected when
+// the prompt opened — not for whatever the cursor has drifted to since.
+func TestOverviewRestartConfirmedSendsOneCallForTheFrozenWorker(t *testing.T) {
+	b, l := newHydratedSession(t)
+	h := l.m.views[0].(*healthView)
+	h.table.SetCursor(1) // "errors" is the restart target
+	l.turn(t, keyRunes('R'))
+	// The cursor moves after the prompt opened: a lazy implementation would
+	// read the selection when y is pressed.
+	h.table.SetCursor(4)
+	l.turn(t, keyRunes('y'))
+	l.until(t, func() bool { return len(b.restartParams()) == 1 })
+	l.settle(t)
+	sent := b.restartParams()
+	if len(sent) != 1 {
+		t.Fatalf("workers:restart sent %d times, want exactly 1: %v", len(sent), sent)
+	}
+	if sent[0]["name"] != "errors" {
+		t.Errorf("restarted %q, want the worker frozen at prompt time (%q)", sent[0]["name"], "errors")
+	}
+	if h.confirm.open() {
+		t.Error("confirmation still open after y")
+	}
+	// A repeated y must not repeat the request.
+	l.turn(t, keyRunes('y'))
+	l.settle(t)
+	if got := b.count("workers:restart"); got != 1 {
+		t.Errorf("a second y sent %d workers:restart calls in total, want 1", got)
+	}
+}
+
+// While the confirmation is open the prompt owns the keyboard: the global quit
+// and tab-switch bindings must not fire, or a restart could be bypassed (or
+// the program exited) without an answer.
+func TestOverviewOpenConfirmationBlocksGlobalKeys(t *testing.T) {
+	b, l := newHydratedSession(t)
+	l.turn(t, keyRunes('R'))
+	if !l.m.views[0].(*healthView).confirm.open() {
+		t.Fatal("no confirmation to test")
+	}
+	for _, k := range []tea.KeyMsg{keyRunes('q'), {Type: tea.KeyTab}, {Type: tea.KeyShiftTab}, {Type: tea.KeyCtrlC}, keyRunes('?'), keyRunes('l'), keyRunes('h')} {
+		next, cmd := l.m.Update(k)
+		m, ok := next.(Model)
+		if !ok {
+			t.Fatalf("model %T", next)
+		}
+		l.m = m
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				if _, quit := msg.(tea.QuitMsg); quit {
+					t.Fatalf("%v quit the program while a confirmation was open", k)
+				}
+			}
+		}
+		if l.m.active != 0 {
+			t.Fatalf("%v switched tabs while a confirmation was open", k)
+		}
+		if !l.m.views[0].(*healthView).confirm.open() {
+			t.Fatalf("%v answered the confirmation without y or n", k)
+		}
+	}
+	if got := b.count("workers:restart"); got != 0 {
+		t.Errorf("blocked keys still sent %d workers:restart calls", got)
+	}
+}
+
+func TestOverviewPushDuringRecoveryWinsOverHeldWorkerSnapshot(t *testing.T) {
+	b, l := newRecoverySession(t)
+	entered := b.hold("workers:get-status")
+	b.push(t, "A", 1, "heartbeat", map[string]any{})
+	l.until(t, func() bool { return l.m.recoveryActive })
+	awaitEntry(t, entered)
+	b.push(t, "A", 2, "workers:update", map[string]any{"workers": []workerStatus{
+		{Name: "scheduler", State: "exhausted", Attempts: 5, LastError: "probe timed out"},
+	}})
+	h := l.m.views[0].(*healthView)
+	l.until(t, func() bool { return len(h.workers) == 1 })
+	b.unhold()
+	l.until(t, func() bool { return l.m.hydratedEpoch == "A" })
+	if len(h.workers) != 1 || h.workers[0].Name != "scheduler" || h.workers[0].State != "exhausted" {
+		t.Fatalf("stale recovery snapshot replaced newer worker facts: %v", h.workers)
+	}
+}
+
+func TestOverviewWorkerGetterFailureDoesNotBlockOtherDomains(t *testing.T) {
+	b, l := newRecoverySession(t)
+	b.mu.Lock()
+	b.fail = "workers:get-status"
+	b.mu.Unlock()
+	b.push(t, "A", 1, "heartbeat", map[string]any{})
+	l.until(t, func() bool { return l.m.hydratedEpoch == "A" })
+	h := l.m.views[0].(*healthView)
+	if len(h.workers) != 0 || !strings.Contains(h.status, "load worker status failed") {
+		t.Fatalf("failed worker getter invented health or lost its error: workers=%v status=%q", h.workers, h.status)
+	}
+	if id := l.m.views[6].(*clusterView).identity.NodeUUID; id != "A" {
+		t.Fatalf("worker getter failure blocked identity recovery: %q", id)
+	}
+}
+
+func TestOverviewRestartFailureIsReported(t *testing.T) {
+	b, l := newHydratedSession(t)
+	b.mu.Lock()
+	b.fail = "workers:restart"
+	b.mu.Unlock()
+	l.turn(t, keyRunes('R'))
+	l.turn(t, keyRunes('y'))
+	h := l.m.views[0].(*healthView)
+	l.until(t, func() bool { return strings.Contains(h.status, "restart scanner failed") })
+	if got := b.count("workers:restart"); got != 1 {
+		t.Fatalf("failed restart sent %d requests", got)
+	}
+}
+
+func TestErrorsSnapshotStillUpdatesErrorsTabNotWorkerHealth(t *testing.T) {
+	b, l := newHydratedSession(t)
+	b.push(t, "A", 2, "errors:update", []svcerrors.ServiceError{
+		{ID: "supervisor:subprocess-crashed:scanner", Message: "scanner crashed", NodeID: "A"},
+	})
+	e := l.m.views[1].(*errorsView)
+	l.until(t, func() bool { return len(e.errs) == 1 })
+	if row := e.table.Rows()[0]; row[3] != "scanner crashed" {
+		t.Fatalf("Errors tab lost the error snapshot: %v", row)
+	}
+	if state := l.m.views[0].(*healthView).table.Rows()[0][1]; state != "running" {
+		t.Fatalf("Overview derived health from crash errors: %q", state)
 	}
 }

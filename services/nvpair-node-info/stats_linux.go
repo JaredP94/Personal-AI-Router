@@ -119,6 +119,7 @@ func initialMemorySnapshot(readUsed func() (uint64, bool)) *statsSnapshot {
 	snap := &statsSnapshot{}
 	if used, ok := readUsed(); ok {
 		snap.MemUsedBytes = used
+		snap.MemUsedValid = true
 	}
 	return snap
 }
@@ -154,6 +155,7 @@ func (c *statsCollector) decodeSnapshot() *statsSnapshot {
 
 	if used, ok := readMemoryUsed(); ok {
 		snap.MemUsedBytes = used
+		snap.MemUsedValid = true
 	}
 
 	gpu := make(map[string]gpuStat)
@@ -352,42 +354,4 @@ func parseMeminfoUsed(s string) (uint64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-// parseNvidiaDynamic decodes the dynamic query (uuid,utilization.gpu,
-// memory.used) into the per-GPU snapshot map keyed by UUID — the same statsKey
-// gpu_linux.go stamped on each static GPUInfo. memory.used is in MiB
-// (-nounits) and converted to bytes; utilization.gpu is an integer percent,
-// clamped to 100. The returned sample count includes a parsed 0 % reading but
-// excludes [N/A] and malformed utilization, so callers do not mistake
-// memory-only rows for fresh utilization. Rows with a missing uuid are skipped.
-// A memory.used value of [N/A] remains zero here; buildResponse supplies
-// system-memory usage for GPUs that static detection identified as
-// unified-memory adapters.
-func parseNvidiaDynamic(out string) (map[string]gpuStat, int) {
-	res := map[string]gpuStat{}
-	utilizationSamples := 0
-	for _, line := range strings.Split(out, "\n") {
-		fields := splitCSVRow(line)
-		if len(fields) < 3 {
-			continue
-		}
-		uuid := fields[0]
-		if uuid == "" {
-			continue
-		}
-		var stat gpuStat
-		if pct, err := strconv.ParseUint(fields[1], 10, 32); err == nil {
-			if pct > 100 {
-				pct = 100
-			}
-			stat.UtilizationPct = uint32(pct)
-			utilizationSamples++
-		}
-		if mib, err := strconv.ParseUint(fields[2], 10, 64); err == nil {
-			stat.VRAMUsed = mib * 1024 * 1024
-		}
-		res[uuid] = stat
-	}
-	return res, utilizationSamples
 }

@@ -5,6 +5,12 @@
  * Engine manifest -- the single, immutable declaration of what an engine is.
  * Never broadcast over the wire; loaded locally from the engine registry.
  * Replaces BackendManifest, BackendCapabilities, BackendDisplayNames, BackendDefaultLinks.
+ *
+ * This is UI presentation metadata only. What an engine *supports* is not here:
+ * `nvpair-engine-manager` reports it per node and platform on every
+ * `EngineStatus` as `capabilities` (`EngineCapabilityFlags`), and the UI gates
+ * model deletion, the delete confirmation and the editable engine port on those
+ * reported flags.
  */
 import type { SupportedPlatform } from '@/shared/types/platform'
 
@@ -20,8 +26,6 @@ export interface EngineCaps {
     hasEject: boolean
     /** Platforms where PAIR can auto-install this engine. Empty = no auto-install. */
     hasInstall: SupportedPlatform[]
-    /** Whether the engine has its own server port (vs CLI-per-request). */
-    hasEnginePort: boolean
     /** Whether the engine requires a user-configured install path. */
     hasInstallPath: boolean
     /** When true, show an "open in browser" button that opens the proxy URL when running. */
@@ -34,14 +38,6 @@ export interface EngineCaps {
     hasModelSearchOnlyWhenRunning: boolean
     /** When true, model operations work while the engine process is stopped (file-based weights). */
     modelOpsWhenStopped: boolean
-    /** When true, show the Delete action in the model action menu. */
-    hasDeleteModel: boolean
-    /**
-     * When true, the engine restarts as part of deleting a model, so Delete asks
-     * for confirmation first. The engine manager owns the restart; this flag only
-     * tells the UI that deleting has that side effect.
-     */
-    restartsOnModelDelete?: boolean
     /**
      * If the engine has its own public model catalog (e.g. ollama.com), provide the
      * hub config here. Presence doubles as the truthy flag for the hub source selector.

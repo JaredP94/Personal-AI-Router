@@ -153,10 +153,13 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
-	codec          *Codec
-	closeTransport func() error
-	cancel         context.CancelFunc
-	startedAt      time.Time
+	workerStatusMu       sync.Mutex
+	workerEntries        []*workerEntry
+	workerHealthInterval time.Duration
+	codec                *Codec
+	closeTransport       func() error
+	cancel               context.CancelFunc
+	startedAt            time.Time
 	// heartbeatInterval is the period runHeartbeat ticks at. Injected so tests
 	// can drive the stream without waiting out jsonrpc.HeartbeatInterval;
 	// NewBroker defaults it, and heartbeatEvery() falls back again if unset.
@@ -306,7 +309,7 @@ type Broker struct {
 	// (failWorkloadsForNode). Written from the proxy / workload-manager reader
 	// goroutines (via emitWorkloadEvent) and the scanner-event goroutine (via
 	// failWorkloadsForNode); it is internally synchronized.
-	workloads *workloadstore.Store
+	workloads       *workloadstore.Store
 	lastLocalDemand atomic.Bool
 
 	// engineMu guards engineSubscribed. The engine:<event> stream is
@@ -359,18 +362,19 @@ type Broker struct {
 // required; every other field is optional (an empty string means the
 // broker won't spawn that worker because its binary couldn't be resolved).
 type workerPaths struct {
-	scanner       string
-	nodeInfo      string
-	proxy         string
-	lmstudioProxy string
-	omlxProxy     string
-	workloadMgr   string
-	errors        string
-	engineMgr     string
-	manualNodes   string
-	settings      string
-	clusterMgr    string
-	scheduler     string
+	workerHealthInterval time.Duration
+	scanner              string
+	nodeInfo             string
+	proxy                string
+	lmstudioProxy        string
+	omlxProxy            string
+	workloadMgr          string
+	errors               string
+	engineMgr            string
+	manualNodes          string
+	settings             string
+	clusterMgr           string
+	scheduler            string
 	// clusterDir is the cluster-manager config dir (node.crt/node.key +
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
@@ -399,36 +403,39 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// only. The same value is passed to nvpair-errors via --node-id so
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
-	return &Broker{
-		codec:              codec,
-		closeTransport:     paths.closeTransport,
-		startedAt:          time.Now(),
-		heartbeatInterval:  jsonrpc.HeartbeatInterval,
-		nodeID:             nodeID,
-		scannerPath:        paths.scanner,
-		nodeInfoPath:       paths.nodeInfo,
-		proxyPath:          paths.proxy,
-		lmstudioProxyPath:  paths.lmstudioProxy,
-		omlxProxyPath:      paths.omlxProxy,
-		workloadMgrPath:    paths.workloadMgr,
-		errorsPath:         paths.errors,
-		engineMgrPath:      paths.engineMgr,
-		manualNodesPath:    paths.manualNodes,
-		settingsPath:       paths.settings,
-		clusterMgrPath:     paths.clusterMgr,
-		schedulerPath:      paths.scheduler,
-		clusterDir:         paths.clusterDir,
-		mesh:               clustertrust.Open(paths.clusterDir),
-		store:              newDiscoveryStore(),
-		telemetry:          newTelemetryCache(),
-		relayDir:           relay.NewDirectory(),
-		regCache:           relay.NewRegistrationCache(),
-		manualNodeKeys:     make(map[string]string),
-		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
-		workloads:          workloadstore.New(),
-		ollamaPortReady:    make(chan struct{}),
-		lmstudioPortReady:  make(chan struct{}),
+	b := &Broker{
+		workerHealthInterval: paths.workerHealthInterval,
+		codec:                codec,
+		closeTransport:       paths.closeTransport,
+		startedAt:            time.Now(),
+		heartbeatInterval:    jsonrpc.HeartbeatInterval,
+		nodeID:               nodeID,
+		scannerPath:          paths.scanner,
+		nodeInfoPath:         paths.nodeInfo,
+		proxyPath:            paths.proxy,
+		lmstudioProxyPath:    paths.lmstudioProxy,
+		omlxProxyPath:        paths.omlxProxy,
+		workloadMgrPath:      paths.workloadMgr,
+		errorsPath:           paths.errors,
+		engineMgrPath:        paths.engineMgr,
+		manualNodesPath:      paths.manualNodes,
+		settingsPath:         paths.settings,
+		clusterMgrPath:       paths.clusterMgr,
+		schedulerPath:        paths.scheduler,
+		clusterDir:           paths.clusterDir,
+		mesh:                 clustertrust.Open(paths.clusterDir),
+		store:                newDiscoveryStore(),
+		telemetry:            newTelemetryCache(),
+		relayDir:             relay.NewDirectory(),
+		regCache:             relay.NewRegistrationCache(),
+		manualNodeKeys:       make(map[string]string),
+		manualNodeStatuses:   make(map[string]manualNodeStatusEntry),
+		workloads:            workloadstore.New(),
+		ollamaPortReady:      make(chan struct{}),
+		lmstudioPortReady:    make(chan struct{}),
 	}
+	b.initWorkerRegistry()
+	return b
 }
 
 // registerService records a local service in the discovery registration cache
@@ -1725,26 +1732,6 @@ func (b *Broker) onErrorsUpdate(params json.RawMessage) {
 	}
 }
 
-// startOptionalWorker creates a supervisor for an optional (non-fatal)
-// worker, wires its crash/recovery callbacks (report into the pipeline,
-// drop the handle while down), and starts it. It returns the supervisor,
-// or nil when the binary wasn't resolved or the first spawn failed — in
-// both cases the broker simply runs without that worker. The caller defers
-// Stop on a non-nil result.
-func (b *Broker) startOptionalWorker(name, path string, spawn func() (supervisedHandle, error), clearHandle func()) *supervisor {
-	if path == "" {
-		slog.Info("worker path not resolved; running without it", "worker", name)
-		return nil
-	}
-	sup := newSupervisor(name, defaultRestartPolicy(), spawn)
-	sup.onCrash, sup.onRecovered = b.supervisedWorkerCallbacks(name, clearHandle)
-	if err := sup.Start(); err != nil {
-		slog.Warn("worker failed to start; continuing without it", "worker", name, "path", path, "err", err)
-		return nil
-	}
-	return sup
-}
-
 // Serve runs the JSON-RPC loop until the peer disconnects, the context is
 // cancelled, or a "shutdown" request is received. The returned error is
 // nil on graceful close; a non-nil error indicates an unrecoverable
@@ -1843,201 +1830,48 @@ func (b *Broker) Serve(ctx context.Context) error {
 		}
 	}()
 
-	// The scanner is the broker's core worker. Its supervisor's first
-	// spawn is synchronous so a hard startup failure stays fatal — the
-	// broker has no job without discovery. Once up, the supervisor watches
-	// it and (when auto-restart is enabled) respawns it on an unexpected
-	// exit instead of leaving the discovery snapshot frozen.
-	b.scannerSup = newSupervisor("scanner", defaultRestartPolicy(), b.spawnScanner)
-	b.scannerSup.onCrash, b.scannerSup.onRecovered = b.supervisedWorkerCallbacks("scanner", func() { b.setScanner(nil) })
+	// Scanner's initial failure remains fatal. Every resolved auxiliary starts a
+	// monitor even when its first spawn fails; missing defaults stay dormant.
 	if err := b.scannerSup.Start(); err != nil {
 		return fmt.Errorf("start scanner: %w", err)
 	}
-	defer b.scannerSup.Stop()
+	b.workerStatusMu.Lock()
+	b.workerEntries[0].started = true
+	b.workerStatusMu.Unlock()
+	defer b.stopWorkers()
 
-	// nvpair-errors is the service-error datastore and the backbone of the
-	// error-surfacing pipeline: producers' errors:report / errors:clear
-	// are forwarded into it and its errors:update snapshots are relayed to
-	// the client. Spawn it early (right after the scanner, before the
-	// other producers) so a sink exists by the time they start emitting.
-	// It runs with --peer-sync for cross-node error propagation. Like the
-	// other auxiliaries a failed first
-	// spawn (or never-resolved binary) is non-fatal — the broker logs and
-	// runs with the pipeline disabled (producer errors are dropped).
-	if b.errorsPath != "" {
-		b.errorsSup = newSupervisor("errors", defaultRestartPolicy(), b.spawnErrors)
-		b.errorsSup.onCrash = b.errorsCrashFallback
-		b.errorsSup.onRecovered = func() { slog.Info("nvpair-errors recovered") }
-		if err := b.errorsSup.Start(); err != nil {
-			slog.Warn("nvpair-errors failed to start; continuing with the error pipeline disabled", "path", b.errorsPath, "err", err)
-			b.errorsSup = nil
-		} else {
-			defer b.errorsSup.Stop()
-		}
-	} else {
-		slog.Info("nvpair-errors path not resolved; running with the error pipeline disabled")
-	}
-
-	// Settings and engine-manager must be available before either proxy starts.
-	// Managed ownership prepares Ollama's deferred move and lets engine-manager
-	// safely move an identified LM Studio command runtime. Unknown owners are
-	// never terminated; preparation instead selects an explicit fallback.
-	b.settingsSup = b.startOptionalWorker("settings", b.settingsPath, b.spawnSettings, func() { b.setSettings(nil) })
-	if b.settingsSup != nil {
-		defer b.settingsSup.Stop()
-	}
+	b.startWorker("errors")
+	b.startWorker("settings")
 	b.prepareOllamaHostAliasCandidate()
-	b.engineMgrSup = b.startOptionalWorker("engine-manager", b.engineMgrPath, b.spawnEngineMgr, func() { b.setEngineMgr(nil); b.clearEngineRelaySub() })
-	if b.engineMgrSup != nil {
-		defer b.engineMgrSup.Stop()
-	}
+	b.startWorker("engine-manager")
 	b.prepareManagedOllamaFacade()
 	b.prepareManagedLMStudioFacade()
 	b.prepareOMLXProxyPort()
 
-	// node-info is an auxiliary worker: spawning it lets the broker's own
-	// host advertise its hardware inventory on the network, but it is NOT
-	// essential to the broker's core job (serving the
-	// discovery snapshot). A spawn failure — or a never-resolved binary
-	// (empty path) — is therefore non-fatal: we log and carry on rather
-	// than tearing down discovery.
-	if b.nodeInfoPath != "" {
-		b.nodeInfoSup = newSupervisor("node-info", defaultRestartPolicy(), b.spawnNodeInfo)
-		b.nodeInfoSup.onCrash, b.nodeInfoSup.onRecovered = b.supervisedWorkerCallbacks("node-info", func() { b.setNodeInfo(nil) })
-		if err := b.nodeInfoSup.Start(); err != nil {
-			slog.Warn("node-info failed to start; continuing without local node advertisement", "path", b.nodeInfoPath, "err", err)
-			b.nodeInfoSup = nil
-		} else {
-			defer b.nodeInfoSup.Stop()
-		}
-	} else {
-		slog.Info("node-info path not resolved; running without local node advertisement")
+	b.startWorker("node-info")
+	b.startWorker("proxy")
+	if b.proxyPath == "" {
+		b.finishOllamaProxyTerminal()
 	}
-
-	// ollama-proxy is another auxiliary worker: it runs a local Ollama
-	// reverse proxy and exposes a control plane the broker relays to
-	// clients. Like node-info, a spawn failure or never-resolved binary
-	// is non-fatal. It does NOT gate app:ready: the proxy announces its
-	// listen port asynchronously via a "ready" notification (after its
-	// HTTP bind), so clients learn the port by polling proxy:get-status
-	// rather than by the presence of app:ready.
-	if b.proxyPath != "" {
-		b.proxySup = newSupervisor("proxy", defaultRestartPolicy(), b.spawnProxy)
-		b.proxySup.onCrash, b.proxySup.onRecovered = b.supervisedWorkerCallbacks("proxy", func() { b.setProxy(nil) })
-		if err := b.proxySup.Start(); err != nil {
-			slog.Warn("proxy failed to start; continuing without local Ollama proxy", "path", b.proxyPath, "err", err)
-			b.proxySup = nil
-			b.disableOllamaHostAliasReservation()
-			if b.managedOllamaFacade.Load() {
-				b.blockManagedOllamaFacade("the Ollama proxy could not be started")
-			} else {
-				b.markOllamaPortReady()
-			}
-		} else {
-			defer b.proxySup.Stop()
-		}
-	} else {
-		slog.Info("proxy path not resolved; running without local Ollama proxy")
-		b.disableOllamaHostAliasReservation()
-		if b.managedOllamaFacade.Load() {
-			b.blockManagedOllamaFacade("the Ollama proxy is unavailable")
-		} else {
-			b.markOllamaPortReady()
-		}
-	}
-
-	// lmstudio-proxy is the LM Studio counterpart of ollama-proxy and is
-	// supervised identically (non-fatal, port learned via its "ready"
-	// notification, control plane relayed under lmstudio-proxy:). Having the
-	// broker own it is what lets it bridge a reachable manual LM Studio node
-	// into routing, the same way it does for Ollama.
-	if b.lmstudioProxyPath != "" {
-		b.lmstudioProxySup = newSupervisor("lmstudio-proxy", defaultRestartPolicy(), b.spawnLMStudioProxy)
-		b.configureLMStudioProxySupervisorCallbacks(b.lmstudioProxySup)
-		if err := b.lmstudioProxySup.Start(); err != nil {
-			slog.Warn("lmstudio-proxy failed to start; continuing without local LM Studio proxy", "path", b.lmstudioProxyPath, "err", err)
-			b.lmstudioProxySup = nil
-			if b.managedLMStudioFacade.Load() {
-				_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy could not be started", nil)
-			}
-			b.finishLMStudioProxyTerminal()
-		} else {
-			defer b.lmstudioProxySup.Stop()
-		}
-	} else {
-		slog.Info("lmstudio-proxy path not resolved; running without local LM Studio proxy")
+	b.startWorker("lmstudio-proxy")
+	if b.lmstudioProxyPath == "" {
 		if b.managedLMStudioFacade.Load() {
 			_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy is unavailable", nil)
 		}
 		b.finishLMStudioProxyTerminal()
 	}
-
-	// omlx-proxy is the oMLX counterpart of ollama-proxy and lmstudio-proxy and
-	// is supervised identically (non-fatal, port learned via its "ready"
-	// notification, control plane relayed under omlx-proxy:).
 	if b.omlxProxyPath != "" {
 		b.prepareOMLXProxyPort()
-		b.omlxProxySup = newSupervisor("omlx-proxy", defaultRestartPolicy(), b.spawnOMLXProxy)
-		b.configureOMLXProxySupervisorCallbacks(b.omlxProxySup)
-		if err := b.omlxProxySup.Start(); err != nil {
-			slog.Warn("omlx-proxy failed to start; continuing without local oMLX proxy", "path", b.omlxProxyPath, "err", err)
-			b.omlxProxySup = nil
-		} else {
-			defer b.omlxProxySup.Stop()
-		}
-	} else {
-		slog.Info("omlx-proxy path not resolved; running without local oMLX proxy")
 	}
+	b.startWorker("omlx-proxy")
 
-	// Restore engines and begin both advertising loops only after both proxy
-	// startup attempts have established either readiness or a terminal outcome.
-	// This prevents a restored engine from taking a persisted proxy port before
-	// the broker can resolve ownership.
+	// Ownership gates remain closed through retries and open only on readiness
+	// or terminal exhaustion/missing, never just a transient spawn failure.
 	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio, b.runAutoAdvertiseOMLX)
-
-	// nvpair-workload-manager is another auxiliary worker: it relays local
-	// workload lifecycle events to peer nodes and surfaces peer events
-	// back. Like node-info and the proxy, a spawn failure or never-resolved
-	// binary is non-fatal — the broker simply runs without cluster workload
-	// relay. It does NOT gate app:ready: it has no readiness handshake the
-	// broker waits on, and workload traffic only flows once the proxy emits
-	// events.
-	if b.workloadMgrPath != "" {
-		b.workloadMgrSup = newSupervisor("workload-manager", defaultRestartPolicy(), b.spawnWorkloadManager)
-		b.workloadMgrSup.onCrash, b.workloadMgrSup.onRecovered = b.supervisedWorkerCallbacks("workload-manager", func() { b.setWorkloadMgr(nil) })
-		if err := b.workloadMgrSup.Start(); err != nil {
-			slog.Warn("workload-manager failed to start; continuing without cluster workload relay", "path", b.workloadMgrPath, "err", err)
-			b.workloadMgrSup = nil
-		} else {
-			defer b.workloadMgrSup.Stop()
-		}
-	} else {
-		slog.Info("workload-manager path not resolved; running without cluster workload relay")
-	}
-
-	// nvpair-manual-nodes and nvpair-cluster-manager are the remaining auxiliary
-	// workers. Each is a
-	// bidirectional JSON-RPC peer run under a supervisor (auto-restart +
-	// crash surfacing); the broker demuxes their errors:* notifications
-	// into the pipeline and relays their control-plane requests.
-	b.manualNodesSup = b.startOptionalWorker("manual-nodes", b.manualNodesPath, b.spawnManualNodes, b.clearManualNodesState)
-	if b.manualNodesSup != nil {
-		defer b.manualNodesSup.Stop()
-	}
-	// nvpair-cluster-manager owns the node's cryptographic identity, the
-	// trusted-node store, and the PIN-based pairing flow, and answers
-	// cluster:* / nodes:* requests the broker relays.
-	b.clusterMgrSup = b.startOptionalWorker("cluster-manager", b.clusterMgrPath, b.spawnClusterManager, func() { b.setClusterMgr(nil) })
-	if b.clusterMgrSup != nil {
-		defer b.clusterMgrSup.Stop()
-	}
-	// nvpair-job-scheduler ranks the discovered nodes least-loaded-first and emits
-	// schedule:priority; the broker fans it out to the proxies. Non-fatal like
-	// the other auxiliaries — absent it, the proxies keep their default order.
-	b.schedulerSup = b.startOptionalWorker("scheduler", b.schedulerPath, b.spawnJobScheduler, func() { b.setScheduler(nil) })
-	if b.schedulerSup != nil {
-		defer b.schedulerSup.Stop()
-	}
+	b.startWorker("workload-manager")
+	b.startWorker("manual-nodes")
+	b.startWorker("cluster-manager")
+	b.startWorker("scheduler")
 
 	if err := b.codec.Notify("app:ready", ReadyParams{Version: Version}); err != nil {
 		if ctx.Err() != nil {
@@ -2075,15 +1909,15 @@ func (b *Broker) shutdownInferenceStack() {
 	// Stop ingress first so no new inference can arrive while engine-manager is
 	// draining engines. supervisor.Stop uses each proxy's stdin-close/join path;
 	// it never adds a parent-side kill timeout.
-	if b.omlxProxySup != nil {
+	if b.omlxProxySup != nil && b.workerActive("omlx-proxy") {
 		b.omlxProxySup.Stop()
 		b.setOMLXProxy(nil)
 	}
-	if b.lmstudioProxySup != nil {
+	if b.lmstudioProxySup != nil && b.workerActive("lmstudio-proxy") {
 		b.lmstudioProxySup.Stop()
 		b.setLMStudioProxy(nil)
 	}
-	if b.proxySup != nil {
+	if b.proxySup != nil && b.workerActive("proxy") {
 		b.proxySup.Stop()
 		b.setProxy(nil)
 	}
@@ -2960,6 +2794,10 @@ func (b *Broker) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case "workers:get-status":
+		_ = b.codec.Respond(msg.ID, b.workerSnapshot())
+	case "workers:restart":
+		b.handleWorkersRestart(msg)
 	case "ping":
 		if err := b.codec.Respond(msg.ID, PingResult{
 			Pong:     true,

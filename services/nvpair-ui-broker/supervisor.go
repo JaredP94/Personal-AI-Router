@@ -4,6 +4,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -28,13 +30,62 @@ type supervisedHandle interface {
 	Stop()
 }
 
+// WorkerState is the broker-reported lifecycle state of a worker.
+type WorkerState string
+
+const (
+	WorkerRunning    WorkerState = "running"
+	WorkerDegraded   WorkerState = "degraded"
+	WorkerRestarting WorkerState = "restarting"
+	WorkerExhausted  WorkerState = "exhausted"
+	// WorkerMissing is assigned by the registry when a binary cannot be resolved.
+	WorkerMissing WorkerState = "missing"
+)
+
+// WorkerStatus is a snapshot of one worker's supervision state.
+type WorkerStatus struct {
+	Name          string      `json:"name"`
+	State         WorkerState `json:"state"`
+	Attempts      int         `json:"attempts"`
+	PID           int         `json:"pid,omitempty"`
+	LastError     string      `json:"lastError,omitempty"`
+	RestartOnHang bool        `json:"restartOnHang"`
+	Since         time.Time   `json:"since"`
+}
+
+// hangPolicy probes the live worker's control loop, not its domain operations.
+// The probe should honour ctx; its result is also bounded by deadline in watch.
+// A nil probe disables probing. restartAfter is ignored when restart is false.
+type hangPolicy struct {
+	probe                      func(ctx context.Context) error
+	interval, deadline         time.Duration
+	degradeAfter, restartAfter int
+	restart                    bool
+}
+
+func (p hangPolicy) withDefaults() hangPolicy {
+	if p.interval <= 0 {
+		p.interval = 30 * time.Second
+	}
+	if p.deadline <= 0 {
+		p.deadline = 5 * time.Second
+	}
+	if p.degradeAfter <= 0 {
+		p.degradeAfter = 2
+	}
+	if p.restartAfter <= 0 {
+		p.restartAfter = 3
+	}
+	return p
+}
+
 // restartPolicy configures the hybrid auto-restart behaviour the broker
 // applies to a crashed worker. The defaults (see defaultRestartPolicy)
 // implement: exponential backoff between attempts, a bounded budget so a
 // hard-broken binary doesn't spin forever, and a "healthy reset" window —
-// a worker that stays up that long is considered recovered, which both
-// clears its crash error and resets the attempt counter so a much-later
-// crash gets a fresh budget rather than tripping the exhausted one.
+// a worker that stays up that long and answers at least one probe is
+// considered recovered, clearing its crash error and resetting the counter
+// so a much-later crash gets a fresh budget rather than tripping exhaustion.
 type restartPolicy struct {
 	// baseDelay is the backoff before the first restart attempt.
 	baseDelay time.Duration
@@ -45,8 +96,8 @@ type restartPolicy struct {
 	// (its crash error stays sticky). A value <= 0 disables auto-restart
 	// entirely — the crash is surfaced but the worker is not respawned.
 	maxAttempts int
-	// healthyReset is how long a freshly (re)started worker must stay up
-	// before it's considered recovered: the attempt counter resets to 0
+	// healthyReset is how long a freshly (re)started worker must stay up,
+	// with at least one successful probe, before the attempt counter resets to 0
 	// and onRecovered fires. A value <= 0 disables the healthy-reset /
 	// auto-clear behaviour (every crash counts against the budget forever).
 	healthyReset time.Duration
@@ -109,6 +160,9 @@ const (
 	// watchRestart means Restart was called: stop the current (healthy)
 	// worker and respawn it promptly, without counting it as a crash.
 	watchRestart
+	// watchUnresponsive means the hang policy requires a bounded teardown
+	// followed by crash recovery, consuming the same restart budget as exits.
+	watchUnresponsive
 )
 
 // supervisor owns the lifecycle of a single broker worker: it spawns the
@@ -126,6 +180,10 @@ const (
 type supervisor struct {
 	name   string
 	policy restartPolicy
+	hang   hangPolicy
+	// onState publishes lifecycle changes and attempt-budget updates. Like the
+	// other callbacks it runs on the monitor goroutine and must not block.
+	onState func(WorkerStatus)
 	// spawn starts a fresh worker process, wires its readers, stores the
 	// concrete handle on the Broker, and returns the handle for the
 	// supervisor to watch. It is called once by Start and again on every
@@ -135,15 +193,17 @@ type supervisor struct {
 	// onCrash, if set, is invoked on every unexpected exit with the
 	// 1-indexed attempt number. The broker uses it to emit a
 	// supervisor:subprocess-crashed:<name> error into the nvpair-errors
-	// pipeline. Invoked on the monitor goroutine.
+	// pipeline. Hangs also invoke it, after onState publishes LastError
+	// "unresponsive". Invoked on the monitor goroutine.
 	onCrash func(attempt int)
 	// onRecovered, if set, is invoked when a restarted worker has stayed
-	// up for healthyReset. The broker uses it to clear the crash error.
+	// up for healthyReset and answered at least one probe since that spawn.
+	// The broker uses it to clear the crash error.
 	// Invoked on the monitor goroutine.
 	onRecovered func()
 	// onExhausted, if set, is invoked once when the worker has no remaining
 	// restart path and is terminally down. Invoked on the monitor goroutine
-	// before it waits for Stop.
+	// before it waits for Stop or an explicit Retry.
 	onExhausted func(attempt int)
 
 	stopCh   chan struct{}
@@ -181,8 +241,16 @@ func (s *supervisor) Start() error {
 	if err != nil {
 		return err
 	}
-	go s.monitor(h)
+	go s.monitor(h, nil)
 	return nil
+}
+
+// StartRetrying attempts an optional worker's first spawn, then monitors even
+// if it failed. Initial failures and later respawn failures share one budget.
+// Unlike Start, it always establishes a monitor and is always safe to Stop.
+func (s *supervisor) StartRetrying() {
+	h, err := s.spawn()
+	go s.monitor(h, err)
 }
 
 // workerStopReportAfter is how long a worker may take to tear down before this
@@ -193,11 +261,9 @@ const workerStopReportAfter = 2 * time.Second
 // Stop signals the supervisor to shut down and blocks until the monitor
 // goroutine has torn the current worker down and exited. Idempotent.
 //
-// The wait is reported because it is otherwise completely silent: teardown joins
-// each worker's real exit with no deadline (see waitForStdinClose), so a worker
-// that never exits stops the broker here forever without logging which one it
-// was. Naming it is the difference between a diagnosable report and a log that
-// simply stops.
+// Slow teardown is reported while the handle's bounded EOF / signal / kill
+// escalation (see waitForStdinClose) completes. Probes are cancelled before
+// stopping the handle and cannot hold this join beyond their deadline.
 func (s *supervisor) Stop() {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 
@@ -222,9 +288,25 @@ func (s *supervisor) Stop() {
 // worker from plain HTTP to pin-gated mTLS (a bind-time decision). Non-blocking
 // and coalescing: a burst collapses to one restart. A no-op once Stopped.
 func (s *supervisor) Restart() {
+	if s.stopping() {
+		return
+	}
 	select {
 	case s.restartCh <- struct{}{}:
 	default:
+	}
+}
+
+// Retry explicitly restarts a live worker, or resets an exhausted worker's
+// budget and immediately tries spawning it again. This also applies to scanner.
+func (s *supervisor) Retry() { s.Restart() }
+
+func (s *supervisor) stopping() bool {
+	select {
+	case <-s.stopCh:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -233,81 +315,125 @@ func (s *supervisor) Restart() {
 // per the policy, until either the worker recovers (resetting the budget),
 // the restart budget is exhausted (leaving the worker down with a sticky
 // crash error), or Stop is called.
-func (s *supervisor) monitor(h supervisedHandle) {
+func (s *supervisor) monitor(h supervisedHandle, spawnErr error) {
 	defer close(s.doneCh)
 
 	attempts := 0
+	lastError := ""
+	status := WorkerStatus{Name: s.name, RestartOnHang: s.hang.probe != nil && s.hang.restart}
+	publish := func(state WorkerState, live supervisedHandle, reason string) {
+		if status.State != state {
+			status.Since = time.Now()
+		}
+		status.State, status.Attempts, status.LastError = state, attempts, reason
+		status.PID = 0
+		// Concrete handles may expose their process ID without widening the
+		// minimal lifecycle interface (including existing test doubles).
+		if process, ok := live.(interface{ PID() int }); ok {
+			status.PID = process.PID()
+		}
+		if s.onState != nil {
+			s.onState(status)
+		}
+	}
+
+	crashed := false
+	// Explicit retries may reset attempts before health is proven. Remember
+	// any reported crash independently so a later healthy window still clears
+	// its sticky error through onRecovered.
+	recoveryPending := false
 	for {
-		// onStable resets the attempt budget and clears the crash error
-		// once the current process has stayed up for healthyReset. It runs
-		// synchronously on this goroutine inside watch, so mutating
-		// attempts here is race-free.
-		res := s.watch(h, func() {
-			if attempts != 0 {
-				attempts = 0
-				slog.Info("supervisor: worker recovered (stable)", "worker", s.name)
-				if s.onRecovered != nil {
-					s.onRecovered()
+		if s.stopping() {
+			if h != nil {
+				h.Stop()
+			}
+			return
+		}
+		if h != nil {
+			publish(WorkerRunning, h, lastError)
+			res := s.watch(h, func() {
+				if attempts != 0 || recoveryPending {
+					attempts, lastError, recoveryPending = 0, "", false
+					reason := status.LastError
+					if status.State == WorkerRunning {
+						reason = ""
+					}
+					publish(status.State, h, reason)
+					slog.Info("supervisor: worker recovered (stable)", "worker", s.name)
+					if s.onRecovered != nil {
+						s.onRecovered()
+					}
 				}
-			}
-		})
-		if res == watchStopped {
-			h.Stop()
-			return
-		}
-		if res == watchRestart {
-			// Graceful, operator-driven restart (e.g. cluster certs appeared on
-			// join): stop the running worker and respawn it promptly. Not a
-			// crash — it surfaces no error and doesn't spend the restart budget.
-			slog.Info("supervisor: restarting worker on request", "worker", s.name)
-			h.Stop()
-			if nh, err := s.spawn(); err == nil {
-				attempts = 0
-				h = nh
-				continue
-			} else {
-				// A requested respawn failed (rare — the same command was just
-				// running). Fall through to the crash/backoff path so it still
-				// recovers rather than wedging the worker down.
-				slog.Warn("supervisor: requested restart respawn failed; falling back to crash recovery", "worker", s.name, "err", err)
-			}
-		}
-
-		// Unexpected exit (crash) — or a failed requested respawn above. Surface
-		// it and decide whether to restart.
-		attempts++
-		slog.Warn("supervisor: worker exited unexpectedly", "worker", s.name, "attempt", attempts)
-		if s.onCrash != nil {
-			s.onCrash(attempts)
-		}
-		if s.exhausted(attempts) {
-			s.notifyExhausted(attempts)
-			<-s.stopCh
-			return
-		}
-
-		// Back off, then respawn. A spawn failure counts as another failed
-		// attempt and re-enters the backoff/budget loop rather than wedging.
-		var next supervisedHandle
-		for {
-			if !s.sleep(s.policy.backoff(attempts)) {
-				return // Stop called during backoff.
-			}
-			nh, err := s.spawn()
-			if err == nil {
-				next = nh
-				break
-			}
-			attempts++
-			slog.Warn("supervisor: respawn failed", "worker", s.name, "attempt", attempts, "err", err)
-			if s.exhausted(attempts) {
-				s.notifyExhausted(attempts)
-				<-s.stopCh
+			}, func(err error) {
+				if err != nil {
+					publish(WorkerDegraded, h, err.Error())
+				} else {
+					publish(WorkerRunning, h, lastError)
+				}
+			})
+			if res == watchStopped {
+				h.Stop()
 				return
 			}
+			if res == watchRestart || res == watchUnresponsive {
+				// Both paths use the handle's existing bounded Stop escalation.
+				// Only a hang is charged as a crash; requested restarts are free.
+				h.Stop()
+			}
+			h = nil
+			if s.stopping() {
+				return
+			}
+			if res == watchRestart {
+				publish(WorkerRestarting, nil, "")
+				h, spawnErr = s.spawn()
+				if spawnErr == nil {
+					attempts, lastError = 0, ""
+					continue
+				}
+			} else if res == watchUnresponsive {
+				spawnErr = errors.New("unresponsive")
+			} else {
+				spawnErr = errors.New("exited unexpectedly")
+			}
+			crashed = true
 		}
-		slog.Info("supervisor: worker restarted", "worker", s.name, "attempt", attempts)
-		h = next
+
+		// Every failed spawn, exit, and hang consumes the same unhealthy
+		// streak. Initial instance + maxAttempts replacements are permitted.
+		attempts++
+		lastError = spawnErr.Error()
+		exhausted := s.exhausted(attempts)
+		state := WorkerRestarting
+		if exhausted {
+			state = WorkerExhausted
+		}
+		publish(state, nil, lastError)
+		slog.Warn("supervisor: worker unavailable", "worker", s.name, "attempt", attempts, "reason", lastError)
+		if crashed {
+			recoveryPending = true
+			if s.onCrash != nil {
+				s.onCrash(attempts)
+			}
+		}
+		if exhausted {
+			s.notifyExhausted(attempts)
+			select {
+			case <-s.stopCh:
+				return
+			case <-s.restartCh:
+				attempts, lastError = 0, ""
+			}
+		} else if !s.sleep(s.policy.backoff(attempts)) {
+			return
+		}
+		if s.stopping() {
+			return
+		}
+		h, spawnErr = s.spawn()
+		// Failed respawns advance the budget and publish their error, but do
+		// not repeat the legacy onCrash callback for the already-dead handle.
+		crashed = false
 	}
 }
 
@@ -315,7 +441,7 @@ func (s *supervisor) monitor(h supervisedHandle) {
 // worker — either because auto-restart is disabled (maxAttempts <= 0) or
 // because the attempt budget for the current unhealthy streak is spent —
 // and logs the reason. When it returns true the caller leaves the worker
-// down (its crash error stays sticky) until Stop.
+// down (its crash error stays sticky) until Stop or an explicit Retry.
 func (s *supervisor) exhausted(attempts int) bool {
 	if s.policy.maxAttempts <= 0 {
 		slog.Warn("supervisor: auto-restart disabled; leaving worker down", "worker", s.name)
@@ -334,30 +460,95 @@ func (s *supervisor) notifyExhausted(attempts int) {
 	}
 }
 
-// watch blocks until the worker handle exits or the supervisor is stopped.
-// If healthyReset is configured, onStable is invoked once the worker has
-// been up that long (and before any exit) so the caller can mark it
-// recovered. Returns watchStopped if Stop was called while the worker was
-// still running, or watchExited if the process exited on its own.
-func (s *supervisor) watch(h supervisedHandle, onStable func()) watchResult {
+// watch owns timers and probe results for exactly one live handle. Cancelling
+// its in-flight probe on every exit fences late results from later generations.
+// Healthy reset requires both the uptime window and a successful probe, in
+// either order. Probes run independently so Stop never waits on a probe call.
+func (s *supervisor) watch(h supervisedHandle, onStable func(), onHealth func(error)) watchResult {
 	var healthyC <-chan time.Time
 	if s.policy.healthyReset > 0 {
 		t := time.NewTimer(s.policy.healthyReset)
 		defer t.Stop()
 		healthyC = t.C
 	}
+	policy := s.hang.withDefaults()
+	var tickC <-chan time.Time
+	if policy.probe != nil {
+		ticker := time.NewTicker(policy.interval)
+		defer ticker.Stop()
+		tickC = ticker.C
+	}
+	var probeC <-chan error
+	var deadlineC <-chan struct{}
+	var probeCtx context.Context
+	var cancel context.CancelFunc
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+	}()
+
+	failures := 0
+	degraded, uptimeMet, probeSucceeded, stable := false, false, false, false
+	markStable := func() {
+		if !stable && uptimeMet && probeSucceeded {
+			stable = true
+			if onStable != nil {
+				onStable()
+			}
+		}
+	}
+	probeFinished := func(err error) bool {
+		cancel()
+		probeC, deadlineC = nil, nil
+		if err == nil {
+			failures, probeSucceeded = 0, true
+			if degraded {
+				degraded = false
+				onHealth(nil)
+			}
+			markStable()
+			return false
+		}
+		failures++
+		if !degraded && failures >= policy.degradeAfter {
+			degraded = true
+			onHealth(err)
+		}
+		return policy.restart && failures >= policy.restartAfter
+	}
 	for {
+		// Prefer an already-pending Stop over launching another probe.
+		if s.stopping() {
+			return watchStopped
+		}
 		select {
 		case <-s.stopCh:
 			return watchStopped
 		case <-s.restartCh:
 			return watchRestart
 		case <-healthyC:
-			// Fire once: nil-out the channel so this arm blocks forever
-			// after the first tick (the worker is now considered stable).
 			healthyC = nil
-			if onStable != nil {
-				onStable()
+			uptimeMet = true
+			markStable()
+		case <-tickC:
+			if probeC != nil {
+				continue // Never overlap probes for the same live handle.
+			}
+			probeCtx, cancel = context.WithTimeout(context.Background(), policy.deadline)
+			result := make(chan error, 1)
+			probeC, deadlineC = result, probeCtx.Done()
+			go func(ctx context.Context) { result <- policy.probe(ctx) }(probeCtx)
+		case err := <-probeC:
+			if probeCtx.Err() != nil {
+				err = probeCtx.Err() // A late success cannot beat the deadline.
+			}
+			if probeFinished(err) {
+				return watchUnresponsive
+			}
+		case <-deadlineC:
+			if probeFinished(probeCtx.Err()) {
+				return watchUnresponsive
 			}
 		case <-h.Done():
 			return watchExited

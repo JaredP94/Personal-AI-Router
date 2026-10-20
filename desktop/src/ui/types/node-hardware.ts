@@ -1,15 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-export type GpuInfo = {
-    id: string
-    name: string
-    // hliId: string;
-    vramTotal: number
-    vramTotalFormatted: string
-    vramUsageFormatted: string
-    vramUsage: number // percentage
-    usage: number // percentage
+import type { GpuInfo as HardwareGpuInfo } from '@/shared/types/hardware'
+
+export type GpuInfo = HardwareGpuInfo & {
+    sharedUsed: number | null
+    vramUsage: number | null // percentage
+    usage: number | null // percentage
     usageColor: string
     vramColor: string
 }

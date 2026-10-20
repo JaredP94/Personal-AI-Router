@@ -14,6 +14,13 @@ is a JSON manifest, not code.
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Communication
 
 Bidirectional newline-delimited JSON-RPC 2.0 — the same conventions as
@@ -24,12 +31,78 @@ domain socket or Windows named pipe instead. The service is
 same binary runs under any supervisor with zero code change. The `engine:*`
 namespace is the surface the orchestrator/broker forwards from the UI.
 
+## One-shot executable resolution
+
+For normal CLI use, prefer [`nvpair engine <engine> [args...]`](../../docs/getting-started.mdx#using-an-engines-own-command-line),
+which consumes these modes and launches the resolved executable. If the `nvpair`
+wrapper is unavailable, invoke the bundled `nvpair-tui` by its full path with
+`engine`; keep this binary beside it. No engine directory is added to PATH.
+
+These read-only modes may run alongside the desktop application's engine-manager:
+
+```sh
+nvpair-engine-manager --list-engines
+nvpair-engine-manager --resolve ollama
+```
+
+`--list-engines` prints a JSON array and exits 0. Each entry has exactly
+`engine` (string), `display_name` (string), `installed` (boolean), and
+`supported` (boolean), including engines unsupported on this OS/architecture.
+Entries are sorted by engine name. Installed means the service's filesystem
+detection succeeded or its service-only adoption criterion succeeded; it does
+not guarantee a command-mode engine's declared CLI still exists.
+
+`--resolve <engine>` prints one JSON object and exits 0:
+
+```json
+{"engine":"ollama","path":"/effective/manifest/path/to/ollama","env":{"OLLAMA_HOST":"127.0.0.1:11435"}}
+```
+
+The path must exist and not be a directory. For process-mode engines it is the
+same first matching detect path used by the service, not a PATH lookup or a
+fallback to `runtime.bin`. For command-mode engines it is the expanded
+`runtime.cli`, not an alternate detect path. `env` contains only the platform's
+declared runtime environment (an empty object if none); callers should overlay
+it onto the child process's inherited environment. Placeholders use the same
+resolver as service operations, with `{host}` always `127.0.0.1`, `{port}` the
+effective configured engine port (persisted override or manifest default), and
+`{install_dir}` the engine's managed installation directory. Thus Ollama's CLI
+targets the engine port rather than the proxy; Linux library paths are retained.
+
+Both modes load the same embedded manifests and deep-merged per-user overrides
+under the service's normal config root. They accept **only `--log-level`** in
+addition to the selected mode. They never connect to stdio/IPC, bind listeners,
+open cluster identity, start watchers, execute engine commands, change PATH, or
+write settings. Like the service, they skip malformed user overrides and keep
+the remaining effective manifests. Diagnostics are suppressed unless
+`--log-level=debug` is explicitly supplied (`NVPAIR_LOG_LEVEL=debug` alone does
+not enable them); debug diagnostics go to stderr. An empty or invalid explicit
+`--log-level` value is a one-line usage error (exit 2), never an environment
+fallback. Stdout contains only the JSON result. Failures exit 2 with a one-line
+reason on stderr and no JSON: unknown engine, unsupported platform, or engine
+not installed. Explicit debug logging
+may add diagnostic lines before that reason.
+
+When a process-mode engine has no detected executable, a single read-only
+readiness probe checks for an externally adopted service on its configured fixed
+port. It reuses the service's readiness check, is loopback-only, ignores HTTP
+proxies, refuses redirects, and has a 500 ms total deadline rather than the
+manifest's startup timeout. No port or readiness definition means no probe;
+command-mode engines still require a filesystem installation. A successful probe
+without an executable returns
+`<engine> is running as an external service; PAIR has no executable for it`.
+An unresponsive, unhealthy, non-loopback, or otherwise unidentified service is
+reported as not installed, not guessed to be an installation. Listing applies
+the same criterion and may spend up to 500 ms sequentially per missing supported
+process-mode engine.
+
 ## JSON-RPC surface
 
 Requests (caller → service):
 
 | Method | Params | Result |
 |---|---|---|
+| `worker/health` | — | `{"ok":true}` — control-loop responsiveness only |
 | `engine:get-installed` | — | `{ engines: [EngineStatus] }` |
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |
@@ -45,13 +118,35 @@ Requests (caller → service):
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
-| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after the remote pull (live progress via `engine:remote-progress`) |
+| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after a successful remote pull (live progress via `engine:remote-progress`); engine-level failures, including HTTP 200 streams containing `error`, return a JSON-RPC error |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
 
-`EngineStatus` = `{ engine, display_name, installed, running, healthy, port }`.
+### Effective capabilities
+
+`EngineStatus` = `{ engine, display_name, installed, running, healthy, port?, capabilities }`.
+Every status snapshot, lifecycle result, and `engine:state-changed` notification
+includes all seven boolean capability flags, derived by Go from the effective
+manifest (including user overrides), the host OS/architecture, and adoption state:
+
+| `capabilities` field | True when |
+|---|---|
+| `list_models`, `pull_model`, `delete_model` | The effective manifest declares that action and has a platform block for this host. |
+| `delete_restarts_engine` | `delete_model` is declared with `restart_after: true` on a supported platform. |
+| `set_port` | The platform's start argv, CLI args, or environment reference `{port}` — a probe or stop template alone moves nothing — and `engine:set-port` would not refuse the engine as externally adopted, which is the same adoption check it makes (a command-mode engine with an official stop command can be moved). |
+| `install` | The effective manifest has a platform block for this host OS/architecture. |
+| `uninstall` | `install` is true, an uninstall is declared, and the install is not externally adopted. |
+
+Unsupported platforms report all flags false. Bundled oMLX supports model listing
+but never pull/delete; its start command has no `{port}` input, so `set_port` is
+false. LM Studio deletion reports `delete_restarts_engine: true`.
+Capabilities describe support, not readiness or guaranteed success: normal action
+validation, port conflicts, ownership checks, and operation errors still apply.
+`engine:remote-get-installed` and other remote status results carry the **peer's**
+capabilities unchanged, not capabilities inferred from the caller's manifests.
+Clients must treat an absent `capabilities` object from an older peer as all-false.
 
 Notifications (service → caller): `engine:ready{version}`,
 `engine:state-changed{EngineStatus}`,
@@ -71,6 +166,12 @@ UI converges even if its synchronous call already timed out),
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
 
+For `engine:action` with `action: "pull_model"`, a streaming engine-level
+failure (including an HTTP 200 NDJSON `{"error":"…"}` frame) returns a
+JSON-RPC error, not a successful result containing an error body. The peer's
+pull endpoint emits a terminal error frame for the same failure, which the
+initiating `engine:remote-pull-model` call propagates as a JSON-RPC error.
+
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
@@ -87,17 +188,24 @@ the op finishes.
 
 `engine:set-port` is the **persistent** port setter (distinct from the
 one-shot `engine:start {port}` override, which reverts on the next restart).
-It validates `1-65535`, persists the choice as a manifest override (a
-`{ engine, runtime: { port } }` delta written
-to the per-user `engines/` dir that deep-merges onto the bundled manifest, so
-`runtime.port` becomes the single source of truth and the port is restored on
-the next start with no separate store), and applies it — bouncing the engine
-onto the new port if it was running. Setting the port back to the bundled
-default removes the override file. Because the chosen port lives in the
+It validates `1-65535` and atomically merges `runtime.port` into the existing
+manifest override in the per-user `engines/` dir, preserving custom detection
+paths, environment, and every unrelated field. If the host's matching platform
+block already pins `runtime.port`, that pin is updated instead of the top-level
+port; other platform blocks are untouched. With no existing override it writes
+only `{ engine, runtime: { port } }`. This deep-merges onto the bundled
+manifest, making `runtime.port` the single source of truth across restarts,
+including one-shot CLI resolution. It applies the choice immediately, bouncing
+the engine onto the new port if it was running. Setting the port back to the
+bundled default removes the top-level and matching host-platform `runtime.port`
+pins, pruning only objects emptied by their removal; the override file is deleted
+only if no other customizations remain. Because the chosen port lives in the
 effective manifest, restore is automatic: a normal `engine:start` (no explicit
 port) and the adopt-on-fixed-port path both come up on the retained port.
-Moving a **running, adopted** engine is **refused** with an error (nothing is
-persisted) — NVPAIR can't relocate a process it didn't start; see Adoption below.
+Moving a **running, adopted process-mode** engine, or an adopted command-mode
+engine without an official stop command, is **refused** with an error (nothing
+is persisted). An identified command-mode engine with an official stop command
+can be moved; see Adoption below.
 
 ## Lifecycle
 
@@ -148,11 +256,13 @@ would only collide on the port. Consequences worth knowing:
   the error as guidance, not as proof the OFF intent was lost. The same applies
   to cluster `POST /v1/engines/stop`, which may answer HTTP 500 even though OFF
   was recorded.
-- **`engine:set-port` on a running adopted engine is refused** (returns an
-  error, persists nothing). Moving it would mean killing the old listener and
-  spawning a new one; since NVPAIR can't kill what it didn't start, it errors
-  rather than leaving a duplicate serving the new port while the original keeps
-  serving the old one. Stop the engine in its own app first, then set the port.
+- **`engine:set-port` on a running adopted process-mode engine is refused**
+  (returns an error, persists nothing); an adopted command-mode engine may move
+  only with an official stop command. Moving a process-mode engine would mean
+  killing the old listener and spawning a new one; since NVPAIR can't kill what
+  it didn't start, it errors rather than leaving a duplicate serving the new port
+  while the original keeps serving the old one. Stop the engine in its own app
+  first, then set the port.
 - **`engine:install` short-circuits the same way.** `detect` honors existing
   system installs (Ollama's detect paths include `/Applications/Ollama.app`,
   `%LOCALAPPDATA%\Programs\Ollama`, etc.), so "installing" an engine that's
@@ -227,9 +337,11 @@ its own.
 | `--loaded-poll-interval <sec>` | `5` | Seconds between loaded-model polls that drive `engine:models-changed`; `0` disables the watcher |
 | `--log-level <level>` | _(env `NVPAIR_LOG_LEVEL` or `info`)_ | `debug` \| `info` \| `warn` \| `error` |
 | `--version` | | Print version and exit |
+| `--list-engines` | | Print engine availability as JSON and exit; only `--log-level` may accompany it |
+| `--resolve <engine>` | | Print executable path and runtime environment as JSON and exit; only `--log-level` may accompany it |
 
 Logs go to **stderr** via the shared `nvpair-shared/applog` format; stdout is
-reserved for JSON-RPC frames in stdio mode.
+reserved for JSON-RPC frames in stdio mode (or the JSON result in one-shot mode).
 
 ## Logging & errors
 

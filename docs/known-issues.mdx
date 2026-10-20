@@ -28,26 +28,37 @@ can reach this machine.
 
 ## Unified-Memory Systems Report Misleading GPU Memory
 
-On a system where the GPU shares system memory rather than having its own VRAM,
-the memory figures PAIR shows for that GPU are wrong or missing. What you see
-depends on the platform:
+**Implemented in source, pending release testing.** GPU memory now has an explicit
+kind rather than labeling every capacity as VRAM. This does not certify the
+published `0.7.0-rc.1` assets. Current behavior depends on the collector:
 
-| System | What PAIR Reports |
+| System / source | Kind and displayed memory |
 | --- | --- |
-| Grace-Blackwell, including DGX Spark | **Correct.** PAIR reports total and used system memory as the GPU's memory, which is what unified memory means on that hardware. |
-| Windows with an integrated or unified-memory GPU | **Understated.** PAIR counts only memory dedicated to the GPU, so a GPU that draws on system RAM can appear to have almost none. |
-| Linux without an NVIDIA driver (AMD or Intel graphics) | **Missing.** PAIR lists the GPU by name with no memory figure and no utilization. |
+| macOS Apple GPU (AGX class or `Apple ` name) | **Unified memory:** physical RAM capacity and GPU-mapped allocation (`Alloc system memory`), not whole-system RAM usage. |
+| macOS non-Apple Intel GPU (class, model, or entry name contains `Intel`, case-insensitive) | **Shared memory:** `VRAM,totalMB` shared budget and dedicated-used counters only; `Alloc system memory` is never substituted for usage. |
+| macOS other non-Apple GPU (AMD/NVIDIA discrete) | **VRAM** (`dedicated`): dedicated capacity and dedicated used counters only; system allocation is never substituted for VRAM usage. |
+| Linux NVIDIA with numeric `memory.total` | **VRAM** (`dedicated`), from `nvidia-smi`. |
+| Linux NVIDIA with `[N/A]` / `Not Supported` total (including UMA systems such as DGX Spark) | **Unified memory:** physical RAM capacity and system-used RAM. This is sentinel-based classification; used bytes are not GPU-only allocations. |
+| Linux NVIDIA with malformed total | **Memory unavailable**; memory figures are omitted. Independently measured utilization can still appear. |
+| Windows with dedicated video memory | **VRAM** (`dedicated`), plus a separate **Shared memory** budget and usage; these are never added together. |
+| Windows with zero dedicated video memory | **Shared memory:** the shared-system-memory budget and measured shared usage, not dedicated VRAM or a claim of exclusive GPU capacity. |
+| Linux AMD/Intel names-only inventory and other names-only platforms | **Memory unavailable**, without GPU utilization. Driver/collector support remains out of scope. |
 
-PAIR handles the Grace-Blackwell case deliberately. The driver reports no GPU
-memory total on that architecture, so PAIR substitutes system memory instead.
-The other two cases are the gap.
+Unified detail reads `<used> used of <total> unified memory` on every platform,
+covering both macOS GPU allocation and Linux system-used RAM.
+Missing readings display `—`, not `0`; a measured idle `0` remains visible.
+Unknown readings on one adapter do not hide measured readings on another. Memory
+history breaks at missing samples rather than dropping to zero. Capacities and
+usage are never summed across adapters, which may refer to the same system-memory
+pool. Older peers without `memory_kind` display **Memory unavailable**, not
+inferred VRAM.
 
-**The impact is display, not routing.** These numbers appear on a node's card
-and in the GPU chart. Scheduling uses pending jobs and GPU utilization pressure,
-not these VRAM capacity figures. A wrong memory figure does not directly alter
-the scheduler's ranking.
-It misleads *you* when you decide which node should hold a large model, so on
-those systems judge capacity from the machine's own tools rather than from PAIR.
+**The impact is display, not routing.** Scheduling still uses pending work and
+the maximum measured GPU utilization across adapters, not memory kind or capacity.
+Invalid or stale telemetry retains neutral pressure. Use platform tools when
+assessing whether a model fits: system RAM or a shared budget is not reserved
+GPU memory. Windows runtime behavior is untested on this macOS verification host;
+see [GPU memory semantics release testing](release-readiness.mdx#gpu-memory-semantics).
 
 ## Scheduling Is Not a Capacity or Latency Model
 
@@ -64,17 +75,29 @@ Improving this is on the roadmap, and knowing which signals matter on your
 hardware would help. Refer to
 [Roadmap](../README.md#roadmap).
 
-## Worker Hangs Are Distinct from Broker-Client Silence
+## Worker Health: Manual Recovery and Platform Limits
 
-A successfully started worker is crash-supervised, but a worker can remain alive
-and stop responding without triggering a restart. Optional workers that fail
-their initial spawn are not automatically retried. State may stop updating;
-restart services from **Settings > Service** to retry.
+The broker probes all twelve workers, marks them `degraded` after two consecutive
+failed probes, and restarts eight eligible workers after three. Engine-manager
+and the three proxies are **never auto-restarted on a hang**: doing so could
+orphan engines or interrupt inference streams. Their degraded desktop rows show
+"Not responding — restart manually" under **Settings → Service → Workers**.
+Restarting engine-manager may leave engines running or stop them; proxy restarts
+interrupt inference. Desktop asks for confirmation for these four workers; TUI
+**Overview** offers `R` with confirmation for any selected worker.
 
-Relay protocol v2 separately monitors the broker-client link: heartbeats every
-15 seconds and a 45-second inbound-silence deadline trigger frontend-owned
-recovery with a readiness deadline. This is not per-worker hang detection or a
-guarantee that every unexpected broker exit automatically reconnects.
+Optional initial spawn failures now use bounded retries shared with crashes and
+eligible hangs. Exhausted workers need an explicit restart; missing default
+binaries remain `missing` until an explicit retry finds them. Health proves
+control-loop responsiveness, not domain progress or HTTP/inference readiness.
+See [Health and Failure Detection](architecture.mdx#health-and-failure-detection).
+
+Cross-process hang tests use Unix signals and are Unix-only. Windows hang
+recovery remains unproven; unit tests are not cross-process Windows evidence.
+
+The broker-client layer remains separate: a 15-second heartbeat and 45-second
+inbound-silence deadline support frontend-owned recovery with a readiness deadline.
+This is not a guarantee that every unexpected broker exit automatically reconnects.
 
 ## macOS Can Stop Answering LAN Connections While Unclustered
 
@@ -84,27 +107,48 @@ discover or reach it, while the application itself looks healthy. Restarting PAI
 restores it. This is a rarer problem than the others on this page, and it has only
 been seen on macOS.
 
+**Accepted and documented for this release, not fixed.** A controlled
+second-machine reproduction is still needed before choosing a remedy; no
+speculative fix has been made. Until then, restart PAIR on the affected Mac.
+This remains open in [release readiness](release-readiness.mdx#known-limitations-spec-9).
+
 ## The Terminal Interface Cannot Do Everything the Desktop App Can
 
-`nvpair-tui` is an operations tool for headless machines rather than a full
-replacement. It cannot do any of the following:
+**Implemented in source, pending release testing.** `nvpair-tui` now shows
+workload destinations, lists models, offers supported model pull/delete and local
+engine port/update operations, and controls supported operations on paired peers.
+Actions follow the target engine-manager's reported capabilities; absent flags
+from older peers disable capability-gated actions. This does not certify the
+published release assets or live engine/cluster behavior.
 
-- List or delete models
-- Change an engine's port
-- Update an engine
-- Control engines on other nodes
-- Show which node served a workload
+It remains an operations tool for headless machines rather than a full
+replacement. It cannot:
 
-This matters most for a genuinely headless deployment, where those operations have
-no other route on that machine. Refer to
+- Send inference requests (use `curl` or another inference client)
+- Uninstall, update or change the port of an engine on another node; these
+  operations are local-only (peer restart is also not offered)
+- Pull or delete oMLX models; the engine offers neither action
+
+Use the owning host for local-only engine operations. Refer to
 [What the Terminal Interface Cannot Do](terminal-interface.mdx#what-the-terminal-interface-cannot-do).
 
 ## Engine Binaries Are Not on Your PATH
 
-PAIR does not add the engines it installs to your `PATH`, so running an engine's
-CLI means using the full path. Refer to
-[Using an engine's own command line](getting-started.mdx#using-an-engines-own-command-line)
-for the locations. This is on the roadmap.
+**Implemented in source via `nvpair engine`, pending release testing.** Engine
+directories are intentionally not added to `PATH`. Use `nvpair engine ollama list`
+or `nvpair engine <engine> [args...]`; the command resolves the executable and
+required environment without starting a second broker or dashboard.
+
+The residual limitation is that **`nvpair` itself may not be on `PATH`**:
+headless/source builds and standalone service installers provide no wrapper,
+and desktop first-run creation is best-effort (notably when macOS's
+`/usr/local/bin` is unwritable). A Linux wrapper directory may also be outside
+your shell's `PATH`. Run `nvpair-tui` by its full path with the same `engine`
+subcommand, keeping engine-manager beside it, or use the
+[engine full-path table](getting-started.mdx#if-nvpair-is-not-on-path).
+See [wrapper availability](terminal-interface.mdx#nvpair-and-nvpair-tui-commands).
+Windows console/Ctrl-C behavior is not runtime-tested on this verification host.
+An external HTTP service with no local executable cannot provide a CLI.
 
 ## Platform Limits Worth Knowing
 

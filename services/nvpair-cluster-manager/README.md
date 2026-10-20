@@ -12,6 +12,13 @@ SPDX-License-Identifier: Apache-2.0
 > as an optional worker — a missing binary leaves the broker running without
 > cluster pairing.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Purpose
 
 `nvpair-cluster-manager` owns, for one node: its **cluster membership** (who
@@ -100,6 +107,9 @@ settings store**. Concretely, the parent must:
   `nodes:changed` (live updates, if enabled) — see the [flows](#typical-flows).
 
 ## Methods (caller → manager)
+
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
 
 All requests carry a JSON-RPC `id` and get exactly one `result` or `error`
 back. Negative *outcomes* (failed pairing, wrong PIN, non-member removal)

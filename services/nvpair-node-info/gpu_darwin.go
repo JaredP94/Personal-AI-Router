@@ -64,19 +64,3 @@ func readDarwinIORegistryWithRunner(
 	}
 	return data, nil
 }
-
-func staticGPUsFromIORegistry(data []byte, systemMemory uint64) ([]GPUInfo, error) {
-	records, err := parseIORegistryGPUs(data, systemMemory)
-	if err != nil {
-		return nil, err
-	}
-	gpus := make([]GPUInfo, 0, len(records))
-	for _, record := range records {
-		gpus = append(gpus, GPUInfo{
-			Name:      record.name,
-			VramBytes: record.vramTotal,
-			statsKey:  record.statsKey,
-		})
-	}
-	return gpus, nil
-}

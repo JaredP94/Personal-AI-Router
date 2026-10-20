@@ -37,6 +37,8 @@ func TestRecoveryConvergesAllSnapshotConsumers(t *testing.T) {
 				result = map[string]any{"workloads": []any{}}
 			case "engine:get-installed":
 				result = map[string]any{"engines": []any{}}
+			case "workers:get-status":
+				result = map[string]any{"workers": []any{map[string]any{"name": "scanner", "state": "running"}}}
 			}
 			_ = codec.Respond(q.ID, result)
 		}
@@ -50,19 +52,21 @@ func TestRecoveryConvergesAllSnapshotConsumers(t *testing.T) {
 	cl := newClusterView(c)
 	cl.identity.NodeUUID = "old"
 	h := newHealthView(c)
-	h.localNodeUUID = "old"
+	h.setWorkers([]workerStatus{{Name: "stale-worker", State: "exhausted"}})
 	e := newErrorsView(c)
+	e.SetSize(80, 21)
+	e.Update(NotificationMsg{&rpc.Message{Method: "errors:update", Params: []byte(`[{"id":"stale","message":"old error"}]`)}})
 	l := newLoop(New(c, nil, []View{n, w, cl, h, e}))
 	l.m.connectionSetup = true
 	epoch := "new"
 	l.turn(t, NotificationMsg{&rpc.Message{Method: "heartbeat", Epoch: &epoch}})
 	deadline := time.After(time.Second)
-	for len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "new" || h.localNodeUUID != "new" {
+	for len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "new" || len(h.workers) != 1 || h.workers[0].Name != "scanner" || len(e.errs) != 0 {
 		select {
 		case msg := <-l.inbox:
 			l.turn(t, msg)
 		case <-deadline:
-			t.Fatalf("stale state nodes=%v workloads=%v cluster=%v overview=%v", n.nodes, w.byKey, cl.identity, h.localNodeUUID)
+			t.Fatalf("stale state nodes=%v workloads=%v cluster=%v overview=%v", n.nodes, w.byKey, cl.identity, h.workers)
 		}
 	}
 }

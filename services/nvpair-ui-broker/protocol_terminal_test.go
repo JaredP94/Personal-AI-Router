@@ -55,8 +55,8 @@ func TestRawWorkerReadersRejectMismatch(t *testing.T) {
 						drainNodeInfoStdout(input, cb)
 					} else {
 						c := &terminalControl{make(chan struct{})}
-						m := &workloadManagerProcess{stdin: c, onNotify: cb}
-						m.readMessages(input)
+						m := &workloadManagerProcess{stdin: c, onNotify: cb, peer: NewPeer(NewCodec(readWriter{input, io.Discard}))}
+						m.readMessages()
 						select {
 						case <-c.closed:
 						default:
@@ -116,13 +116,13 @@ func TestWorkloadReaderRecoversMalformedAndDispatchesOnlyValidNotifications(t *t
 	input.WriteString(`{"jsonrpc":"2.0","id":1,"method":"ignored-request"}` + "\n")
 	control := &terminalControl{make(chan struct{})}
 	calls := 0
-	m := &workloadManagerProcess{stdin: control, onNotify: func(method string, _ json.RawMessage) {
+	m := &workloadManagerProcess{stdin: control, peer: NewPeer(NewCodec(readWriter{&input, io.Discard})), onNotify: func(method string, _ json.RawMessage) {
 		calls++
 		if method != "ready" {
 			t.Fatal("request dispatched as notification")
 		}
 	}}
-	m.readMessages(&input)
+	m.readMessages()
 	if calls != 1 {
 		t.Fatalf("valid notification not delivered: %d", calls)
 	}

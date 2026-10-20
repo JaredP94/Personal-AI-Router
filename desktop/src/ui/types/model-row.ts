@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ModelItem } from '@/ui/types/engine-info'
-import type { ModelExpiry } from '@/shared/types/engines'
-import type { EngineProgress } from '@/shared/types/engines'
+import type { EngineCapabilityFlags, EngineProgress, ModelExpiry } from '@/shared/types/engines'
 import type { EngineCaps } from '@/ui/types/engine-manifest'
 import type { EngineCommandType } from '@/shared/types/engine-api'
 
@@ -16,7 +15,14 @@ export type ModelRowDropdownControl = {
 export interface ModelRowProps {
     model: ModelItem
     isRunning: boolean
+    /** Static UI metadata (which controls exist at all). */
     capabilities: EngineCaps
+    /**
+     * What the node owning this model reports it supports. Delete is offered
+     * only when that node reports a `delete_model` action, so the gate follows
+     * the engine's own manifest on that platform — local or remote.
+     */
+    reported: EngineCapabilityFlags
     progress?: EngineProgress
     /**
      * Optimistic in-flight action for this model (load/eject/delete/pull) fired

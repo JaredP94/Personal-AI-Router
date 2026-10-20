@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sync"
 	"sync/atomic"
 )
 
@@ -87,7 +86,13 @@ func (m *Message) IsResponse() bool {
 type Codec struct {
 	scanner *bufio.Scanner
 	writer  io.Writer
-	wmu     sync.Mutex
+	// A channel semaphore lets canceled requests stop waiting for the write
+	// lock without releasing the lock held by an unfinished frame.
+	wmu chan struct{}
+
+	// A failed write may have emitted a partial frame. Never append another
+	// frame to that stream; only the transport owner can replace it.
+	writeErr error
 
 	// seq is this connection's notification counter, starting at 1. The broker
 	// builds one Codec per client connection, so it is already per-connection.
@@ -101,6 +106,7 @@ func NewCodec(rw io.ReadWriter) *Codec {
 	return &Codec{
 		scanner: scanner,
 		writer:  rw,
+		wmu:     make(chan struct{}, 1),
 	}
 }
 
@@ -116,11 +122,12 @@ func NewCodecMaxFrame(rw io.ReadWriter, maxFrame int) *Codec {
 	return &Codec{
 		scanner: scanner,
 		writer:  rw,
+		wmu:     make(chan struct{}, 1),
 	}
 }
 
 // BindWriteContext bounds every write on this connection by ctx cancellation.
-// Install once, before any concurrent codec use. The codec mutex still owns wire
+// Install once, before any concurrent codec use. The codec write lock still owns wire
 // ordering and stamps. If Close cannot unblock an OS write, at most that single
 // write is abandoned: subsequent writes fail without spawning another writer.
 // Default codecs retain synchronous write semantics.
@@ -184,8 +191,8 @@ func (c *Codec) Read() (*Message, error) {
 }
 
 func (c *Codec) write(msg *Message) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
+	c.wmu <- struct{}{}
+	defer func() { <-c.wmu }()
 	return c.writeLocked(msg)
 }
 
@@ -195,14 +202,17 @@ func (c *Codec) write(msg *Message) error {
 // first, violating the sender's monotonic wire guarantee. Receivers accept
 // gaps and regressions without sequence-based recovery.
 func (c *Codec) writeNotification(msg *Message) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
+	c.wmu <- struct{}{}
+	defer func() { <-c.wmu }()
 	c.stamp(msg)
 	return c.writeLocked(msg)
 }
 
 // writeLocked marshals and writes one frame. The caller must hold wmu.
 func (c *Codec) writeLocked(msg *Message) error {
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -214,10 +224,12 @@ func (c *Codec) writeLocked(msg *Message) error {
 	for off := 0; off < len(data); {
 		n, werr := c.writer.Write(data[off:])
 		if werr != nil {
+			c.writeErr = werr
 			return werr
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			c.writeErr = io.ErrShortWrite
+			return c.writeErr
 		}
 		off += n
 	}
@@ -243,7 +255,24 @@ func (c *Codec) Notify(method string, params any) error {
 // stamping a request would make the frame unreadable to a v2 peer. Peer.Call is
 // the higher-level form of this for callers that also want the response.
 func (c *Codec) Request(id *json.RawMessage, method string, params json.RawMessage) error {
-	return c.write(&Message{
+	return c.request(context.Background(), id, method, params)
+}
+
+// request stops waiting for wmu when its caller is canceled. Once a frame
+// starts, keep wmu through the entire write, even if ctx expires: releasing it
+// early would let another writer interleave with a partially written frame.
+func (c *Codec) request(ctx context.Context, id *json.RawMessage, method string, params json.RawMessage) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case c.wmu <- struct{}{}:
+	}
+	defer func() { <-c.wmu }()
+	// Cancellation and lock availability can become ready together.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.writeLocked(&Message{
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  method,

@@ -124,6 +124,103 @@ Historical performance observations and the final-artifact profiling gate are in
 - **Legacy Fallback Removed:** The legacy `broker:epoch` params fallback for
   envelope epoch discovery has been completely removed.
 
+### Worker Health
+
+**Implemented, pending release testing.**
+
+- All twelve workers answer `worker/health`; the broker probes every 30 s with a
+  5 s deadline (`--worker-health-interval`, minimum 1 s; deadline capped at the
+  interval). Two consecutive failures report `degraded`; a successful probe
+  restores `running` and clears the failure count.
+- Three failures restart only scanner, errors, settings, node-info,
+  workload-manager, manual-nodes, cluster-manager, and scheduler. Engine-manager
+  and the three proxies never auto-restart on a hang: orphan/stream safety is not
+  established. Desktop shows "Not responding — restart manually" for those rows.
+- Optional initial spawn failures, crashes and eligible hang restarts share
+  1 s → 16 s backoff and five replacement attempts. Healthy reset needs 60 s
+  uptime and a successful probe since spawn. Missing default binaries remain
+  `missing` with no automatic retry until `workers:restart` finds them. Scanner
+  initial failure and invalid explicit paths remain fatal.
+- `workers:get-status`, `workers:restart`, and full `workers:update` snapshots
+  drive Settings → Service → Workers and TUI Overview (all twelve workers, `R`
+  with confirmation). Clients recover worker snapshots after epoch changes;
+  the 15 s broker heartbeat / 45 s client-silence layer remains separate.
+- Cross-process hang tests are **Unix-only; Windows behavior remains unproven**.
+  Passing source checks is not final-artifact or release testing. Verify packaged
+  startup/retry, manual confirmation and recovery on each release platform before
+  classifying this item resolved for that release.
+
+### GPU Memory Semantics
+
+**Implemented, pending release testing; Windows runtime untested on this host;
+Linux AMD/Intel remain names-only.**
+
+- Go reports `dedicated`, `unified`, `shared`, or `unavailable` per adapter.
+  Apple unified usage is GPU-mapped allocation; Linux NVIDIA unified usage is
+  system-used RAM. Unified detail reads `<used> used of <total> unified memory`.
+  macOS Intel GPUs report a shared budget, while AMD/NVIDIA discrete GPUs remain
+  dedicated; neither substitutes system allocation for dedicated-used counters.
+  Windows dedicated VRAM and shared-system-memory budgets/usage
+  are separate; zero-dedicated adapters report shared memory, not VRAM.
+- Discovery/manual-node/broker propagation and desktop history preserve missing
+  readings separately from measured zero. Labels follow the reported kind;
+  unknown current readings show `—`, charts break at gaps, and adapter memory is
+  never summed. Older peers without a kind render unavailable memory.
+- Scheduler policy is unchanged: maximum measured utilization, neutral pressure
+  for invalid/stale telemetry, no memory-capacity ranking. Linux AMD/Intel driver
+  collectors are out of scope and remain **Memory unavailable**, without GPU
+  utilization.
+- Windows host-runnable classification/counter fixtures and cross-compilation
+  are not actual DXGI/PDH execution. Verify real adapter capacities, independent
+  dedicated/shared counters, idle/unknown readings, multi-adapter displays, and
+  packaged history recovery on release platforms before calling this resolved
+  in a release. Source checks do not certify published assets. See
+  [GPU memory limitations](known-issues.mdx#unified-memory-systems-report-misleading-gpu-memory).
+
+### Terminal interface operations
+
+**Implemented, pending release testing.**
+
+- Engine-manager reports effective per-host capabilities from manifests, platform
+  and ownership. Desktop and TUI consume those flags; missing flags default to
+  false. oMLX pull/delete remain unsupported and its server port is not editable.
+- TUI Engines offers node selection (`n`), model inventory (`m`), supported
+  pull/delete (`p`/`d`), local server-port editing (`e`), and destructive update
+  by reinstall (`U`). Peers support install/start/stop and supported model
+  pull/delete; restart/uninstall/update/persistent port changes remain local-only.
+- Model deletion, uninstall, update, port changes, cluster removal/leave and
+  manual-node removal require default-cancel confirmation with frozen targets.
+  Update never installs after failed uninstall; it has no rollback guarantee.
+  Long-operation deadlines include an 11-minute uninstall allowance inside the
+  overall 31-minute update budget.
+- Workloads show distinct origin and destination, with friendly-name/UUID-prefix
+  fallback and destination replacement on failover. Assignment is not proof of
+  completed inference. Built-in inference submission remains out of scope.
+- Automated checks use fake engines, brokers, transports and temporary service
+  processes. **Live engines and clusters were not exercised.** Before calling
+  this resolved for a release, test packaged interactive terminals on release
+  platforms, destructive update/uninstall and file retention, port restarts,
+  model deletion/restart failures, slow remote install/pull, offline/trust
+  errors, discovery inventory lag, and multi-node workload failover. Passing
+  source checks do not certify released artifacts. See
+  [terminal interface usage](terminal-interface.mdx).
+
+### Known Limitations (spec §9)
+
+Release disposition of each limitation in
+[the remediation design §9](superpowers/specs/2026-10-17-release-concerns-remediation-design.md).
+“Implemented” describes this branch's source, not published artifacts. The
+remaining platform and live-system checks below are still release gates.
+
+| Limitation | Disposition | Remaining boundary / release testing |
+| --- | --- | --- |
+| Worker hangs | **Implemented, pending release testing.** Auto-restart for eight child-free workers; engine-manager and the three proxies degrade and require manual restart on a hang. | [Worker Health](#worker-health) defines the eligible workers, probe thresholds and shared retry budget. Windows cross-process hang recovery remains unproven; verify packaged recovery and confirmation on release platforms. |
+| Optional initial spawn failure | **Implemented, pending release testing.** Optional spawn failures retry under the same bounded budget as crashes and eligible hangs. | Missing default binaries stay `missing` until explicit retry; scanner initial failure and invalid explicit paths remain fatal. Verify packaged startup/retry and exhaustion; see [Worker Health](#worker-health). |
+| macOS unclustered reachability | **Accepted and documented for this release; not fixed.** | Needs controlled second-machine reproduction before selecting a remedy. Restart PAIR as the documented workaround; see [known issue](known-issues.mdx#macos-can-stop-answering-lan-connections-while-unclustered). |
+| GPU memory semantics | **Implemented, pending release testing.** Dedicated/unified/shared/unavailable labels preserve unknown readings; Intel integrated GPUs on Macs are labelled shared. | Linux AMD/Intel remain **Memory unavailable** (names-only); Windows runtime is untested on this host. Adapter capacities, independent counters and history need release-platform checks; see [GPU Memory Semantics](#gpu-memory-semantics). |
+| TUI operations | **Implemented, pending release testing.** Capability-gated engine/model operations and workload destinations. | Remote uninstall/update/persistent port changes (also peer restart) and oMLX pull/delete are unsupported by design. Live engines and clusters were not exercised; verify packaged terminals, destructive operations and multi-node failure cases listed under [Terminal interface operations](#terminal-interface-operations). |
+| Engine CLI access | **Implemented via `nvpair engine`, pending release testing.** Effective executable/environment resolution, without another broker or dashboard. | Windows console/Ctrl-C behavior is runtime-untested. `nvpair` itself may be absent from `PATH` on headless/source installs or with unwritable `/usr/local/bin`; use a full-path `nvpair-tui engine` invocation or the [engine full-path table](getting-started.mdx#if-nvpair-is-not-on-path). External HTTP services without executables cannot supply a CLI. Verify packaged wrappers, real engine commands and exit/signal behavior; see [command usage](terminal-interface.mdx#nvpair-and-nvpair-tui-commands). |
+
 ### Private Vulnerability Reporting
 
 **Done (enabled 2026-10-18).** GitHub private vulnerability reporting was enabled

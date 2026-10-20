@@ -13,9 +13,13 @@ interface GpuMetricsHistory {
     data: PerformanceMetric[]
 }
 
+interface GpuMemoryMetricsHistory extends GpuMetricsHistory {
+    sharedUsed: PerformanceMetric[] // bytes, not percentage
+}
+
 export interface NodeMetricsHistory {
     gpuUtilization: GpuMetricsHistory[]
-    gpuVramUsage: GpuMetricsHistory[]
+    gpuVramUsage: GpuMemoryMetricsHistory[]
     cpuUtilization: PerformanceMetric[]
     memoryUsage: PerformanceMetric[]
 }
@@ -31,18 +35,11 @@ interface MetricsStore {
 
 let unsubs: Array<() => void> = []
 
-function pushMetric(arr: PerformanceMetric[], value: number | undefined, timestamp: number): void {
+function pushMetric(arr: PerformanceMetric[], value: number | null, timestamp: number): void {
     if (arr.length >= MAX_DATA_POINTS) {
         arr.shift()
     }
-    arr.push({ timestamp, value: value ?? 0 })
-}
-
-function createPrefill(baseTs: number): PerformanceMetric[] {
-    return Array.from({ length: MAX_DATA_POINTS }, (_, i) => ({
-        timestamp: baseTs - (MAX_DATA_POINTS - i) * 1000,
-        value: 0
-    }))
+    arr.push({ timestamp, value })
 }
 
 export const useMetricsStore = create<MetricsStore>((set, get) => ({
@@ -84,18 +81,11 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
                 let history = map.get(metrics.id)
 
                 if (!history) {
-                    const ts = metrics.current.timestamp
                     history = {
-                        gpuUtilization: metrics.current.gpuUtilization.map(gpu => ({
-                            id: gpu.id,
-                            data: createPrefill(ts)
-                        })),
-                        gpuVramUsage: metrics.current.gpuVramUsage.map(gpu => ({
-                            id: gpu.id,
-                            data: createPrefill(ts)
-                        })),
-                        cpuUtilization: createPrefill(ts),
-                        memoryUsage: createPrefill(ts)
+                        gpuUtilization: [],
+                        gpuVramUsage: [],
+                        cpuUtilization: [],
+                        memoryUsage: []
                     }
                     map.set(metrics.id, history)
                 }
@@ -117,10 +107,11 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
                 for (const gpu of metrics.current.gpuVramUsage) {
                     let entry = history.gpuVramUsage.find(h => h.id === gpu.id)
                     if (!entry) {
-                        entry = { id: gpu.id, data: [] }
+                        entry = { id: gpu.id, data: [], sharedUsed: [] }
                         history.gpuVramUsage.push(entry)
                     }
                     pushMetric(entry.data, gpu.value, ts)
+                    pushMetric(entry.sharedUsed, gpu.sharedUsed, ts)
                 }
 
                 pushMetric(history.cpuUtilization, metrics.current.cpuUtilization, ts)

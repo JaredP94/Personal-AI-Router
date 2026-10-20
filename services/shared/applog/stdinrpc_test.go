@@ -118,6 +118,59 @@ func TestNotifyWritesInSeqOrderUnderConcurrency(t *testing.T) {
 	}
 }
 
+func TestStdinRPCAnswersWorkerHealth(t *testing.T) {
+	for _, id := range []string{`7`, `"probe"`} {
+		t.Run(id, func(t *testing.T) {
+			var buf bytes.Buffer
+			forwarded := false
+			closed := false
+			serveStdinRPC(io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":`+id+`,"method":"worker/health"}`+"\n")), &buf,
+				func(StdinMessage) { forwarded = true }, func() { closed = true })
+			if forwarded {
+				t.Error("built-in worker/health was forwarded to the application handler")
+			}
+			if !closed {
+				t.Error("stdin close callback was not called")
+			}
+			codec := jsonrpc.NewCodec(readerWriter{Reader: &buf, Writer: io.Discard})
+			msg, err := codec.Read()
+			if err != nil {
+				t.Fatalf("reading worker/health response: %v", err)
+			}
+			if !msg.IsResponse() || string(*msg.ID) != id || msg.Error != nil || string(msg.Result) != `{"ok":true}` {
+				t.Fatalf("unexpected worker/health response: %+v", msg)
+			}
+			if _, err := codec.Read(); err != io.EOF {
+				t.Fatalf("want exactly one response then EOF, got %v", err)
+			}
+		})
+	}
+}
+
+func TestStdinRPCWorkerHealthWithoutResponse(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		frame string
+		write bool
+	}{
+		{"notification", `{"jsonrpc":"2.0","method":"worker/health","epoch":"test","seq":1}`, true},
+		{"nil writer", `{"jsonrpc":"2.0","id":1,"method":"worker/health"}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var writer io.Writer
+			if test.write {
+				writer = &buf
+			}
+			serveStdinRPC(io.NopCloser(strings.NewReader(test.frame+"\n")), writer,
+				func(StdinMessage) { t.Error("built-in worker/health was forwarded") }, nil)
+			if buf.Len() != 0 {
+				t.Fatalf("unexpected response: %s", buf.String())
+			}
+		})
+	}
+}
+
 // readerWriter adapts a reader and a writer into the io.ReadWriter NewCodec wants.
 type readerWriter struct {
 	io.Reader

@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+export type GpuMemoryKind = 'dedicated' | 'unified' | 'shared' | 'unavailable'
+
 export interface GpuInfo {
     id: string
     name: string
-    vramTotal: number // in bytes
+    memoryKind: GpuMemoryKind
+    vramTotal: number | null // in bytes
+    sharedTotal: number | null // Windows shared-system-memory budget, in bytes
 }
 
 export interface StorageInfo {

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
@@ -35,6 +36,7 @@ func main() {
 	clusterMgrPath := flag.String("cluster-manager-path", "", "path to nvpair-cluster-manager binary (default: ./nvpair-cluster-manager in the current working directory)")
 	schedulerPath := flag.String("scheduler-path", "", "path to nvpair-job-scheduler binary (default: ./nvpair-job-scheduler in the current working directory)")
 	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/Personal AI Router cluster/ dir, where nvpair-cluster-manager mints them")
+	workerHealthInterval := flag.Duration("worker-health-interval", 30*time.Second, "worker health probe interval (minimum 1s; deadline capped at 5s)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
@@ -42,6 +44,11 @@ func main() {
 	if *showVersion {
 		fmt.Println(Version)
 		os.Exit(0)
+	}
+
+	if *workerHealthInterval < time.Second {
+		fmt.Fprintln(os.Stderr, "worker-health-interval must be at least 1s")
+		os.Exit(2)
 	}
 
 	// Route this process's logs, and every worker's, through one non-blocking
@@ -263,20 +270,21 @@ func main() {
 
 	codec := NewCodec(transport)
 	paths := workerPaths{
-		scanner:        resolvedScanner,
-		nodeInfo:       resolvedNodeInfo,
-		proxy:          resolvedProxy,
-		lmstudioProxy:  resolvedLMStudioProxy,
-		omlxProxy:      resolvedOMLXProxy,
-		workloadMgr:    resolvedWorkloadMgr,
-		errors:         resolvedErrors,
-		engineMgr:      resolvedEngineMgr,
-		manualNodes:    resolvedManualNodes,
-		settings:       resolvedSettings,
-		clusterMgr:     resolvedClusterMgr,
-		scheduler:      resolvedScheduler,
-		clusterDir:     clusterDir,
-		closeTransport: transport.Close,
+		workerHealthInterval: *workerHealthInterval,
+		scanner:              resolvedScanner,
+		nodeInfo:             resolvedNodeInfo,
+		proxy:                resolvedProxy,
+		lmstudioProxy:        resolvedLMStudioProxy,
+		omlxProxy:            resolvedOMLXProxy,
+		workloadMgr:          resolvedWorkloadMgr,
+		errors:               resolvedErrors,
+		engineMgr:            resolvedEngineMgr,
+		manualNodes:          resolvedManualNodes,
+		settings:             resolvedSettings,
+		clusterMgr:           resolvedClusterMgr,
+		scheduler:            resolvedScheduler,
+		clusterDir:           clusterDir,
+		closeTransport:       transport.Close,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)

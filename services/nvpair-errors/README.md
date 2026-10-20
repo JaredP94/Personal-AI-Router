@@ -30,6 +30,13 @@ SPDX-License-Identifier: Apache-2.0
 > Replacing them is a one-line change in each producer — no wire-shape
 > change.
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Purpose
 
 A typed in-memory error registry for the local node. Producers
@@ -110,6 +117,9 @@ Starter ids:
 | `supervisor:subprocess-crashed:<subprocess-name>` | broker | any spawned subprocess exited unexpectedly |
 
 ## JSON-RPC methods (broker → nvpair-errors)
+
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
 
 ### `errors:get-initial` (request)
 

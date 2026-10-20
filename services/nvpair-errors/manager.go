@@ -21,6 +21,7 @@ import (
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -440,6 +441,11 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
+
 	case "errors:get-initial":
 		m.codec.Respond(msg.ID, m.snapshot())
 

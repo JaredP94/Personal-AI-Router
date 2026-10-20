@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
+	"nvpair-shared/workerhealth"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -415,6 +417,11 @@ func (m *Manager) handleMessage(msg *Message) {
 	}
 
 	switch msg.Method {
+	case workerhealth.Method:
+		if err := m.codec.Respond(msg.ID, workerhealth.OK()); err != nil {
+			slog.Error("failed to respond to worker/health", "err", err)
+		}
+
 	case "cluster:get-node-id":
 		m.handleGetNodeID(msg)
 	case "cluster:set-identity":

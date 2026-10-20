@@ -314,7 +314,7 @@ func enrichedNodeEqual(a, b EnrichedNode) bool {
 	if !slices.Equal(a.Addresses, b.Addresses) || !slices.Equal(a.TXT, b.TXT) || !slices.Equal(a.Models, b.Models) {
 		return false
 	}
-	if !slices.Equal(a.GPUs, b.GPUs) {
+	if !slices.EqualFunc(a.GPUs, b.GPUs, GPUInfo.Equal) {
 		return false
 	}
 	if (a.CPU == nil) != (b.CPU == nil) || (a.CPU != nil && *a.CPU != *b.CPU) {
@@ -451,6 +451,10 @@ func (s *scannerProcess) SetLogLevel(level string) error {
 // Done implements supervisedHandle: the returned channel closes once the
 // scanner process has exited (cmd.Wait returned).
 func (s *scannerProcess) Done() <-chan struct{} { return s.done }
+
+func (s *scannerProcess) PID() int { return s.cmd.Process.Pid }
+
+func (s *scannerProcess) Health(ctx context.Context) error { return healthCall(ctx, s.peer) }
 
 // startScanner spawns nvpair-node-scanner with the given binary path, forwards
 // the broker's current log level via --log-level, hides the console

@@ -5,10 +5,10 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
-	svcerrors "nvpair-shared/errors"
 	"nvpair-tui/rpc"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -16,35 +16,40 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// crashPrefix is the id prefix the broker stamps on its sticky
-// "subprocess X exited unexpectedly" errors. The Health view derives
-// per-worker liveness from the presence/absence of these in the
-// errors:update snapshot, since the broker exposes no dedicated
-// workers:get-status RPC.
-const crashPrefix = "supervisor:subprocess-crashed:"
-
-// healthPollInterval is how often the Overview re-pings the broker for
-// liveness + uptime.
+// healthPollInterval is how often the Overview re-pings the broker for its
+// version and uptime.
 const healthPollInterval = 5 * time.Second
 
-// healthWorkers are the workers the broker supervises and reports crashes
-// for. nvpair-errors is deliberately absent: it is the error sink itself and
-// cannot report its own death, so it has no crash entry to key on.
-var healthWorkers = []string{
-	"scanner",
-	"node-info",
-	"proxy",
-	"lmstudio-proxy",
-	"workload-manager",
-	"engine-manager",
-	"manual-nodes",
-	"settings",
-	"cluster-manager",
+var healthRestartKey = key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restart worker"))
+
+// workerStatus mirrors the broker's WorkerStatus snapshot: the element of
+// workers:get-status, of workers:restart, and of every workers:update push.
+// The broker owns health, retry and restart policy; this view renders exactly
+// what it reports and computes nothing of its own.
+type workerStatus struct {
+	Name          string `json:"name"`
+	State         string `json:"state"`
+	Attempts      int    `json:"attempts"`
+	PID           int    `json:"pid"`
+	LastError     string `json:"lastError"`
+	RestartOnHang bool   `json:"restartOnHang"`
+	Since         string `json:"since"`
 }
 
-// healthView is the Overview tab: broker liveness/version/uptime from
-// periodic pings, plus a per-worker health table derived from the broker's
-// crash-error stream.
+type workersLoadedMsg struct {
+	workers []workerStatus
+	err     error
+}
+
+type workerRestartMsg struct {
+	name string
+	err  error
+}
+
+// healthView is the Overview tab: broker liveness/version/uptime from periodic
+// pings, plus the lifecycle table the broker reports for every worker it
+// supervises. The snapshot arrives from the root epoch recovery path
+// (workers:get-status) and is kept current by workers:update.
 type healthView struct {
 	client *rpc.Client
 	table  table.Model
@@ -52,18 +57,13 @@ type healthView struct {
 	brokerVersion string
 	uptime        time.Duration
 	pingErr       error
-	crashed       map[string]svcerrors.ServiceError
 
-	// localNodeUUID is this host's stable per-host UUID (from cluster:get-node-id).
-	// The broker stamps local-origin reports' NodeID with this UUID, so a crash
-	// entry whose NodeID differs belongs to a peer and must be ignored —
-	// errors:update is the full cross-node snapshot when nvpair-errors runs with
-	// --peer-sync. (Filtering on the display hostname instead would reject every
-	// local UUID-stamped crash as remote.)
-	localNodeUUID string
-	// lastErrs is the most recent errors:update snapshot, retained so the
-	// crash table can be re-filtered once localNodeID resolves.
-	lastErrs []svcerrors.ServiceError
+	// workers is the broker's snapshot in its startup order. Both the recovery
+	// read and a workers:update push replace it wholesale; a push is a full
+	// snapshot, never a delta.
+	workers []workerStatus
+	status  string
+	confirm *confirmPrompt
 
 	width, height int
 }
@@ -76,17 +76,13 @@ type healthPingMsg struct {
 	err     error
 }
 
-type healthNodeIDMsg struct {
-	nodeUUID string
-	err      error
-}
-
 func newHealthView(client *rpc.Client) *healthView {
-	v := &healthView{client: client, crashed: map[string]svcerrors.ServiceError{}}
+	v := &healthView{client: client}
 	v.table = newTable([]table.Column{
 		{Title: "WORKER", Width: 20},
-		{Title: "STATUS", Width: 10},
-		{Title: "DETAIL", Width: 40},
+		{Title: "STATE", Width: 12},
+		{Title: "ATTEMPTS", Width: 8},
+		{Title: "LAST ERROR", Width: 32},
 	})
 	return v
 }
@@ -94,22 +90,7 @@ func newHealthView(client *rpc.Client) *healthView {
 func (v *healthView) Title() string { return "Overview" }
 
 func (v *healthView) Init() tea.Cmd {
-	return tea.Batch(v.pingCmd(), v.tickCmd(), v.nodeIDCmd())
-}
-
-// nodeIDCmd resolves this host's stable UUID so the crash table can drop
-// peer-origin entries from the cross-node errors:update snapshot. It keys on
-// NodeUUID (not the display NodeID/hostname) to match the UUID the broker stamps
-// on local reports.
-func (v *healthView) nodeIDCmd() tea.Cmd {
-	return call(v.client, "cluster:get-node-id", nil, func(msg *rpc.Message, err error) tea.Msg {
-		if err != nil {
-			return healthNodeIDMsg{err: err}
-		}
-		var id clusterIdentity
-		_ = decodeParams(msg.Result, &id)
-		return healthNodeIDMsg{nodeUUID: id.NodeUUID}
-	})
+	return tea.Batch(v.pingCmd(), v.tickCmd())
 }
 
 func (v *healthView) pingCmd() tea.Cmd {
@@ -132,15 +113,22 @@ func (v *healthView) tickCmd() tea.Cmd {
 
 func (v *healthView) SetSize(w, h int) {
 	v.width, v.height = w, h
-	detail := clampWidth(w-20-10-2, 10)
+	// Each of the four columns has one cell of padding on either side.
+	const name, state, attempts, padding = 20, 12, 8, 8
+	detail := clampWidth(w-name-state-attempts-padding, 10)
 	v.table.SetColumns([]table.Column{
-		{Title: "WORKER", Width: 20},
-		{Title: "STATUS", Width: 10},
-		{Title: "DETAIL", Width: detail},
+		{Title: "WORKER", Width: name},
+		{Title: "STATE", Width: state},
+		{Title: "ATTEMPTS", Width: attempts},
+		{Title: "LAST ERROR", Width: detail},
 	})
 	v.table.SetWidth(w)
 	v.table.SetHeight(clampWidth(h-3, 1))
 }
+
+// CapturingInput lets an open confirmation claim every key, so the root model
+// routes q, Tab and Ctrl-C to it instead of the global bindings.
+func (v *healthView) CapturingInput() bool { return v.confirm.open() }
 
 func (v *healthView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -155,65 +143,101 @@ func (v *healthView) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
-	case clusterIdentityMsg:
-		if msg.err == nil {
-			v.localNodeUUID = msg.id.NodeUUID
-			v.rebuildCrashes(v.lastErrs)
+	case workersLoadedMsg:
+		if msg.err != nil {
+			v.status = "load worker status failed: " + msg.err.Error()
+			return nil
 		}
+		v.setWorkers(msg.workers)
 		return nil
-	case healthNodeIDMsg:
-		if msg.err == nil && msg.nodeUUID != "" {
-			v.localNodeUUID = msg.nodeUUID
-			// Re-filter the last snapshot now that we know who we are.
-			v.rebuildCrashes(v.lastErrs)
+
+	case workerRestartMsg:
+		if msg.err != nil {
+			v.status = fmt.Sprintf("restart %s failed: %s", msg.name, msg.err.Error())
+		} else {
+			// workers:restart returns once the restart is initiated; the
+			// resulting state arrives as a workers:update push.
+			v.status = fmt.Sprintf("restart %s requested", msg.name)
 		}
 		return nil
 
 	case NotificationMsg:
-		if msg.Msg.Method == "errors:update" {
-			var errs []svcerrors.ServiceError
-			_ = decodeParams(msg.Msg.Params, &errs)
-			v.rebuildCrashes(errs)
+		if msg.Msg.Method == "workers:update" {
+			var r struct {
+				Workers []workerStatus `json:"workers"`
+			}
+			if err := decodeParams(msg.Msg.Params, &r); err != nil {
+				v.status = "worker status update ignored: " + err.Error()
+				return nil
+			}
+			v.setWorkers(r.Workers)
 		}
 		return nil
 
 	case tea.KeyMsg:
-		var cmd tea.Cmd
-		v.table, cmd = v.table.Update(msg)
-		return cmd
+		return v.handleKey(msg)
 	}
 	return nil
 }
 
-func (v *healthView) rebuildCrashes(errs []svcerrors.ServiceError) {
-	v.lastErrs = errs
-	crashed := map[string]svcerrors.ServiceError{}
-	for _, e := range errs {
-		// errors:update is the full cross-node snapshot (nvpair-errors runs
-		// with --peer-sync in a cluster), so a peer's crashed worker would
-		// otherwise paint this host's same-named worker DOWN. Keep only
-		// local-origin crashes. Once localNodeUUID is known, drop entries
-		// whose NodeID (a UUID, as the broker stamps it) is a different node;
-		// an empty NodeID is treated as local (be defensive).
-		if v.localNodeUUID != "" && e.NodeID != "" && e.NodeID != v.localNodeUUID {
-			continue
-		}
-		if strings.HasPrefix(e.ID, crashPrefix) {
-			crashed[strings.TrimPrefix(e.ID, crashPrefix)] = e
-		}
+func (v *healthView) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if v.confirm.open() {
+		return v.confirm.Update(msg)
 	}
-	v.crashed = crashed
+	if key.Matches(msg, healthRestartKey) {
+		worker := v.selectedWorker()
+		if worker == "" {
+			return nil
+		}
+		// The restart command is built now, so confirming later restarts the
+		// worker that was selected when the question was asked.
+		v.confirm = newConfirm("Restart "+worker+"?", restartConsequence(worker), v.restartCmd(worker))
+		return nil
+	}
+	var cmd tea.Cmd
+	v.table, cmd = v.table.Update(msg)
+	return cmd
+}
+
+func (v *healthView) restartCmd(worker string) tea.Cmd {
+	return call(v.client, "workers:restart", map[string]string{"name": worker}, func(_ *rpc.Message, err error) tea.Msg {
+		return workerRestartMsg{name: worker, err: err}
+	})
+}
+
+// restartConsequence is the confirmation detail for a worker whose restart
+// interrupts work the operator cannot see from the process table. The wording
+// matches the desktop Workers card, so both clients ask for the same reason.
+func restartConsequence(worker string) string {
+	switch worker {
+	case "engine-manager":
+		return "Engines PAIR started may keep running or stop; running inference may be interrupted."
+	case "proxy", "lmstudio-proxy", "omlx-proxy":
+		return "Running inference through this proxy will be interrupted."
+	}
+	return "The broker restarts it under its own retry policy."
+}
+
+func (v *healthView) selectedWorker() string {
+	idx := v.table.Cursor()
+	if idx < 0 || idx >= len(v.workers) {
+		return ""
+	}
+	return v.workers[idx].Name
+}
+
+// setWorkers replaces the whole snapshot. A workers:update push is a full
+// snapshot, and a recovery read is the broker's complete list, so neither is
+// merged into what is already shown.
+func (v *healthView) setWorkers(workers []workerStatus) {
+	v.workers = workers
 	v.refreshRows()
 }
 
 func (v *healthView) refreshRows() {
-	rows := make([]table.Row, 0, len(healthWorkers))
-	for _, w := range healthWorkers {
-		status, detail := "ok", ""
-		if e, down := v.crashed[w]; down {
-			status, detail = "DOWN", e.Message
-		}
-		rows = append(rows, table.Row{w, status, detail})
+	rows := make([]table.Row, 0, len(v.workers))
+	for _, w := range v.workers {
+		rows = append(rows, table.Row{w.Name, w.State, strconv.Itoa(w.Attempts), w.LastError})
 	}
 	v.table.SetRows(rows)
 }
@@ -227,13 +251,26 @@ func (v *healthView) View() string {
 		b.WriteString(statusOKStyle.Render(summary))
 	}
 	b.WriteString("\n\n")
-	if len(v.table.Rows()) == 0 {
-		v.refreshRows()
+	// Show the question instead of appending it below a full-height table,
+	// where it would fall outside the terminal's content area.
+	if v.confirm.open() {
+		b.WriteString(v.confirm.View())
+		return b.String()
 	}
-	b.WriteString(v.table.View())
-	b.WriteString("\n")
-	b.WriteString(footerStyle.Render("status is best-effort: DOWN means the broker reported a crash; nvpair-errors self-crashes are not surfaced here"))
+	if len(v.workers) == 0 {
+		b.WriteString(footerStyle.Render("No worker status reported yet."))
+	} else {
+		b.WriteString(v.table.View())
+	}
+	if v.status != "" {
+		b.WriteString("\n" + footerStyle.Render(v.status))
+	}
 	return b.String()
 }
 
-func (v *healthView) Help() []key.Binding { return nil }
+func (v *healthView) Help() []key.Binding {
+	if v.confirm.open() {
+		return v.confirm.Help()
+	}
+	return []key.Binding{healthRestartKey}
+}

@@ -7,6 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 
 A discovery-aware HTTP reverse proxy for Ollama nodes on the local network. It runs no mDNS browse of its own: its routing targets come from the broker's discovery relay (it sends `discovery:subscribe {services:[ol]}` and replaces its routing overlay from each pushed `discovery:nodes` snapshot) plus user-added manual nodes. It forwards HTTP requests to the selected node, aggregates the model-list routes across candidate nodes, and exposes a bidirectional JSON-RPC 2.0 control channel over stdio (or an IPC socket).
 
+## Worker control health
+
+An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
+that same id, inline on the stdin dispatch loop. Notifications receive no
+response. This checks control-loop responsiveness, not engine, HTTP listener,
+or domain readiness; it does not wait for engine operations.
+
 ## Build
 
 ```bash
@@ -205,6 +212,9 @@ Entries for the `nvpair-errors` pipeline, keyed by a stable `id` so a report and
 ---
 
 ### Requests (client → proxy)
+
+`worker/health` (no params) returns `{"ok":true}` for an id-bearing request;
+see [Worker control health](#worker-control-health) for its limited meaning.
 
 Requests carry an `id` and receive a response.
 

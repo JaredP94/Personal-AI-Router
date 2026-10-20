@@ -122,7 +122,6 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 		go b.reconcileTelemetry()
 		var rp proxyReadyParams
 		if err := json.Unmarshal(params, &rp); err == nil && rp.Port > 0 {
-			b.forwardErrorsClear(subprocessCrashedID("omlx-proxy"))
 			go b.reconcileOMLXProxyPortOnReadyForGeneration(generation, rp.Port)
 		}
 	}

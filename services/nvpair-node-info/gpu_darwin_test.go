@@ -23,16 +23,16 @@ func TestStaticGPUsFromIORegistry(t *testing.T) {
 	}
 
 	apple := gpus[0]
-	if apple.Name != "Apple M3 Max" || apple.VramBytes != systemMemory ||
+	if apple.Name != "Apple M3 Max" || (apple.VRAMBytes == nil || *apple.VRAMBytes != systemMemory) ||
 		apple.statsKey != "ioreg:2a" {
 		t.Fatalf("unexpected Apple GPU: %+v", apple)
 	}
-	if apple.VramUsedBytes != 0 || apple.UtilizationPercent != 0 {
+	if apple.VRAMUsedBytes != nil || apple.UtilizationPercent != nil {
 		t.Fatalf("static detection published dynamic fields: %+v", apple)
 	}
 
 	discrete := gpus[1]
-	if discrete.Name != "AMD Radeon Pro" || discrete.VramBytes != 8<<30 ||
+	if discrete.Name != "AMD Radeon Pro" || (discrete.VRAMBytes == nil || *discrete.VRAMBytes != 8<<30) ||
 		discrete.statsKey != "ioreg:63" {
 		t.Fatalf("unexpected discrete GPU: %+v", discrete)
 	}

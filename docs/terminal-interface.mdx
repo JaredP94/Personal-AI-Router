@@ -6,16 +6,16 @@ SPDX-License-Identifier: Apache-2.0
 # Using the PAIR terminal interface
 
 `nvpair-tui` is a full-screen keyboard-driven interface for operating one PAIR
-host.
+host and managing supported engine operations on paired cluster peers.
 
 **This is the headless option, not a second UI.** Use it on a machine with no
 desktop environment, or over SSH, where the desktop application cannot run. If a
 desktop is available, use the desktop application.
 
 **It has known limitations.** It is an operations tool, not a full replacement.
-It cannot list or delete models, change an engine's port, update an engine,
-control engines on other nodes, or show which node served a workload. The full
-list is in
+It can list models, perform supported model and engine operations, and show
+workload destinations. Inference submission and some remote operations remain
+outside its scope. The full list is in
 [What the Terminal Interface Cannot Do](#what-the-terminal-interface-cannot-do),
 and it is worth reading before you depend on it.
 
@@ -24,24 +24,54 @@ and it is worth reading before you depend on it.
 > broker and full worker tree, so two sets of services would fight over the same
 > proxy ports, try to manage the same engines, and write the same settings files.
 > Expect port conflicts, engines that refuse to start, and confusing state on both
-> sides. Quit one before starting the other.
+> sides. Quit one before starting the other. This warning applies to dashboard
+> mode, **not `nvpair engine`**, which starts no service tree.
 
 Within its scope it is self-contained. It starts its own service process tree, so
 you do not run anything else first.
 
-## `nvpair` and `nvpair-tui` Both Start It
+## `nvpair` and `nvpair-tui` Commands
 
-An installed PAIR puts `nvpair` on your `PATH` as a small wrapper that runs
-`nvpair-tui`, so either command opens this interface.
+The `nvpair` wrapper runs `nvpair-tui`. With no subcommand, either opens the
+full-screen dashboard. The separate `engine` subcommand runs an engine's CLI
+without opening the dashboard:
+
+```bash
+nvpair engine                         # ENGINE, NAME, INSTALLED, SUPPORTED table and usage
+nvpair engine ollama list
+nvpair engine lmstudio --help
+./nvpair-tui engine ollama --version  # No wrapper required
+```
+
+Keep `nvpair-engine-manager` beside `nvpair-tui`. The command asks that sibling
+for `--list-engines` or `--resolve <engine>`; it never searches `PATH` for an
+engine or guesses vendor locations. All arguments after the engine name pass
+through unchanged, even `--version`, `-h`, `--`, and quoted spaces. The CLI
+inherits stdin/stdout/stderr, working directory and environment, overlaid with
+the resolver's required environment. Ollama targets the effective engine port,
+not the PAIR proxy; Linux retains its library paths. Neither your shell's
+`PATH` nor its environment is changed.
+
+Unlike dashboard mode, **`nvpair engine` may run alongside the desktop app**:
+resolution starts no broker or workers and writes no settings. The chosen CLI
+can still perform user-requested mutations. On Unix it replaces the launcher;
+on Windows it runs in the same console with inherited stdio. The engine's exit
+code is returned. Windows console/Ctrl-C behavior remains runtime-untested on
+this macOS verification host. Resolution or launch failures print one
+`nvpair: <reason>` stderr line and exit 2. An external HTTP service without a
+local executable cannot be launched; see
+[engine CLI usage and fallback paths](getting-started.mdx#using-an-engines-own-command-line).
 
 **Do not count on `nvpair` existing on a headless machine.** Only the Debian
-package writes the wrapper at install time. On Windows and macOS the desktop
-application writes it when it starts, so on a machine where you never open the
-desktop application — the case this interface exists for — it may never appear.
-On macOS it is also skipped when `/usr/local/bin` is not writable. Run
-`nvpair-tui` directly when `nvpair` is not found, and do the same for a source
-build, which has no wrapper at all. Refer to
-[Building PAIR](building.mdx#run-without-the-desktop-application).
+desktop package writes the wrapper at install time. On Windows and macOS the
+desktop application creates it at startup on a best-effort basis; it may never
+appear if you never open the packaged app. macOS skips it when `/usr/local/bin`
+is unwritable. Linux desktop startup tries `~/.local/bin`, then `/usr/local/bin`,
+but does not ensure that the chosen directory is on your shell's `PATH`.
+Standalone service installers and source builds install no wrapper. Use the
+full path to `nvpair-tui` (with `engine` for CLI mode), or the
+[engine full-path table](getting-started.mdx#if-nvpair-is-not-on-path).
+Refer to [Building PAIR](building.mdx#run-without-the-desktop-application).
 
 ## Start It
 
@@ -127,16 +157,37 @@ Tab switching and `q` do not work until you do.
 
 | # | Tab | What It Shows |
 | --- | --- | --- |
-| 1 | **Overview** | Service uptime and version, and an `ok` / `DOWN` table for each worker |
+| 1 | **Overview** | Broker uptime/version and all twelve workers: state, attempts, last error; `R` restarts with confirmation |
 | 2 | **Errors** | Active service errors by severity, age, node, and message |
 | 3 | **Nodes** | Nodes discovered on the network, with `Connected` or `In cluster` status |
-| 4 | **Proxies** | Both compatible proxies: listening port, discovered upstreams, and which node is selected |
-| 5 | **Workloads** | Live inference workloads: ID, model, engine, state, and age |
-| 6 | **Engines** | Local engines: installed, running, healthy, and port |
+| 4 | **Proxies** | Ollama, LM Studio and oMLX proxies: listening port, discovered upstreams, and which node is selected |
+| 5 | **Workloads** | Live inference workloads: ID, model, engine, origin, destination, state, and age |
+| 6 | **Engines** | Selected node's engines: installed, running, healthy, port, and model inventory |
 | 7 | **Cluster** | This node's identity, cluster membership, and pairing |
 | 8 | **Manual** | Nodes you added by address, with reachability |
 | 9 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
 | 10 | **Logs** | Service log output, with live log-level control |
+
+### Worker Health and Restart
+
+Overview renders the broker's `workers:get-status` snapshot and full
+`workers:update` pushes, refreshed after an epoch change; it does not infer health
+from crash errors. States are `running`, `degraded`, `restarting`, `exhausted`, and
+`missing`. Select a worker and press **`R`** to request `workers:restart` after
+confirmation: `y` confirms; `n`, `esc`, or `enter` cancel. Other keys, including
+quit and tab switching, stay captured while the question is open. The request
+initiates recovery; later updates show the result.
+
+The broker probes every 30 s with a 5 s deadline, degrades after two failures,
+and restarts eight eligible workers after three. Engine-manager and all three
+proxies never auto-restart on a hang. Restarting engine-manager may leave engines
+running or stop them; restarting a proxy interrupts inference through it. These
+warnings appear before confirmation. Missing defaults wait for explicit retry;
+exhausted workers need it to resume. See
+[Health and Failure Detection](architecture.mdx#health-and-failure-detection)
+for the shared retry budget and eligibility. Unix-only cross-process hang tests
+do not prove Windows recovery. Broker-client heartbeat/silence recovery is a
+separate layer, not this worker table's health policy.
 
 ## Pair This Machine with Another
 
@@ -178,8 +229,8 @@ Press `d` instead to decline. After pairing, the peer appears under **Members**.
 | `i` | Invite by address | Cluster |
 | `a` | Accept an inbound invitation | Cluster |
 | `d` | Decline an inbound invitation | Cluster |
-| `r` | Remove the selected member | Cluster |
-| `L` | Leave the cluster (capital L) | Cluster |
+| `r` | Confirm removal of the selected member | Cluster |
+| `L` | Confirm leaving the cluster (capital L) | Cluster |
 
 Only pair when you trust both machines and the network. The PIN is a short-lived
 bootstrap code, not a durable credential. Refer to the
@@ -187,19 +238,61 @@ bootstrap code, not a durable credential. Refer to the
 
 ## Prepare an Engine and a Model
 
-From the **Engines** tab (6), select an engine with `j` / `k`, then:
+On the **Engines** tab (6), press `n` to cycle **This node**, paired discovered
+peers, and cluster members with a host UUID. The title identifies the target;
+offline members remain selectable, with connection or trust errors shown on the
+status line. Peer engine status is fetched on selection and after remote actions.
+Select an engine with `j` / `k`, then use:
 
-| Key | Action |
-| --- | --- |
-| `i` | Install |
-| `s` | Start |
-| `x` | Stop |
-| `r` | Restart |
-| `u` | Uninstall |
-| `p` | Download a model |
+| Key | Action | Availability |
+| --- | --- | --- |
+| `n` | Next target node | Local and peers |
+| `i` | Local: install (then `s` to start); peer: install and start | Reported `install` capability |
+| `s` / `x` | Start / stop | Local and peers |
+| `r` | Restart | Local only |
+| `u` | Confirm uninstall | Local; reported `uninstall` capability |
+| `U` | Confirm update (reinstall; capital U) | Local; reported `install` and `uninstall` capabilities |
+| `e` | Edit engine server port, then confirm | Local; reported `set_port` capability |
+| `m` | Open / close model inventory | Selected engine |
+| `p` | Download a model | Reported `pull_model` capability |
+| `d` | Confirm deletion of the selected model | Models pane; reported `delete_model` capability |
 
-Pressing `p` opens a prompt. Type the model name, for example `qwen4:12b`, and
-press `enter`. Progress appears on the status line.
+The engine-manager on the target node reports capabilities from its effective
+manifest, platform and ownership. Unsupported actions are omitted from help and
+their keys do nothing; absent capabilities from an older peer count as false.
+Capabilities describe support, not a guarantee that an operation will succeed.
+oMLX can list models, but cannot pull or delete them or edit its server port.
+
+Press `m` to see model names and which are **loaded**. While the pane is open,
+`j` / `k` select models rather than engines; press `m` again to return. An absent
+inventory displays **Model list unavailable (engine stopped or unsupported)**;
+a known empty inventory displays **No models**. Local inventory follows
+engine-manager snapshots and notifications. Peer inventory comes from discovery
+and may lag the peer; it is not a direct live query of that engine.
+
+Pressing `p` opens a model-name prompt. Type, for example, `qwen4:12b`, and press
+`enter`. Local download progress appears on the status line. Remote pull and
+install complete on the RPC reply, not on a progress notification.
+
+Port editing (`e`) accepts integers from 1 to 65535. After `enter`, confirm the
+warning that the engine will restart on that port if running. This changes the
+engine's persistent server port, not its proxy port.
+
+**Update is destructive reinstall, not an in-place upgrade.** `U` warns that the
+engine is uninstalled, then installed and started: inference stops meanwhile,
+and files removed by its uninstaller are deleted. If uninstall fails, install
+is not attempted. The status line identifies the failing phase; there is no
+rollback or data-preservation guarantee.
+
+Uninstall, update, port changes and model deletion require `y` to proceed;
+`n`, `esc`, or `enter` cancel. Other navigation and quit keys are captured while
+the confirmation is open. The question freezes the displayed target, so later
+list changes do not redirect it. Model deletion also names the node, engine and
+model; if `delete_restarts_engine` is true (bundled LM Studio), it warns that
+running inference will be interrupted. Cluster removal, cluster leave (`L`),
+and manual-node removal (`r` on **Manual**) use the same default-cancel prompt.
+If the local cluster identity changes while confirming leave, confirm again
+rather than leaving the replacement cluster.
 
 A node can serve a request only when it is online, a compatible engine is
 running, and the requested model is present on that node. To route across several
@@ -208,18 +301,24 @@ machines, download the same model on each.
 ## Check Routing and Health
 
 The **Workloads** tab (5) lists inference work as it runs, with its model,
-engine, and state.
+engine, **ORIGIN**, **DESTINATION**, state, and age. Origin is the submitting
+node; destination is the node assigned to execute it (`scheduledOn`), not proof
+that a still-pending request completed. Known nodes show their friendly name;
+unknown or departed nodes retain the first eight characters of their UUID,
+and an absent destination displays `—`. Failover updates the destination.
+The screenshot below predates the origin and destination columns.
 
 ![The terminal interface Workloads tab listing live inference workloads with model, engine, state, and age.](assets/onboarding/terminal-interface/03-tui-workloads.png)
 
 The **Proxies** tab (4) shows each proxy's listening port and whether it is
 routing automatically (`selected=auto`) or pinned to one node. Press `g` to
-switch between the two engines, `enter` to pin the highlighted upstream, and `a`
+cycle Ollama, LM Studio and oMLX, `enter` to pin the highlighted upstream, and `a`
 to return to automatic routing. Leave it on automatic unless you are
 deliberately testing one node.
 
-The **Overview** tab (1) reports whether each worker is up. Worker status is
-best-effort. `DOWN` means a worker reported a crash.
+The **Overview** tab (1) reports the broker's worker registry and probe results;
+see [Worker Health and Restart](#worker-health-and-restart). These control-loop
+health checks do not prove engine HTTP readiness or successful inference.
 
 ## Look at Errors and Logs
 
@@ -243,15 +342,13 @@ for how PAIR arranges ports.
 
 It is an operations tool, not a full replacement for the desktop application:
 
-- It cannot list or delete models. You can download one, but the interface shows
-  no model inventory.
-- It cannot change an engine's port. The port column is read-only. Use the
-  desktop application to change it.
-- It cannot update an engine or control engines on other cluster nodes.
-- It does not show which node served a particular workload.
 - It has no built-in way to send an inference request. Use `curl` or another
   client against the proxy port, as in
   [Getting Started](getting-started.mdx#6-run-your-first-inference).
+- It cannot uninstall, update or change the port of an engine on another node.
+  Those operations are local-only; peer restart is not offered either.
+- It cannot pull or delete oMLX models: the engine offers neither action.
+  Manage those files outside PAIR using oMLX's own workflow.
 
 ## See Also
 

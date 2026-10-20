@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"runtime"
 	"time"
 )
 
@@ -26,19 +27,8 @@ func (e *Executor) Detect(engine string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	installed := false
-	binPath := ""
-	for _, p := range st.plat.Detect {
-		r, err := resolvePlaceholders(p, map[string]string{"install_dir": st.installDir})
-		if err != nil {
-			continue // detect path references something other than {install_dir}
-		}
-		if ep := expandPath(r); fileExists(ep) {
-			installed = true
-			binPath = ep
-			break
-		}
-	}
+	binPath := detectedExecutable(st.plat, st.installDir, runtime.GOOS)
+	installed := binPath != ""
 	st.mu.Lock()
 	st.installed = installed
 	if binPath != "" {
@@ -125,12 +115,13 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return EngineStatus{
-		Engine:      engine,
-		DisplayName: st.manifest.DisplayName,
-		Installed:   st.installed,
-		Running:     st.running,
-		Healthy:     st.healthy,
-		Port:        st.port,
+		Engine:       engine,
+		DisplayName:  st.manifest.DisplayName,
+		Installed:    st.installed,
+		Running:      st.running,
+		Healthy:      st.healthy,
+		Port:         st.port,
+		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted),
 	}
 }
 

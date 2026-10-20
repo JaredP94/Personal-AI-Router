@@ -70,8 +70,8 @@ type manualNodeTelemetryParams struct {
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
 	var utilization uint32
 	for i := range status.GPUs {
-		if status.GPUs[i].UtilizationPercent > utilization {
-			utilization = status.GPUs[i].UtilizationPercent
+		if reading := status.GPUs[i].UtilizationPercent; reading != nil && *reading > utilization {
+			utilization = *reading
 		}
 	}
 	return noderec.NodeTelemetry{

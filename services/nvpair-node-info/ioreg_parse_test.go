@@ -3,7 +3,10 @@
 
 package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 const ioRegistryGPUFixture = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -47,7 +50,7 @@ func TestParseIORegistryGPUs(t *testing.T) {
 	if apple.statsKey != "ioreg:2a" || apple.name != "Apple M3 Max" {
 		t.Fatalf("unexpected Apple identity: %+v", apple)
 	}
-	if apple.vramTotal != systemMemory || apple.vramUsed != 8<<30 {
+	if apple.memoryKind != MemoryUnified || apple.vramTotal != systemMemory || apple.vramUsed != 8<<30 || !apple.vramUsedValid {
 		t.Fatalf("unexpected Apple memory: %+v", apple)
 	}
 	if apple.utilizationPct != 100 || !apple.utilizationValid {
@@ -59,7 +62,7 @@ func TestParseIORegistryGPUs(t *testing.T) {
 	if discrete.statsKey != "ioreg:63" || discrete.name != "AMD Radeon Pro" {
 		t.Fatalf("unexpected discrete identity: %+v", discrete)
 	}
-	if discrete.vramTotal != 8<<30 || discrete.vramUsed != 2<<30 {
+	if discrete.memoryKind != MemoryDedicated || discrete.vramTotal != 8<<30 || discrete.vramUsed != 2<<30 || !discrete.vramUsedValid {
 		t.Fatalf("unexpected discrete memory: %+v", discrete)
 	}
 	if discrete.utilizationPct != 25 || !discrete.utilizationValid {
@@ -131,19 +134,86 @@ func TestParseIORegistryGPUsPreservesDedicatedCounterPresence(t *testing.T) {
 	if len(records) != 3 {
 		t.Fatalf("got %d records, want 3", len(records))
 	}
-	if records[0].vramTotal != 0 || records[0].vramUsed != 1<<30 {
+	if records[0].vramTotal != 0 || records[0].vramUsed != 0 || records[0].vramUsedValid {
 		t.Fatalf("free-only counters inferred false capacity: %+v", records[0])
 	}
 	if records[0].utilizationValid {
 		t.Fatalf("missing utilization reported valid: %+v", records[0])
 	}
-	if records[1].vramTotal != 8<<30 || records[1].vramUsed != 0 ||
+	if records[1].vramTotal != 8<<30 || records[1].vramUsed != 0 || !records[1].vramUsedValid ||
 		records[1].utilizationPct != 0 || !records[1].utilizationValid {
 		t.Fatalf("explicit zero used counter was not preserved: %+v", records[1])
 	}
 	if records[2].vramTotal != 8<<30 || records[2].vramUsed != 3<<30 ||
 		records[2].utilizationPct != 67 || !records[2].utilizationValid {
 		t.Fatalf("alias counters were not normalized: %+v", records[2])
+	}
+}
+
+func TestParseIORegistryIntelGPUsUseSharedBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		class     string
+		model     string
+		entryName string
+		totalMB   uint64
+		counters  string
+		wantUsed  uint64
+		wantValid bool
+	}{
+		{
+			name:  "Iris model ignores system allocation",
+			class: "Accelerator", model: "iNtEl Iris Pro", entryName: "Graphics",
+			totalMB:  1536,
+			counters: `<key>Alloc system memory</key><integer>1073741824</integer>`,
+		},
+		{
+			name:  "UHD name preserves measured zero",
+			class: "Accelerator", model: "Graphics", entryName: "intel UHD Graphics 630",
+			totalMB: 1536,
+			counters: `<key>vramUsedBytes</key><integer>0</integer>
+<key>Alloc system memory</key><integer>1073741824</integer>`,
+			wantValid: true,
+		},
+		{
+			name:  "Intel class uses alias counter",
+			class: "InTeLAccelerator", model: "Graphics", entryName: "Graphics",
+			totalMB: 1536,
+			counters: `<key>inUseVidMemoryBytes</key><integer>536870912</integer>
+<key>Alloc system memory</key><integer>1073741824</integer>`,
+			wantUsed: 512 << 20, wantValid: true,
+		},
+		{
+			name:  "missing shared budget is not inferred from used and free",
+			class: "IntelAccelerator", model: "Intel Iris", entryName: "Graphics",
+			counters: `<key>vramUsedBytes</key><integer>536870912</integer>
+<key>vramFreeBytes</key><integer>1073741824</integer>`,
+			wantUsed: 512 << 20, wantValid: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><array><dict>
+<key>IORegistryEntryID</key><integer>101</integer>
+<key>IOObjectClass</key><string>%s</string>
+<key>model</key><string>%s</string>
+<key>IORegistryEntryName</key><string>%s</string>
+<key>VRAM,totalMB</key><integer>%d</integer>
+<key>PerformanceStatistics</key><dict>%s</dict>
+</dict></array></plist>`, tc.class, tc.model, tc.entryName, tc.totalMB, tc.counters)
+			records, err := parseIORegistryGPUs([]byte(fixture), 16<<30)
+			if err != nil {
+				t.Fatalf("parseIORegistryGPUs() error = %v", err)
+			}
+			if len(records) != 1 {
+				t.Fatalf("got %d records, want 1", len(records))
+			}
+			got := records[0]
+			if got.memoryKind != MemoryShared || got.vramTotal != tc.totalMB<<20 ||
+				got.vramUsed != tc.wantUsed || got.vramUsedValid != tc.wantValid {
+				t.Fatalf("Intel GPU must use shared budget and measured counters only: %+v", got)
+			}
+		})
 	}
 }
 

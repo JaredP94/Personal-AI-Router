@@ -6,7 +6,6 @@
 package main
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -135,16 +134,23 @@ func TestCPUUtilization(t *testing.T) {
 // when /proc/meminfo cannot be read.
 func TestInitialMemorySnapshot(t *testing.T) {
 	cases := []struct {
-		name     string
-		readUsed func() (uint64, bool)
-		wantUsed uint64
+		name      string
+		readUsed  func() (uint64, bool)
+		wantUsed  uint64
+		wantValid bool
 	}{
 		{
 			name: "successful startup read",
 			readUsed: func() (uint64, bool) {
 				return 48 << 30, true
 			},
-			wantUsed: 48 << 30,
+			wantUsed:  48 << 30,
+			wantValid: true,
+		},
+		{
+			name:      "measured zero startup read",
+			readUsed:  func() (uint64, bool) { return 0, true },
+			wantValid: true,
 		},
 		{
 			name: "failed startup read remains unknown",
@@ -157,6 +163,9 @@ func TestInitialMemorySnapshot(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			snap := initialMemorySnapshot(c.readUsed)
+			if snap.MemUsedValid != c.wantValid {
+				t.Fatalf("MemUsedValid = %v, want %v", snap.MemUsedValid, c.wantValid)
+			}
 			if snap.MemUsedBytes != c.wantUsed {
 				t.Fatalf("MemUsedBytes = %d, want %d", snap.MemUsedBytes, c.wantUsed)
 			}
@@ -207,156 +216,5 @@ func TestParseMeminfoUsed(t *testing.T) {
 				t.Fatalf("used = %d, want %d", used, c.wantUsed)
 			}
 		})
-	}
-}
-
-// TestParseNvidiaStatic pins the static enumeration parse: name + total VRAM
-// (MiB->bytes) keyed by UUID, with skips for malformed rows, plus UMA [N/A]
-// detection.
-func TestParseNvidiaStatic(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      string
-		want    []GPUInfo
-		wantUMA bool
-	}{
-		{
-			name: "discrete VRAM",
-			in: "GPU-aaa, NVIDIA GeForce RTX 4090, 24564\n" +
-				"GPU-bbb, NVIDIA A100, 81920\n" +
-				", MissingUUID, 4096\n" + // skipped: empty uuid
-				"GPU-ccc, , 4096\n" + // skipped: empty name
-				"GPU-ddd, Bad VRAM, notanumber\n", // kept, vram 0
-			want: []GPUInfo{
-				{Name: "NVIDIA GeForce RTX 4090", VramBytes: 24564 * 1024 * 1024, statsKey: "GPU-aaa"},
-				{Name: "NVIDIA A100", VramBytes: 81920 * 1024 * 1024, statsKey: "GPU-bbb"},
-				{Name: "Bad VRAM", VramBytes: 0, statsKey: "GPU-ddd"},
-			},
-		},
-		{
-			name: "unified memory [N/A]",
-			in:   "GPU-spark, NVIDIA GB10, [N/A]\n",
-			want: []GPUInfo{
-				{Name: "NVIDIA GB10", VramBytes: 0, statsKey: "GPU-spark", usesSystemMemoryUsage: true},
-			},
-			wantUMA: true,
-		},
-		{
-			name: "unified memory Not Supported",
-			in:   "GPU-spark, NVIDIA GB10, [Not Supported]\n",
-			want: []GPUInfo{
-				{Name: "NVIDIA GB10", VramBytes: 0, statsKey: "GPU-spark", usesSystemMemoryUsage: true},
-			},
-			wantUMA: true,
-		},
-		{
-			name: "mixed discrete and unified memory",
-			in: "GPU-aaa, NVIDIA GeForce RTX 4090, 24564\n" +
-				"GPU-spark, NVIDIA GB10, [N/A]\n",
-			want: []GPUInfo{
-				{Name: "NVIDIA GeForce RTX 4090", VramBytes: 24564 * 1024 * 1024, statsKey: "GPU-aaa"},
-				{Name: "NVIDIA GB10", VramBytes: 0, statsKey: "GPU-spark", usesSystemMemoryUsage: true},
-			},
-			wantUMA: true,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got, uma := parseNvidiaStatic(c.in)
-			if uma != c.wantUMA {
-				t.Fatalf("unifiedMemory = %v, want %v", uma, c.wantUMA)
-			}
-			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("parseNvidiaStatic() = %+v, want %+v", got, c.want)
-			}
-		})
-	}
-}
-
-// TestParseNvidiaDynamic pins the dynamic-stats parse: per-UUID gpuStat with
-// utilization clamped to 100 and memory.used converted MiB->bytes, plus a
-// separate count of successfully parsed utilization samples. A numeric 0 is a
-// valid idle sample; [N/A] and malformed values leave display data intact but
-// must not make node-wide telemetry valid.
-func TestParseNvidiaDynamic(t *testing.T) {
-	cases := []struct {
-		name        string
-		in          string
-		want        map[string]gpuStat
-		wantSamples int
-	}{
-		{
-			name: "discrete VRAM",
-			in: "GPU-aaa, 37, 8192\n" +
-				"GPU-bbb, 150, 1024\n" + // util clamped to 100
-				", 50, 2048\n" + // skipped: empty uuid
-				"GPU-ccc, bad, alsobad\n", // kept, both zero
-			want: map[string]gpuStat{
-				"GPU-aaa": {UtilizationPct: 37, VRAMUsed: 8192 * 1024 * 1024},
-				"GPU-bbb": {UtilizationPct: 100, VRAMUsed: 1024 * 1024 * 1024},
-				"GPU-ccc": {UtilizationPct: 0, VRAMUsed: 0},
-			},
-			wantSamples: 2,
-		},
-		{
-			name: "unified memory [N/A] leaves memory for response assembly",
-			in:   "GPU-spark, 42, [N/A]\n",
-			want: map[string]gpuStat{
-				"GPU-spark": {UtilizationPct: 42},
-			},
-			wantSamples: 1,
-		},
-		{
-			name: "all unavailable utilization remains invalid",
-			in: "GPU-spark, [N/A], [N/A]\n" +
-				"GPU-memory, N/A, 2048\n",
-			want: map[string]gpuStat{
-				"GPU-spark":  {},
-				"GPU-memory": {VRAMUsed: 2048 * 1024 * 1024},
-			},
-			wantSamples: 0,
-		},
-		{
-			name: "valid idle sample survives mixed unavailable rows",
-			in: "GPU-idle, 0, [N/A]\n" +
-				"GPU-unknown, [N/A], 1024\n",
-			want: map[string]gpuStat{
-				"GPU-idle":    {UtilizationPct: 0},
-				"GPU-unknown": {VRAMUsed: 1024 * 1024 * 1024},
-			},
-			wantSamples: 1,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got, samples := parseNvidiaDynamic(c.in)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("parseNvidiaDynamic() = %+v, want %+v", got, c.want)
-			}
-			if samples != c.wantSamples {
-				t.Fatalf("parseNvidiaDynamic() samples = %d, want %d", samples, c.wantSamples)
-			}
-		})
-	}
-}
-
-// TestIsNvidiaSmiNA pins recognition of nvidia-smi not-applicable sentinels.
-func TestIsNvidiaSmiNA(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"[N/A]", true},
-		{"N/A", true},
-		{"[Not Supported]", true},
-		{"Not Supported", true},
-		{"8192", false},
-		{"notanumber", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := isNvidiaSmiNA(c.in); got != c.want {
-			t.Fatalf("isNvidiaSmiNA(%q) = %v, want %v", c.in, got, c.want)
-		}
 	}
 }

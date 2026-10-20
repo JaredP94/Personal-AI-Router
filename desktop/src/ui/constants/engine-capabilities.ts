@@ -4,6 +4,14 @@
 import { EngineType } from '@/shared/types/engines'
 import type { EngineCaps } from '@/ui/types/engine-manifest'
 
+/**
+ * Static UI metadata only — which controls a row is built from at all (Eject,
+ * expiry, install platforms, hub links). What an engine actually supports is
+ * not here: `nvpair-engine-manager` reports it per node and platform on every
+ * `EngineStatus` as `capabilities`, and the UI gates Delete, the delete
+ * confirmation and the editable server port on those reported flags
+ * (`EngineCaps` carries no delete/restart/port policy).
+ */
 export const EngineCapabilities: Record<EngineType, EngineCaps> = {
     ollama: {
         // Ollama has no model keep-alive/expiry UI; unload uses unload_model
@@ -12,14 +20,12 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // Ollama unloads via POST /api/generate with keep_alive: 0 (unload_model).
         hasEject: true,
         hasInstall: ['win32', 'darwin', 'linux'],
-        hasEnginePort: true,
         hasInstallPath: false,
         hasProxyWebUI: false,
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
-        hasDeleteModel: true,
         engineHub: { label: 'Ollama', url: 'https://ollama.com/library' }
     },
     'lm-studio': {
@@ -30,32 +36,24 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         // `'loaded'`.
         hasEject: true,
         hasInstall: ['win32', 'darwin', 'linux'],
-        hasEnginePort: true,
         hasInstallPath: false,
         hasProxyWebUI: false,
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
-        hasDeleteModel: true,
-        // LM Studio answers /v1/models from an index it builds at startup and
-        // exposes no rescan, so nvpair-engine-manager's delete_model restarts the
-        // server. Deleting therefore interrupts inference and needs a warning.
-        restartsOnModelDelete: true,
         engineHub: { label: 'LM Studio', url: 'https://lmstudio.ai/models' }
     },
     omlx: {
         hasExpiry: false,
         hasEject: true,
         hasInstall: ['darwin'],
-        hasEnginePort: true,
         hasInstallPath: false,
         hasProxyWebUI: false,
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: true,
         modelOpsWhenStopped: false,
-        hasDeleteModel: true,
         engineHub: { label: 'Hugging Face (MLX)', url: 'https://huggingface.co/models?other=mlx' }
     }
 }

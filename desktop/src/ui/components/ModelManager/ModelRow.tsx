@@ -7,6 +7,7 @@ import { useDropdownClickable } from '@/ui/hooks/useDropdownClickable'
 import { ModelRowHeader } from './ModelRowHeader'
 import { ModelRowSecondaryRow } from './ModelRowSecondaryRow'
 import type { ModelRowProps } from '@/ui/types/model-row'
+import { modelActionItems } from '@/ui/utils/engine-capability-gates'
 import type { EngineCommandType } from '@/shared/types/engine-api'
 
 /** "Working" label shown on the secondary row while an optimistic action is in flight. */
@@ -29,6 +30,7 @@ function ModelRowInner({
     model,
     isRunning,
     capabilities,
+    reported,
     progress,
     pendingAction,
     displayName,
@@ -41,39 +43,18 @@ function ModelRowInner({
 
     const isLoaded = model.status === 'loaded'
 
-    const actionItems = useMemo(() => {
-        const items: { id: string; children: string; disabled?: boolean; danger?: boolean }[] = []
-        // A command is already in flight for this model -- lock the whole menu so
-        // the user cannot fire a second conflicting op before it resolves.
-        const busy = pendingAction !== undefined
-        items.push({
-            id: 'load',
-            children: 'Load',
-            disabled: busy || isLoaded || !model.downloaded || !isRunning
-        })
-        if (capabilities.hasEject) {
-            items.push({
-                id: 'eject',
-                children: 'Eject',
-                // The backend reports per-model loaded state and stamps
-                // `status: 'loaded'`, so Eject is offered only for a model that
-                // is actually resident in memory — ejecting an idle model would
-                // be a no-op.
-                disabled: busy || !isRunning || !isLoaded
-            })
-        }
-        if (capabilities.hasDeleteModel) {
-            items.push({ id: 'delete', children: 'Delete', danger: true, disabled: busy })
-        }
-        return items
-    }, [
-        capabilities.hasEject,
-        capabilities.hasDeleteModel,
-        isLoaded,
-        isRunning,
-        model.downloaded,
-        pendingAction
-    ])
+    const actionItems = useMemo(
+        () =>
+            modelActionItems({
+                capabilities,
+                reported,
+                isRunning,
+                isLoaded,
+                downloaded: model.downloaded,
+                busy: pendingAction !== undefined
+            }),
+        [capabilities, reported, isLoaded, isRunning, model.downloaded, pendingAction]
+    )
 
     const formattedName = displayName(model.name)
     // Pull already renders its own progress spinner via `progress`; only fall

@@ -39,8 +39,11 @@ change belongs in a Go service instead.
 - The broker attempts to start 12 workers, including `omlx-proxy`. Standalone,
   only the scanner is required: missing default auxiliary binaries and initial
   auxiliary spawn failures are non-fatal. Invalid explicit worker paths are
-  fatal. Failed initial spawns are not automatically retried; crash supervision
-  applies after a successful start.
+  fatal; scanner's initial spawn failure is also fatal. Optional initial spawn
+  failures retry under the same budget as crashes and eligible hang restarts:
+  1 s → 16 s backoff, five replacement attempts. Reset requires 60 s uptime
+  and a successful health probe since that spawn. Missing default binaries stay
+  `missing` without retries until `workers:restart` finds them.
 - Desktop additionally prevalidates broker, scanner, Ollama proxy, node-info, and
   node-settings binaries. Do not confuse its requirements with standalone mode.
 - `nvpair-tui` is bundled but never supervised. It owns its own broker.
@@ -53,6 +56,18 @@ change belongs in a Go service instead.
 - The broker emits a heartbeat every 15 seconds. Desktop owns recovery after
   45 seconds of inbound silence; this is not worker-heartbeat monitoring or a
   promise to reconnect automatically after every broker crash.
+- Separately, the broker probes each worker's `worker/health` every 30 s
+  (`--worker-health-interval`, minimum 1 s), with a 5 s deadline capped at the
+  interval. Two consecutive failures report `degraded`; a successful probe
+  restores `running` and clears the failure count. Three failures restart scanner,
+  errors, settings, node-info, workload-manager, manual-nodes, cluster-manager,
+  and scheduler. Engine-manager and the three proxies never auto-restart on a
+  hang; desktop shows "Not responding — restart manually".
+- `workers:get-status` and full-snapshot `workers:update` expose all 12 workers;
+  `workers:restart` requests an explicit retry/restart, including after exhaustion.
+  Desktop renders these under Settings → Service → Workers; TUI Overview uses
+  the same registry, with `R` and confirmation to restart. Unix cross-process
+  hang tests do not establish Windows behavior.
 - The desktop build compiles the Go binaries from the sibling `services/`
   directory with `npm run build:modular-binaries`. There is no submodule.
 

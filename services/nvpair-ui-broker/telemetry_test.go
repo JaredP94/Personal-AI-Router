@@ -193,7 +193,7 @@ func TestManualNodeTelemetryPreservesSampleSeq(t *testing.T) {
 		TelemetryValid: true,
 		MSSince:        100,
 		SampleSeq:      77,
-		GPUs:           []GPUInfo{{UtilizationPercent: 50}},
+		GPUs:           []GPUInfo{{UtilizationPercent: gpuReading(uint32(50))}},
 	}
 	telemetry := manualNodeTelemetry(status, "node-a")
 	if telemetry.SampleSeq != 77 {
@@ -297,5 +297,3 @@ func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
 		t.Fatalf("removal left cached telemetry: %+v", snapRemoved)
 	}
 }
-
-
