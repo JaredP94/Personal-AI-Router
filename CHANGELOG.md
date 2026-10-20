@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.2] - 2026-10-20
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
+Linux desktop and Intel Mac packages are not published. Privileged-helper
+registration and helper-based firewall setup remain unavailable in unsigned builds;
+Settings → Service shows manual firewall guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.2)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.7.0-rc.2` ships service product `2.2.0`. Relay
+protocol stays v2. Settings migrate to schema 2, which turns tracing and content
+capture off until re-confirmed. In a mixed cluster, `0.7.0-rc.1` peers poll
+node-info without `X-NVPAIR-Poll`, which keeps upgraded nodes sampling their GPU
+every 2 seconds; idle backoff applies once every node is upgraded.
+
 ### Migration
 - **Tracing and Capture Reset to Off**: Migration to settings schema 2 resets telemetry to disabled (`telemetry_enabled: false`), content capture to off (`telemetry_record_payloads: false`), consent version to 0, and collector port to 4317. Existing schema 1 settings with tracing or capture enabled are not carried forward as consent. Content capture requires explicit informed user consent conforming to payload policy version 1.
 - **Proxy Configuration via Broker Only**: Proxies (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`) no longer read `PAIR_TELEMETRY_*` or `OTEL_*` startup environment variables. They start with tracing disabled and are configured solely by the supervising broker via serialized `telemetry/configure` requests. Standalone proxies without a broker do not trace.
@@ -22,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Local-Only Tracing & Discovery Cleanup**: The `otel=4317` mDNS TXT record advertisement has been removed from `nvpair-node-scanner`. Telemetry is strictly local: the serving node records nothing for peer-originated requests, W3C trace context is not propagated across nodes, request headers are allowlisted to `Content-Type` and `Content-Length`, and captured payloads are truncated to 16 KB.
 
 ### Added
+- **Worker Health and Startup Retry**: Every worker answers `worker/health`. The broker probes each worker every 30 s (5 s deadline), marks it degraded after 2 missed probes, and restarts eight child-free workers after 3; engine-manager and the three proxies are never auto-restarted on a hang. Optional workers whose first launch fails retry under the existing crash budget, and a missing binary is reported as `missing`. New `workers:get-status`, `workers:restart` and `workers:update`; Settings → Service shows a Workers card and the terminal interface Overview lists all 12 workers with restart.
+- **GPU Memory Kinds**: Each GPU reports `memory_kind` (`dedicated`, `unified`, `shared`, `unavailable`) and only measured readings; the desktop labels memory by kind, shows unknown readings as "—" instead of 0, and draws chart gaps. Windows reports shared system memory separately; Intel integrated GPUs on Macs are reported as shared.
+- **Engine Capabilities**: engine-manager reports each engine's effective capabilities (`list_models`, `pull_model`, `delete_model`, `delete_restarts_engine`, `set_port`, `install`, `uninstall`) in every `EngineStatus`, including peers' statuses. The desktop gates actions on them instead of a hardcoded table.
+- **Terminal Interface Operations**: `nvpair-tui` lists, downloads and deletes models, changes a local engine's port, updates an engine (uninstall then install), starts, stops and installs engines on cluster peers, shows each workload's destination node, and confirms every destructive action.
+- **`nvpair engine <engine> [args…]`**: Runs an installed engine's own command line through engine-manager's new one-shot `--list-engines` / `--resolve` modes, without starting a broker or changing `PATH`.
+- **Scheduling Demand Notification**: The broker pushes `telemetry/set-scheduling-demand` to the scanner and manual nodes, which request the scheduling sampling lease only while a workload is queued or running.
+- **Release Profiling Harness**: `scripts/perf/` profiles a baseline and candidate macOS app in sandboxed homes across the whole owned process tree, with verified clean shutdown and whole-bundle artifact identity.
 - **Per-Node Tracing, Explicit Consent, and Storage Controls**: Persist revisioned telemetry configuration in `nvpair-node-settings` (schema 2) with atomic `settings/get-telemetry-config` and `settings/set-telemetry-config` methods, notifying changes via `settings/telemetry-changed`.
 - **Dynamic Broker Telemetry Reconciliation**: The broker reconciles desired settings into proxies dynamically via `telemetry/configure` (with per-worker status tracking and delivery health reporting in `telemetry/get-status`), retaining the last loaded configuration if the settings worker restarts.
 - **Broker-Managed Pinned Phoenix Observability**: Built-in, loopback-only Arize Phoenix Docker Compose deployment managed from an embedded template (`services/nvpair-ui-broker/telemetry/phoenix-compose.yml.tmpl`), pinned to `arizephoenix/phoenix:version-20.23.0@sha256:c542e7de1dc1fdd0f938de337d44ebefa7266e91391eed6e7978523d7f6e1f2f`, publishing only `127.0.0.1:6006` and `127.0.0.1:<collectorPort>`.
@@ -50,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Collector Discovery Advertisement**: Dropped `otel=4317` TXT record advertisement from `nvpair-node-scanner`.
 
 ### Fixed
+- **Idle GPU Sampling**: A tray-only desktop no longer requests foreground node-info readings, and discovery no longer renews the scheduling lease without demand, so idle nodes reach the 10 s sampling rate.
+- **oMLX Command-Line Resolution**: oMLX counts as installed only when the CLI PAIR runs exists (`~/.omlx/bin/omlx`, `/opt/homebrew/bin/omlx` or `/usr/local/bin/omlx`); the app bundle alone no longer counts, so starts no longer fail with "no such file or directory". Uninstall is offered only when the declared uninstaller removes the resolved CLI (`uninstall.cli_roots`).
+- **Engine Port Overrides**: Changing an engine's port keeps every other field of a user manifest override, including a port pinned for this host's platform, and restoring the default removes only the port.
+- **Model Pull Failures**: An engine-reported pull error is returned as an error instead of a successful result.
+- **Blocked Worker Writes**: A worker that stops reading its input no longer blocks the broker's request handling or the manual restart needed to recover it; calls honour their deadlines while a write is blocked.
+- **Electron License Notices**: macOS packages ship `LICENSES.chromium.html` and `LICENSE.electron.txt`, and packaging fails on any platform if they are missing.
 - **Unsigned macOS Helper Registration Prompts**: `nvpair-helper-ctl trust` checks the running host application and control tool against helper code-signing requirements before prompting; unsigned builds skip the helper explanation dialog and registration attempts entirely instead of repeatedly prompting.
 - **Standalone Service Installer Packaging & Firewall Cleanup**: `services/installer_build.sh` stages every component in `services/versions.json` along with `LICENSE` and `THIRD_PARTY_NOTICES.md`, failing before archive creation if any file is missing or non-executable. The Windows NSIS installer (`nvpair-setup.nsi`) installs `omlx-proxy.exe` with firewall rules, bundles license notices, and removes all firewall rules on uninstall (fixing leaked LM Studio proxy firewall rules).
 - **Kaizen CSS Vendoring Integrity**: `desktop/scripts/vendor-kaizen-ui-foundations-css.ts` validates pinned SHA-256 digests of downloaded CSS bytes before writing to disk, failing closed on digest mismatches.
@@ -61,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **macOS Installer Safety**: Validate options and release asset names, require and verify `SHA256SUMS` for downloads before mounting, and validate the exact `PAIR.app` before stopping the installed application. Normal quit is bounded and scoped to the installed bundle; independent TUI/dev services are no longer killed by global names. Older downloads without a checksum manifest fail closed; local DMGs require independent verification.
 
 ### Documentation
+- Recorded the [release-candidate profile](docs/performance-release-summary.mdx#release-candidate-profile-2026-10-20) of `0.7.0-rc.2` against `0.7.0-rc.1` (tray-only and Overview): CPU and memory match rc.1, idle GPU sampling reaches its 10 s rate, and package idle wakeups rose (cause not established). No percentage improvement is claimed.
 - Backfilled the `0.7.0-rc.1` changelog and corrected fork artifact/signing claims, engine capabilities, worker inventory, relay v2 recovery, logging, and telemetry/privacy limitations across user and architecture guides and `AGENTS.md`.
 - Regenerated dependency notices, retained companion Go attribution files, fixed embedded Markdown fencing, and replaced the stale services notice with a canonical-root pointer. README-only/missing upstream license text remains flagged for review.
 - Added [next-release readiness follow-ups](docs/release-readiness.mdx), including unwired telemetry settings, collector exposure, private vulnerability reporting, attribution review, and final artifact validation. These are not resolved by documentation changes.
