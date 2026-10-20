@@ -52,6 +52,7 @@ func assertCapabilities(t *testing.T, status EngineStatus, want Capabilities) {
 // bundled manifests, per platform. It pins what every client gates on, notably
 // that oMLX never offers pull or delete and never an editable port.
 func TestBundledManifestCapabilities(t *testing.T) {
+	base := resolutionRoot(t) // no real user CLI may affect the capability table
 	reg := loadWithOverrides(t, t.TempDir())
 	for _, tc := range []struct {
 		engine, platform string
@@ -71,17 +72,18 @@ func TestBundledManifestCapabilities(t *testing.T) {
 			// Only LM Studio declares restart_after, so its delete interrupts a
 			// running engine and a caller has to warn about it.
 			DeleteRestartsEngine: true,
-			SetPort:              true, Install: true, Uninstall: true,
+			SetPort:              true, Install: true,
 		}},
 		{"lmstudio", "windows/amd64", false, Capabilities{
 			ListModels: true, PullModel: true, DeleteModel: true,
 			DeleteRestartsEngine: true,
-			SetPort:              true, Install: true, Uninstall: true,
+			SetPort:              true, Install: true,
 		}},
 		// oMLX lists models and is installable, but declares no pull_model or
-		// delete_model action, and its start command takes no port.
+		// delete_model action, and its start command takes no port. Command-mode
+		// uninstall requires a resolved, covered CLI; none is installed here.
 		{"omlx", "darwin/arm64", false, Capabilities{
-			ListModels: true, Install: true, Uninstall: true,
+			ListModels: true, Install: true,
 		}},
 		// oMLX ships for macOS arm64 only: an unsupported host supports nothing.
 		{"omlx", "linux/amd64", false, Capabilities{}},
@@ -103,7 +105,7 @@ func TestBundledManifestCapabilities(t *testing.T) {
 			if !ok {
 				t.Fatalf("bundled engine %q not loaded", tc.engine)
 			}
-			if got := capabilitiesFor(m, tc.platform, tc.adopted); got != tc.want {
+			if got := capabilitiesFor(m, tc.platform, tc.adopted, filepath.Join(base, tc.engine)); got != tc.want {
 				t.Fatalf("capabilitiesFor(%q, %q, adopted=%t) = %+v, want %+v", tc.engine, tc.platform, tc.adopted, got, tc.want)
 			}
 		})
@@ -139,7 +141,7 @@ func TestSetPortCapabilityMatchesEngineSetPortRules(t *testing.T) {
 				p.Uninstall = nil // isolate set_port from the uninstall flag
 				m.Platforms[key] = p
 			}
-			got := capabilitiesFor(m, runtime.GOOS+"/"+runtime.GOARCH, tc.adopted)
+			got := capabilitiesFor(m, runtime.GOOS+"/"+runtime.GOARCH, tc.adopted, t.TempDir())
 			if got.SetPort != tc.setPort {
 				t.Errorf("set_port = %t, want %t (all flags %+v)", got.SetPort, tc.setPort, got)
 			}

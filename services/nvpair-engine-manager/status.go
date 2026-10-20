@@ -122,7 +122,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Running:      st.running,
 		Healthy:      st.healthy,
 		Port:         st.port,
-		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted),
+		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted, st.installDir),
 	}
 }
 

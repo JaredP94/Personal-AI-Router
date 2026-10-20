@@ -372,6 +372,9 @@ For oMLX on macOS arm64, PAIR uses the first installed standalone CLI from its
 [declared candidates](../services/nvpair-engine-manager/README.md#omlx-cli-candidates),
 unless a manifest override explicitly sets `runtime.cli`. A GUI-only oMLX app
 installation does not supply a verified CLI and is reported as not installed.
+PAIR offers uninstall only for a resolved CLI under `~/.omlx`; Homebrew and
+`/usr/local` installations cannot be uninstalled through PAIR. Remove those
+installations using their original package manager or installer instead.
 
 This command starts no broker, workers or dashboard and writes no PAIR settings,
 so it can run alongside the desktop app. **The engine CLI can still change or

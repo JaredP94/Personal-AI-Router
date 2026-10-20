@@ -13,6 +13,7 @@
     "mode": "user"
   },
   "uninstall": {
+    "cli_roots": ["~/.omlx"],
     "run": ["sh", "-c", "pkill -x omlx 2>/dev/null; sleep 2; rm -rf \"$HOME/.omlx\""]
   },
   "runtime": {

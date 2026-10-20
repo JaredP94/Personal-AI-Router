@@ -110,9 +110,9 @@ func TestUninstallRetries(t *testing.T) {
 	m := testEngineManifest(binCopy)
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
-	p.Runtime.Mode = "command"                                           // command-mode installs may legitimately live outside installDir
-	p.Detect = []string{binCopy}                                         // installed → uninstall runs the command
-	p.Uninstall = &Uninstall{Run: []string{binCopy, "failmark", marker}} // always exits 1, appends one byte
+	p.Runtime.Mode = "command"                                                                    // command-mode installs may legitimately live outside installDir
+	p.Detect = []string{binCopy}                                                                  // installed → uninstall runs the command
+	p.Uninstall = &Uninstall{Run: []string{binCopy, "failmark", marker}, CLIRoots: []string{dir}} // declared owner; always exits 1, appends one byte
 	m.Platforms[key] = p
 
 	ex := newTestExecutor(t, m)

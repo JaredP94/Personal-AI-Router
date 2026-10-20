@@ -119,6 +119,25 @@ is therefore not installed from PAIR's perspective; install the standalone CLI
 or explicitly configure a verified CLI through a manifest override. LM Studio
 retains its existing per-platform `runtime.cli` (`~/.lmstudio/bin/lms` on Unix).
 
+PAIR can uninstall oMLX only when the resolved CLI is under `~/.omlx`, which
+its declared uninstaller removes. Homebrew and `/usr/local` installations report
+`uninstall: false`; an uninstall request is rejected before stopping the engine or
+running the uninstall command. Remove those installations with their original
+package manager or installer instead. LM Studio under `~/.lmstudio` can still be
+uninstalled through PAIR (including its Windows user-profile installation).
+
+For command-mode engines, `uninstall.cli_roots` declares the directory roots
+whose CLI files `uninstall.run` removes, for example `"cli_roots": ["~/.omlx"]`.
+The same coverage check gates both the capability and the request. Roots expand
+`~`, OS environment variables and `{install_dir}`, must be absolute after
+expansion, and match whole path components (not sibling prefixes). Missing or
+unresolvable roots cover nothing; an absent CLI reports `uninstall: false`.
+Coverage is lexical: deleting a root removes CLI symlinks within it, not external
+targets. Manifest authors must keep these declarations aligned with the actual
+command; PAIR does not infer ownership by parsing shell commands. Overrides that
+relocate a CLI must also declare an uninstaller that covers it. Process-mode
+engines retain the separate managed-install-directory request guard.
+
 ## JSON-RPC surface
 
 Requests (caller → service):
@@ -152,7 +171,8 @@ Requests (caller → service):
 `EngineStatus` = `{ engine, display_name, installed, running, healthy, port?, capabilities }`.
 Every status snapshot, lifecycle result, and `engine:state-changed` notification
 includes all seven boolean capability flags, derived by Go from the effective
-manifest (including user overrides), the host OS/architecture, and adoption state:
+manifest (including user overrides), the host OS/architecture, adoption state,
+and command-mode CLI coverage:
 
 | `capabilities` field | True when |
 |---|---|
@@ -160,7 +180,7 @@ manifest (including user overrides), the host OS/architecture, and adoption stat
 | `delete_restarts_engine` | `delete_model` is declared with `restart_after: true` on a supported platform. |
 | `set_port` | The platform's start argv, CLI args, or environment reference `{port}` — a probe or stop template alone moves nothing — and `engine:set-port` would not refuse the engine as externally adopted, which is the same adoption check it makes (a command-mode engine with an official stop command can be moved). |
 | `install` | The effective manifest has a platform block for this host OS/architecture. |
-| `uninstall` | `install` is true, an uninstall is declared, and the install is not externally adopted. |
+| `uninstall` | `install` is true, a nonempty uninstall command is declared, and the install is not externally adopted. Command mode additionally requires the resolved CLI to be within a declared `uninstall.cli_roots` directory. |
 
 Unsupported platforms report all flags false. Bundled oMLX supports model listing
 but never pull/delete; its start command has no `{port}` input, so `set_port` is

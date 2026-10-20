@@ -89,6 +89,11 @@ type Install struct {
 // it only runs a local command.
 type Uninstall struct {
 	Run []string `json:"run"`
+	// CLIRoots declares the directories whose CLI files Run removes. Command
+	// mode refuses uninstall unless the resolved CLI is within one of these
+	// roots. Paths expand environment, ~ and {install_dir}; no roots means no
+	// command-mode uninstall. Process mode retains its managed-directory guard.
+	CLIRoots []string `json:"cli_roots,omitempty"`
 }
 
 // Fetch is an engine download. SHA256, when set, pins it (verified
@@ -730,6 +735,7 @@ func (m *Manifest) templatedStrings() []string {
 		}
 		if p.Uninstall != nil {
 			out = append(out, p.Uninstall.Run...)
+			out = append(out, p.Uninstall.CLIRoots...)
 		}
 		out = append(out, p.Runtime.Bin)
 		out = append(out, p.Runtime.Args...)

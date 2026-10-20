@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -144,6 +145,11 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	st.mu.Lock()
 	binPath := st.binPath // resolved by the Detect at the top of Uninstall
 	st.mu.Unlock()
+	if st.plat.Runtime.modeOrDefault() == "command" && !uninstallerCoversCLI(un, binPath, st.installDir, runtime.GOOS) {
+		err := fmt.Errorf("cannot uninstall engine %q: declared uninstaller does not cover the resolved CLI (%s); remove this installation using its original package manager or installer", engine, binPath)
+		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
+		return err
+	}
 	if st.plat.Runtime.modeOrDefault() == "process" && !isManagedInstallPath(binPath, st.installDir) {
 		err := fmt.Errorf("cannot uninstall engine %q: its executable is outside NVPAIR's managed install directory (%s)", engine, binPath)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})

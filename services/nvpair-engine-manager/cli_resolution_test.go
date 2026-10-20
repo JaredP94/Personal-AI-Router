@@ -39,7 +39,7 @@ func isolatedCommandRegistry(t *testing.T, engine, root string) *Registry {
 	return reg
 }
 
-func assertCommandPresence(t *testing.T, reg *Registry, base, engine, wantPath string) {
+func assertCommandPresence(t *testing.T, reg *Registry, base, engine, wantPath string, wantUninstall bool) {
 	t.Helper()
 	wantInstalled := wantPath != ""
 	ex := NewExecutor(reg, NewReporter(nil), nil, base)
@@ -52,12 +52,15 @@ func assertCommandPresence(t *testing.T, reg *Registry, base, engine, wantPath s
 	}
 	// Capabilities are support, not installed-ness: a missing CLI still offers
 	// installation, while the authoritative installed flag remains false.
-	if !status.Capabilities.Install || status.Capabilities.SetPort {
+	if !status.Capabilities.Install || status.Capabilities.SetPort || status.Capabilities.Uninstall != wantUninstall {
 		t.Errorf("unexpected oMLX capabilities: %+v", status.Capabilities)
 	}
 	installed := ex.GetInstalled()
 	if len(installed) != 1 || installed[0].Installed != wantInstalled {
 		t.Errorf("GetInstalled = %+v; want installed=%v", installed, wantInstalled)
+	}
+	if len(installed) == 1 && installed[0].Capabilities.Uninstall != wantUninstall {
+		t.Errorf("GetInstalled uninstall = %v; want %v", installed[0].Capabilities.Uninstall, wantUninstall)
 	}
 	listed := listEngines(reg, runtime.GOOS, runtime.GOARCH)
 	if len(listed) != 1 || listed[0].Installed != wantInstalled {
@@ -113,7 +116,7 @@ func TestOmlxCLICandidatesAgreeAcrossConsumers(t *testing.T) {
 			if tc.want != "" {
 				want = filepath.Join(home, tc.want)
 			}
-			assertCommandPresence(t, reg, base, "omlx", want)
+			assertCommandPresence(t, reg, base, "omlx", want, tc.want == ".omlx/bin/omlx")
 		})
 	}
 }
@@ -147,7 +150,7 @@ func TestCommandCLIOverrideIsAuthoritative(t *testing.T) {
 			if exists {
 				want = cli
 			}
-			assertCommandPresence(t, reg, base, "omlx", want)
+			assertCommandPresence(t, reg, base, "omlx", want, false)
 		})
 	}
 }
@@ -162,13 +165,13 @@ func TestCommandCLISkipsDirectories(t *testing.T) {
 	}
 	cli := filepath.Join(home, "opt/homebrew/bin/omlx")
 	resolutionFile(t, cli)
-	assertCommandPresence(t, reg, base, "omlx", cli)
+	assertCommandPresence(t, reg, base, "omlx", cli, false)
 	m, _ := reg.Get("omlx")
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	p.Runtime.CLI = directory
 	m.Platforms[key] = p
-	assertCommandPresence(t, reg, base, "omlx", "")
+	assertCommandPresence(t, reg, base, "omlx", "", false)
 }
 
 func TestLMStudioCLIResolutionUnchanged(t *testing.T) {
