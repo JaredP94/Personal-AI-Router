@@ -40,7 +40,7 @@ def sample(pid, start, user=0, system=0, name="PAIR", ppid=1, **extra):
                     ri_diskio_byteswritten=0, ri_billed_energy=0)
     counters.update(extra)
     return dict(pid=pid, ppid=ppid, name=name, path="/test/" + name,
-                raw=counters)
+                start_time=(start, 0), raw=counters)
 
 
 class StatisticsTests(unittest.TestCase):
@@ -259,8 +259,10 @@ class FakeProc:
         self.clock, self.app = clock, app
     def info(self, pid):
         return dict(sample(pid, 1, user=int(self.clock.value * 1e9)), pgid=pid)
+    def group_members(self, pgid):
+        return {} if self.app.exitcode is not None else {self.app.pid: (1, 0)}
     def snapshot(self):
-        return {} if self.app.exitcode is not None else {1000: self.info(1000)}
+        return {} if self.app.exitcode is not None else {self.app.pid: self.info(self.app.pid)}
     def absolute_time(self):
         return 100 + int(self.clock.value * 1e9)
     def seconds(self, ticks):
@@ -636,9 +638,11 @@ class LifecycleTests(unittest.TestCase):
 
     def test_hook_group_permission_failure_is_unverified_even_if_leader_exits_zero(self):
         clock, hook = FakeClock(), FakeApp()
-        hook.exitcode = 0
         evidence = {}
-        with patch("scripts.perf.profile.os.killpg", side_effect=PermissionError("denied")), \
+        def denied(pid, sig):
+            hook.exitcode = 0
+            raise PermissionError("denied")
+        with patch("scripts.perf.profile.os.killpg", side_effect=denied), \
              patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
              patch("scripts.perf.profile.time.sleep", clock.sleep):
             profile.finish_hook(profile.ProcessGroup(hook, FakeProc(clock, hook)), evidence, 1)
@@ -684,6 +688,8 @@ class LifecycleTests(unittest.TestCase):
                 proc = FakeProc(clock, hook)
                 child = dict(sample(1001, 2), pgid=1000)
                 proc.snapshot = lambda: {1001: child} if living else {}
+                proc.group_members = lambda pgid: {1001: (2, 0)} if living else {}
+                proc.info = lambda pid: child
                 with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
                      patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
                      patch("scripts.perf.profile.time.sleep", clock.sleep):
@@ -729,6 +735,14 @@ class LifecycleTests(unittest.TestCase):
                 signals = []
 
                 class Collector(FakeProc):
+                    def group_members(self, pgid):
+                        if pgid == 2000:
+                            return {2001: (2, 0)}
+                        return super().group_members(pgid)
+                    def info(self, pid):
+                        if pid == 2001:
+                            raise PermissionError(errno.EACCES, "unreadable member")
+                        return super().info(pid)
                     def snapshot(self):
                         self.errors = [dict(pid=2001, errno=errno.EACCES, error="unreadable member")]
                         return {p.pid: self.info(p.pid) for p in (app, hook)
@@ -748,7 +762,6 @@ class LifecycleTests(unittest.TestCase):
                      patch("scripts.perf.profile.platform.machine", return_value="arm64"), \
                      patch("scripts.perf.profile.Libproc", return_value=proc), \
                      patch("scripts.perf.profile.subprocess.Popen", side_effect=[app, hook]) as launch, \
-                     patch("scripts.perf.profile.os.getpgid", return_value=2000), \
                      patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
                      patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
                      patch("scripts.perf.profile.time.sleep", clock.sleep):
@@ -790,8 +803,10 @@ class GroupIdentityTests(unittest.TestCase):
             errors = []
             def snapshot(self):
                 return {1000: reused} if leader.reaped else ({1001: child} if living else {})
+            def group_members(self, pgid):
+                return {pid: p["start_time"] for pid, p in self.snapshot().items()}
             def info(self, pid):
-                return dict(sample(pid, 1), pgid=1000)
+                return self.snapshot()[pid]
 
         def exited(pid):
             if leader.reaped:
@@ -835,8 +850,8 @@ class GroupIdentityTests(unittest.TestCase):
             ("permission", errno.EACCES, 1000, None),
             ("read race", errno.ESRCH, 1000, None),
             ("other read error", errno.EIO, 1000, None),
-            ("pgid permission", errno.EACCES, PermissionError("PGID denied"), None),
-            ("pgid race", errno.ESRCH, ProcessLookupError("PGID race"), None),
+            ("group query permission", errno.EACCES, PermissionError("query denied"), None),
+            ("group query error", errno.EIO, OSError("query failed"), None),
             ("missing start", None, 1000, dict(sample(1001, 2), raw={})),
             ("zero start", None, 1000, sample(1001, 0)),
             ("null start", None, 1000, sample(1001, None)),
@@ -851,6 +866,16 @@ class GroupIdentityTests(unittest.TestCase):
                         partial["pgid"] = 1000
 
                     class Collector(FakeProc):
+                        def group_members(self, group_id):
+                            if isinstance(pgid, Exception):
+                                raise pgid
+                            return {1001: (2, 0)}
+                        def info(self, pid):
+                            if pid == 1001:
+                                if code is not None:
+                                    raise OSError(code, name)
+                                return partial
+                            return super().info(pid)
                         def snapshot(self):
                             self.errors = ([dict(pid=1001, errno=code, error=name)]
                                            if code is not None else [])
@@ -869,8 +894,6 @@ class GroupIdentityTests(unittest.TestCase):
                     with patch("scripts.perf.profile.child_exited", side_effect=fake_child_exited), \
                          patch("scripts.perf.profile.os.kill", side_effect=fake_kill), \
                          patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
-                         patch("scripts.perf.profile.os.getpgid", side_effect=(pgid if isinstance(pgid, Exception)
-                               else lambda pid: pgid)), \
                          patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
                          patch("scripts.perf.profile.time.sleep", clock.sleep):
                         group = profile.ProcessGroup(leader, proc)
@@ -886,7 +909,7 @@ class GroupIdentityTests(unittest.TestCase):
                     self.assertIn(signal.SIGKILL, [sig for sig, unused in signals])
                     self.assertGreaterEqual(signals[-1][1], 1)
                     self.assertFalse(ok)
-                    self.assertTrue(evidence.get("unverified_members"))
+                    self.assertTrue(evidence.get("unverified_members") or evidence.get("collector_error"))
                     self.assertTrue(leader.reaped)
 
     def test_enumerated_members_still_present_after_kill_fail_cleanup(self):
@@ -896,6 +919,8 @@ class GroupIdentityTests(unittest.TestCase):
                 child = dict(sample(1001, 2), pgid=1000, status=status)
                 proc = FakeProc(clock, leader)
                 proc.snapshot = lambda: {1001: child}
+                proc.group_members = lambda pgid: {1001: (2, 0)}
+                proc.info = lambda pid: child
                 signals = []
                 def group_signal(pid, sig):
                     self.assertEqual(pid, 1000)
@@ -912,7 +937,7 @@ class GroupIdentityTests(unittest.TestCase):
                 self.assertEqual(signals, [signal.SIGTERM, signal.SIGKILL])
                 self.assertFalse(evidence["cleanup_ok"])
 
-    def test_read_errors_positively_outside_group_do_not_force_kill(self):
+    def test_read_errors_for_kernel_nonmembers_do_not_force_kill(self):
         clock, leader = FakeClock(), FakeApp()
         proc = FakeProc(clock, leader)
         proc.errors = [dict(pid=2001, errno=code, error="unrelated read error")
@@ -925,7 +950,6 @@ class GroupIdentityTests(unittest.TestCase):
             leader.exitcode = 0
         with patch("scripts.perf.profile.child_exited", side_effect=fake_child_exited), \
              patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
-             patch("scripts.perf.profile.os.getpgid", return_value=2000), \
              patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
              patch("scripts.perf.profile.time.sleep", clock.sleep):
             group = profile.ProcessGroup(leader, proc)
@@ -945,6 +969,8 @@ class GroupIdentityTests(unittest.TestCase):
             errors = []
             def snapshot(self):
                 return {1001: reused_member}
+            def group_members(self, pgid):
+                return {1001: (99, 0)}
             def info(self, pid):
                 return reused_member
 
@@ -980,7 +1006,11 @@ class GroupIdentityTests(unittest.TestCase):
                     errors = []
                     def snapshot(self):
                         return {} if leader.reaped else {1001: known}
+                    def group_members(self, pgid):
+                        return {} if leader.reaped else {1001: (2, 0)}
                     def info(self, pid):
+                        if not leader.reaped:
+                            return known
                         if isinstance(current, Exception):
                             raise current
                         return current
