@@ -186,6 +186,12 @@ One lifecycle transition per forwarded inference request, carrying a single `wor
 {"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"17","model":"mlx-community/Qwen2.5-Coder-7B-Instruct-4bit","engine":"omlx","runId":"3ce8a1740b62df95","state":"running","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}
 ```
 
+The terminal transition also carries the engine's own inference measurement, taken from the `usage` block oMLX reports on its final chunk: `prefillTokens`, `decodeTokens` and `cachedTokens` are token counts, and `prefillMs`, `decodeMs`, `ttftMs` and `totalMs` are the phase durations in milliseconds. Every field is optional and present only when oMLX reported that value — a phase the engine did not measure stays absent rather than becoming a zero. The measurement is reported whether or not telemetry is enabled, and is absent for a request that was cancelled before the engine finished.
+
+```json
+{"jsonrpc":"2.0","method":"workload:completed","params":{"workloadInfo":{"id":"17","model":"mlx-community/Qwen2.5-Coder-7B-Instruct-4bit","engine":"omlx","runId":"3ce8a1740b62df95","state":"completed","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":1716998406120,"error":null,"requesterId":null,"prefillTokens":120,"decodeTokens":34,"cachedTokens":90,"prefillMs":1250,"decodeMs":4500,"ttftMs":1300,"totalMs":5900}}}
+```
+
 #### `node/activity`
 
 Raised while a node's engine is streaming a response back through the proxy: every successful write of upstream body bytes reports the node that produced them. The broker relays it to `nvpair-node-scanner`, which treats it as proof of life and cancels that node's eviction — a node saturated by inference cannot answer a liveness probe, but it is demonstrably alive precisely because it is streaming. Coalesced to one report per node per 2s (`nvpair-shared/nodeactivity`), since a generation writes hundreds of chunks and the scanner treats one report as good for a minute. `msSince` is the age of the observation; the broker adds its own relay delay before passing it on.

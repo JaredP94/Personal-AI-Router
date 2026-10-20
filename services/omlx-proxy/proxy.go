@@ -36,6 +36,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/errors"
+	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
@@ -188,7 +189,8 @@ func isInferenceRequest(method, path string) bool {
 // authoritative attribution handle), so a consumer can attribute the workload
 // to where it ran rather than to where it came from. requesterId is omitted.
 // Pointer fields serialize as JSON null when unset, matching the spec's
-// nullable columns.
+// nullable columns. The embedded measurement is the exception: its fields are
+// omitted entirely when the engine did not report them.
 type Workload struct {
 	ID             string  `json:"id"`
 	Model          string  `json:"model"`
@@ -202,6 +204,12 @@ type Workload struct {
 	CompletedAt    *int64  `json:"completedAt"`
 	Error          *string `json:"error"`
 	RequesterID    *string `json:"requesterId"`
+
+	// Measurement carries the engine's own prefill/decode numbers for this
+	// request. It is embedded anonymously so its fields appear inline in
+	// the workload JSON, and it stays empty for a workload that never
+	// reached an engine (a rejected or cancelled request).
+	inferencemetrics.Measurement
 }
 
 // workloadParams is the params envelope for a workload:* notification
@@ -1151,6 +1159,13 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		proxyErr     string
 		started      bool
 		wl           *Workload
+
+		// telReader wraps the body of the candidate we committed to and
+		// carries the engine's own prefill/decode measurement. It is declared
+		// here, outside the failover loop and before emitTerminal, so the
+		// measurement is reachable where the workload is finalized below.
+		// Only the committed candidate sets it.
+		telReader *telemetryBodyReader
 	)
 
 	// Emit workload:started up front, the moment we begin forwarding, naming
@@ -1256,7 +1271,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK, idle: idleClientWriteTimeout}
 
 		var dispatchSpan trace.Span
-		var telReader *telemetryBodyReader
 		dispatchStart := time.Now()
 		if isInf {
 			_, dispatchSpan = session.Tracer().Start(ctx, "pair.engine.dispatch", trace.WithSpanKind(trace.SpanKindClient))
@@ -1479,6 +1493,18 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		Requests:          reqs,
 		CacheAffinityHits: hits,
 	})
+
+	// Attach the engine's own prefill/decode measurement to the workload. The
+	// measurement is read from the committed reader once the copy unwinds and
+	// written under wlMu, alongside the other shared workload fields. The
+	// disconnect watcher may already have emitted the terminal event (the
+	// request was cancelled before it finished); that event legitimately
+	// carries no measurement.
+	if wl != nil && telReader != nil {
+		wlMu.Lock()
+		wl.Measurement = telReader.Measurement()
+		wlMu.Unlock()
+	}
 
 	// Terminal workload transition pairs with the workload:started emitted at
 	// the commit point above. Cancellation, an upstream/transport error, a

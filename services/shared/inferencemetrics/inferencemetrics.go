@@ -14,6 +14,8 @@ package inferencemetrics
 // Measurement carries the per-request prefill/decode measurements in
 // workload-spec wire form. It is embedded by every struct that carries a
 // measurement, so the JSON field names are a contract shared across services.
+// Embed it anonymously: a named field would nest the measurement instead of
+// inlining its fields into the enclosing payload.
 type Measurement struct {
 	PrefillTokens *int   `json:"prefillTokens,omitempty"`
 	DecodeTokens  *int   `json:"decodeTokens,omitempty"`
