@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -195,7 +196,7 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 	root = expandPath(root)
 
 	if act.ModelResolution == modelResolutionLMSDiskPath {
-		cli := st.plat.Runtime.CLI
+		cli := controlCLIPath(st.plat, st.installDir, runtime.GOOS)
 		targets, err := e.lmsDiskPathsToDelete(ctx, cli, root, vars["model"])
 		if err != nil {
 			return nil, err
@@ -252,8 +253,8 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 	}
 	vars["port"] = strconv.Itoa(port)
 	vars["install_dir"] = st.installDir
-	if cli := st.plat.Runtime.CLI; cli != "" {
-		vars["cli"] = expandPath(cli)
+	if cli := controlCLIPath(st.plat, st.installDir, runtime.GOOS); cli != "" {
+		vars["cli"] = cli
 	}
 
 	// Most cmd actions run once with the params as given. An action that

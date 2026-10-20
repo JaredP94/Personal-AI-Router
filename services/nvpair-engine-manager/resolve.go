@@ -29,19 +29,35 @@ type listedEngine struct {
 	Supported   bool   `json:"supported"`
 }
 
-// detectedExecutable is shared with Detect: the first existing manifest path
-// wins, with no PATH lookup or fallback to an undeclared vendor location.
+// detectedExecutable is shared by detection and command-mode CLI execution.
+// An explicit runtime.cli is authoritative for command mode; otherwise detect
+// declares the ordered CLI candidates. No PATH lookup or undeclared locations.
 func detectedExecutable(plat *Platform, installDir, goos string) string {
-	for _, path := range plat.Detect {
+	paths := plat.Detect
+	if plat.Runtime.modeOrDefault() == "command" && plat.Runtime.CLI != "" {
+		paths = []string{plat.Runtime.CLI}
+	}
+	for _, path := range paths {
 		resolved, err := resolvePlaceholders(path, map[string]string{"install_dir": installDir})
 		if err != nil {
 			continue
 		}
-		if expanded := expandPathForOS(resolved, goos); fileExists(expanded) {
+		expanded := expandPathForOS(resolved, goos)
+		if info, err := os.Stat(expanded); err == nil && !info.IsDir() {
 			return expanded
 		}
 	}
 	return ""
+}
+
+// controlCLIPath resolves {cli} for lifecycle and actions using the same
+// candidates as installed detection and one-shot resolution. Process-mode
+// manifests retain their independent optional control CLI.
+func controlCLIPath(plat *Platform, installDir, goos string) string {
+	if plat.Runtime.modeOrDefault() == "command" {
+		return detectedExecutable(plat, installDir, goos)
+	}
+	return expandPathForOS(plat.Runtime.CLI, goos)
 }
 
 func resolveEngine(reg *Registry, engine, goos, goarch string) (Resolution, error) {
@@ -69,15 +85,14 @@ func resolveEngine(reg *Registry, engine, goos, goarch string) (Resolution, erro
 		"host": "127.0.0.1", "port": strconv.Itoa(plat.Runtime.Port), "install_dir": installDir,
 		"bin": path,
 	}
-	if plat.Runtime.CLI != "" {
+	if plat.Runtime.modeOrDefault() == "command" {
+		vars["cli"] = path
+	} else if plat.Runtime.CLI != "" {
 		cli, err := resolvePlaceholders(plat.Runtime.CLI, vars)
 		if err != nil {
 			return Resolution{}, err
 		}
 		vars["cli"] = expandPathForOS(cli, goos)
-	}
-	if plat.Runtime.modeOrDefault() == "command" {
-		path = vars["cli"]
 	}
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		return Resolution{}, fmt.Errorf("%s is not installed (executable is missing: %s)", engine, path)

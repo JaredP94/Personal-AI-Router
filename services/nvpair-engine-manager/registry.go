@@ -120,9 +120,10 @@ type Runtime struct {
 	Port  int               `json:"port"`            // 0 => auto-assign a free loopback port
 	Bind  string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
 	Start [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
-	// CLI is the engine's control-CLI path for this platform, referenced
-	// elsewhere as {cli}. It lets the manifest's global actions resolve
-	// to the correct per-OS binary (e.g. lms.exe vs lms).
+	// CLI is an explicit control-CLI path, referenced elsewhere as {cli}.
+	// In command mode it overrides Detect for both installation detection and
+	// execution; when omitted, Detect is the ordered list of CLI candidates.
+	// A process-mode engine may declare a separate optional control CLI.
 	CLI    string    `json:"cli,omitempty"`
 	Ready  *Probe    `json:"ready,omitempty"`
 	Stop   *StopSpec `json:"stop,omitempty"`
