@@ -21,7 +21,8 @@ type presenceResult struct {
 }
 
 // Detect updates and returns whether the engine is installed, based on
-// the manifest's detect paths (env-expanded existence checks).
+// the manifest's executable candidates (env-expanded existence checks).
+// Command mode detects only the CLI that lifecycle/actions will execute.
 func (e *Executor) Detect(engine string) (bool, error) {
 	st, err := e.state(engine)
 	if err != nil {
@@ -121,7 +122,7 @@ func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 		Running:      st.running,
 		Healthy:      st.healthy,
 		Port:         st.port,
-		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted),
+		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted, st.installDir),
 	}
 }
 

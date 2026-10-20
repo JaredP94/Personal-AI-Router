@@ -170,8 +170,8 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		"port":        strconv.Itoa(port),
 		"install_dir": st.installDir,
 	}
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli := controlCLIPath(st.plat, st.installDir, runtime.GOOS); cli != "" {
+		vars["cli"] = cli
 	}
 
 	st.mu.Lock()
@@ -457,8 +457,8 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 		return fmt.Errorf("cannot stop engine %q: no stop command is configured", engine)
 	}
 	vars := map[string]string{"port": strconv.Itoa(port), "install_dir": st.installDir}
-	if rt.CLI != "" {
-		vars["cli"] = expandPath(rt.CLI)
+	if cli := controlCLIPath(st.plat, st.installDir, runtime.GOOS); cli != "" {
+		vars["cli"] = cli
 	}
 	argv, err := resolveArgs(sp.Cmd, vars)
 	if err != nil {

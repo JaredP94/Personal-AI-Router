@@ -69,7 +69,7 @@ Create `manifests/omlx.json` in `services/nvpair-engine-manager`:
   "detect": [
     "~/.omlx/bin/omlx",
     "/opt/homebrew/bin/omlx",
-    "/Applications/oMLX.app/Contents/MacOS/omlx"
+    "/usr/local/bin/omlx"
   ],
   "install": {
     "fetch": { "url": "https://omlx.ai/install.sh" },
@@ -89,9 +89,7 @@ Create `manifests/omlx.json` in `services/nvpair-engine-manager`:
     "health": { "http": "http://127.0.0.1:{port}/v1/models", "status": 200, "interval_s": 10 }
   },
   "platforms": {
-    "darwin/arm64": {
-      "runtime": { "cli": "~/.omlx/bin/omlx" }
-    }
+    "darwin/arm64": {}
   },
   "actions": {
     "list_models": {
@@ -119,6 +117,14 @@ Create `manifests/omlx.json` in `services/nvpair-engine-manager`:
   }
 }
 ```
+
+CLI resolution uses the first existing `detect` candidate unless a user explicitly
+overrides `runtime.cli`. Homebrew and `/usr/local` paths assume the same CLI and
+`start`/`stop` semantics as install.sh. App-bundle executables are not CLI
+candidates: lowercase `omlx` can match the GUI's `oMLX` binary on macOS, and
+`omlx-cli` lifecycle semantics are unverified. The JSON above is an integration
+plan, not the authoritative runtime/action contract; see the shipped manifest and
+[engine-manager CLI reference](../services/nvpair-engine-manager/README.md#omlx-cli-candidates).
 
 *Note: On non-`darwin/arm64` platforms (Windows, Linux, Intel Mac), the absence of matching platform runtime entries causes `nvpair-engine-manager` to report the engine as unsupported.*
 

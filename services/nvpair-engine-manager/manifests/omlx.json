@@ -5,8 +5,7 @@
   "detect": [
     "~/.omlx/bin/omlx",
     "/opt/homebrew/bin/omlx",
-    "/usr/local/bin/omlx",
-    "/Applications/oMLX.app/Contents/MacOS/omlx"
+    "/usr/local/bin/omlx"
   ],
   "install": {
     "fetch": { "url": "https://omlx.ai/install.sh" },
@@ -14,6 +13,7 @@
     "mode": "user"
   },
   "uninstall": {
+    "cli_roots": ["~/.omlx"],
     "run": ["sh", "-c", "pkill -x omlx 2>/dev/null; sleep 2; rm -rf \"$HOME/.omlx\""]
   },
   "runtime": {
@@ -26,9 +26,7 @@
     "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
   },
   "platforms": {
-    "darwin/arm64": {
-      "runtime": { "cli": "~/.omlx/bin/omlx" }
-    }
+    "darwin/arm64": {}
   },
   "actions": {
     "list_models": {

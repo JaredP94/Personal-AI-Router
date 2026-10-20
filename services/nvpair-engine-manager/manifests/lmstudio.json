@@ -9,6 +9,7 @@
     "mode": "user"
   },
   "uninstall": {
+    "cli_roots": ["~/.lmstudio"],
     "run": ["sh", "-c", "pkill -x lms 2>/dev/null; pkill -x llmster 2>/dev/null; sleep 2; rm -rf \"$HOME/.lmstudio\"; sleep 1; [ -d \"$HOME/.lmstudio\" ] && exit 1; exit 0"]
   },
   "runtime": {

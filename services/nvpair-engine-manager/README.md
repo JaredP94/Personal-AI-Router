@@ -49,8 +49,9 @@ nvpair-engine-manager --resolve ollama
 `engine` (string), `display_name` (string), `installed` (boolean), and
 `supported` (boolean), including engines unsupported on this OS/architecture.
 Entries are sorted by engine name. Installed means the service's filesystem
-detection succeeded or its service-only adoption criterion succeeded; it does
-not guarantee a command-mode engine's declared CLI still exists.
+detection succeeded or its service-only adoption criterion succeeded. For command
+mode, detection requires the same CLI used by lifecycle operations, actions and
+`--resolve`; a GUI app alone does not count as a CLI installation.
 
 `--resolve <engine>` prints one JSON object and exits 0:
 
@@ -60,8 +61,12 @@ not guarantee a command-mode engine's declared CLI still exists.
 
 The path must exist and not be a directory. For process-mode engines it is the
 same first matching detect path used by the service, not a PATH lookup or a
-fallback to `runtime.bin`. For command-mode engines it is the expanded
-`runtime.cli`, not an alternate detect path. `env` contains only the platform's
+fallback to `runtime.bin`. For command-mode engines, an explicit `runtime.cli`
+is the sole CLI candidate; otherwise `detect` declares the ordered CLI candidates
+and the first existing non-directory path wins. A missing explicit CLI does not
+fall back to `detect`. Per-user CLI overrides remain authoritative. Environment
+variables, `~`, and `{install_dir}` are expanded before checking candidates.
+`env` contains only the platform's
 declared runtime environment (an empty object if none); callers should overlay
 it onto the child process's inherited environment. Placeholders use the same
 resolver as service operations, with `{host}` always `127.0.0.1`, `{port}` the
@@ -96,6 +101,43 @@ reported as not installed, not guessed to be an installation. Listing applies
 the same criterion and may spend up to 500 ms sequentially per missing supported
 process-mode engine.
 
+### oMLX CLI candidates
+
+On macOS arm64, the bundled manifest checks these CLI paths in order:
+
+1. `~/.omlx/bin/omlx`
+2. `/opt/homebrew/bin/omlx`
+3. `/usr/local/bin/omlx`
+
+The Homebrew and `/usr/local` candidates are assumed to provide the same `omlx`
+CLI and `start`/`stop` semantics as the install.sh installation. This change does
+not verify vendor CLI behavior. No app-bundle executable is a candidate:
+`oMLX.app/Contents/MacOS/oMLX` is the GUI executable (also matched by lowercase
+`omlx` on case-insensitive macOS filesystems), and `omlx-cli` and other bundle
+helpers have unverified command-line and lifecycle semantics. A GUI-only install
+is therefore not installed from PAIR's perspective; install the standalone CLI
+or explicitly configure a verified CLI through a manifest override. LM Studio
+retains its existing per-platform `runtime.cli` (`~/.lmstudio/bin/lms` on Unix).
+
+PAIR can uninstall oMLX only when the resolved CLI is under `~/.omlx`, which
+its declared uninstaller removes. Homebrew and `/usr/local` installations report
+`uninstall: false`; an uninstall request is rejected before stopping the engine or
+running the uninstall command. Remove those installations with their original
+package manager or installer instead. LM Studio under `~/.lmstudio` can still be
+uninstalled through PAIR (including its Windows user-profile installation).
+
+For command-mode engines, `uninstall.cli_roots` declares the directory roots
+whose CLI files `uninstall.run` removes, for example `"cli_roots": ["~/.omlx"]`.
+The same coverage check gates both the capability and the request. Roots expand
+`~`, OS environment variables and `{install_dir}`, must be absolute after
+expansion, and match whole path components (not sibling prefixes). Missing or
+unresolvable roots cover nothing; an absent CLI reports `uninstall: false`.
+Coverage is lexical: deleting a root removes CLI symlinks within it, not external
+targets. Manifest authors must keep these declarations aligned with the actual
+command; PAIR does not infer ownership by parsing shell commands. Overrides that
+relocate a CLI must also declare an uninstaller that covers it. Process-mode
+engines retain the separate managed-install-directory request guard.
+
 ## JSON-RPC surface
 
 Requests (caller → service):
@@ -129,7 +171,8 @@ Requests (caller → service):
 `EngineStatus` = `{ engine, display_name, installed, running, healthy, port?, capabilities }`.
 Every status snapshot, lifecycle result, and `engine:state-changed` notification
 includes all seven boolean capability flags, derived by Go from the effective
-manifest (including user overrides), the host OS/architecture, and adoption state:
+manifest (including user overrides), the host OS/architecture, adoption state,
+and command-mode CLI coverage:
 
 | `capabilities` field | True when |
 |---|---|
@@ -137,7 +180,7 @@ manifest (including user overrides), the host OS/architecture, and adoption stat
 | `delete_restarts_engine` | `delete_model` is declared with `restart_after: true` on a supported platform. |
 | `set_port` | The platform's start argv, CLI args, or environment reference `{port}` — a probe or stop template alone moves nothing — and `engine:set-port` would not refuse the engine as externally adopted, which is the same adoption check it makes (a command-mode engine with an official stop command can be moved). |
 | `install` | The effective manifest has a platform block for this host OS/architecture. |
-| `uninstall` | `install` is true, an uninstall is declared, and the install is not externally adopted. |
+| `uninstall` | `install` is true, a nonempty uninstall command is declared, and the install is not externally adopted. Command mode additionally requires the resolved CLI to be within a declared `uninstall.cli_roots` directory. |
 
 Unsupported platforms report all flags false. Bundled oMLX supports model listing
 but never pull/delete; its start command has no `{port}` input, so `set_port` is
@@ -215,7 +258,8 @@ Stopped      --engine:start----> (adopt if already serving the port, else spawn)
 Running      --engine:stop-----> (stop signal, wait for exit; no timeout) --> Stopped
 ```
 
-Detect uses the manifest's `detect` paths. Install is one-shot and
+Detect uses the manifest's executable candidates (`runtime.cli` when explicitly
+set in command mode, otherwise `detect`). Install is one-shot and
 user-mode — an HTTPS download, verified against the manifest's `sha256`
 when one is pinned (an unpinned fetch runs with a loud warning). Start
 waits for the readiness probe, then runs a periodic health probe; an

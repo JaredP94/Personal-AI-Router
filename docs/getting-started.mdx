@@ -368,6 +368,14 @@ the engine name are passed untouched, including `--version`, `-h`, `--`, and
 quoted spaces. The CLI inherits your terminal, working directory and environment,
 with the resolver's additions applied only to the child; the shell is unchanged.
 
+For oMLX on macOS arm64, PAIR uses the first installed standalone CLI from its
+[declared candidates](../services/nvpair-engine-manager/README.md#omlx-cli-candidates),
+unless a manifest override explicitly sets `runtime.cli`. A GUI-only oMLX app
+installation does not supply a verified CLI and is reported as not installed.
+PAIR offers uninstall only for a resolved CLI under `~/.omlx`; Homebrew and
+`/usr/local` installations cannot be uninstalled through PAIR. Remove those
+installations using their original package manager or installer instead.
+
 This command starts no broker, workers or dashboard and writes no PAIR settings,
 so it can run alongside the desktop app. **The engine CLI can still change or
 delete data when you ask it to**; it is not a sandbox. Unknown, unsupported or

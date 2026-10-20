@@ -89,6 +89,11 @@ type Install struct {
 // it only runs a local command.
 type Uninstall struct {
 	Run []string `json:"run"`
+	// CLIRoots declares the directories whose CLI files Run removes. Command
+	// mode refuses uninstall unless the resolved CLI is within one of these
+	// roots. Paths expand environment, ~ and {install_dir}; no roots means no
+	// command-mode uninstall. Process mode retains its managed-directory guard.
+	CLIRoots []string `json:"cli_roots,omitempty"`
 }
 
 // Fetch is an engine download. SHA256, when set, pins it (verified
@@ -120,9 +125,10 @@ type Runtime struct {
 	Port  int               `json:"port"`            // 0 => auto-assign a free loopback port
 	Bind  string            `json:"bind,omitempty"`  // listen addr, substituted as {host}; "" => 127.0.0.1
 	Start [][]string        `json:"start,omitempty"` // command mode: ordered bring-up commands
-	// CLI is the engine's control-CLI path for this platform, referenced
-	// elsewhere as {cli}. It lets the manifest's global actions resolve
-	// to the correct per-OS binary (e.g. lms.exe vs lms).
+	// CLI is an explicit control-CLI path, referenced elsewhere as {cli}.
+	// In command mode it overrides Detect for both installation detection and
+	// execution; when omitted, Detect is the ordered list of CLI candidates.
+	// A process-mode engine may declare a separate optional control CLI.
 	CLI    string    `json:"cli,omitempty"`
 	Ready  *Probe    `json:"ready,omitempty"`
 	Stop   *StopSpec `json:"stop,omitempty"`
@@ -729,6 +735,7 @@ func (m *Manifest) templatedStrings() []string {
 		}
 		if p.Uninstall != nil {
 			out = append(out, p.Uninstall.Run...)
+			out = append(out, p.Uninstall.CLIRoots...)
 		}
 		out = append(out, p.Runtime.Bin)
 		out = append(out, p.Runtime.Args...)
