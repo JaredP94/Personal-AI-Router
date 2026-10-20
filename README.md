@@ -67,8 +67,8 @@ This project exists as a forward-looking extension that introduces practical fea
    - Relay v2 JSON-RPC 2.0 notification envelopes (`epoch`, `seq`; `protocol: 2` in broker epoch/resync payloads) with automatic per-domain state resynchronization (`broker:epoch`, `broker:resync`), 15-second heartbeat liveness monitoring with 45-second frontend-owned silence reconnects, and service-authoritative routing metrics (`metrics/get`, `metrics/routing-update`).
    - Dynamic monochrome template menu bar / system tray icon displaying live active job counts and 30-second failure alerts (`!`).
 
-8. **Idle Energy & Wakeup Optimizations (Unreleased)**
-   - Lease-driven GPU sampling (`X-NVPAIR-Poll: foreground/scheduling/background`) and broker demand signaling (`stats/set-demand`) restore unattended idle backoff (10 s) while strictly preserving the scheduler's 10-second freshness budget (proven <= 8.5 s at decision point); manual nodes deliver scheduling telemetry every ~2 s separately from 10 s topology probes. Filtered macOS network events, unchanged trust-pin caching, reduced notification churn, and debug-only verbose file logging reduce background work. These changes are not in the published `0.7.0-rc.1` candidate.
+8. **Idle Energy & Wakeup Optimizations (0.7.0-rc.2)**
+   - Lease-driven GPU sampling (`X-NVPAIR-Poll: foreground/scheduling/background`) and broker demand signaling (`stats/set-demand`) restore unattended idle backoff (10 s) while strictly preserving the scheduler's 10-second freshness budget (proven <= 8.5 s at decision point); manual nodes deliver scheduling telemetry every ~2 s separately from 10 s topology probes, and discovery requests the scheduling rate only while a workload is queued or running. Filtered macOS network events, unchanged trust-pin caching, reduced notification churn, and debug-only verbose file logging reduce background work. These changes are in `0.7.0-rc.2`; its [release-candidate profile](docs/performance-release-summary.mdx#release-candidate-profile-2026-10-20) shows CPU and memory in line with `0.7.0-rc.1` on an unclustered node, with no percentage improvement claimed.
 
 ## What is supported
 
@@ -102,23 +102,26 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.7.0-rc.1` (2026-10-17), an unsigned,
+The latest published build is **`0.7.0-rc.2` (2026-10-20), an unsigned,
 unnotarized macOS Apple Silicon candidate**, not an NVIDIA-signed release.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
 and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
 Automatic updater installation is not certified for this unsigned candidate;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.1).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.2).
+It is marked as GitHub's Latest release for the Terminal installer and in-app
+update discovery.
 
 Upstream official releases are separate and available at
 [NVIDIA/Personal-AI-Router](https://github.com/NVIDIA/Personal-AI-Router/releases).
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** `0.7.0-rc.1` introduces relay protocol
-v2. Do not mix older desktop/TUI clients or individual workers with the new
-bundle. Unreleased performance changes are listed separately in the changelog.
+**Upgrade clients and services together:** Desktop `0.7.0-rc.2` ships service
+product `2.2.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+pre-v2 desktop/TUI clients or individual workers from other bundles with this
+bundle. See the changelog for the changes in this release.
 
 **On macOS,** review the installer script before running it. It replaces
 `/Applications/PAIR.app` while retaining application data. A `curl` download
@@ -129,7 +132,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the candidate, pass `--version 0.7.0-rc.1` using `bash -s --` after the pipe.
+To pin the candidate, pass `--version 0.7.0-rc.2` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.
