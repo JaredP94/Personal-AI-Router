@@ -419,6 +419,26 @@ func (s *Store) ActiveScheduledOn(node string) int {
 	return count
 }
 
+// HasActive reports whether any non-terminal record exists, whoever runs it.
+//
+// It is the cluster-wide counterpart to ActiveScheduledOn: that one asks "is this
+// host executing work", which is what makes local sampling interactive, while
+// this one asks "is there work anywhere still to place or to watch", which is
+// what scheduling consumers need fresh telemetry for. A queued record with no
+// executor yet counts — the scheduler is precisely the thing that has to choose
+// one — as does a peer's running job, because its telemetry feeds the same
+// placement decisions.
+func (s *Store) HasActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.records {
+		if !r.Terminal {
+			return true
+		}
+	}
+	return false
+}
+
 // StaleForeign returns copies of the non-terminal records whose origin is not
 // selfNode and which that origin has not asserted for at least staleAfter.
 //

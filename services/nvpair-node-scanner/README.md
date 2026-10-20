@@ -73,6 +73,16 @@ nothing to answer and the caller must not wait:
   that node's eviction. The broker sends this while inference is streaming, so an
   id-bearing call would cost it a pending entry and a blocked goroutine per
   report in exchange for an ack nobody reads.
+- `telemetry/set-scheduling-demand` `{active}` — whether the broker has queued or
+  running work anywhere, local or on a peer. It sets the `X-NVPAIR-Poll` intent of
+  every outbound `/v1/node-info` GET: `scheduling` while true (the read renews the
+  target's five-second scheduling lease), `background` while false (the read renews
+  nothing, so the target keeps its ten-second idle cadence). The poll cadence stays
+  two seconds either way. A freshly spawned daemon starts inactive, so an
+  unrenewed lease — the safe direction — is the default until the broker pushes;
+  on a cold start the next poll renews the lease, and until then the scheduler
+  treats a sample of up to ten seconds as it treats any other: neutral pressure
+  above the freshness budget, never a younger age than it has.
 - `log/set-level` (above).
 
 ### Notifications (daemon → caller)

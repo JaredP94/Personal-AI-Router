@@ -89,6 +89,24 @@ Historical performance observations and the final-artifact profiling gate are in
   during scheduling demand (when local or remote workloads exist or are queued),
   and relaxes to 10 seconds when fully idle. Windows retains its native 1-second
   PDH collector loop.
+- **Demand-Gated Scheduling Leases:** The broker owns the scheduling-demand
+  decision (`telemetry/set-scheduling-demand`), because it is the only process
+  that sees every workload: it pushes `{active:true}` on the first non-terminal
+  workload in its store — queued or running, local or peer-origin, including a
+  local in-flight inference request, which is recorded as a workload — and
+  `{active:false}` when the last one reaches a terminal state or is removed. The
+  scanner and `nvpair-manual-nodes` keep their own poll cadence but choose the
+  lease they renew from that value: `scheduling` while active, `background` (which
+  renews nothing) otherwise. Both workers start inactive and are re-told on every
+  respawn, so neither a restart nor a two-second poll can hold a node above its
+  idle cadence. A desktop session with no window — tray-only — is a background
+  reader for the same reason: the tray icon is not a window, and the tray popup
+  counts only while it is shown.
+- **Cold-Start Transition:** Demand can turn on between two polls, so the first
+  scheduling sample after a fleet goes from idle to busy can be up to the idle
+  cadence old. That sample is not re-stamped: the scheduler keeps its 10-second
+  freshness budget and applies neutral pressure to a sample it cannot vouch for,
+  never a younger age than the sample has.
 - **Freshness Budget Preservation:** Sampling operations use a 1-second collection
   timeout. Telemetry age at the scheduler's decision point is mathematically and
   empirically proven <= 8.5 seconds across all valid lease and scheduling modes,
