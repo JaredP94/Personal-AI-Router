@@ -247,8 +247,14 @@ Regeneration inventories **296 component/version entries**: 240 npm/Electron and
   with firewall rules and the notices, and its uninstaller removes every rule it adds (the
   LM Studio proxy rules were previously left behind). The NSIS script was not compiled
   (no `makensis` on macOS) — keep that as an open Windows build check.
-- Inspect final app artifacts for the canonical `LICENSE` and
-  `THIRD_PARTY_NOTICES.md` plus Electron's separate `LICENSES.chromium.html`.
+- Desktop packaging ships the canonical `LICENSE` and `THIRD_PARTY_NOTICES.md`
+  in resources, plus Electron's separate `LICENSES.chromium.html` and
+  `LICENSE.electron.txt`. On macOS the Electron notices are copied from the
+  installed Electron distribution into `Contents/Resources`; Windows/Linux
+  retain electron-builder's copies beside the executable. An `afterPack` guard
+  rejects packages missing either Electron notice at the expected location.
+  Inspect final artifacts as well; these checks are not legal completeness or
+  artifact certification.
 - Engines and the Phoenix image are separately downloaded software with their
   own terms, not bundled distributions covered by the desktop dependency scan.
 
