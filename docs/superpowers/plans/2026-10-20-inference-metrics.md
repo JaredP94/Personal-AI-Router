@@ -251,7 +251,8 @@ In `telemetry.go`:
 
 In `proxy.go`:
 - Embed `inferencemetrics.Measurement` in the `Workload` struct so the fields appear inline in the JSON.
-- Where the terminal workload event is built (`emitTerminal`), set the measurement from the `telemetryBodyReader` for the committed candidate. The reader is in scope as `telReader` in the failover loop; the terminal event is emitted after the copy unwinds, so the measurement is complete. A failed request leaves the fields absent.
+- Hoist the `telReader` declaration **out** of the failover loop (it is currently declared inside it, at `proxy.go:1259`, while `emitTerminal` is defined outside the loop at `proxy.go:1191`), so the measurement is reachable where the workload is finalized. Declare it next to `wl`, before `emitTerminal`.
+- After the copy unwinds and before `emitTerminal` runs, read the measurement from the committed reader and assign it to the workload **under the existing `wlMu`**. The disconnect watcher can emit the terminal event earlier; that event legitimately carries no measurement, because the request was cancelled before it finished. Do not read the measurement outside `wlMu`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -407,7 +408,7 @@ Expected: FAIL — neither workload event carries a measurement yet.
 
 - ollama-proxy: extend `streamChunk` with `PromptEvalDuration int64 \`json:"prompt_eval_duration"\`` and `EvalDuration int64 \`json:"eval_duration"\`` (nanoseconds). Convert to milliseconds by dividing by 1_000_000. Set the token pointers from the existing `prompt_eval_count` / `eval_count` handling. Ollama reports no TTFT and no cached tokens — leave them absent.
 - lmstudio-proxy: extend `streamChunk.Usage` with nothing; the token counts are already parsed. Set the token pointers and leave every duration absent. LM Studio reports no phase split.
-- In both: add `measurement()` to the reader, embed `inferencemetrics.Measurement` in the `Workload` struct, and set the measurement on the terminal workload event exactly as in Task 2.
+- In both: add `measurement()` to the reader, embed `inferencemetrics.Measurement` in the `Workload` struct, and set the measurement on the terminal workload event exactly as in Task 2 — including hoisting the reader declaration out of the failover loop and assigning the measurement under the existing `wlMu`.
 - In both: set `totalMs` from the proxy's own measured request duration (`time.Since(start).Milliseconds()`, the same value `RequestEvent.duration_ms` carries), because neither engine reports a total time. oMLX prefers the engine's `usage.total_time` when it is present.
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -866,7 +867,19 @@ git commit -s -m "feat(desktop): show prefill and decode metrics on node and job
 
 - [ ] **Step 1: Bump the versions**
 
-In `services/versions.json`, bump `omlx-proxy`, `ollama-proxy`, `lmstudio-proxy`, `nvpair-ui-broker`, `nvpair-workload-manager` to their next MINOR, and `product` + `installer` to the next MINOR (2.2.0 → 2.3.0). Read each component's current version first; bump to the next patch-appropriate value.
+In `services/versions.json`, set these exact targets (a new additive field over IPC is a MINOR bump; the product takes a MINOR because at least one component does):
+
+| Key | From | To |
+| --- | --- | --- |
+| `product` | 2.2.0 | 2.3.0 |
+| `installer` | 2.2.0 | 2.3.0 |
+| `components.omlx-proxy` | 1.2.0 | 1.3.0 |
+| `components.ollama-proxy` | 1.2.0 | 1.3.0 |
+| `components.lmstudio-proxy` | 1.2.0 | 1.3.0 |
+| `components.nvpair-ui-broker` | 2.2.0 | 2.3.0 |
+| `components.nvpair-workload-manager` | 1.1.0 | 1.2.0 |
+
+If `services/versions.json` no longer holds the "From" values above when you get here, bump whatever is there to its next MINOR instead and say so in the report.
 
 - [ ] **Step 2: Regenerate the API doc and verify the contracts**
 
