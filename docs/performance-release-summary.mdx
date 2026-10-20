@@ -53,9 +53,9 @@ Medians, with min–max in brackets. CPU is percent of one core.
 | Metric | rc.1 | rc.2 candidate |
 | --- | ---: | ---: |
 | Total CPU, owned processes (excl. `ioreg`) | 3.66 (3.11–4.15) | 3.32 (3.11–8.07) |
-| `nvpair-node-info` `ioreg` child CPU | 1.60 (1.55–1.65) | 1.61 (1.59–1.76) |
-| Renderer (`PAIR Helper (Renderer)`) CPU | 0.79 (0.59–0.98) | 0.66 (0.61–2.40) |
-| Package idle wakeups per second | 0.88 (0.63–2.52) | 2.70 (1.67–3.72) |
+| `nvpair-node-info` `ioreg` child CPU | 1.60 (1.55–1.65) | 1.61 (1.59–1.63) |
+| Renderer (`PAIR Helper (Renderer)`) CPU | 0.79 (0.59–0.98) | 0.66 (0.60–2.40) |
+| Package idle wakeups per second | 0.88 (0.62–2.52) | 2.70 (1.67–3.72) |
 | Interrupt wakeups per second, all processes | 369 (358–397) | 367 (355–477) |
 | Physical footprint (mean) | 563 MB (519–574 MB) | 549 MB (532–576 MB) |
 | RSS (mean) | 876 MB (873–879 MB) | 871 MB (869–877 MB) |
@@ -70,7 +70,7 @@ evidence of an improvement.
 - **Idle sampling works as designed.** Tray only, with no workloads, the candidate's
   sampling falls back to 10 seconds, the same cost as rc.1. Before the fix in
   [#13](https://github.com/JaredP94/Personal-AI-Router/pull/13), a tray-only candidate
-  sampled every 2 seconds (`ioreg` 1.66% against rc.1's 0.33% in a diagnostic run).
+  sampled every 2 seconds (`ioreg` 1.66% against rc.1's 0.35% in a diagnostic run).
 - **No measured saving against rc.1 in this setup.** The earlier development rounds below
   were measured on a real clustered installation with live peers, where trust refresh,
   discovery and alias handling do much more work. A fresh unclustered node gives most of
@@ -197,7 +197,7 @@ sampling backoff does not apply to this table.
 | TLS-aware peer probing | Plaintext engine probes that clustered peers will reject | Probe regression coverage; whole-app effect not isolated quantitatively |
 | Verbose/debug log gating and duplicate-log removal | Routine serialization and synchronous file writes | Logging/installer-independent tests; historical Round 2 I/O observation above |
 | Repeated rejection-warning deduplication | Recurrent warning writes from unchanged legacy-peer probes | Included after Round 2; no standalone measured saving claimed |
-| Filtered macOS kernel network events | Routing-cache-miss traffic and periodic socket-timeout wakeups | Source/tests and historical Round 3 observations; corrected-build profile pending |
+| Filtered macOS kernel network events | Routing-cache-miss traffic and periodic socket-timeout wakeups | Source/tests and historical Round 3 observations; no isolated effect visible in the unclustered 2026-10-20 profile; clustered-peer profile pending |
 | Validated trust-pin byte caching | Repeated JSON/PEM/X.509 parsing of unchanged pins | Trust/race coverage; periodic directory/file reads remain |
 | Lease-driven GPU sampling and restored idle backoff | Reduces unattended GPU collection while strictly preserving scheduler freshness budget | Restored behind `X-NVPAIR-Poll` leases and separate ~2 s manual telemetry; scheduling leases are now renewed only while a workload is active, and a tray-only desktop reads node-info as background; profiled 2026-10-20 (tray only, unclustered): idle rate reached, same `ioreg` cost as rc.1. rc.1 peers that poll without the header keep a node at 2 s |
 
