@@ -1,0 +1,470 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Opt-in macOS artifact profiler. Importing this module never starts an app.
+
+Invoke from the repository root: python3 -m scripts.perf.profile --help
+"""
+
+import argparse
+import errno
+from datetime import datetime, timezone
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import plistlib
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+from scripts.perf.accounting import (
+    Accounting, ENERGY_LABEL, LIMITS, aggregate_runs, alternating_order, identity,
+    render_markdown,
+)
+from scripts.perf.libproc import Libproc, find_orphans, owned_processes
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def sandbox_environment(sandbox):
+    """Do not inherit the real profile, telemetry, credentials or engine settings."""
+    sandbox = sandbox.resolve()
+    for name in ("tmp", ".cache", ".config", ".local/share"):
+        (sandbox / name).mkdir(parents=True, exist_ok=True)
+    return dict(HOME=str(sandbox), CFFIXED_USER_HOME=str(sandbox),
+                TMPDIR=str(sandbox / "tmp") + "/", XDG_CACHE_HOME=str(sandbox / ".cache"),
+                XDG_CONFIG_HOME=str(sandbox / ".config"),
+                XDG_DATA_HOME=str(sandbox / ".local/share"),
+                PATH="/usr/bin:/bin:/usr/sbin:/sbin", LANG="en_US.UTF-8",
+                PYTHONDONTWRITEBYTECODE="1")
+
+
+def prepare_sandbox(output, template, links, real_home):
+    for name in links:
+        if (not name.startswith(".") or name in (".", "..", ".cache", ".config", ".local")
+                or Path(name).name != name):
+            raise ValueError("engine links must be named dot-directories, not paths: " + name)
+        if not (real_home / name).is_dir():
+            raise ValueError("engine link is not an installed directory: " + name)
+    if template:
+        if output.resolve().is_relative_to(template.resolve()):
+            raise ValueError("output must not be inside its own sandbox template")
+        # No inherited symlink can redirect state writes back into a real home.
+        for path in [template] + list(template.rglob("*")):
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise ValueError("sandbox template must contain only regular files/directories")
+    output.mkdir(parents=True, exist_ok=True)
+    sandbox = Path(tempfile.mkdtemp(prefix="home-", dir=output)).resolve()
+    if template:
+        shutil.copytree(template, sandbox, dirs_exist_ok=True)
+    for name in links:
+        target = sandbox / name
+        if target.exists():
+            raise ValueError("engine link collides with sandbox template: " + name)
+        target.symlink_to((real_home / name).resolve(), target_is_directory=True)
+    return sandbox
+
+
+def command_evidence(command, timeout=15):
+    """Read-only metadata probes, without shell expansion or screenshot capture."""
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+                                check=False)
+        return dict(command=command, exit_status=result.returncode,
+                    stdout=result.stdout, stderr=result.stderr)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return dict(command=command, exit_status=None, error=type(error).__name__)
+
+
+def hash_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def app_metadata(path):
+    path = path.resolve()
+    binary = path / "Contents/MacOS/PAIR"
+    manifest = path / "Contents/Resources/cli-bin/manifest.json"
+    result = dict(path=str(path), binary=str(binary), manifest_path=str(manifest))
+    try:
+        result["binary_sha256"] = hash_file(binary)
+        result["manifest_sha256"] = hash_file(manifest)
+        result["service_manifest"] = json.loads(manifest.read_text(encoding="utf-8"))
+        with (path / "Contents/Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        result["version"] = info.get("CFBundleShortVersionString")
+        result["build"] = info.get("CFBundleVersion")
+        if not os.access(binary, os.X_OK):
+            raise ValueError("app executable is not executable")
+    except (OSError, ValueError, plistlib.InvalidFileException) as error:
+        result["error"] = str(error)
+    return result
+
+
+def parse_low_power_modes(text):
+    """Parse pmset's source-specific settings; do not invent a value if absent."""
+    result = {}
+    source = None
+    for line in text.splitlines():
+        if line and not line[0].isspace() and line.rstrip().endswith(":"):
+            source = line.strip().rstrip(":")
+        fields = line.split()
+        if source and len(fields) == 2 and fields[0] == "lowpowermode" and fields[1] in ("0", "1"):
+            result[source] = fields[1] == "1"
+    return result
+
+
+def power_display_metadata():
+    probes = dict(power_source=["/usr/bin/pmset", "-g", "batt"],
+                  power_modes=["/usr/bin/pmset", "-g", "custom"],
+                  display_state=["/usr/sbin/ioreg", "-r", "-n", "IODisplayWrangler", "-d", "1"])
+    evidence = {name: command_evidence(command) for name, command in probes.items()}
+    evidence["timestamp"] = now()
+    evidence["low_power_mode_by_source"] = parse_low_power_modes(evidence["power_modes"].get("stdout", ""))
+    return evidence
+
+
+def environment_metadata(args, argv):
+    probes = dict(
+        macos=["/usr/bin/sw_vers"], hardware_model=["/usr/sbin/sysctl", "-n", "hw.model"],
+        hardware=["/usr/sbin/sysctl", "hw.machine", "hw.memsize", "hw.ncpu", "machdep.cpu.brand_string"],
+    )
+    evidence = {name: command_evidence(command) for name, command in probes.items()}
+    evidence.update(power_display_metadata())
+    return dict(timestamp=now(), argv=argv, platform=platform.platform(),
+                machine=platform.machine(), python=sys.version, probes=evidence,
+                low_power_mode_by_source=parse_low_power_modes(evidence["power_modes"].get("stdout", "")),
+                low_power_mode_note="See lowpowermode in power_modes for each source; missing means unavailable.",
+                display_note="IODisplayWrangler only; absence means unavailable, no screenshots.",
+                source_commit=command_evidence(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
+                apps={"baseline": app_metadata(args.baseline), "candidate": app_metadata(args.candidate)},
+                protocol=vars_for_json(args), energy_label=ENERGY_LABEL, limits=LIMITS)
+
+
+def vars_for_json(args):
+    return {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+
+
+def hook_environment(env, run_dir, sandbox, app_pid, scenario):
+    return dict(env, PAIR_PERF_OUTPUT=str(run_dir), PAIR_PERF_SANDBOX=str(sandbox),
+                PAIR_PERF_APP_PID=str(app_pid), PAIR_PERF_SCENARIO=scenario)
+
+
+def start_hook(command, name, run_dir, env, handles):
+    stdout = (run_dir / (name + ".stdout.txt")).open("w", encoding="utf-8")
+    handles.append(stdout)
+    stderr = (run_dir / (name + ".stderr.txt")).open("w", encoding="utf-8")
+    handles.append(stderr)
+    process = subprocess.Popen(shlex.split(command), cwd=env["HOME"], env=env,
+                               stdout=stdout, stderr=stderr, start_new_session=True)
+    return process, dict(command=command, pid=process.pid, started=now(),
+                         stdout=stdout.name, stderr=stderr.name)
+
+
+def finish_hook(process, evidence, timeout, stop=False):
+    if stop:
+        # Also stop descendants of a hook whose parent has already returned.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            evidence["termination_requested"] = True
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        evidence["timeout"] = True
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+    evidence.update(exit_status=process.returncode, ended=now())
+
+
+def clean_quit(proc, app, root, known, timeout=30):
+    """SIGTERM only the launched PID; never signal a reused PID or other PAIR."""
+    evidence = dict(signal="SIGTERM", requested=now(), timeout_seconds=timeout)
+    if app.poll() is None:
+        try:
+            current = proc.info(app.pid)
+            if identity(current) == root:
+                app.terminate()
+            else:
+                evidence["identity_mismatch"] = True
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            evidence["signal_error"] = str(error)
+    deadline = time.monotonic() + timeout
+    while True:
+        table = proc.snapshot()
+        live = owned_processes(table, root, known)
+        known.update({identity(p): p for p in live.values()})
+        app.poll()  # Reap the root, so its zombie is not mistaken for an orphan.
+        if not live and app.returncode is not None:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    table = proc.snapshot()
+    evidence.update(exit_status=app.poll(), ended=now(),
+                    orphans=find_orphans(table, root, known),
+                    collection_errors=proc.errors)
+    # Permission errors on a previously observed PID cannot prove clean shutdown.
+    evidence["unverified_pids"] = [error for error in proc.errors
+                                    if any(key[0] == error["pid"] for key in known)
+                                    and error["errno"] != errno.ESRCH]
+    evidence["ok"] = (app.returncode is not None and not evidence["orphans"] and
+                      not evidence["unverified_pids"] and not evidence.get("identity_mismatch")
+                      and not evidence.get("signal_error"))
+    return evidence
+
+
+def run_once(args, proc, variant, scenario, run_dir, index, artifact):
+    run_dir.mkdir()
+    (run_dir / "samples.jsonl").write_text("", encoding="utf-8")
+    result = dict(id=run_dir.name, variant=variant, scenario=scenario, status="failed",
+                  started=now(), metrics={}, failures=[], hooks={}, repetition=index,
+                  interval_seconds=args.interval or (10 if scenario == "tray" else 5),
+                  launch_window_note="PAIR opens Overview on launch. Tray requires an external visibility hook.",
+                  artifact=artifact, raw_samples=str(run_dir / "samples.jsonl"))
+    app = None
+    pre = None
+    post = None
+    known = {}
+    root = None
+    handles = []
+    ledger = None
+    try:
+        result["environment_before"] = power_display_metadata()
+        sandbox = prepare_sandbox(run_dir, args.template, args.link_dotdir, Path.home())
+        result["sandbox"] = str(sandbox)
+        env = sandbox_environment(sandbox)
+        # Do not persist app prompt/message bodies via stdout/stderr capture.
+        app = subprocess.Popen([artifact["binary"]], cwd=sandbox, env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               start_new_session=True)
+        # Capture the root identity immediately; failure still requires cleanup.
+        root = identity(proc.info(app.pid))
+        known[root] = proc.info(app.pid)
+        env = hook_environment(env, run_dir, sandbox, app.pid, scenario)
+        if args.pre_sample_hook:
+            pre, result["hooks"]["pre_sample"] = start_hook(
+                args.pre_sample_hook, "pre-sample", run_dir, env, handles)
+        warmup_end = time.monotonic() + args.warmup
+        while time.monotonic() < warmup_end:
+            if app.poll() is not None:
+                raise RuntimeError("app exited during warm-up")
+            table = proc.snapshot()
+            owned = owned_processes(table, root, known)
+            known.update({identity(p): p for p in owned.values()})
+            time.sleep(min(result["interval_seconds"], max(0, warmup_end - time.monotonic())))
+        steady_start = proc.absolute_time()
+        ledger = Accounting(steady_start, proc.numer, proc.denom)
+        deadline = None
+        due = None
+        with (run_dir / "samples.jsonl").open("w", encoding="utf-8") as stream:
+            while True:
+                if app.poll() is not None:
+                    raise RuntimeError("app exited during steady sampling")
+                table = proc.snapshot()
+                owned = owned_processes(table, root, known)
+                known.update({identity(p): p for p in owned.values()})
+                timestamp, ticks = now(), proc.absolute_time()
+                elapsed = proc.seconds(ticks - steady_start)
+                for process in owned.values():
+                    process["counter_timestamp"] = timestamp
+                    process["counter_elapsed_seconds"] = elapsed
+                exited = ledger.observe(elapsed, list(owned.values()))
+                if deadline is None:
+                    # Measure the full requested span after the first completed
+                    # reading, not including the cost of initial discovery.
+                    due = time.monotonic()
+                    deadline = due + args.duration
+                # A frame exists even if the process tree is empty.
+                stream.write(json.dumps(dict(event="frame", timestamp=timestamp,
+                    elapsed_seconds=elapsed, mach_abstime=ticks,
+                    collection_errors=proc.errors, owned_count=len(owned))) + "\n")
+                for event, processes in (("sample", owned.values()), ("exit_final_known", exited)):
+                    for process in processes:
+                        stream.write(json.dumps(dict(process, timestamp=timestamp,
+                            elapsed_seconds=elapsed, event=event,
+                            counter_timestamp_note="last observation" if event == "exit_final_known" else "current frame")) + "\n")
+                stream.flush()
+                if not any(identity(p) == root for p in owned.values()):
+                    raise RuntimeError("app root could not be sampled")
+                failed_owned = [e for e in proc.errors if any(k[0] == e["pid"] for k in known)
+                                and e["errno"] != errno.ESRCH]
+                if failed_owned:
+                    result["failures"].append(dict(owned_collection_errors=failed_owned))
+                if time.monotonic() >= deadline:
+                    break
+                due = min(due + result["interval_seconds"], deadline)
+                time.sleep(max(0, due - time.monotonic()))
+        if ledger.warnings:
+            result["failures"].append("Accounting warnings: inspect raw samples")
+        if pre:
+            finish_hook(pre, result["hooks"]["pre_sample"], args.hook_timeout, stop=True)
+            if pre.returncode != 0:
+                result["failures"].append("Pre-sample hook failed or was terminated without a clean exit")
+            pre = None
+        if args.post_run_check:
+            post, evidence = start_hook(args.post_run_check, "post-run-check", run_dir, env, handles)
+            result["hooks"]["post_run_check"] = evidence
+            evidence["phase"] = "after steady sampling, before app quit"
+            finish_hook(post, evidence, args.hook_timeout)
+            if post.returncode != 0:
+                result["failures"].append("Post-run check failed")
+            post = None
+        else:
+            result["hooks"]["post_run_check"] = dict(status="not configured",
+                note="Routing eligibility, freshness and alias failover require external evidence.")
+    except (Exception, KeyboardInterrupt) as error:
+        result["failures"].append(type(error).__name__ + ": " + str(error))
+        if isinstance(error, KeyboardInterrupt):
+            result["interrupted"] = True
+    finally:
+        if ledger and ledger.times:
+            result.update(metrics=ledger.summary(), accounting_warnings=ledger.warnings,
+                          measured_seconds=ledger.times[-1] - ledger.times[0],
+                          snapshots=len(ledger.times))
+        for hook, key in ((pre, "pre_sample"), (post, "post_run_check")):
+            if hook:
+                try:
+                    finish_hook(hook, result["hooks"][key], args.hook_timeout, stop=True)
+                except Exception as error:
+                    result["failures"].append("Hook cleanup failed: " + str(error))
+                    result["hook_cleanup_unverified"] = True
+        if app:
+            try:
+                identity_unavailable = root is None
+                if identity_unavailable:
+                    # Popen still owns an unreaped child PID. It cannot be reused.
+                    if app.poll() is None:
+                        app.terminate()
+                    root = (app.pid, -1)
+                    result["failures"].append("Root identity unavailable; descendant cleanup unverified")
+                result["quit"] = clean_quit(proc, app, root, known)
+                if identity_unavailable:
+                    result["quit"]["ok"] = False
+            except Exception as error:
+                result["quit"] = dict(ok=False, error=str(error))
+            if not result["quit"]["ok"]:
+                result["failures"].append("Clean quit/orphan verification failed; stop experiment")
+        for handle in handles:
+            handle.close()
+        result["environment_after"] = power_display_metadata()
+        result["status"] = "failed" if result["failures"] else "ok"
+        result["ended"] = now()
+        write_json(run_dir / "summary.json", result)
+    return result
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True, help="new evidence directory (must not exist)")
+    parser.add_argument("--baseline", type=Path, default=Path("/Applications/PAIR.app"))
+    parser.add_argument("--candidate", type=Path,
+                        default=ROOT / "desktop/release/0.7.0-rc.2/mac/mac-arm64/PAIR.app")
+    parser.add_argument("--scenario", nargs="+", choices=("tray", "overview", "inference"),
+                        default=["tray", "overview", "inference"])
+    parser.add_argument("--repetitions", type=int, default=5, help="runs per variant and scenario")
+    parser.add_argument("--seed", type=int, default=20260421)
+    parser.add_argument("--warmup", type=float, default=60)
+    parser.add_argument("--duration", type=float, default=120)
+    parser.add_argument("--interval", type=float, help="default: tray 10 s, overview/inference 5 s")
+    parser.add_argument("--template", type=Path, help="copy a trusted state template into each fresh home")
+    parser.add_argument("--link-dotdir", action="append", default=[], metavar=".NAME")
+    parser.add_argument("--pre-sample-hook", help="argv command (no implicit shell); starts before warm-up")
+    parser.add_argument("--post-run-check", help="argv command at end of steady sampling, before quit")
+    parser.add_argument("--hook-timeout", type=float, default=30)
+    parser.add_argument("--context", help="operator description: source commits, topology, engines/models, tracing, workload")
+    parser.add_argument("--authorize-launch", action="store_true", help="explicitly authorize GUI app launch")
+    return parser
+
+
+def save_report(output, report):
+    report["groups"] = aggregate_runs(report["runs"])
+    write_json(output / "report.json", report)
+    (output / "report.md").write_text(render_markdown(report), encoding="utf-8")
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    durations = [args.warmup, args.duration, args.hook_timeout]
+    if args.interval is not None:
+        durations.append(args.interval)
+    if not all(math.isfinite(value) for value in durations):
+        parser.error("durations and intervals must be finite")
+    if len(set(args.scenario)) != len(args.scenario):
+        parser.error("scenario labels must be unique")
+    if args.repetitions < 1 or args.warmup < 0 or args.duration <= 0 or args.hook_timeout <= 0:
+        parser.error("positive repetitions/duration/hook-timeout and nonnegative warmup required")
+    if args.interval is not None and not 0 < args.interval <= args.duration:
+        parser.error("interval must be positive and no longer than duration")
+    if not args.authorize_launch:
+        parser.error("no app launched: --authorize-launch is required on an idle, authorized test machine")
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    report = dict(metadata=environment_metadata(args, argv), runs=[], groups={})
+    report["metadata"]["diagnostic_only"] = args.repetitions < 5 or args.duration < 120
+    order = alternating_order(args.repetitions, args.seed)
+    report["metadata"]["variant_order_per_scenario"] = order
+    supported = platform.system() == "Darwin" and platform.machine() == "arm64"
+    proc = None
+    collector_error = None
+    if supported:
+        try:
+            proc = Libproc()
+        except (OSError, RuntimeError) as error:
+            collector_error = str(error)
+            report["metadata"]["collector_error"] = collector_error
+    if proc:
+        report["metadata"]["mach_timebase"] = dict(numer=proc.numer, denom=proc.denom)
+        report["metadata"]["rusage_flavor"] = "RUSAGE_INFO_V4"
+    abort = False
+    save_report(output, report)
+    for scenario in args.scenario:
+        for index, variant in enumerate(order):
+            artifact = report["metadata"]["apps"][variant]
+            run_id = "%s-%02d-%s" % (scenario, index + 1, variant)
+            reason = ("Previous run left unverified processes or was interrupted" if abort else
+                      collector_error if collector_error else
+                      "Requires macOS arm64" if not proc else artifact.get("error"))
+            if reason:
+                run_dir = output / run_id
+                run_dir.mkdir()
+                run = dict(id=run_id, variant=variant, scenario=scenario, status="skipped",
+                           failures=[reason], metrics={}, raw_samples=str(run_dir / "samples.jsonl"))
+                (run_dir / "samples.jsonl").write_text("", encoding="utf-8")
+                write_json(run_dir / "summary.json", run)
+            else:
+                run = run_once(args, proc, variant, scenario, output / run_id,
+                               index // 2 + 1, artifact)
+                abort = (run.get("interrupted", False) or run.get("hook_cleanup_unverified", False)
+                         or not run.get("quit", {}).get("ok", False))
+            report["runs"].append(run)
+            save_report(output, report)
+    return 1 if any(run["status"] != "ok" for run in report["runs"]) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
