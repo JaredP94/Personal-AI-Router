@@ -8,6 +8,8 @@ services/versions.json, includes licenses and notices, and pairs every firewall
 add rule with a corresponding delete rule.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 import re
