@@ -19,6 +19,7 @@ import plistlib
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,42 @@ from scripts.perf.libproc import Libproc, find_orphans, owned_processes
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SYSTEM_LAUNCHER = Path("/usr/local/bin/nvpair")
+
+
+class Cancelled(Exception):
+    pass
+
+
+class Cancellation:
+    """Signals only set state: never interrupt Popen assignment or teardown."""
+    def __init__(self):
+        self.signum = None
+        self.previous = {}
+
+    def __enter__(self):
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            self.previous[signum] = signal.signal(signum, self.request)
+        return self
+
+    def __exit__(self, *unused):
+        for signum, handler in self.previous.items():
+            signal.signal(signum, handler)
+
+    def request(self, signum, frame):
+        if self.signum is None:
+            self.signum = signum
+
+    def check(self):
+        if self.signum is not None:
+            raise Cancelled(signal.Signals(self.signum).name)
+
+    def sleep(self, seconds):
+        deadline = time.monotonic() + seconds
+        self.check()
+        while time.monotonic() < deadline:
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+            self.check()
 
 
 def now():
@@ -100,12 +137,69 @@ def hash_file(path):
     return digest.hexdigest()
 
 
-def app_metadata(path):
+def bundle_manifest(bundle, output):
+    """Canonical content/mode inventory; symlinks are content, never traversed."""
+    entries = []
+
+    def visit(path):
+        info = path.lstat()
+        entry = dict(path=path.relative_to(bundle).as_posix(), mode=stat.S_IMODE(info.st_mode))
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(path)
+            entry.update(type="symlink", target=target,
+                         sha256=hashlib.sha256(os.fsencode(target)).hexdigest())
+        elif stat.S_ISREG(info.st_mode):
+            entry.update(type="file", sha256=hash_file(path))
+        elif stat.S_ISDIR(info.st_mode):
+            entry["type"] = "directory"
+        else:
+            raise ValueError("unsupported bundle entry: " + str(path))
+        entries.append(entry)
+        if entry["type"] == "directory":
+            for child in sorted(path.iterdir()):
+                visit(child)
+
+    visit(bundle)
+    entries.sort(key=lambda entry: entry["path"])
+    write_json(output, entries)
+    return hash_file(output)
+
+
+def launcher_snapshot(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return dict(state="absent")
+    result = dict(state="present", lstat={key: getattr(info, key) for key in
+        ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid", "st_size",
+         "st_mtime_ns", "st_ctime_ns")})
+    if stat.S_ISLNK(info.st_mode):
+        result["target"] = os.readlink(path)
+    try:
+        # Include the referent's contents, not just a symlink's target string.
+        if path.is_file():
+            result["sha256"] = hash_file(path)
+        elif path.is_symlink() and not path.exists():
+            result["content_state"] = "absent"
+        else:
+            raise ValueError("system launcher is not a regular file or symlink")
+    except FileNotFoundError:
+        raise RuntimeError("system launcher changed while being snapshotted")
+    return result
+
+
+def app_metadata(path, bundle_output=None, archive=None):
     path = path.resolve()
     binary = path / "Contents/MacOS/PAIR"
     manifest = path / "Contents/Resources/cli-bin/manifest.json"
     result = dict(path=str(path), binary=str(binary), manifest_path=str(manifest))
     try:
+        if bundle_output is not None:
+            result["bundle_manifest_path"] = str(bundle_output)
+            result["bundle_manifest_sha256"] = bundle_manifest(path, bundle_output)
+        if archive is not None:
+            result["archive_path"] = str(archive.resolve())
+            result["archive_sha256"] = hash_file(archive)
         result["binary_sha256"] = hash_file(binary)
         result["manifest_sha256"] = hash_file(manifest)
         result["service_manifest"] = json.loads(manifest.read_text(encoding="utf-8"))
@@ -156,7 +250,9 @@ def environment_metadata(args, argv):
                 low_power_mode_note="See lowpowermode in power_modes for each source; missing means unavailable.",
                 display_note="IODisplayWrangler only; absence means unavailable, no screenshots.",
                 source_commit=command_evidence(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
-                apps={"baseline": app_metadata(args.baseline), "candidate": app_metadata(args.candidate)},
+                apps={variant: app_metadata(getattr(args, variant),
+                      args.output.resolve() / (variant + "-bundle-manifest.json"),
+                      getattr(args, variant + "_archive")) for variant in ("baseline", "candidate")},
                 protocol=vars_for_json(args), energy_label=ENERGY_LABEL, limits=LIMITS)
 
 
@@ -180,63 +276,104 @@ def start_hook(command, name, run_dir, env, handles):
                          stdout=stdout.name, stderr=stderr.name)
 
 
-def finish_hook(process, evidence, timeout, stop=False):
-    if stop:
-        # Also stop descendants of a hook whose parent has already returned.
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            evidence["termination_requested"] = True
-        except ProcessLookupError:
-            pass
+def signal_group(pid, signum, evidence):
     try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        evidence["timeout"] = True
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(pid, signum)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as error:
+        evidence.setdefault("group_errors", []).append(str(error))
+        return True  # Fail closed: absence has not been established.
+
+
+def wait_group(process, deadline, evidence):
+    while True:
+        process.poll()  # Reap a dead leader before probing group existence.
+        present = signal_group(process.pid, 0, evidence)
+        if not present and process.returncode is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+
+
+def finish_hook(process, evidence, timeout, stop=False):
+    if not stop:
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            evidence["timeout"] = True
+    # Both pre and post hooks may leave children after the leader returns.
+    evidence["termination_requested"] = True
+    signal_group(process.pid, signal.SIGTERM, evidence)
+    if not wait_group(process, time.monotonic() + timeout, evidence):
+        evidence["forced_kill"] = True
+        signal_group(process.pid, signal.SIGKILL, evidence)
+    try:
         process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        evidence["reap_timeout"] = True
+    evidence["cleanup_ok"] = (wait_group(process, time.monotonic() + 5, evidence)
+                              and not evidence.get("group_errors"))
     evidence.update(exit_status=process.returncode, ended=now())
 
 
 def clean_quit(proc, app, root, known, timeout=30):
-    """SIGTERM only the launched PID; never signal a reused PID or other PAIR."""
+    """Own Popen child shutdown never depends on the measurement collector."""
     evidence = dict(signal="SIGTERM", requested=now(), timeout_seconds=timeout)
+    deadline = time.monotonic() + timeout
     if app.poll() is None:
         try:
-            current = proc.info(app.pid)
-            if identity(current) == root:
-                app.terminate()
-            else:
-                evidence["identity_mismatch"] = True
+            app.terminate()
         except ProcessLookupError:
             pass
         except OSError as error:
             evidence["signal_error"] = str(error)
-    deadline = time.monotonic() + timeout
-    while True:
+    try:
+        app.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        pass
+    if not wait_group(app, deadline, evidence):
+        evidence["forced_kill"] = True
+        signal_group(app.pid, signal.SIGKILL, evidence)
+        if app.poll() is None:
+            # Still own the unreaped child, even if group signalling failed.
+            try:
+                app.kill()
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                evidence["kill_error"] = str(error)
+    try:
+        app.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        evidence["reap_timeout"] = True
+    evidence["group_gone"] = wait_group(app, time.monotonic() + 5, evidence)
+    # Collector failure is evidence, never a reason to skip terminate/kill/reap.
+    try:
         table = proc.snapshot()
-        live = owned_processes(table, root, known)
-        known.update({identity(p): p for p in live.values()})
-        app.poll()  # Reap the root, so its zombie is not mistaken for an orphan.
-        if not live and app.returncode is not None:
-            break
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
-    table = proc.snapshot()
-    evidence.update(exit_status=app.poll(), ended=now(),
-                    orphans=find_orphans(table, root, known),
-                    collection_errors=proc.errors)
-    # Permission errors on a previously observed PID cannot prove clean shutdown.
-    evidence["unverified_pids"] = [error for error in proc.errors
-                                    if any(key[0] == error["pid"] for key in known)
-                                    and error["errno"] != errno.ESRCH]
-    evidence["ok"] = (app.returncode is not None and not evidence["orphans"] and
-                      not evidence["unverified_pids"] and not evidence.get("identity_mismatch")
-                      and not evidence.get("signal_error"))
+        evidence["orphans"] = find_orphans(table, root, known)
+        evidence["collection_errors"] = proc.errors
+        evidence["unverified_pids"] = [error for error in proc.errors
+            if any(key[0] == error["pid"] for key in known) and error["errno"] != errno.ESRCH]
+    except Exception as error:
+        evidence["collector_error"] = type(error).__name__ + ": " + str(error)
+    evidence.update(exit_status=app.poll(), ended=now())
+    evidence["ok"] = (app.returncode is not None and evidence["group_gone"] and
+        not any(evidence.get(key) for key in ("orphans", "unverified_pids", "collector_error",
+            "signal_error", "kill_error", "reap_timeout", "group_errors", "forced_kill")))
     return evidence
 
 
-def run_once(args, proc, variant, scenario, run_dir, index, artifact):
+def run_once(args, proc, variant, scenario, run_dir, index, artifact, cancellation=None):
+    if cancellation is not None:
+        return measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancellation)
+    with Cancellation() as cancellation:
+        return measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancellation)
+
+
+def measure_run(args, proc, variant, scenario, run_dir, index, artifact, cancellation):
     run_dir.mkdir()
     (run_dir / "samples.jsonl").write_text("", encoding="utf-8")
     result = dict(id=run_dir.name, variant=variant, scenario=scenario, status="failed",
@@ -252,14 +389,23 @@ def run_once(args, proc, variant, scenario, run_dir, index, artifact):
     handles = []
     ledger = None
     try:
+        result["system_launcher"] = dict(path=str(SYSTEM_LAUNCHER),
+            allow_write=args.allow_system_launcher_write)
+        result["system_launcher"]["before"] = launcher_snapshot(SYSTEM_LAUNCHER)
+        if os.access(SYSTEM_LAUNCHER.parent, os.W_OK) and not args.allow_system_launcher_write:
+            raise RuntimeError("no app launched: /usr/local/bin is writable; "
+                               "--allow-system-launcher-write is required to accept this risk")
+        cancellation.check()
         result["environment_before"] = power_display_metadata()
         sandbox = prepare_sandbox(run_dir, args.template, args.link_dotdir, Path.home())
         result["sandbox"] = str(sandbox)
         env = sandbox_environment(sandbox)
+        cancellation.check()
         # Do not persist app prompt/message bodies via stdout/stderr capture.
         app = subprocess.Popen([artifact["binary"]], cwd=sandbox, env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                start_new_session=True)
+        cancellation.check()
         # Capture the root identity immediately; failure still requires cleanup.
         root = identity(proc.info(app.pid))
         known[root] = proc.info(app.pid)
@@ -269,18 +415,20 @@ def run_once(args, proc, variant, scenario, run_dir, index, artifact):
                 args.pre_sample_hook, "pre-sample", run_dir, env, handles)
         warmup_end = time.monotonic() + args.warmup
         while time.monotonic() < warmup_end:
+            cancellation.check()
             if app.poll() is not None:
                 raise RuntimeError("app exited during warm-up")
             table = proc.snapshot()
             owned = owned_processes(table, root, known)
             known.update({identity(p): p for p in owned.values()})
-            time.sleep(min(result["interval_seconds"], max(0, warmup_end - time.monotonic())))
+            cancellation.sleep(min(result["interval_seconds"], max(0, warmup_end - time.monotonic())))
         steady_start = proc.absolute_time()
         ledger = Accounting(steady_start, proc.numer, proc.denom)
         deadline = None
         due = None
         with (run_dir / "samples.jsonl").open("w", encoding="utf-8") as stream:
             while True:
+                cancellation.check()
                 if app.poll() is not None:
                     raise RuntimeError("app exited during steady sampling")
                 table = proc.snapshot()
@@ -316,28 +464,33 @@ def run_once(args, proc, variant, scenario, run_dir, index, artifact):
                 if time.monotonic() >= deadline:
                     break
                 due = min(due + result["interval_seconds"], deadline)
-                time.sleep(max(0, due - time.monotonic()))
+                cancellation.sleep(max(0, due - time.monotonic()))
         if ledger.warnings:
             result["failures"].append("Accounting warnings: inspect raw samples")
+        cancellation.check()
         if pre:
             finish_hook(pre, result["hooks"]["pre_sample"], args.hook_timeout, stop=True)
-            if pre.returncode != 0:
-                result["failures"].append("Pre-sample hook failed or was terminated without a clean exit")
-            pre = None
+            if result["hooks"]["pre_sample"]["cleanup_ok"]:
+                pre = None
+            else:
+                result["hook_cleanup_unverified"] = True
+                raise RuntimeError("Pre-sample hook cleanup unverified")
+        cancellation.check()
         if args.post_run_check:
             post, evidence = start_hook(args.post_run_check, "post-run-check", run_dir, env, handles)
             result["hooks"]["post_run_check"] = evidence
             evidence["phase"] = "after steady sampling, before app quit"
             finish_hook(post, evidence, args.hook_timeout)
-            if post.returncode != 0:
-                result["failures"].append("Post-run check failed")
-            post = None
+            if evidence["cleanup_ok"]:
+                post = None
+            else:
+                result["hook_cleanup_unverified"] = True
         else:
             result["hooks"]["post_run_check"] = dict(status="not configured",
                 note="Routing eligibility, freshness and alias failover require external evidence.")
     except (Exception, KeyboardInterrupt) as error:
         result["failures"].append(type(error).__name__ + ": " + str(error))
-        if isinstance(error, KeyboardInterrupt):
+        if isinstance(error, (KeyboardInterrupt, Cancelled)):
             result["interrupted"] = True
     finally:
         if ledger and ledger.times:
@@ -351,13 +504,18 @@ def run_once(args, proc, variant, scenario, run_dir, index, artifact):
                 except Exception as error:
                     result["failures"].append("Hook cleanup failed: " + str(error))
                     result["hook_cleanup_unverified"] = True
+        for key, evidence in result["hooks"].items():
+            if "pid" not in evidence and key == "post_run_check" and "status" in evidence:
+                continue
+            if not evidence.get("cleanup_ok"):
+                result["hook_cleanup_unverified"] = True
+                result["failures"].append(key + " cleanup unverified; stop experiment")
+            if evidence.get("exit_status") != 0 or evidence.get("forced_kill") or evidence.get("timeout"):
+                result["failures"].append(key + " hook failed or required forced termination")
         if app:
             try:
                 identity_unavailable = root is None
                 if identity_unavailable:
-                    # Popen still owns an unreaped child PID. It cannot be reused.
-                    if app.poll() is None:
-                        app.terminate()
                     root = (app.pid, -1)
                     result["failures"].append("Root identity unavailable; descendant cleanup unverified")
                 result["quit"] = clean_quit(proc, app, root, known)
@@ -369,7 +527,20 @@ def run_once(args, proc, variant, scenario, run_dir, index, artifact):
                 result["failures"].append("Clean quit/orphan verification failed; stop experiment")
         for handle in handles:
             handle.close()
+        try:
+            launcher = result["system_launcher"]
+            launcher["after"] = launcher_snapshot(SYSTEM_LAUNCHER)
+            result["launcher_changed"] = launcher["before"] != launcher["after"]
+            if result["launcher_changed"]:
+                result["failures"].append("System launcher changed; stop experiment (not restored)")
+        except Exception as error:
+            result["launcher_changed"] = True  # Fail closed if comparison is impossible.
+            result["failures"].append("System launcher verification failed: " + str(error))
         result["environment_after"] = power_display_metadata()
+        if cancellation.signum is not None:
+            result["interrupted"] = True
+            result["cancellation_signal"] = signal.Signals(cancellation.signum).name
+            result["failures"].append("Cancelled by " + result["cancellation_signal"])
         result["status"] = "failed" if result["failures"] else "ok"
         result["ended"] = now()
         write_json(run_dir / "summary.json", result)
@@ -382,6 +553,10 @@ def build_parser():
     parser.add_argument("--baseline", type=Path, default=Path("/Applications/PAIR.app"))
     parser.add_argument("--candidate", type=Path,
                         default=ROOT / "desktop/release/0.7.0-rc.2/mac/mac-arm64/PAIR.app")
+    parser.add_argument("--baseline-archive", type=Path, help="optional original archive to hash")
+    parser.add_argument("--candidate-archive", type=Path, help="optional original archive to hash")
+    parser.add_argument("--allow-system-launcher-write", action="store_true",
+                        help="accept packaged startup's /usr/local/bin launcher write risk")
     parser.add_argument("--scenario", nargs="+", choices=("tray", "overview", "inference"),
                         default=["tray", "overview", "inference"])
     parser.add_argument("--repetitions", type=int, default=5, help="runs per variant and scenario")
@@ -422,6 +597,11 @@ def main(argv=None):
         parser.error("interval must be positive and no longer than duration")
     if not args.authorize_launch:
         parser.error("no app launched: --authorize-launch is required on an idle, authorized test machine")
+    with Cancellation() as cancellation:
+        return experiment(args, argv, cancellation)
+
+
+def experiment(args, argv, cancellation):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = dict(metadata=environment_metadata(args, argv), runs=[], groups={})
@@ -446,7 +626,8 @@ def main(argv=None):
         for index, variant in enumerate(order):
             artifact = report["metadata"]["apps"][variant]
             run_id = "%s-%02d-%s" % (scenario, index + 1, variant)
-            reason = ("Previous run left unverified processes or was interrupted" if abort else
+            reason = ("Previous run failed confinement/cleanup or experiment was interrupted"
+                      if abort or cancellation.signum is not None else
                       collector_error if collector_error else
                       "Requires macOS arm64" if not proc else artifact.get("error"))
             if reason:
@@ -458,8 +639,9 @@ def main(argv=None):
                 write_json(run_dir / "summary.json", run)
             else:
                 run = run_once(args, proc, variant, scenario, output / run_id,
-                               index // 2 + 1, artifact)
+                               index // 2 + 1, artifact, cancellation)
                 abort = (run.get("interrupted", False) or run.get("hook_cleanup_unverified", False)
+                         or run.get("launcher_changed", False)
                          or not run.get("quit", {}).get("ok", False))
             report["runs"].append(run)
             save_report(output, report)

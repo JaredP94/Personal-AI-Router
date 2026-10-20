@@ -47,6 +47,19 @@ read-only. Only use trusted detection-only state and hooks; do not ask the app
 to install, start, stop, upgrade or mutate engines. Omit links for strongest
 profile isolation. The harness's own writes stay inside output/sandbox paths.
 
+Packaged macOS startup can create or rewrite `/usr/local/bin/nvpair` despite
+HOME redirection. **Before every launch the harness refuses to proceed if
+`/usr/local/bin` is writable by the current user**, unless explicitly authorized
+with `--allow-system-launcher-write`. This is separate from `--authorize-launch`:
+the override accepts a possible system launcher write, not filesystem confinement.
+With or without that override, each run records `/usr/local/bin/nvpair` before
+and after: absent state or lstat metadata plus SHA-256 of file contents (including
+a symlink's referent contents and its target string). An unreadable/unverifiable
+snapshot or any change fails the run and skips further launches. The harness
+never restores/deletes the launcher; inspect evidence and arrange any repair
+separately. This guard is not a general OS sandbox and cannot prevent arbitrary
+writes by trusted app code or hooks.
+
 `--scenario tray`, `overview`, and `inference` are labels, not visibility/load
 assertions. PAIR opens Overview on launch. There is no headless close/hide
 implementation here: the controller must establish actual tray-only state.
@@ -66,7 +79,14 @@ Hook stdout/stderr and exit status are retained; do not put credentials,
 response text or private prompts in arguments/output. PAIR stdout/stderr are
 discarded, not copied into profiling logs. Hooks get SIGTERM after steady
 sampling and must exit zero within `--hook-timeout` (default 30 s). Timed-out
-hook groups are killed and the run fails.
+hook groups are killed and the run fails. Both pre- and post-hooks retain their
+process-group ownership through cleanup, even if the leader exits first. The
+harness sends group SIGTERM, allows `--hook-timeout` seconds of termination
+grace (separate from a post-hook's execution timeout), escalates to SIGKILL,
+and verifies disappearance/reaps the leader with a bounded 5 s wait.
+Unverified cleanup fails the run and skips subsequent runs. Hooks and their
+children must not detach into different process groups/sessions; escaped,
+unobserved descendants cannot be certified by process-group probes.
 
 ### Example inference hook
 
@@ -105,9 +125,19 @@ and `Contents/Resources/cli-bin/manifest.json` SHA-256, version/service manifest
 CLI, harness source commit, OS/build, hardware, power source/modes and
 best-effort display state are recorded, with power/display probes repeated
 before and after each run. Unavailable probes remain explicit.
-Retain complete artifact provenance separately; two file hashes are not a
-whole-bundle signature. Review output for local paths and identifiers before
-sharing; do not commit run evidence or seeded state to the repository.
+
+`baseline-bundle-manifest.json` and `candidate-bundle-manifest.json` inventory
+the entire `.app`, including relative paths, entry types, permission modes,
+per-file SHA-256, and symlink targets plus their SHA-256. Symlinks are not
+followed. Entries are sorted by relative path; SHA-256 of the retained canonical
+JSON bytes is recorded as `bundle_manifest_sha256` in app metadata. Timestamps,
+ownership and extended attributes are not included. Optional `--baseline-archive`
+and `--candidate-archive` paths add the original archive's SHA-256 to metadata.
+Keep artifacts immutable during profiling: the inventory identifies content at
+preflight, not changes made later. Retain provenance/signature/notarization
+evidence separately; a content digest is not a signing certificate. Review output
+for local paths and identifiers before sharing; do not commit run evidence or
+seeded state to the repository.
 
 The collector uses `proc_listallpids`, `proc_pidinfo`, `proc_pidpath`, and
 `proc_pid_rusage` (`RUSAGE_INFO_V4`); ctypes layouts match the SDK headers.
@@ -136,11 +166,21 @@ counter — units/attribution unvalidated; directional only**; it is never
 converted to physical energy, power or runtime. A zero observed write delta is
 not a promise of absent I/O.
 
-On quit, only the launched app PID is sent SIGTERM, with up to 30 s for app and
-known descendants to disappear. Orphans/unverifiable shutdowns fail the run
-and skip subsequent runs to avoid contamination. They are **not automatically
-killed**: inspect retained PIDs/start identities before manual cleanup. This is
-not an uninstaller and never replaces the installed app.
+SIGINT, SIGTERM and SIGHUP request controlled cancellation; repeated signals
+during teardown do not interrupt app/hook cleanup. The harness retains partial
+measurements and cancellation evidence, and skips remaining runs. SIGKILL,
+host failure and deliberately detached/unobserved children are outside this
+guarantee.
+
+On quit, the harness signals its own Popen child directly with SIGTERM and
+waits/reaps independently of the measurement collector. The app's new process
+group gets up to 30 s to disappear, then SIGKILL and a bounded verification/reap
+wait. Forced termination fails the run. Collector failures are retained and
+cannot prevent requesting shutdown. Orphans/unverifiable shutdowns fail the run
+and skip subsequent runs to avoid contamination. Escaped descendants outside
+the launched process group are **not automatically killed**: inspect retained
+PIDs/start identities before manual cleanup. This is not an uninstaller and
+never replaces the installed app.
 
 ## Gate mapping and tests
 

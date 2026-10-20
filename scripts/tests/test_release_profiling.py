@@ -9,6 +9,9 @@ from pathlib import Path
 import tempfile
 import time
 import json
+import hashlib
+import signal
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -23,6 +26,7 @@ from scripts.perf.profile import (
     parse_low_power_modes, clean_quit, run_once, main,
 )
 from scripts.perf.inference_hook import stream_request, run_load
+from scripts.perf import profile
 
 
 def sample(pid, start, user=0, system=0, name="PAIR", ppid=1, **extra):
@@ -194,6 +198,12 @@ class FakeApp:
         return self.returncode
     def terminate(self):
         self.returncode = 0
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("fake app", timeout)
+        return self.returncode
+    def kill(self):
+        self.returncode = -signal.SIGKILL
 
 
 class FakeProc:
@@ -217,6 +227,17 @@ class LifecycleTests(unittest.TestCase):
                       return_value=dict(exit_status=0, stdout="fixture state", stderr=""))
         probe.start()
         self.addCleanup(probe.stop)
+        access = patch("scripts.perf.profile.os.access", return_value=False)
+        access.start()
+        self.addCleanup(access.stop)
+        groups = patch("scripts.perf.profile.os.killpg", side_effect=ProcessLookupError)
+        groups.start()
+        self.addCleanup(groups.stop)
+        sandbox = tempfile.TemporaryDirectory()
+        self.addCleanup(sandbox.cleanup)
+        launcher = patch("scripts.perf.profile.SYSTEM_LAUNCHER", Path(sandbox.name) / "nvpair")
+        launcher.start()
+        self.addCleanup(launcher.stop)
 
     def test_fake_run_writes_raw_summary_and_terminates_only_fake_app(self):
         clock, app = FakeClock(), FakeApp()
@@ -321,6 +342,337 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn("collector unavailable", report["metadata"]["collector_error"])
             self.assertTrue((output / "report.md").exists())
 
+    def fake_run(self, temp, app, proc, clock, extra=()):
+        args = build_parser().parse_args(["--output", "/unused", "--warmup", "0",
+                                         "--duration", "20", "--interval", "10"] + list(extra))
+        with patch("scripts.perf.profile.subprocess.Popen", return_value=app), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            return run_once(args, proc, "baseline", "tray", Path(temp) / "run", 1,
+                            {"binary": "/never-run"})
+
+    def test_writable_system_launcher_directory_refuses_launch_without_opt_in(self):
+        clock, app = FakeClock(), FakeApp()
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.os.access", return_value=True):
+            result = self.fake_run(temp, app, FakeProc(clock, app), clock)
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(any("--allow-system-launcher-write" in str(f) for f in result["failures"]))
+        self.assertNotIn("quit", result)
+
+    def test_writable_directory_opt_in_permits_fake_launch_but_still_verifies_launcher(self):
+        clock, app = FakeClock(), FakeApp()
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.os.access", return_value=True):
+            result = self.fake_run(temp, app, FakeProc(clock, app), clock,
+                                   ["--allow-system-launcher-write"])
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["system_launcher"]["allow_write"])
+        self.assertEqual(result["system_launcher"]["before"], {"state": "absent"})
+        self.assertEqual(result["system_launcher"]["after"], {"state": "absent"})
+        self.assertFalse(result["launcher_changed"])
+        self.assertEqual(app.wait(), 0)
+
+    def test_launcher_snapshot_detects_mutation_even_with_opt_in(self):
+        for allowed in (False, True):
+            with self.subTest(allowed=allowed), tempfile.TemporaryDirectory() as temp:
+                launcher = Path(temp) / "nvpair"
+                clock, app = FakeClock(), FakeApp()
+                proc = FakeProc(clock, app)
+                original = proc.snapshot
+                def mutate():
+                    launcher.write_text("unexpected launcher")
+                    return original()
+                proc.snapshot = mutate
+                with patch("scripts.perf.profile.SYSTEM_LAUNCHER", launcher):
+                    result = self.fake_run(temp, app, proc, clock,
+                        ["--allow-system-launcher-write"] if allowed else [])
+                self.assertEqual(result["status"], "failed")
+                self.assertTrue(result["launcher_changed"])
+                self.assertEqual(result["system_launcher"]["before"], {"state": "absent"})
+                self.assertEqual(result["system_launcher"]["after"]["sha256"],
+                                 hashlib.sha256(b"unexpected launcher").hexdigest())
+
+    def test_signals_cancel_sampling_and_repeated_cleanup_signals_do_not_strand_app(self):
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=signum), tempfile.TemporaryDirectory() as temp:
+                clock, app = FakeClock(), FakeApp()
+                proc = FakeProc(clock, app)
+                handlers = {}
+                def install(sig, handler):
+                    previous = handlers.get(sig, signal.SIG_DFL)
+                    handlers[sig] = handler
+                    return previous
+                def terminate_with_repeated_signals():
+                    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                        handlers[sig](sig, None)
+                    app.returncode = 0
+                app.terminate = terminate_with_repeated_signals
+                with patch("scripts.perf.profile.signal.signal", side_effect=install):
+                    original_sleep = clock.sleep
+                    def interrupted_sleep(seconds):
+                        original_sleep(seconds)
+                        handlers[signum](signum, None)
+                    clock.sleep = interrupted_sleep
+                    result = self.fake_run(temp, app, proc, clock)
+                self.assertTrue(result["interrupted"])
+                self.assertEqual(app.poll(), 0)
+                self.assertTrue(result["quit"]["ok"])
+                self.assertTrue((Path(temp) / "run/summary.json").exists())
+                self.assertTrue(all(value == signal.SIG_DFL for value in handlers.values()))
+
+    def test_signal_at_launch_returns_owned_child_before_cleanup(self):
+        clock, app = FakeClock(), FakeApp()
+        handlers = {}
+        def install(sig, handler):
+            previous = handlers.get(sig, signal.SIG_DFL)
+            handlers[sig] = handler
+            return previous
+        def launch(*args, **kwargs):
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+            return app
+        args = build_parser().parse_args(["--output", "/unused"])
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.signal.signal", side_effect=install), \
+             patch("scripts.perf.profile.subprocess.Popen", side_effect=launch):
+            result = run_once(args, FakeProc(clock, app), "baseline", "tray",
+                              Path(temp) / "run", 1, {"binary": "/fake"})
+        self.assertTrue(result["interrupted"])
+        self.assertEqual(app.wait(), 0)
+        self.assertFalse(result["quit"]["ok"])  # root discovery never completed
+
+    def test_repeated_signals_during_hook_teardown_still_reap_app_and_hook(self):
+        clock, app = FakeClock(), FakeApp()
+        hook = FakeApp()
+        hook.pid = 2000
+        handlers = {}
+        def install(sig, handler):
+            previous = handlers.get(sig, signal.SIG_DFL)
+            handlers[sig] = handler
+            return previous
+        def group_signal(pid, sig):
+            if pid == hook.pid and sig == signal.SIGTERM:
+                for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                    handlers[signum](signum, None)
+                hook.terminate()
+            if pid != hook.pid or hook.poll() is not None:
+                raise ProcessLookupError
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.signal.signal", side_effect=install), \
+             patch("scripts.perf.profile.start_hook", return_value=(hook, {"pid": hook.pid})), \
+             patch("scripts.perf.profile.os.killpg", side_effect=group_signal):
+            result = self.fake_run(temp, app, FakeProc(clock, app), clock,
+                                   ["--pre-sample-hook", "/fake-hook"])
+        self.assertTrue(result["interrupted"])
+        self.assertEqual(hook.wait(), 0)
+        self.assertEqual(app.wait(), 0)
+        self.assertTrue(result["hooks"]["pre_sample"]["cleanup_ok"])
+        self.assertTrue(result["quit"]["ok"])
+
+    def test_failing_collector_cannot_prevent_child_shutdown_and_failure_is_retained(self):
+        clock, app = FakeClock(), FakeApp()
+        proc = FakeProc(clock, app)
+        proc.info = lambda pid: (_ for _ in ()).throw(OSError("info unavailable"))
+        proc.snapshot = lambda: (_ for _ in ()).throw(OSError("snapshot unavailable"))
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.fake_run(temp, app, proc, clock)
+        self.assertEqual(app.poll(), 0)
+        self.assertFalse(result["quit"]["ok"])
+        self.assertIn("snapshot unavailable", str(result["quit"]))
+
+    def test_collector_failure_with_known_root_does_not_block_direct_child_termination(self):
+        clock, app = FakeClock(), FakeApp()
+        proc = FakeProc(clock, app)
+        def unavailable(*unused):
+            raise OSError("collector unavailable")
+        proc.info = proc.snapshot = unavailable
+        result = clean_quit(proc, app, (1000, 1), {})
+        self.assertEqual(app.wait(), 0)
+        self.assertFalse(result["ok"])
+        self.assertIn("collector unavailable", result["collector_error"])
+
+    def test_signal_during_final_metadata_is_retained_and_stops_experiment(self):
+        clock, app = FakeClock(), FakeApp()
+        handlers = {}
+        def install(sig, handler):
+            previous = handlers.get(sig, signal.SIG_DFL)
+            handlers[sig] = handler
+            return previous
+        calls = 0
+        def probe():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+            return {}
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.signal.signal", side_effect=install), \
+             patch("scripts.perf.profile.power_display_metadata", side_effect=probe):
+            result = self.fake_run(temp, app, FakeProc(clock, app), clock)
+            stored = json.loads((Path(temp) / "run/summary.json").read_text())
+        self.assertTrue(result.get("interrupted"))
+        self.assertEqual(stored["status"], "failed")
+
+    def test_signal_during_experiment_metadata_skips_all_launches(self):
+        handlers = {}
+        def install(sig, handler):
+            previous = handlers.get(sig, signal.SIG_DFL)
+            handlers[sig] = handler
+            return previous
+        def metadata(*unused):
+            handlers[signal.SIGHUP](signal.SIGHUP, None)
+            return dict(apps={v: {"binary": "/fake"} for v in ("baseline", "candidate")})
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.signal.signal", side_effect=install), \
+             patch("scripts.perf.profile.environment_metadata", side_effect=metadata), \
+             patch("scripts.perf.profile.platform.system", return_value="Darwin"), \
+             patch("scripts.perf.profile.platform.machine", return_value="arm64"), \
+             patch("scripts.perf.profile.Libproc", return_value=FakeProc(FakeClock(), FakeApp())), \
+             patch("scripts.perf.profile.subprocess.Popen", side_effect=AssertionError("must not launch")):
+            output = Path(temp) / "out"
+            status = main(["--output", str(output), "--authorize-launch", "--scenario", "overview",
+                           "--repetitions", "1"])
+            report = json.loads((output / "report.json").read_text())
+        self.assertEqual(status, 1)
+        self.assertEqual([r["status"] for r in report["runs"]], ["skipped", "skipped"])
+
+    def test_launcher_mutation_skips_subsequent_runs(self):
+        clock, app = FakeClock(), FakeApp()
+        proc = FakeProc(clock, app)
+        with tempfile.TemporaryDirectory() as temp:
+            launcher = Path(temp) / "nvpair"
+            original = proc.snapshot
+            def mutate():
+                launcher.write_bytes(b"modified")
+                return original()
+            proc.snapshot = mutate
+            metadata = dict(apps={v: {"binary": "/fake"} for v in ("baseline", "candidate")})
+            with patch("scripts.perf.profile.SYSTEM_LAUNCHER", launcher), \
+                 patch("scripts.perf.profile.environment_metadata", return_value=metadata), \
+                 patch("scripts.perf.profile.platform.system", return_value="Darwin"), \
+                 patch("scripts.perf.profile.platform.machine", return_value="arm64"), \
+                 patch("scripts.perf.profile.Libproc", return_value=proc), \
+                 patch("scripts.perf.profile.subprocess.Popen", return_value=app), \
+                 patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+                 patch("scripts.perf.profile.time.sleep", clock.sleep):
+                output = Path(temp) / "out"
+                status = main(["--output", str(output), "--authorize-launch", "--scenario", "overview",
+                               "--repetitions", "1", "--warmup", "0", "--duration", "20"])
+            report = json.loads((output / "report.json").read_text())
+        self.assertEqual(status, 1)
+        self.assertEqual([r["status"] for r in report["runs"]], ["failed", "skipped"])
+        self.assertTrue(report["runs"][0]["launcher_changed"])
+        self.assertTrue(report["runs"][0]["quit"]["ok"])
+
+    def test_timed_out_post_hook_gets_termination_grace_before_group_kill(self):
+        clock, hook = FakeClock(), FakeApp()
+        terminated_at = None
+        killed_at = None
+        def wait(timeout=None):
+            if hook.returncode is None:
+                clock.value += timeout
+                raise subprocess.TimeoutExpired("fake hook", timeout)
+            return hook.returncode
+        hook.wait = wait
+        def group_signal(pid, sig):
+            nonlocal terminated_at, killed_at
+            if hook.returncode is not None:
+                raise ProcessLookupError
+            if sig == signal.SIGTERM:
+                terminated_at = clock.value
+            elif sig == signal.SIGKILL:
+                killed_at = clock.value
+                hook.kill()
+        with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            profile.finish_hook(hook, {}, 1)
+        self.assertGreaterEqual(killed_at - terminated_at, 1)
+        self.assertEqual(hook.wait(), -signal.SIGKILL)
+
+    def test_hook_group_permission_failure_is_unverified_even_if_leader_exits_zero(self):
+        clock, hook = FakeClock(), FakeApp()
+        hook.returncode = 0
+        evidence = {}
+        with patch("scripts.perf.profile.os.killpg", side_effect=PermissionError("denied")), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            profile.finish_hook(hook, evidence, 1)
+        self.assertFalse(evidence["cleanup_ok"])
+        self.assertTrue(evidence["group_errors"])
+
+    def test_unresponsive_child_is_group_killed_and_reaped_without_collector(self):
+        clock, app = FakeClock(), FakeApp()
+        app.terminate = lambda: None
+        proc = FakeProc(clock, app)
+        proc.snapshot = lambda: (_ for _ in ()).throw(OSError("collector failed"))
+        signals = []
+        def group_signal(pid, sig):
+            self.assertEqual(pid, 1000)
+            signals.append(sig)
+            if sig == signal.SIGKILL:
+                app.kill()
+            if app.poll() is not None:
+                raise ProcessLookupError
+        with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            result = clean_quit(proc, app, (1000, 1), {}, timeout=1)
+        self.assertEqual(app.wait(), -signal.SIGKILL)
+        self.assertIn(signal.SIGKILL, signals)
+        self.assertFalse(result["ok"])
+
+    def test_both_hook_groups_are_cleaned_after_leader_exit_and_kill_escalation(self):
+        for stop in (False, True):
+            with self.subTest(pre_hook=stop):
+                clock, hook = FakeClock(), FakeApp()
+                hook.returncode = 0  # leader exited; descendant is still running
+                living = True
+                signals = []
+                def group_signal(pid, sig):
+                    nonlocal living
+                    self.assertEqual(pid, hook.pid)
+                    if not living:
+                        raise ProcessLookupError
+                    signals.append(sig)
+                    if sig == signal.SIGKILL:
+                        living = False
+                evidence = {}
+                with patch("scripts.perf.profile.os.killpg", side_effect=group_signal), \
+                     patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+                     patch("scripts.perf.profile.time.sleep", clock.sleep):
+                    profile.finish_hook(hook, evidence, 1, stop=stop)
+                self.assertFalse(living)
+                self.assertIn(signal.SIGTERM, signals)
+                self.assertIn(signal.SIGKILL, signals)
+                self.assertTrue(evidence["cleanup_ok"])
+                self.assertTrue(evidence["forced_kill"])
+
+    def test_unverified_hook_cleanup_aborts_remaining_runs(self):
+        metadata = dict(apps={"baseline": {"binary": "/fake"}, "candidate": {"binary": "/fake"}})
+        clock, app = FakeClock(), FakeApp()
+        proc = FakeProc(clock, app)
+        def cannot_clean(hook, evidence, *args, **kwargs):
+            evidence.update(cleanup_ok=False, exit_status=0)
+        with tempfile.TemporaryDirectory() as temp, \
+             patch("scripts.perf.profile.environment_metadata", return_value=metadata), \
+             patch("scripts.perf.profile.platform.system", return_value="Darwin"), \
+             patch("scripts.perf.profile.platform.machine", return_value="arm64"), \
+             patch("scripts.perf.profile.Libproc", return_value=proc), \
+             patch("scripts.perf.profile.subprocess.Popen", return_value=app), \
+             patch("scripts.perf.profile.start_hook", return_value=(app, {})), \
+             patch("scripts.perf.profile.finish_hook", side_effect=cannot_clean), \
+             patch("scripts.perf.profile.time.monotonic", clock.monotonic), \
+             patch("scripts.perf.profile.time.sleep", clock.sleep):
+            output = Path(temp) / "out"
+            status = main(["--output", str(output), "--authorize-launch", "--scenario", "overview",
+                           "--repetitions", "1", "--warmup", "0", "--duration", "20",
+                           "--post-run-check", "/fake-check"])
+            report = json.loads((output / "report.json").read_text())
+        self.assertEqual(status, 1)
+        self.assertEqual([r["status"] for r in report["runs"]], ["failed", "skipped"])
+        self.assertTrue(report["runs"][0]["hook_cleanup_unverified"])
+
     def test_missing_authorization_fails_without_launch(self):
         with patch("scripts.perf.profile.subprocess.Popen", side_effect=AssertionError("must not launch")):
             with self.assertRaises(SystemExit) as caught, patch("sys.stderr"):
@@ -353,6 +705,71 @@ class MetadataAndHookTests(unittest.TestCase):
             self.assertEqual(info["manifest_sha256"], hashlib.sha256(b'{"version":"fixture"}').hexdigest())
             self.assertEqual(info["version"], "0.7.0-rc.2")
             self.assertNotIn("error", info)
+
+    def test_whole_bundle_manifest_is_deterministic_and_sensitive_to_content_mode_and_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tree = Path(temp) / "PAIR.app"
+            tree.mkdir()
+            (tree / "z").write_bytes(b"payload")
+            (tree / "a").mkdir()
+            (tree / "a/file").write_bytes(b"hello")
+            (tree / "link").symlink_to("a")
+            output = Path(temp) / "manifest.json"
+            first = profile.bundle_manifest(tree, output)
+            self.assertEqual(first, profile.bundle_manifest(tree, output))
+            self.assertEqual(first, hashlib.sha256(output.read_bytes()).hexdigest())
+            entries = json.loads(output.read_text())
+            self.assertEqual([row["path"] for row in entries], [".", "a", "a/file", "link", "z"])
+            link = entries[3]
+            self.assertEqual(link["target"], "a")
+            self.assertEqual(link["sha256"], hashlib.sha256(b"a").hexdigest())
+            self.assertNotIn("link/file", [row["path"] for row in entries])
+            (tree / "a/file").write_bytes(b"jello")
+            second = profile.bundle_manifest(tree, output)
+            self.assertNotEqual(first, second)
+            (tree / "z").chmod(0o700)
+            third = profile.bundle_manifest(tree, output)
+            self.assertNotEqual(second, third)
+            (tree / "link").unlink()
+            (tree / "link").symlink_to("z")
+            self.assertNotEqual(third, profile.bundle_manifest(tree, output))
+
+    def test_launcher_lstat_snapshot_tracks_symlink_and_content_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "nvpair"
+            self.assertEqual(profile.launcher_snapshot(path), {"state": "absent"})
+            target = Path(temp) / "target"
+            target.write_bytes(b"launcher")
+            path.symlink_to("target")
+            before = profile.launcher_snapshot(path)
+            self.assertEqual(before["target"], "target")
+            self.assertEqual(before["sha256"], hashlib.sha256(b"launcher").hexdigest())
+            target.write_bytes(b"changed")
+            self.assertNotEqual(before, profile.launcher_snapshot(path))
+            path.unlink()
+            path.symlink_to("missing")
+            self.assertEqual(profile.launcher_snapshot(path)["content_state"], "absent")
+
+    def test_artifact_metadata_retains_whole_bundle_and_optional_archive_hash(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as temp:
+            tree = Path(temp) / "PAIR.app"
+            binary = tree / "Contents/MacOS/PAIR"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"fake")
+            binary.chmod(0o700)
+            manifest = tree / "Contents/Resources/cli-bin/manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}")
+            with (tree / "Contents/Info.plist").open("wb") as stream:
+                plistlib.dump({}, stream)
+            archive = Path(temp) / "release.zip"
+            archive.write_bytes(b"archive")
+            output = Path(temp) / "bundle.json"
+            info = app_metadata(tree, output, archive)
+            self.assertEqual(info["bundle_manifest_sha256"], hashlib.sha256(output.read_bytes()).hexdigest())
+            self.assertEqual(info["bundle_manifest_path"], str(output))
+            self.assertEqual(info["archive_sha256"], hashlib.sha256(b"archive").hexdigest())
 
     def test_stream_consumed_without_persisting_response_and_requires_done(self):
         class Response:
