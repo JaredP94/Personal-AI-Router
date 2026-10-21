@@ -89,6 +89,10 @@ Inbound lifecycle notifications, on either channel:
 Each carries `params.workloadInfo`. Removal uses `workloads:remove` with
 `params.workloadId` and the origin `params.originatedFrom`.
 
+Alongside them the manager relays **progress frames** (`workload:progress`),
+which are a live snapshot of a running request rather than a state
+transition. See [Live progress frames](#live-progress-frames).
+
 ## Workload shape
 
 Defined in [`workload.go`](workload.go):
@@ -131,6 +135,41 @@ A value the engine did not report stays absent, and stays absent through the
 broadcast: the manager never fills in a zero and never rejects a lifecycle
 event over a missing measurement.
 
+## Live progress frames
+
+A running request can be described while it runs. The proxies publish a
+**progress frame** for an in-flight request under the method `workload:progress`:
+what PAIR measured of the client's stream — the elapsed time, the content
+chunks received, the response bytes received, the time to the first byte.
+
+A frame is a **snapshot, not a state transition**. It never enters the
+catalog, it is never tracked as an active workload, and it is never deduped —
+not against the `workload:started` event that shares its job id, and not
+against the frame before it. Deduping would freeze the live view at its first
+reading, because each frame carries the newer numbers. Two frames for the
+same job id are two readings, not one event seen twice.
+
+The manager validates a frame (only the job id is required — every other field
+is optional, because a frame reports what its publisher measured and stays
+silent about the rest) and broadcasts it to the pinned peers unchanged.
+
+The same job id can carry frames from two different publishers: the origin
+proxy's frame, which holds what PAIR measured, and the serving node's frame,
+which holds what the engine reported of its own request. Neither publisher can
+see the other's facts, so a field a frame does not carry means "not measured
+here", never "zero". Each broker merges the frames of one job field by field.
+
+| Field | Notes |
+| --- | --- |
+| `jobId` | PAIR's own id for the request; the same id the lifecycle events carry |
+| `originatedFrom` | the node the request entered the cluster on, stamped by the origin's broker |
+| `nodeId` | the node that is serving the request |
+| `elapsedMs` | the time since the request reached the proxy |
+| `chunks` | the content chunks received so far — a chunk count is never a token count |
+| `bytes` | the response body bytes received so far |
+| `ttfbMs` | the time to the first response byte, absent until a byte has arrived |
+| `engine` | the engine's own live reading, absent when the engine reported nothing |
+
 ## Output to the broker
 
 Translated remote events are forwarded to the broker as:
@@ -139,10 +178,13 @@ Translated remote events are forwarded to the broker as:
 | --- | --- |
 | `workloads:upsert` | `{ workloadInfo }` |
 | `workloads:remove` | `{ workloadId, originatedFrom }` |
+| `workloads:progress` | the progress frame, relayed from a peer unchanged — a snapshot of a running request, never a catalog event |
 | `ready` | `{ version }` — startup handshake |
 
 Duplicate events arriving from more than one peer are collapsed before they reach
-the broker, so a workload observed over several paths is reported once.
+the broker, so a workload observed over several paths is reported once. A
+progress frame is never collapsed: it is a reading, and the later one carries
+the newer numbers.
 
 ## Testing
 

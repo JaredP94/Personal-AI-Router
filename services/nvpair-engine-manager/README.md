@@ -279,8 +279,26 @@ is not running, or is not answering — answers `supported:false` with the
 sanitised reason. Each fetch is bounded (5 s by default), so a slow engine is
 reported rather than waited on.
 
-Every numeric field is `omitempty`: a value the engine did not report stays
-absent instead of becoming a zero.
+Every numeric field of the **stats** view is `omitempty`: a value the engine
+did not report stays absent instead of becoming a zero, and for a counter a
+reported zero and an absent value mean the same thing to a reader. The
+**activity** rows are the exception: their numbers are per-request readings
+rather than counters, so they are pointers — a reported reading is present in
+the JSON even when it is zero, and an unreported one is absent, which lets a
+consumer tell "the engine reported zero" from "the engine reported nothing".
+
+The stats view carries the engine's **counters** (requests, prompt,
+completion and cached tokens, cache efficiency), its **speeds** (the average
+prefill and generation throughput it measured) and the models it lists as
+active. It carries **no phase durations**: the engine's stats endpoint reports
+none, and the durations on the engine's usage endpoint are scoped to a date
+range rather than to the engine's life, so a day-scoped number would not
+belong beside the lifetime counters. The per-request durations PAIR shows
+come from the request's own `usage` block, not from here.
+
+The counters are the engine's account of **all** the work it did, including
+the traffic PAIR did not route. A consumer must show them beside PAIR's own
+numbers and never add the two together: they count overlapping work.
 
 ## Lifecycle
 

@@ -98,6 +98,40 @@ Emitted as the directory changes. Each carries the affected `DirectoryNode` (ide
 
 A one-shot `ready` notification is sent on startup carrying the daemon version. The broker replays its service registrations on every scanner spawn, so a restarted daemon is repopulated without needing to compare an epoch.
 
+### The engine-native field
+
+The directory entry carries the engine's own report of itself as
+`engineNative`, enriched from the node's `em` port
+(`GET /v1/engine-stats`):
+
+| Field | Notes |
+| --- | --- |
+| `engine` | the engine that published the view (`omlx`) |
+| `supported` | whether the engine publishes an admin API at all |
+| `totals` | the engine's cumulative counters: `requests`, `promptTokens`, `completionTokens`, `cachedTokens`, `cacheEfficiency` |
+| `rates` | the engine's own average throughput: `prefillTokensPerSecond`, `generationTokensPerSecond` |
+| `models` | the models the engine lists as active, each with `loaded` |
+| `error` | a short sanitised reason, when a known engine could not be reached |
+| `observedAt` | when the reading was taken, in milliseconds since the epoch |
+
+The view is omitted entirely when the node never produced one: its engine
+publishes no admin API, or it could not be reached. Every numeric field
+inside it is `omitempty` — a value the engine did not report stays absent
+rather than becoming a zero, and for a counter a reported zero and an absent
+value mean the same thing to a reader.
+
+`observedAt` advances on every sweep even when the counters do not move, so a
+consumer computes staleness as `now - observedAt`: that is what tells a live
+but idle engine apart from one that stopped answering. A node whose fetch
+fails keeps the view it had (the last-good rule the model list follows too).
+
+The counters are the engine's account of **all** the work it did, including
+the traffic PAIR did not route, so a consumer presents them beside PAIR's own
+numbers and never adds the two together. The view carries no phase
+durations: the engine's stats endpoint reports none, and the durations on the
+engine's usage endpoint are scoped to a date range rather than to the
+engine's life.
+
 ## Shutdown
 
 The daemon shuts down on:

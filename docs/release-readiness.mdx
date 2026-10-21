@@ -195,6 +195,56 @@ tracing-enabled profiling scenarios are still open.
   [design](superpowers/specs/2026-10-20-inference-metrics-design.md) §7 for
   the live checklist.
 
+### Engine-Native View and Live In-Flight Numbers
+
+**Implemented in source, pending live-engine and release testing.**
+
+- **The engine's own view of itself:** The engine-manager serves
+  `GET /v1/engine-stats` and `GET /v1/engine-activity` on its `em` surface,
+  behind the same two gates as the model list (plaintext for loopback only,
+  cluster mTLS for pinned peers). The answers are PAIR's own sanitized type,
+  mapped field by field from the engine's admin payload — which also carries
+  the engine's API key. PAIR's type has no field for the key, so it cannot
+  leak; the mapping is structural, not a filter.
+- **Carried on the node record:** The node-scanner fetches the stats from
+  every peer over the mTLS pool it already uses, on its own slower cadence,
+  and folds them onto the node record as `engineNative`; the broker copies
+  the field onto its own node record. The desktop shows it on the node card
+  as a clearly separate "engine self-report" section, never merged with
+  PAIR's own numbers: the engine's counters include the traffic PAIR did not
+  route, so adding the two together would count overlapping work twice.
+- **Counters and speeds, no durations:** The view carries the engine's
+  cumulative counters and its average prefill and generation throughput. It
+  carries no phase durations: the engine's stats endpoint reports none, and
+  the durations on the engine's usage endpoint are scoped to a date range
+  rather than to the engine's life, so a day-scoped number would not belong
+  beside the lifetime counters.
+- **Live in-flight numbers:** The proxies count the content chunks and the
+  response bytes they received, and time the first response byte, exactly, and
+  publish a frame at most once every two seconds per in-flight request. The
+  serving node's poller adds the engine's own live
+  numbers (oMLX only) under the same job id. The workload-manager broadcasts
+  the frame to every pinned peer; each broker keeps a bounded live view and
+  pushes the merged view to its clients as `workloads:progress`. The desktop
+  shows the live line on a running job and the final exact numbers on a
+  finished one.
+- **No estimates:** Nothing on these surfaces is estimated, interpolated, or
+  derived from a different quantity. A chunk count is never presented as a
+  token count. A value nobody reported stays absent and reads as "not
+  reported" rather than as a zero; a measured zero stays a zero.
+- **Not yet validated against live engines:** The three checks above remain
+  open for the v1 measurement — that a live oMLX emits the `usage` block once
+  the proxy asks for it and that the values match `/admin/api/stats` deltas;
+  that Ollama's nanosecond durations convert correctly; and whether LM
+  Studio's streaming responses carry a `usage` block at all. The engine-native
+  view and the live progress frames need a live oMLX of their own to confirm
+  that its activity rows pair with PAIR's jobs, that the counters the node
+  card shows match the engine's own, and that a live frame reaches a remote
+  member's clients under the right job id. No release-candidate profile
+  exists for this feature. Source checks do not certify published assets.
+  See the [design](superpowers/specs/2026-10-21-inference-metrics-v2-design.md)
+  §7 for the risks and unknowns.
+
 ### GPU Memory Semantics
 
 **Implemented, pending release testing; Windows runtime untested on this host;

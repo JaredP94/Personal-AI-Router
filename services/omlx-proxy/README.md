@@ -208,6 +208,26 @@ Every field is optional and present only when oMLX reported that value — a pha
 
 oMLX emits that streaming `usage` chunk only when the request asks for it, so the proxy asks on the client's behalf: for a streaming request to an inference route whose body is a JSON object and carries no `stream_options` of its own, the forwarded body is a copy with `{"stream_options":{"include_usage":true}}` added. The client's own body is never modified in place, a client-supplied `stream_options` is never overridden, a non-streaming request is forwarded unchanged, and every failover attempt replays the same body.
 
+#### `workload:progress`
+
+A live snapshot of an in-flight request, published while the response is streaming: what PAIR measured of the client's stream, exactly. The proxy counts the content chunks and the response body bytes it received, and times the first response byte. The frame carries **no token count and no rate** of its own — PAIR does not know the engine's token count until the response ends, and a chunk is not a token.
+
+A frame leaves at most once every two seconds per request, so a busy engine cannot flood the stream. Every field but the job id is optional and omitted when it was not measured, so a measured zero stays distinguishable from an absent measurement.
+
+The frame is a **partial** view: it never enters the workload catalog and never changes a job's state. The broker hands it to `nvpair-workload-manager`, which broadcasts it to the pinned peers; each broker merges it into the live view of its job and pushes the merged view to the clients as `workloads:progress`.
+
+`nodeId` names the node that is **serving** the request — the peer's id for a request this proxy forwarded onward, not this node's.
+
+```json
+{"jsonrpc":"2.0","method":"workload:progress","params":{"jobId":"17","nodeId":"22222222-2222-2222-2222-222222222222","elapsedMs":1840,"chunks":96,"bytes":24576,"ttfbMs":112}}
+```
+
+`originatedFrom` is not set by the proxy: the proxy that received the request cannot know it is the origin of a job it forwarded onward. The origin's own broker stamps it, exactly as it stamps `originatedFrom` onto a workload lifecycle event.
+
+**The engine's own live numbers ride on the same job id.** oMLX is the only engine that reports live numbers, so the oMLX proxy publishes them as a second, differently shaped frame: it reads the engine's live rows from the engine-manager's `em` surface (`GET /v1/engine-activity`) over loopback, refreshing them every two seconds while it is serving at least one request. The `em` surface is preferred because it answers with PAIR's own type and needs no API key; when it cannot be reached, the engine's own admin API is the fallback, and the key it needs never leaves this node. The proxy pairs each row with the job it belongs to through the engine's own request id, and publishes the reading as the frame's `engine` object — `requestId`, `phase` (`waiting`, `prefilling`, `generating`), `generatedTokens`, `tokensPerSecond`, `prefillProgress` and `queuePosition`. Only what the engine reported is carried: a reading it did not report stays absent rather than becoming a zero. The engine's object is one reading of one engine row, so a later reading replaces it as a unit rather than merging with it field by field.
+
+The two frames describe the same request from two sides, and neither publisher can see the other's facts. A broker merges them field by field, so a field a frame does not carry means "not measured here", never "zero".
+
 #### `node/activity`
 
 Raised while a node's engine is streaming a response back through the proxy: every successful write of upstream body bytes reports the node that produced them. The broker relays it to `nvpair-node-scanner`, which treats it as proof of life and cancels that node's eviction — a node saturated by inference cannot answer a liveness probe, but it is demonstrably alive precisely because it is streaming. Coalesced to one report per node per 2s (`nvpair-shared/nodeactivity`), since a generation writes hundreds of chunks and the scanner treats one report as good for a minute. `msSince` is the age of the observation; the broker adds its own relay delay before passing it on.

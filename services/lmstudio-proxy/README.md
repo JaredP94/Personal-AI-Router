@@ -199,6 +199,22 @@ Every field is optional and present only when LM Studio reported that value. The
 
 **The measurement carries engine-reported values only.** LM Studio reports no total time, so `totalMs` stays absent rather than carrying the proxy's own wall-clock duration: that duration covers queueing, transport and client write time, so it would not mean the same thing as the engine-reported total oMLX reports. It is reported as the `proxy/request` event's `duration_ms` instead.
 
+#### `workload:progress`
+
+A live snapshot of an in-flight request, published while the response is streaming: what PAIR measured of the client's stream, exactly. The proxy counts the content chunks and the response body bytes it received, and times the first response byte. The frame carries **no token count and no rate** — PAIR does not know the engine's token count until the response ends, and a chunk is not a token.
+
+A frame leaves at most once every two seconds per request, so a busy engine cannot flood the stream. Every field but the job id is optional and omitted when it was not measured, so a measured zero stays distinguishable from an absent measurement.
+
+The frame is a **partial** view: it never enters the workload catalog and never changes a job's state. The broker hands it to `nvpair-workload-manager`, which broadcasts it to the pinned peers; each broker merges it into the live view of its job and pushes the merged view to the clients as `workloads:progress`.
+
+`nodeId` names the node that is **serving** the request — the peer's id for a request this proxy forwarded onward, not this node's.
+
+```json
+{"jsonrpc":"2.0","method":"workload:progress","params":{"jobId":"17","nodeId":"22222222-2222-2222-2222-222222222222","elapsedMs":1840,"chunks":96,"bytes":24576,"ttfbMs":112}}
+```
+
+`originatedFrom` is not set by the proxy: the proxy that received the request cannot know it is the origin of a job it forwarded onward. The origin's own broker stamps it, exactly as it stamps `originatedFrom` onto a workload lifecycle event.
+
 #### `node/activity`
 
 Raised while a node's engine is streaming a response back through the proxy: every successful write of upstream body bytes reports the node that produced them. The broker relays it to `nvpair-node-scanner`, which treats it as proof of life and cancels that node's eviction — a node saturated by inference cannot answer a liveness probe, but it is demonstrably alive precisely because it is streaming. Coalesced to one report per node per 2s (`nvpair-shared/nodeactivity`), since a generation writes hundreds of chunks and the scanner treats one report as good for a minute. `msSince` is the age of the observation; the broker adds its own relay delay before passing it on.
