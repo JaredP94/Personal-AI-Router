@@ -68,6 +68,11 @@ type nodeMetricsWorkload struct {
 // event (the workload-manager's heartbeat) and a synthesized failure (the
 // node-loss sweep) both leave the totals untouched.
 //
+// The exactly-once property rests on the origin never changing scheduledOn
+// after the terminal event: the workload store treats a same-rank event with
+// a changed scheduledOn as a new accepted merge, and the accumulator cannot
+// detect that case itself.
+//
 // Only a terminal event is counted. The broker sees a non-terminal event for
 // every job it watches, and a job that is merely running is not a served
 // request yet — counting it would count every job twice and put a request in
@@ -114,9 +119,9 @@ func (b *Broker) markNodeMetricsDirty() {
 	b.metricsMu.Unlock()
 }
 
-// getNodeMetrics returns the current per-node metrics snapshot: the lifetime
-// totals, the windowed rates and the per-model breakdown of every node that
-// has served traffic.
+// getNodeMetrics returns the current per-node metrics snapshot: the totals
+// since the broker started, the windowed rates and the per-model breakdown of
+// every node that has served traffic.
 //
 // NewBroker always installs the store. A hand-built broker (a test that
 // exercises another path) may not have one, and it then has no metrics to
@@ -180,8 +185,8 @@ func (b *Broker) runNodeMetricsPush(ctx context.Context) {
 
 // handleGetNodeMetrics answers "metrics:get-node-metrics".
 //
-// The full per-node snapshot: lifetime totals, windowed rates and the
-// per-model breakdown for every node that has served traffic. This is
+// The full per-node snapshot: totals since the broker started, windowed rates
+// and the per-model breakdown for every node that has served traffic. This is
 // also how a client hydrates — the push carries the same object.
 func (b *Broker) handleGetNodeMetrics(msg *Message) {
 	// A hand-built broker (a test that exercises another path) may have no

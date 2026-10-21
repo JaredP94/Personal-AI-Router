@@ -74,8 +74,9 @@ func TestWindowExpiryZeroesRatesButKeepsTotals(t *testing.T) {
 		t.Fatalf("rates: %+v", inside[0].Rates)
 	}
 	// Move the store's clock past the window: the sample leaves the window,
-	// the rates go to zero, and the lifetime totals stay. Note that this
-	// exercises the negative-age tolerance, not the ordinary ageing: the
+	// the rates go to zero, and the totals since the broker started stay.
+	// Note that this exercises the negative-age tolerance, not the ordinary
+	// ageing: the
 	// moved-back clock puts the sample ahead of the window end, so it is
 	// dropped because it lies too far in the future. The ordinary ageing
 	// path is covered by TestAgedSampleLeavesTheWindow.

@@ -901,8 +901,12 @@ rendered by the desktop.
   includes queueing, transport and client write time and would not mean the
   same thing. The desktop leaves the optional extras out entirely when the
   engine reported none: the Total row and the cached-token row are absent
-  rather than zero, while the phase rows stay and say "not reported". The
-  node card shows no cached-token row at all: the broker's node totals carry
+  rather than zero, while the phase rows stay and say "not reported" — for a
+  job that reported a partial measurement, the phase it did not report reads
+  "not reported". A job that reported no measurement at all shows no
+  measurement block: a failed job, or a job whose engine sent no usage block,
+  has nothing to report and must not carry a block of "not reported" noise.
+  The node card shows no cached-token row at all: the broker's node totals carry
   no counter for the requests that reported a cached count, so a node-level
   total would read as a measured zero on a node whose engine never measured
   one. The cached count is shown per job, where the engine reported it.
@@ -919,7 +923,11 @@ rendered by the desktop.
   so a re-asserted terminal event or a synthesized node-loss failure cannot
   inflate the totals. The broker serves the snapshot over
   `metrics:get-node-metrics` and pushes it to subscribed clients as
-  `metrics:node-metrics`, coalesced to at most one push per second.
+  `metrics:node-metrics`, coalesced to at most one push per second. The push
+  is measurement-driven, so a node's rate decays toward zero as its window
+  empties without ever being pushed; the desktop therefore re-reads the
+  snapshot on a short interval (every five seconds) so the rates it shows are
+  the broker's current ones rather than the last pushed ones.
 - **Desktop rendering:** The desktop shows the per-request measurement on the
   job card and the per-node figures on the node card, with the per-model
   breakdown behind a disclosure that is collapsed by default. Every figure is

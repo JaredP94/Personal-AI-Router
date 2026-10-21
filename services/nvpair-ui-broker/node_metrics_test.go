@@ -110,17 +110,18 @@ func TestNodeMetricsAccumulateFromAcceptedWorkload(t *testing.T) {
 }
 
 // omlxWorkloadInfoLiteral is the workloadInfo the oMLX proxy recorded in its
-// end-to-end test (services/omlx-proxy/cache_affinity_e2e_test.go), copied
-// verbatim.
+// end-to-end test (services/omlx-proxy/cache_affinity_e2e_test.go).
 //
-// The proxy leaves `originatedFrom` empty for the broker to stamp, so that is
-// the one field that differs here: the literal carries the origin the broker
-// stamps. The ids and the timestamps are the ones the fixture generates per
-// run. The measurement fields are the ones the engine reported, and they are
-// the contract between the proxy that produced the frame and the broker that
-// folds it into the per-node totals.
+// Only the measurement fields are copied verbatim from that fixture: the
+// token counts, the phase durations, the TTFT and the total. Those are the
+// contract between the proxy that produced the frame and the broker that
+// folds it into the per-node totals, and the two literals must agree by eye
+// on them.
 //
-// The two literals must agree by eye.
+// The rest of the literal belongs to this test: the id, the run id and the
+// timestamps are fixed here rather than the per-run values the fixture
+// generates, and the proxy leaves `originatedFrom` empty for the broker to
+// stamp, so the literal carries the origin the broker stamps.
 const omlxWorkloadInfoLiteral = `{"id":"17","model":"omlx-fixture-model","engine":"omlx",` +
 	`"runId":"3ce8a1740b62df95","state":"completed",` +
 	`"originatedFrom":"11111111-1111-1111-1111-111111111111",` +

@@ -514,8 +514,11 @@ returns the same snapshot for hydration on connect.
   The optional extras — the cached-token count and the total duration — are
   **omitted** when the engine did not report them: an engine that reports no
   cached count and no total time has no row for them, and no zero is shown in
-  their place. The phase rows stay in every case, because "this engine does
-  not report phases" is worth saying.
+  their place. A job with a partial measurement shows "not reported" for what
+  the engine did not report; a job with no measurement at all shows no
+  measurement block — a job that reported nothing (a failed job, or an engine
+  that sent no usage block) has nothing to report and must not carry a block
+  of "not reported" noise.
 - **Relay:** the broker's push reaches the renderer through the existing
   bridge push path (`emitBridgePush`).
 

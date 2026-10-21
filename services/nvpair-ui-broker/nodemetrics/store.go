@@ -3,9 +3,10 @@
 
 // Package nodemetrics is the broker's per-node inference-metrics accumulator.
 //
-// It holds, per node that has served traffic, the lifetime totals of the
-// prefill/decode measurements PAIR has observed for that node and a rolling
-// window of the recent completions used to compute that node's current rates.
+// It holds, per node that has served traffic, the totals of the
+// prefill/decode measurements PAIR has observed for that node since the broker
+// started and a rolling window of the recent completions used to compute that
+// node's current rates.
 // The per-model breakdown is kept alongside, because "this node is slow" is
 // usually "this node is slow for this model".
 //
@@ -31,7 +32,7 @@
 //     already defends against cross-node clock skew elsewhere. Two members of
 //     the cluster can therefore hold slightly different sample sets at a
 //     window boundary and report slightly different instantaneous rates,
-//     while their lifetime totals agree exactly.
+//     while their totals since the broker started agree exactly.
 //
 // The store is safe for concurrent use: the broker records from its
 // workload-ingest path and snapshots from its RPC path.
@@ -45,10 +46,14 @@ import (
 	"nvpair-shared/inferencemetrics"
 )
 
-// Totals is the lifetime total of the measurements for a node, or for one
-// model on that node. The values are cumulative since the broker started: they
-// never shrink, and they are not derived from the rolling window, so a node
-// that goes idle keeps its history while its rates fall back to zero.
+// Totals is the total of the measurements for a node, or for one model on that
+// node, accumulated since the broker started. The values never shrink, and
+// they are not derived from the rolling window, so a node that goes idle keeps
+// its history while its rates fall back to zero.
+//
+// "Since the broker started" is the whole scope of these totals: the store
+// lives in the broker's memory and is empty at every broker start, so they
+// cover neither the life of the engine nor the life of the machine.
 type Totals struct {
 	Requests      int   `json:"requests"`
 	PrefillTokens int   `json:"prefillTokens"`
@@ -93,14 +98,15 @@ type Rates struct {
 	MeanTtftMs             float64 `json:"meanTtftMs"`
 }
 
-// ModelTotals is one model's lifetime totals on one node.
+// ModelTotals is one model's totals on one node, accumulated since the broker
+// started.
 type ModelTotals struct {
 	Model  string `json:"model"`
 	Totals Totals `json:"totals"`
 }
 
-// NodeSnapshot is one node's metrics: its lifetime totals, its current rates,
-// and the same totals broken down per model.
+// NodeSnapshot is one node's metrics: its totals since the broker started, its
+// current rates, and the same totals broken down per model.
 type NodeSnapshot struct {
 	NodeId string        `json:"nodeId"`
 	Totals Totals        `json:"totals"`
@@ -110,8 +116,8 @@ type NodeSnapshot struct {
 
 // Store is the broker's per-node metrics accumulator.
 //
-// The state is per node id: the lifetime totals, a per-model map of the same
-// totals, and the rolling window of recent completions.
+// The state is per node id: the totals since the broker started, a per-model
+// map of the same totals, and the rolling window of recent completions.
 //
 // A Store must be created with NewStore. The zero value has no clock and no
 // node map, so its first use panics on a nil map write or a nil clock call;
@@ -119,7 +125,8 @@ type NodeSnapshot struct {
 type Store struct {
 	mu sync.Mutex
 	// window is the length of the rolling window. A non-positive window
-	// disables it: every rate is zero and only the lifetime totals are kept.
+	// disables it: every rate is zero and only the totals since the broker
+	// started are kept.
 	window time.Duration
 	nodes  map[string]*nodeState
 	// now reads the clock. It is unexported and defaults to time.Now; tests
@@ -161,8 +168,8 @@ func NewStore(window time.Duration) *Store {
 	}
 }
 
-// Record folds one completed inference into the node's lifetime totals, into
-// the model's totals, and into the rolling window.
+// Record folds one completed inference into the node's totals since the broker
+// started, into the model's totals, and into the rolling window.
 //
 // The now argument is the caller's instant of the completion — the moment the
 // caller saw it arrive. The store measures its window on its own clock: the
@@ -216,8 +223,8 @@ func (s *Store) Record(nodeID, model string, m inferencemetrics.Measurement, now
 // by node id, with its per-model entries ordered by model id.
 //
 // A node whose window is empty still appears, with zeroed rates and its
-// lifetime totals intact: "idle now" is different from "never served". A node
-// that never served anything does not appear at all.
+// totals since the broker started intact: "idle now" is different from "never
+// served". A node that never served anything does not appear at all.
 func (s *Store) Snapshot() []NodeSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -323,8 +330,8 @@ func (s *Store) inWindow(end time.Time, at time.Time) (time.Duration, bool) {
 
 // pruneLocked drops the samples that have left the window, so the store's
 // memory is bounded by the traffic inside the window rather than by the
-// broker's uptime. The lifetime totals are untouched: they are not derived
-// from the window. Caller holds s.mu.
+// broker's uptime. The totals since the broker started are untouched: they
+// are not derived from the window. Caller holds s.mu.
 func (s *Store) pruneLocked(n *nodeState, now time.Time) {
 	kept := n.samples[:0]
 	for _, sm := range n.samples {

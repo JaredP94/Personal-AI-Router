@@ -368,17 +368,32 @@ describe('the node inference metrics rows', () => {
         expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('100 ms')
     })
 
-    it('gates the mean TTFT on the requests that reported one', () => {
-        // The mean is zero when no request reported a TTFT, which is the same
-        // number an engine reports for a first token that took no time. Only
-        // the counter separates the two.
+    it("reports a TTFT the broker's current window does not hold as not reported", () => {
+        // The node measured a TTFT earlier — the lifetime counter says so —
+        // but nothing was measured inside the broker's 60-second window, so
+        // the windowed mean is zero. A zero mean must not read as a measured
+        // "0 ms": a time-to-first-token is always positive, so a zero mean
+        // means nothing was measured in this window.
         const rows = buildInferenceMetricsRows({
             nodeId: 'n1',
-            totals: { ...reportedTotals, ttftRequests: 0 },
-            rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 0 },
+            totals: { ...reportedTotals, ttftRequests: 3 },
+            rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
         expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('not reported')
+    })
+
+    it('keeps the TTFT row for a node that measured no TTFT at all', () => {
+        // The row is always there, like the prefill and decode rows: what
+        // the engine did not report is worth saying.
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: silentTotals,
+            rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'TTFT (last 60 s)')).toBeDefined()
         expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('not reported')
     })
 

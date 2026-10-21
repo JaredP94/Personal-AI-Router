@@ -50,7 +50,13 @@ function nodeMetrics(totals: InferenceMetricsTotals): NodeInferenceMetrics {
     return {
         nodeId: 'node-a',
         totals,
-        rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
+        rates: {
+            prefillTokensPerSecond: 100,
+            decodeTokensPerSecond: 10,
+            // The broker's mean TTFT is zero when no request inside its
+            // window reported a TTFT, so the fixture follows the totals.
+            meanTtftMs: totals.ttftRequests > 0 ? 100 : 0
+        },
         models: [{ model: 'llama-3.2-3b', totals }]
     }
 }
@@ -192,6 +198,26 @@ describe('the node card prefill/decode section', () => {
         // The token counts were reported, so they are shown.
         expect(text()).toContain('Prefill + decode tokens (since broker start) 120')
         expect(text()).not.toContain('0 tok/s')
+        expect(text()).not.toContain('0 ms')
+    })
+
+    it('renders a node whose window holds no measured TTFT as not reported', async () => {
+        // The node measured a TTFT earlier — the lifetime counter says so —
+        // but the broker's current window holds none, so the windowed mean
+        // is zero. It must not read as a measured "0 ms".
+        useMetricsStore.setState({
+            nodeInferenceMetrics: new Map([['node-a', nodeMetrics(reportedTotals)]])
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toContain('TTFT (last 60 s) 100 ms')
+
+        const idle: NodeInferenceMetrics = {
+            ...nodeMetrics(reportedTotals),
+            rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 }
+        }
+        useMetricsStore.setState({ nodeInferenceMetrics: new Map([['node-a', idle]]) })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toContain('TTFT (last 60 s) not reported')
         expect(text()).not.toContain('0 ms')
     })
 

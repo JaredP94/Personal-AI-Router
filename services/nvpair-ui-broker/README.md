@@ -596,6 +596,8 @@ Returns `{ "workloads": [Workload, ...] }`, the broker's full-fidelity current a
 
 Returns `{ "nodes": [NodeSnapshot, ...] }`, the broker's full per-node inference-metrics snapshot. It is the same object the `metrics:node-metrics` push carries, and is how a client hydrates after subscribing.
 
+The request is safe to call on a cadence: it is a pure read of the broker's current state, and it returns the broker's own windowed rates rather than the last pushed ones. The desktop re-reads it every five seconds, because the push is measurement-driven — a node's rate decays toward zero as its 60-second window empties, and that decay is never pushed because nothing was measured, so a push-only client would show the last pushed rate indefinitely.
+
 Each entry holds:
 
 | Field | Meaning |

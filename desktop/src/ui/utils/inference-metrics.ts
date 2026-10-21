@@ -145,6 +145,11 @@ export function hasDecodeMetrics(totals: InferenceMetricsTotals): boolean {
  * reported a TTFT, and it is zero when no request reported one — the same
  * number an engine reports when it measures a first token that took no time.
  * The counter is what separates the two.
+ *
+ * The counter is a lifetime figure — it counts every request that reported a
+ * TTFT since the broker started — so it does not say whether the broker's
+ * current window holds a measured TTFT. The node's TTFT row is answered by
+ * the windowed mean for that reason.
  */
 export function hasTtftMetrics(totals: InferenceMetricsTotals): boolean {
     return totals.ttftRequests > 0
@@ -221,6 +226,15 @@ function reportedTokens(totals: InferenceMetricsTotals): number {
  * all, which the presence counters answer — a phase the engine does not
  * measure must not read as a rate of zero.
  *
+ * The TTFT row is always present, like the prefill and decode rows, and it
+ * is answered by the broker's windowed mean rather than by the lifetime
+ * counter: a node that measured a TTFT an hour ago and has been idle since
+ * holds no measured TTFT in the broker's current window, and it must not
+ * read as "0 ms" for a window in which nothing was measured. A measured
+ * mean of exactly zero is not physically meaningful either — a
+ * time-to-first-token is always positive — so a zero windowed mean means
+ * "nothing was measured in this window".
+ *
  * The rates are labelled with the broker's window, and the token count names
  * the two phases it adds and the scope the totals cover, so a windowed rate
  * and a since-broker-start count never read as the same figure.
@@ -230,7 +244,7 @@ export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): Infere
 
     const prefill = hasPrefillMetrics(totals)
     const decode = hasDecodeMetrics(totals)
-    const ttft = hasTtftMetrics(totals)
+    const ttft = rates.meanTtftMs > 0
     const tokens = totals.tokenRequests > 0
 
     const rows: InferenceMetricsRow[] = [
