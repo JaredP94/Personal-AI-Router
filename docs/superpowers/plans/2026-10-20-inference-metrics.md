@@ -51,7 +51,8 @@ SPDX-License-Identifier: Apache-2.0
       "totals": {
         "requests": 12, "prefillTokens": 3400, "decodeTokens": 900,
         "cachedTokens": 1200, "prefillMs": 4100, "decodeMs": 5200,
-        "ttftMs": 3800, "ttftRequests": 12
+        "ttftMs": 3800, "ttftRequests": 12,
+        "tokenRequests": 12, "prefillRequests": 12, "decodeRequests": 12
       },
       "rates": {
         "prefillTokensPerSecond": 829.3, "decodeTokensPerSecond": 173.1,
@@ -494,7 +495,14 @@ type Totals struct {
     PrefillMs     int64 `json:"prefillMs"`
     DecodeMs      int64 `json:"decodeMs"`
     TtftMs        int64 `json:"ttftMs"`
-    TtftRequests  int   `json:"ttftRequests"`
+    // The presence counters: how many requests reported each value. A
+    // counter of zero means the engine never reported that value, which is
+    // not the same as a reported zero. The UI renders such a phase as
+    // "not reported by this engine".
+    TokenRequests   int `json:"tokenRequests"`
+    PrefillRequests int `json:"prefillRequests"`
+    DecodeRequests  int `json:"decodeRequests"`
+    TtftRequests    int `json:"ttftRequests"`
 }
 
 type Rates struct {
