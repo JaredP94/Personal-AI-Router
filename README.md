@@ -64,11 +64,16 @@ This project exists as a forward-looking extension that introduces practical fea
    - Broker-reconciled tracing configuration with explicit payload consent (`payload_consent_version: 1`), loopback-only export, header allowlisting (`Content-Type`, `Content-Length`), 16 KB payload truncation, on-device volume storage reporting, and confirmed trace purge (`telemetry/purge-storage`). Serving nodes record no spans for peer requests, and no trace context crosses nodes. See [Security](SECURITY.md) for details.
 
 7. **Relay Protocol v2, Session Recovery & Live Menu Bar Activity**
-   - Relay v2 JSON-RPC 2.0 notification envelopes (`epoch`, `seq`; `protocol: 2` in broker epoch/resync payloads) with automatic per-domain state resynchronization (`broker:epoch`, `broker:resync`), 15-second heartbeat liveness monitoring with 45-second frontend-owned silence reconnects, and service-authoritative routing metrics (`metrics/get`, `metrics/routing-update`).
+   - Relay v2 JSON-RPC 2.0 notification envelopes (`epoch`, `seq`; `protocol: 2` in broker epoch/resync payloads) with automatic per-domain state resynchronization (`broker:epoch`, `broker:resync`), 15-second heartbeat liveness monitoring with 45-second frontend-owned silence reconnects, and service-authoritative routing metrics (`metrics:get-routing`, `metrics:routing-update`).
    - Dynamic monochrome template menu bar / system tray icon displaying live active job counts and 30-second failure alerts (`!`).
 
 8. **Idle Energy & Wakeup Optimizations (0.7.0-rc.2)**
    - Lease-driven GPU sampling (`X-NVPAIR-Poll: foreground/scheduling/background`) and broker demand signaling (`stats/set-demand`) restore unattended idle backoff (10 s) while strictly preserving the scheduler's 10-second freshness budget (proven <= 8.5 s at decision point); manual nodes deliver scheduling telemetry every ~2 s separately from 10 s topology probes, and discovery requests the scheduling rate only while a workload is queued or running. Filtered macOS network events, unchanged trust-pin caching, reduced notification churn, and debug-only verbose file logging reduce background work. These changes are in `0.7.0-rc.2`; its [release-candidate profile](docs/performance-release-summary.mdx#release-candidate-profile-2026-10-20) shows CPU and memory in line with `0.7.0-rc.1` on an unclustered node, with no percentage improvement claimed.
+
+9. **Prefill & Decode Metrics (0.7.0-rc.3)**
+   - Each job card shows what the request actually cost: prefill and decode token counts, the duration of each phase, time to first token, and the decode rate. Each node card shows its phase rates over a rolling minute, its mean time to first token and the tokens it served, with a per-model breakdown behind a disclosure.
+   - The numbers are the engine's own. PAIR reads the prefill and decode durations that oMLX and Ollama report, and the time to first token and cached-token count that only oMLX reports, and shows "not reported" for anything an engine does not report — LM Studio reports no phase split and Ollama reports no time to first token, so those fields are always absent rather than zero. Per-node totals cover the period since the broker started.
+   - New broker methods `metrics:get-node-metrics`, `metrics:subscribe` and `metrics:unsubscribe`, plus a coalesced `metrics:node-metrics` push. The relay protocol stays v2 and no method was removed.
 
 ## What is supported
 
@@ -102,14 +107,14 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.7.0-rc.2` (2026-10-20), an unsigned,
+The latest published build is **`0.7.0-rc.3` (2026-10-21), an unsigned,
 unnotarized macOS Apple Silicon candidate**, not an NVIDIA-signed release.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
 and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
 Automatic updater installation is not certified for this unsigned candidate;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.2).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.3).
 It is marked as GitHub's Latest release for the Terminal installer and in-app
 update discovery.
 
@@ -118,8 +123,8 @@ Upstream official releases are separate and available at
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** Desktop `0.7.0-rc.2` ships service
-product `2.2.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+**Upgrade clients and services together:** Desktop `0.7.0-rc.3` ships service
+product `2.3.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 
@@ -132,7 +137,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the candidate, pass `--version 0.7.0-rc.2` using `bash -s --` after the pipe.
+To pin the candidate, pass `--version 0.7.0-rc.3` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.

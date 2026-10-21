@@ -12,6 +12,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.3] - 2026-10-21
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
+Linux desktop and Intel Mac packages are not published. Privileged-helper
+registration and helper-based firewall setup remain unavailable in unsigned builds;
+Settings → Service shows manual firewall guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.3)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.7.0-rc.3` ships service product `2.3.0`. Relay
+protocol stays v2. The new broker methods and the new workload fields are
+additive, so a mixed cluster keeps working — but a node running an older
+workload-manager drops the measurement from remote jobs, so its per-node totals
+are complete only once every member is upgraded.
+
+### Added
+- **Prefill and decode metrics per job and per node**: a job card now shows how
+  many tokens were prefilled versus decoded, how long each phase took, the time
+  to first token and the decode rate. A node card shows what that node has
+  served — its phase rates over a rolling minute, its mean time to first token
+  and the tokens it served — with a per-model breakdown behind a disclosure.
+- The numbers are the engine's own: PAIR reads the prefill and decode
+  durations that oMLX and Ollama report, and the time to first token and the
+  cached-token count that only oMLX reports. Anything an engine does not
+  report is shown as "not reported" rather than as a zero — LM Studio reports no
+  phase split and Ollama reports no time to first token, so those fields are
+  always absent. Per-node totals cover the period since the broker started.
+- New broker methods `metrics:get-node-metrics`, `metrics:subscribe` and
+  `metrics:unsubscribe`, plus a coalesced `metrics:node-metrics` push carrying
+  the full per-node snapshot.
+- The oMLX proxy now asks oMLX for the usage block on streaming requests, so
+  oMLX's own prefill and decode numbers reach the job card instead of being
+  missing.
+
 ## [0.7.0-rc.2] - 2026-10-20
 
 Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
@@ -115,7 +149,7 @@ cycles.
 ### Added
 - **Relay Protocol v2 (`nvpair-shared/jsonrpc`, `nvpair-ui-broker`, `desktop`, `nvpair-tui`)**: Stamped `epoch` and monotonic `seq` on every stdio notification envelope while keeping requests and responses unstamped; report `protocol: 2` in broker epoch/resync payloads; added `broker:epoch`, `broker:resync`, and 15-second `heartbeat` liveness notifications. Go codecs now terminate incompatible stdio sessions with a protocol-mismatch diagnostic; the desktop parser extracts stamps but does not enforce every inbound envelope invariant.
 - **Session Liveness & Automatic Reconnect Ownership (`desktop`, `nvpair-tui`)**: Added a 45-second inbound-silence detector that expires unresponsive broker sessions and triggers a frontend-owned reconnect with a bounded readiness deadline while preserving shutdown ownership across reconnects.
-- **Service-Authoritative Routing Metrics (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`)**: Moved routing and prefix-cache affinity metric aggregation into the Go proxies (`metrics/get` and `metrics/routing-update`) via `nvpair-shared/routingmetrics` rather than reimplementing metric math in clients.
+- **Service-Authoritative Routing Metrics (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`)**: Moved routing and prefix-cache affinity metric aggregation into the Go proxies (`metrics:get-routing` and `metrics:routing-update`) via `nvpair-shared/routingmetrics` rather than reimplementing metric math in clients.
 
 ### Changed
 - **Epoch-Driven State Recovery (`desktop`, `nvpair-tui`)**: Desktop and TUI refresh subscribed state snapshots per domain when the broker announces a new epoch, without sequence-gap polling or repeated healthy-connection resync bursts.

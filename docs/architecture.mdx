@@ -906,10 +906,11 @@ rendered by the desktop.
   "not reported". A job that reported no measurement at all shows no
   measurement block: a failed job, or a job whose engine sent no usage block,
   has nothing to report and must not carry a block of "not reported" noise.
-  The node card shows no cached-token row at all: the broker's node totals carry
-  no counter for the requests that reported a cached count, so a node-level
-  total would read as a measured zero on a node whose engine never measured
-  one. The cached count is shown per job, where the engine reported it.
+  The node card shows no cached-token row at all: the broker's node totals sum
+  the cached counts but carry no counter for the requests that reported one,
+  so a node-level total would read as a measured zero on a node whose engine
+  never measured one. The cached count is shown per job, where the engine
+  reported it.
 - **Cluster-wide lifecycle:** The terminal `workload:completed` /
   `workload:errored` event carries the measurement on the workload object. The
   workload lifecycle stream already reaches every broker in the cluster, so the
@@ -1004,7 +1005,7 @@ The Go binaries can be cross-compiled. Desktop also builds operator tools outsid
 `cli-bin/`: `collectlogs` and `inference-dispatcher`; these are not supervised
 service workers. Public electron-builder packaging/installer targets exist but
 produce unsigned, noncertified candidates, not NVIDIA's signed releases. The
-fork's current 0.7.0-rc.2 candidate is macOS arm64, unsigned and unnotarized;
+fork's current 0.7.0-rc.3 candidate is macOS arm64, unsigned and unnotarized;
 inspect real release assets rather than assuming upstream signing or coverage.
 Mac helper packaging requires the macOS SDK and Swift tools. NVIDIA signing,
 notarization, and helper approval are separate from compilation or downloading

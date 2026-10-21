@@ -269,6 +269,12 @@ the serving node.
 
 ![A job card under the Jobs filter naming the node that served the request.](assets/onboarding/getting-started/09-job-served-by-node.png)
 
+A finished job card also shows what the request cost: the prefill and decode
+token counts, how long each phase took, the time to first token, and the decode
+rate. These are the engine's own numbers, so a phase your engine does not
+report reads **not reported** rather than `0`. (The screenshot above predates
+these rows.)
+
 Send several independent requests to observe multi-node routing. One request
 always runs on one selected node. PAIR does not split an in-flight request
 between systems.
@@ -613,7 +619,7 @@ To manage the container and tracing:
 
 ## Keeping PAIR Up to Date
 
-**Fork candidate caveat:** `0.7.0-rc.2` is an unsigned, unnotarized macOS arm64
+**Fork candidate caveat:** `0.7.0-rc.3` is an unsigned, unnotarized macOS arm64
 candidate. Update discovery metadata is published, but automatic installation
 through macOS trust/signature checks is not certified. Use the
 [macOS installation instructions](../README.md#download-a-release) and release
