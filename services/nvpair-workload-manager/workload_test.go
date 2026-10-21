@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,56 @@ func TestParseLifecycleRejectsMissingFields(t *testing.T) {
 	for name, body := range cases {
 		if _, err := parseLifecycle(json.RawMessage(body)); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+}
+
+// TestPeerLifecycleKeepsMeasurementOnUpsert covers the peer -> broker path: a
+// lifecycle frame that arrives from another node carries the engine's
+// measurement, and re-emitting it as workloads:upsert must not drop it.
+func TestPeerLifecycleKeepsMeasurementOnUpsert(t *testing.T) {
+	params := json.RawMessage(`{"workloadInfo":{"id":"7","model":"m","engine":"omlx","runId":"r",` +
+		`"state":"completed","originatedFrom":"node-b","scheduledOn":"node-b",` +
+		`"createdAt":1,"prefillMs":1250,"decodeMs":4500,"prefillTokens":120,"decodeTokens":34}}`)
+	wl, err := parseLifecycle(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wl.PrefillMs == nil || *wl.PrefillMs != 1250 {
+		t.Fatalf("prefill ms: %v", wl.PrefillMs)
+	}
+	if wl.DecodeMs == nil || *wl.DecodeMs != 4500 {
+		t.Fatalf("decode ms: %v", wl.DecodeMs)
+	}
+	out, err := json.Marshal(lifecycleParams{WorkloadInfo: wl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"prefillMs":1250`) {
+		t.Fatalf("measurement must survive the upsert re-marshal: %s", out)
+	}
+}
+
+// TestParseLifecycleWithoutMeasurement checks that the measurement stays
+// optional: a frame without one is still accepted and re-marshals without
+// inventing measurement fields.
+func TestParseLifecycleWithoutMeasurement(t *testing.T) {
+	params := json.RawMessage(`{"workloadInfo":{"id":"8","model":"m","engine":"omlx",` +
+		`"state":"completed","originatedFrom":"node-b","createdAt":1}}`)
+	wl, err := parseLifecycle(params)
+	if err != nil {
+		t.Fatalf("a lifecycle frame without a measurement must still be valid: %v", err)
+	}
+	if wl.PrefillMs != nil || wl.DecodeMs != nil || wl.PrefillTokens != nil || wl.DecodeTokens != nil {
+		t.Fatalf("expected no measurement, got %+v", wl.Measurement)
+	}
+	out, err := json.Marshal(lifecycleParams{WorkloadInfo: wl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"prefillMs", "decodeMs", "prefillTokens", "decodeTokens"} {
+		if strings.Contains(string(out), field) {
+			t.Fatalf("absent measurement must not be emitted: %s", out)
 		}
 	}
 }
