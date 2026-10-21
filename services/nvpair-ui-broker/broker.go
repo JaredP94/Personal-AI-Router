@@ -2327,6 +2327,16 @@ func (b *Broker) routeProxyWorkloadMethod(method string, params json.RawMessage)
 // proxy: it merges the frame into this node's view of the job and hands the
 // frame to the workload-manager, which broadcasts it to every pinned peer.
 //
+// A frame that carries no origin is stamped with this node's id — the same
+// way the broker stamps `originatedFrom` onto a workload lifecycle event. The
+// proxy that received the request cannot know it is the origin of a job it
+// forwarded onward, but this broker is the origin's own broker for a job it
+// serves, so its id is the origin. The STAMPED frame is the one broadcast,
+// so every member of the cluster keys the live view by the same origin.
+//
+// A frame that already carries an origin is left alone: the serving node's
+// broker must not re-stamp a peer's job with its own id.
+//
 // The frame never enters the workload catalog — it is a snapshot of a
 // running request, not a state transition — and it is forwarded unchanged, so
 // each peer merges the facts this node measured with the facts it measured
@@ -2337,9 +2347,15 @@ func (b *Broker) routeProxyProgress(params json.RawMessage) {
 		slog.Debug("dropping malformed progress frame", "err", err)
 		return
 	}
+	frame = stampProgressOrigin(frame, b.nodeID)
 	b.ingestProgress(frame)
+	stamped, err := json.Marshal(frame)
+	if err != nil {
+		slog.Debug("dropping unserializable progress frame", "err", err)
+		return
+	}
 	if wm := b.getWorkloadMgr(); wm != nil {
-		if err := wm.Forward(methodProgress, params); err != nil {
+		if err := wm.Forward(methodProgress, stamped); err != nil {
 			slog.Warn("failed to forward progress frame to workload-manager", "err", err)
 		}
 	} else {
@@ -2610,7 +2626,11 @@ func (b *Broker) forwardWorkloadManagerNotification(method string, params json.R
 			slog.Debug("dropping malformed relayed progress frame", "err", err)
 			return
 		}
-		b.ingestProgress(frame)
+		// A relayed frame carries the origin its publishing broker stamped,
+		// so it is merged under the same key every member of the cluster
+		// uses. A frame that somehow arrives without one is stamped with
+		// this node's id, the same rule the local path applies.
+		b.ingestProgress(stampProgressOrigin(frame, b.nodeID))
 	default:
 		slog.Debug("ignoring workload-manager notification", "method", method)
 	}
@@ -2764,10 +2784,10 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		b.recordNodeMetrics(env.WorkloadInfo)
 		// A terminal event retires the job's live view: the job is over, so
 		// no frame that arrives after this may bring it back to life. The
-		// serving node is part of the key, and it is the node the frame
-		// named — the one the work ran on.
+		// key is the origin plus the job id — the identity the frames
+		// carry, and the identity the catalog keys the job by.
 		if workloadstore.IsTerminal(in.State) {
-			b.liveViews().retire(in.ID, in.ScheduledOn)
+			b.liveViews().retire(in.Origin, in.ID)
 		}
 		return true
 	case "workloads:remove":
@@ -2778,15 +2798,12 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		if err := json.Unmarshal(params, &rm); err != nil || rm.WorkloadID == "" {
 			return false
 		}
-		// A removal retires the job too. The removal wire carries no
-		// serving node, so the store's record is the only place that knows
-		// where the job ran; without it the job is retired on every node.
-		servedOn := ""
-		if rec, ok := b.workloads.Get(rm.OriginatedFrom, rm.WorkloadID); ok {
-			servedOn = rec.ScheduledOn
-		}
+		// A removal retires the job too. The removal wire carries the
+		// origin (the workload's `originatedFrom`), which is the half of
+		// the live view's key the frames carry; without it the job is
+		// retired on every origin.
 		b.workloads.Remove(rm.OriginatedFrom, rm.WorkloadID)
-		b.liveViews().retire(rm.WorkloadID, servedOn)
+		b.liveViews().retire(rm.OriginatedFrom, rm.WorkloadID)
 		return true
 	default:
 		return false

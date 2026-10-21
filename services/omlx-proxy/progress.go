@@ -50,6 +50,16 @@ type ProgressFrame struct {
 	// proxy forwarded to a peer it is the peer's id, not this node's: the
 	// frame describes where the work runs.
 	NodeID string `json:"nodeId,omitempty"`
+	// OriginatedFrom is the node the request entered the cluster on. It is
+	// the origin of the job, and the half of the identity a job is keyed
+	// by: PAIR's job id is a per-proxy counter, so two origins can both
+	// hold a job "1".
+	//
+	// It is set only for a request this proxy serves on behalf of a peer:
+	// the origin's id travelled with the request. A request this proxy
+	// received directly leaves it empty, and the origin's own broker stamps
+	// this node's id onto the frame.
+	OriginatedFrom string `json:"originatedFrom,omitempty"`
 	// ElapsedMs is the time since the request reached the proxy.
 	ElapsedMs *int64 `json:"elapsedMs,omitempty"`
 	// Chunks is the number of content chunks received so far.

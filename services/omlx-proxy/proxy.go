@@ -1649,10 +1649,12 @@ func serveReverseProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *h
 //
 // A request forwarded to a cluster peer carries PAIR's job id, so the
 // serving peer can pair the engine's request id with it and publish the
-// engine's live rows already keyed by that job id. The header is a random
-// per-request identifier that carries no content, and it is not a routing
-// input: the ingress stays strictly terminal and never re-routes a peer's
-// request onward.
+// engine's live rows already keyed by that job id. It carries the origin
+// node's id too: the job id is a per-proxy counter, so two origins can both
+// hold a job "1", and only the origin tells their jobs apart. Both headers
+// are random per-request identifiers that carry no content, and they are not
+// routing inputs: the ingress stays strictly terminal and never re-routes a
+// peer's request onward.
 func (p *Proxy) forwardDirector(cand candidate, jobID string) func(*http.Request) {
 	return func(req *http.Request) {
 		req.URL.Scheme = cand.url.Scheme
@@ -1665,6 +1667,9 @@ func (p *Proxy) forwardDirector(cand candidate, jobID string) func(*http.Request
 		}
 		if cand.peerUUID != "" && jobID != "" {
 			req.Header.Set(nvpairRequestIDHeader, jobID)
+			if p.nodeID != "" {
+				req.Header.Set(nvpairOriginNodeHeader, p.nodeID)
+			}
 		}
 		stripTraceContext(req.Header)
 	}

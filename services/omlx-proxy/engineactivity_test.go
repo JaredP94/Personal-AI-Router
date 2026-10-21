@@ -38,6 +38,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // carry it — the header exists for the peer that serves the request.
 func TestForwardedPeerRequestCarriesTheJobId(t *testing.T) {
 	p := testProxy(NewDiscovery(), 1235)
+	p.nodeID = "node-origin"
 
 	peer := candidate{
 		id:       "peer-a",
@@ -58,6 +59,38 @@ func TestForwardedPeerRequestCarriesTheJobId(t *testing.T) {
 	p.forwardDirector(local, "42")(req)
 	if got := req.Header.Get(nvpairRequestIDHeader); got != "" {
 		t.Fatalf("%s = %q, want it absent on a request that is not forwarded to a peer", nvpairRequestIDHeader, got)
+	}
+}
+
+// TestForwardedPeerRequestCarriesTheOrigin: a request forwarded to a cluster
+// peer carries the origin node's id alongside the job id. PAIR's job id is a
+// per-proxy counter, so the origin is what tells two origins' job "1" apart —
+// the serving peer publishes the engine's live rows under that id.
+func TestForwardedPeerRequestCarriesTheOrigin(t *testing.T) {
+	p := testProxy(NewDiscovery(), 1235)
+	p.nodeID = "node-origin"
+
+	peer := candidate{
+		id:       "peer-a",
+		url:      &url.URL{Scheme: "https", Host: "192.0.2.10:1234"},
+		peerUUID: "principal-peer",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	p.forwardDirector(peer, "42")(req)
+	if got := req.Header.Get(nvpairOriginNodeHeader); got != "node-origin" {
+		t.Fatalf("%s = %q, want the origin's node id", nvpairOriginNodeHeader, got)
+	}
+
+	// A request that is not forwarded to a peer carries neither header: the
+	// peer is the only node that needs them.
+	local := candidate{
+		id:  "local-node",
+		url: &url.URL{Scheme: "http", Host: "127.0.0.1:8000"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	p.forwardDirector(local, "42")(req)
+	if got := req.Header.Get(nvpairOriginNodeHeader); got != "" {
+		t.Fatalf("%s = %q, want it absent on a request that is not forwarded to a peer", nvpairOriginNodeHeader, got)
 	}
 }
 
@@ -92,7 +125,7 @@ func TestIngressPairsTheEngineRequestIdWithTheJobId(t *testing.T) {
 		defer close(done)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
 		req.Header.Set(nvpairRequestIDHeader, "job-42")
-		p.serveLocalEngine(httptest.NewRecorder(), req, target, req.Header.Get(nvpairRequestIDHeader))
+		p.serveLocalEngine(httptest.NewRecorder(), req, target, req.Header.Get(nvpairRequestIDHeader), req.Header.Get(nvpairOriginNodeHeader))
 	}()
 
 	waitFor(t, "the engine request id to be paired with the job id", func() bool {
@@ -329,7 +362,8 @@ func TestPeerPublishesTheEngineRowsUnderTheOriginsJobId(t *testing.T) {
 		defer close(done)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
 		req.Header.Set(nvpairRequestIDHeader, "job-99")
-		p.serveLocalEngine(httptest.NewRecorder(), req, target, req.Header.Get(nvpairRequestIDHeader))
+		req.Header.Set(nvpairOriginNodeHeader, "origin-a")
+		p.serveLocalEngine(httptest.NewRecorder(), req, target, req.Header.Get(nvpairRequestIDHeader), req.Header.Get(nvpairOriginNodeHeader))
 	}()
 
 	var frame *ProgressFrame
@@ -345,6 +379,9 @@ func TestPeerPublishesTheEngineRowsUnderTheOriginsJobId(t *testing.T) {
 
 	if frame.JobID != "job-99" {
 		t.Fatalf("the frame's job id = %q, want the origin's job id 99", frame.JobID)
+	}
+	if frame.OriginatedFrom != "origin-a" {
+		t.Fatalf("the frame's origin = %q, want the origin that forwarded the request", frame.OriginatedFrom)
 	}
 	if frame.NodeID != "node-peer" {
 		t.Fatalf("the frame names node %q, want the serving node", frame.NodeID)

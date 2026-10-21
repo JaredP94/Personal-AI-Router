@@ -64,6 +64,12 @@ type engineJob struct {
 	// engineReqID is the engine's own request id, read from the engine's
 	// response headers.
 	engineReqID string
+	// originNodeID is the node the request entered the cluster on. It is
+	// empty for a request this proxy received directly (the broker stamps
+	// this node's own id onto such a frame), and the origin's id for a
+	// request a peer forwarded — PAIR's job id is a per-proxy counter, so
+	// the origin is what tells two peers' job "1" apart.
+	originNodeID string
 }
 
 // engineActivity holds the pairing between the engine's request ids and
@@ -204,9 +210,10 @@ func (p *Proxy) refreshEngineActivity(ctx context.Context) {
 			continue
 		}
 		p.emitProgress(ProgressFrame{
-			JobID:  job.jobID,
-			NodeID: p.nodeID,
-			Engine: engineProgressOf(row),
+			JobID:          job.jobID,
+			NodeID:         p.nodeID,
+			OriginatedFrom: job.originNodeID,
+			Engine:         engineProgressOf(row),
 		})
 	}
 }

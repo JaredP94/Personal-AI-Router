@@ -36,24 +36,45 @@ func (b *Broker) liveViews() *liveProgressIndex {
 
 // liveJobKey identifies the live view of one in-flight job.
 //
-// It is PAIR's job id plus the node serving the request. The job id alone
-// is not enough: every proxy counts its own requests from 1, so two nodes
-// can hold a job "1" at the same time, and the workload catalog tells them
-// apart by the origin. A live frame carries no origin — it carries the job
-// id and the node the work runs on — so (job id, serving node) is the
-// finest identity a frame can carry. It is also the identity every frame of
-// one job shares: the origin proxy's frame and the serving node's engine
-// frame name the same job id and the same serving node, which is what lets
-// the two merge into one view.
+// It is the ORIGIN node plus PAIR's job id — the same identity the workload
+// catalog uses (`originatedFrom` + `id`).
+//
+// The job id alone is not enough: every proxy counts its own requests from 1,
+// so two origins can hold a job "1" at the same time. The node SERVING the
+// job is not enough either: two origins can have their job "1" served by the
+// same peer, and the two jobs would then share one live view — one job's
+// numbers shown on another job's card. The origin is the only half of the
+// identity that tells two jobs apart, so it is part of the key.
+//
+// The serving node is deliberately NOT part of the key: the origin plus the
+// job id already identify the job, and every frame of one job — the origin
+// proxy's PAIR-derived facts and the serving node's engine reading — carries
+// the same origin.
 type liveJobKey struct {
+	origin string
 	jobID  string
-	nodeID string
 }
 
 // liveJob is one job's merged live view.
 type liveJob struct {
 	key   liveJobKey
 	frame inferencemetrics.ProgressFrame
+}
+
+// stampProgressOrigin fills in the frame's origin node id when the frame
+// carries none.
+//
+// The origin's own broker stamps its own id, the way it stamps
+// `originatedFrom` onto a workload lifecycle event: the proxy that received
+// the request cannot know it is the origin of a job it forwarded onward. A
+// frame that already carries an origin — one the serving node published for a
+// request a peer forwarded — is left alone, so the serving node's broker
+// never re-stamps a peer's job with its own id.
+func stampProgressOrigin(frame inferencemetrics.ProgressFrame, nodeID string) inferencemetrics.ProgressFrame {
+	if frame.OriginatedFrom == "" {
+		frame.OriginatedFrom = nodeID
+	}
+	return frame
 }
 
 // liveProgressCapacity bounds how many live job views the broker keeps. It is
@@ -114,7 +135,7 @@ func (i *liveProgressIndex) merge(frame inferencemetrics.ProgressFrame) (inferen
 	if frame.JobID == "" {
 		return inferencemetrics.ProgressFrame{}, false
 	}
-	key := liveJobKey{jobID: frame.JobID, nodeID: frame.NodeID}
+	key := liveJobKey{origin: frame.OriginatedFrom, jobID: frame.JobID}
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -127,6 +148,7 @@ func (i *liveProgressIndex) merge(frame inferencemetrics.ProgressFrame) (inferen
 	if !ok {
 		job := &liveJob{key: key}
 		job.frame.JobID = key.jobID
+		job.frame.OriginatedFrom = key.origin
 		el = i.order.PushFront(job)
 		i.entries[key] = el
 		i.evictLocked()
@@ -164,6 +186,9 @@ func (i *liveProgressIndex) evictLocked() {
 // The engine object is the one exception: it is a single reading of a single
 // engine row, so it is replaced as a unit rather than merged field by field.
 func mergeProgress(stored *inferencemetrics.ProgressFrame, incoming inferencemetrics.ProgressFrame) {
+	if incoming.OriginatedFrom != "" {
+		stored.OriginatedFrom = incoming.OriginatedFrom
+	}
 	if incoming.NodeID != "" {
 		stored.NodeID = incoming.NodeID
 	}
@@ -187,23 +212,24 @@ func mergeProgress(stored *inferencemetrics.ProgressFrame, incoming inferencemet
 // retire drops the live view of a job that reached a terminal state and
 // remembers the job, so a frame that arrives late cannot bring it back.
 //
-// The serving node is part of the key: the frame of a peer-served job names
-// the node the work runs on, and that is the node the terminal event names
-// as the job's scheduledOn. A terminal event that names no node retires the
-// job on every node, because the job is over wherever it ran.
-func (i *liveProgressIndex) retire(jobID, nodeID string) {
+// The key is the origin plus the job id, the same identity the frames carry:
+// the origin proxy's frame and the serving node's engine frame name the same
+// pair, and so does the terminal event (`originatedFrom` + `id`). An empty
+// origin retires the job on every origin, because the job is over wherever
+// it ran and the event named no origin to retire.
+func (i *liveProgressIndex) retire(origin, jobID string) {
 	if jobID == "" {
 		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	key := liveJobKey{jobID: jobID, nodeID: nodeID}
+	key := liveJobKey{origin: origin, jobID: jobID}
 	if el, ok := i.entries[key]; ok {
 		i.order.Remove(el)
 		delete(i.entries, key)
 	}
-	if nodeID == "" {
+	if origin == "" {
 		// The job is over wherever it ran: drop every view of it.
 		for el := i.order.Front(); el != nil; {
 			next := el.Next()
@@ -236,11 +262,11 @@ func (i *liveProgressIndex) markRetired(key liveJobKey) {
 }
 
 // get returns the merged live view of a job.
-func (i *liveProgressIndex) get(jobID, nodeID string) (inferencemetrics.ProgressFrame, bool) {
+func (i *liveProgressIndex) get(origin, jobID string) (inferencemetrics.ProgressFrame, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	el, ok := i.entries[liveJobKey{jobID: jobID, nodeID: nodeID}]
+	el, ok := i.entries[liveJobKey{origin: origin, jobID: jobID}]
 	if !ok {
 		return inferencemetrics.ProgressFrame{}, false
 	}

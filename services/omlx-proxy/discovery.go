@@ -67,8 +67,8 @@ func (n Node) withPrimaryIP() Node {
 // Discovery holds the proxy's routing targets: the relay-fed subscribed overlay
 // and the user-added manual overlay.
 type Discovery struct {
-	mu              sync.RWMutex
-	manualNodes     map[string]Node
+	mu          sync.RWMutex
+	manualNodes map[string]Node
 	// subscribedNodes are routing targets pushed down by the broker's discovery
 	// relay (discovery:nodes snapshots for the om service), keyed by node ID (the
 	// directory instance name).
