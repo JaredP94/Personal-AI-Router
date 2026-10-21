@@ -142,6 +142,7 @@ The `engine` object is absent when the engine reports no live progress. Every nu
   func ParseActivity(raw []byte) (Activity, error)
   ```
   `ParseStats` and `ParseActivity` map oMLX's raw admin payloads onto these types **field by field**. They never copy a field they did not name — in particular `api_key`, `host`, `port` and `cli_prefix` are dropped by construction.
+- The type carries **no phase durations**: oMLX's stats endpoint reports none (its speeds — `avg_prefill_tps`, `avg_generation_tps` — are what it does report), and the usage endpoint's durations are scoped to a date range rather than the engine's life. The durations arrive with the trends work, where the scope is explicit.
 
 - [ ] **Step 1: Write the failing test**
 
