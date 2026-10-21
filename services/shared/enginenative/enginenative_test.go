@@ -35,6 +35,41 @@ func TestParseStatsDropsTheAPIKey(t *testing.T) {
 	}
 }
 
+func TestParseStatsDropsDurationKeysTheEngineDoesNotReport(t *testing.T) {
+	raw := []byte(`{"total_requests":2,"total_prompt_tokens":120,"total_completion_tokens":34,` +
+		`"total_cached_tokens":90,"cache_efficiency":75,` +
+		`"total_prefill_seconds":1.25,"total_generation_seconds":4.5,` +
+		`"prefill_seconds":1.25,"generation_seconds":4.5,"uptime_seconds":900}`)
+	s, err := ParseStats(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "econds") {
+		t.Fatalf("a duration reached the view: %s", b)
+	}
+	var view struct {
+		Totals map[string]json.RawMessage `json:"totals"`
+	}
+	if err := json.Unmarshal(b, &view); err != nil {
+		t.Fatal(err)
+	}
+	for key := range view.Totals {
+		if strings.Contains(key, "econds") {
+			t.Fatalf("a duration reached the totals: %s", b)
+		}
+	}
+	if s.Totals.Requests != 2 {
+		t.Fatalf("totals: %+v", s.Totals)
+	}
+	if s.Totals.CacheEfficiency != 75 {
+		t.Fatalf("totals: %+v", s.Totals)
+	}
+}
+
 func TestParseStatsReportsAbsentValuesAsZero(t *testing.T) {
 	s, err := ParseStats([]byte(`{"total_requests":1}`))
 	if err != nil {

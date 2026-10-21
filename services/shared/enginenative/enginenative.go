@@ -50,15 +50,16 @@ type Stats struct {
 	ObservedAt int64   `json:"observedAt,omitempty"`
 }
 
-// Totals holds the engine's cumulative counters.
+// Totals holds the engine's cumulative counters. The engine reports no phase
+// durations on this endpoint, so none are carried here: the durations live on
+// an endpoint whose totals are scoped to a date range rather than to the
+// engine's life, and a day-scoped number would not belong beside these.
 type Totals struct {
-	Requests          int     `json:"requests,omitempty"`
-	PromptTokens      int     `json:"promptTokens,omitempty"`
-	CompletionTokens  int     `json:"completionTokens,omitempty"`
-	CachedTokens      int     `json:"cachedTokens,omitempty"`
-	PrefillSeconds    float64 `json:"prefillSeconds,omitempty"`
-	GenerationSeconds float64 `json:"generationSeconds,omitempty"`
-	CacheEfficiency   float64 `json:"cacheEfficiency,omitempty"`
+	Requests         int     `json:"requests,omitempty"`
+	PromptTokens     int     `json:"promptTokens,omitempty"`
+	CompletionTokens int     `json:"completionTokens,omitempty"`
+	CachedTokens     int     `json:"cachedTokens,omitempty"`
+	CacheEfficiency  float64 `json:"cacheEfficiency,omitempty"`
 }
 
 // Rates holds the engine's own average throughput numbers.
@@ -116,8 +117,6 @@ func ParseStats(raw []byte) (Stats, error) {
 	s.Totals.PromptTokens = intField(fields, "total_prompt_tokens")
 	s.Totals.CompletionTokens = intField(fields, "total_completion_tokens")
 	s.Totals.CachedTokens = intField(fields, "total_cached_tokens")
-	s.Totals.PrefillSeconds = numberField(fields, "total_prefill_seconds")
-	s.Totals.GenerationSeconds = numberField(fields, "total_generation_seconds")
 	s.Totals.CacheEfficiency = numberField(fields, "cache_efficiency")
 	s.Rates.PrefillTokensPerSecond = numberField(fields, "avg_prefill_tps")
 	s.Rates.GenerationTokensPerSecond = numberField(fields, "avg_generation_tps")
