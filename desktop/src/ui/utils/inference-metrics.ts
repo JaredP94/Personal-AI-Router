@@ -44,6 +44,8 @@
  * brings.
  */
 import type {
+    EngineNativeModel,
+    EngineNativeView,
     InferenceMetricsTotals,
     NodeInferenceMetrics,
     NodeModelMetrics
@@ -77,6 +79,34 @@ const TOTAL_LABEL = 'since broker start'
 
 /** The window a single request's ratio covers, as it appears in a label. */
 const REQUEST_LABEL = 'this request'
+
+/**
+ * The scope the engine's own counters cover, as it appears in a label.
+ *
+ * The engine keeps its counters for as long as it runs, so they cover the
+ * engine's own life — not the broker's window and not PAIR's routing. The
+ * label says so, because the numbers sit right next to PAIR's own rows and
+ * the two must never read as the same measurement.
+ */
+const ENGINE_TOTAL_LABEL = 'engine total'
+
+/**
+ * The scope the engine's own rates cover, as it appears in a label.
+ *
+ * The engine publishes averages over its own counters, so they cover the
+ * engine's life rather than a rolling window. The label says so.
+ */
+const ENGINE_AVERAGE_LABEL = 'engine average'
+
+/**
+ * How old the engine's own view may get before it reads as stale.
+ *
+ * The scanner refreshes the view on a 60-second sweep. A node whose engine
+ * stopped answering keeps its last good view with a frozen stamp, so a view
+ * older than three sweeps means the engine is no longer reporting — which is
+ * exactly what the frozen stamp is for.
+ */
+const ENGINE_NATIVE_STALE_MS = 3 * 60 * 1000
 
 /**
  * Format a token count with thousands separators.
@@ -426,4 +456,159 @@ export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRo
         })
     }
     return rows
+}
+
+/**
+ * One row of the engine's own view of itself.
+ *
+ * Every row is tagged `source: 'engine'`, so a renderer can label the
+ * section and can never mix these rows with PAIR's own: the engine's
+ * counters include the traffic PAIR did not route, so adding them to PAIR's
+ * totals would count the same work twice.
+ */
+export interface EngineNativeRow {
+    label: string
+    value: string
+    source: 'engine'
+}
+
+/**
+ * One model the engine lists, with the engine's own claim about it.
+ */
+export interface EngineNativeModelEntry {
+    model: string
+    /**
+     * Whether the engine lists this model as active.
+     *
+     * This is the engine's own claim, not PAIR's. The engine-manager's
+     * per-engine loaded set means a model is resident in memory, which is a
+     * different thing, so the two never answer to the same word.
+     */
+    active: boolean
+}
+
+/**
+ * Format a percentage the engine reported, with at most one decimal.
+ *
+ * An absent percentage is not formatted at all: the caller leaves the row
+ * out rather than showing a zero.
+ */
+function formatPercent(value: number): string {
+    const rounded = Math.round(value * 10) / 10
+    return `${rounded}%`
+}
+
+/**
+ * The rows of the engine's own view of itself.
+ *
+ * These are the engine's counters, not PAIR's: they count every request the
+ * engine served, including the traffic PAIR did not route. They are therefore
+ * labelled with the engine's own scope ("engine total", "engine average"),
+ * which no PAIR row uses, and every row is tagged `source: 'engine'` so the
+ * two sets can never be merged.
+ *
+ * A value the engine did not report produces no row at all. The engine
+ * publishes its counters with `omitempty`, so an absent key means "not
+ * reported" — and a row that said "0" would read as a measurement the engine
+ * never made.
+ *
+ * An engine with no native view produces no rows either: it publishes no
+ * admin API, so there is nothing to show and no "not reported" noise to
+ * show instead.
+ */
+export function buildEngineNativeRows(view: EngineNativeView): EngineNativeRow[] {
+    if (!view.supported) return []
+
+    const rows: EngineNativeRow[] = []
+    const totals = view.totals
+    if (totals?.requests !== undefined) {
+        rows.push({
+            label: `Requests (${ENGINE_TOTAL_LABEL})`,
+            value: formatTokenCount(totals.requests),
+            source: 'engine'
+        })
+    }
+    if (totals?.promptTokens !== undefined) {
+        rows.push({
+            label: `Prompt tokens (${ENGINE_TOTAL_LABEL})`,
+            value: formatTokenCount(totals.promptTokens),
+            source: 'engine'
+        })
+    }
+    if (totals?.completionTokens !== undefined) {
+        rows.push({
+            label: `Completion tokens (${ENGINE_TOTAL_LABEL})`,
+            value: formatTokenCount(totals.completionTokens),
+            source: 'engine'
+        })
+    }
+    if (totals?.cachedTokens !== undefined) {
+        rows.push({
+            label: `Cached tokens (${ENGINE_TOTAL_LABEL})`,
+            value: formatTokenCount(totals.cachedTokens),
+            source: 'engine'
+        })
+    }
+    if (totals?.cacheEfficiency !== undefined) {
+        rows.push({
+            label: `Cache efficiency (${ENGINE_AVERAGE_LABEL})`,
+            value: formatPercent(totals.cacheEfficiency),
+            source: 'engine'
+        })
+    }
+    const rates = view.rates
+    if (rates?.prefillTokensPerSecond !== undefined) {
+        rows.push({
+            label: `Prefill (${ENGINE_AVERAGE_LABEL})`,
+            value: formatTokensPerSecond(rates.prefillTokensPerSecond),
+            source: 'engine'
+        })
+    }
+    if (rates?.generationTokensPerSecond !== undefined) {
+        rows.push({
+            label: `Generation (${ENGINE_AVERAGE_LABEL})`,
+            value: formatTokensPerSecond(rates.generationTokensPerSecond),
+            source: 'engine'
+        })
+    }
+    return rows
+}
+
+/**
+ * The models the engine lists, with the engine's own claim about each of them.
+ *
+ * The engine's list is its own: it says which models the engine offers, which
+ * is not the same as the models resident in memory that the engine-manager
+ * reports. An engine with no native view lists nothing.
+ */
+export function buildEngineNativeModels(view: EngineNativeView): EngineNativeModelEntry[] {
+    if (!view.supported) return []
+    const models: EngineNativeModel[] = view.models ?? []
+    return models.map(model => ({ model: model.model, active: model.loaded }))
+}
+
+/**
+ * The age of the engine's own view, in milliseconds, or `null` when the view
+ * carries no stamp.
+ *
+ * The stamp advances on every sweep, so the age is the freshness signal: a
+ * node whose engine stopped answering keeps its last good view with a frozen
+ * stamp, and the age of that stamp is how a dead engine shows.
+ */
+export function engineNativeAgeMs(view: EngineNativeView | undefined, now: number): number | null {
+    if (!view || view.observedAt === undefined) return null
+    return Math.max(0, now - view.observedAt)
+}
+
+/**
+ * Whether the engine's own view is stale: older than three sweeps of the
+ * scanner's refresh, which means the engine has stopped reporting.
+ *
+ * A view with no stamp is not stale: the engine published no stamp, so there
+ * is nothing to measure the age of.
+ */
+export function isEngineNativeViewStale(view: EngineNativeView | undefined, now: number): boolean {
+    const age = engineNativeAgeMs(view, now)
+    if (age === null) return false
+    return age > ENGINE_NATIVE_STALE_MS
 }

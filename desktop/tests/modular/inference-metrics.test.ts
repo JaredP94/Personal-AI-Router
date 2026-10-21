@@ -3,9 +3,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+    buildEngineNativeModels,
+    buildEngineNativeRows,
     buildInferenceMetricsRows,
     buildModelMetricsRows,
     buildWorkloadMetricsRows,
+    engineNativeAgeMs,
     formatDurationMs,
     formatTokenCount,
     formatTokensPerSecond,
@@ -14,6 +17,7 @@ import {
     hasPrefillMetrics,
     hasTtftMetrics,
     hasWorkloadMeasurement,
+    isEngineNativeViewStale,
     phaseTokensPerSecond
 } from '@/ui/utils/inference-metrics'
 import type { InferenceMetricsTotals, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
@@ -23,6 +27,7 @@ vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 
 import {
+    parseEngineNativeView,
     parseNodeMetricsSnapshot,
     parseWorkloadsInitial
 } from '@/electron/service-bridge/modular-state'
@@ -637,5 +642,162 @@ describe('the per-job measurement rows', () => {
         expect(hasWorkloadMeasurement(running)).toBe(false)
         expect(hasWorkloadMeasurement(silent)).toBe(false)
         expect(hasWorkloadMeasurement(measuredJob)).toBe(true)
+    })
+})
+
+describe("the engine's own view of itself", () => {
+    const engineView = {
+        engine: 'omlx',
+        supported: true,
+        totals: {
+            requests: 2,
+            promptTokens: 120,
+            completionTokens: 34,
+            cachedTokens: 90,
+            cacheEfficiency: 75
+        },
+        rates: { prefillTokensPerSecond: 100, generationTokensPerSecond: 50 },
+        models: [{ model: 'm', loaded: true }]
+    }
+
+    it("labels the engine self-report separately from the router's own numbers", () => {
+        const rows = buildEngineNativeRows(engineView)
+        expect(rows.length).toBeGreaterThan(0)
+        expect(rows.every(r => r.source === 'engine')).toBe(true)
+    })
+
+    it('reports an engine with no native view as unsupported', () => {
+        const rows = buildEngineNativeRows({ engine: 'ollama', supported: false })
+        expect(rows).toEqual([])
+    })
+
+    it("labels the engine rows with the engine's own scope, never PAIR's", () => {
+        // PAIR's own rows say "last 60 s" or "since broker start". The
+        // engine's rows cover the engine's own life, so they must not answer
+        // to either of those windows.
+        const rows = buildEngineNativeRows(engineView)
+        expect(rows.find(r => r.label === 'Requests (engine total)')?.value).toBe('2')
+        expect(rows.find(r => r.label === 'Prompt tokens (engine total)')?.value).toBe('120')
+        expect(rows.find(r => r.label === 'Completion tokens (engine total)')?.value).toBe('34')
+        expect(rows.find(r => r.label === 'Cached tokens (engine total)')?.value).toBe('90')
+        expect(rows.find(r => r.label === 'Cache efficiency (engine average)')?.value).toBe('75%')
+        expect(rows.find(r => r.label === 'Prefill (engine average)')?.value).toBe('100 tok/s')
+        expect(rows.find(r => r.label === 'Generation (engine average)')?.value).toBe('50 tok/s')
+        expect(rows.some(r => r.label.includes('last 60 s'))).toBe(false)
+        expect(rows.some(r => r.label.includes('since broker start'))).toBe(false)
+    })
+
+    it('leaves a value the engine never reported out of the rows', () => {
+        // The engine publishes its counters with omitempty, so an absent key
+        // means "not reported". A row that said "0" would read as a
+        // measurement the engine never made.
+        const rows = buildEngineNativeRows({
+            engine: 'omlx',
+            supported: true,
+            totals: { requests: 2 },
+            rates: {}
+        })
+        expect(rows.map(r => r.label)).toEqual(['Requests (engine total)'])
+    })
+
+    it('keeps a reported zero a zero', () => {
+        const rows = buildEngineNativeRows({
+            engine: 'omlx',
+            supported: true,
+            totals: { cachedTokens: 0 },
+            rates: { generationTokensPerSecond: 0 }
+        })
+        expect(rows.find(r => r.label === 'Cached tokens (engine total)')?.value).toBe('0')
+        expect(rows.find(r => r.label === 'Generation (engine average)')?.value).toBe('0 tok/s')
+    })
+
+    it('shows no rows for a view that reports no numbers at all', () => {
+        // An empty totals object is not "the engine reported zeros".
+        expect(buildEngineNativeRows({ engine: 'omlx', supported: true })).toEqual([])
+        expect(buildEngineNativeRows({ engine: 'omlx', supported: true, totals: {} })).toEqual([])
+    })
+
+    it("keeps the engine's own models apart from the models loaded in memory", () => {
+        // The engine's list says which models it offers; the engine-manager's
+        // loaded set says which are resident in memory. The engine's own claim
+        // is reported as "active", so the two never answer to the same word.
+        const models = buildEngineNativeModels({
+            engine: 'omlx',
+            supported: true,
+            models: [
+                { model: 'mlx-community/Llama-3.2-3B-Instruct-4bit', loaded: true },
+                { model: 'mlx-community/Qwen3-0.6B-4bit', loaded: false }
+            ]
+        })
+        expect(models).toHaveLength(2)
+        expect(models[0].active).toBe(true)
+        expect(models[1].active).toBe(false)
+    })
+
+    it('lists no models for an engine with no native view', () => {
+        expect(buildEngineNativeModels({ engine: 'ollama', supported: false })).toEqual([])
+    })
+
+    it('measures the age of the view, and says when it is stale', () => {
+        const now = 1_716_998_400_000
+        const fresh = { engine: 'omlx', supported: true, observedAt: now - 30_000 }
+        expect(engineNativeAgeMs(fresh, now)).toBe(30_000)
+        expect(isEngineNativeViewStale(fresh, now)).toBe(false)
+
+        // The stamp freezes when the engine stops answering: the node keeps
+        // its last good view, and the frozen stamp is how that shows.
+        const dead = { engine: 'omlx', supported: true, observedAt: now - 600_000 }
+        expect(engineNativeAgeMs(dead, now)).toBe(600_000)
+        expect(isEngineNativeViewStale(dead, now)).toBe(true)
+    })
+
+    it('has no age to measure for a view with no stamp', () => {
+        expect(engineNativeAgeMs({ engine: 'omlx', supported: true }, 1000)).toBeNull()
+        expect(isEngineNativeViewStale(undefined, 1000)).toBe(false)
+        expect(isEngineNativeViewStale({ engine: 'omlx', supported: true }, 1000)).toBe(false)
+    })
+})
+
+describe('the engine-native view on the wire', () => {
+    it("carries the engine's own counters off the node record", () => {
+        const view = parseEngineNativeView({
+            engine: 'omlx',
+            supported: true,
+            totals: {
+                requests: 3270,
+                promptTokens: 212978711,
+                completionTokens: 2147906,
+                cachedTokens: 157045860,
+                cacheEfficiency: 73.7
+            },
+            rates: { prefillTokensPerSecond: 1553.2, generationTokensPerSecond: 32.5 },
+            models: [{ model: 'mlx-community/Llama-3.2-3B-Instruct-4bit', loaded: true }],
+            observedAt: 1716998400000
+        })
+        expect(view?.engine).toBe('omlx')
+        expect(view?.supported).toBe(true)
+        expect(view?.totals?.requests).toBe(3270)
+        expect(view?.totals?.cacheEfficiency).toBe(73.7)
+        expect(view?.rates?.generationTokensPerSecond).toBe(32.5)
+        expect(view?.models?.[0].model).toBe('mlx-community/Llama-3.2-3B-Instruct-4bit')
+        expect(view?.observedAt).toBe(1716998400000)
+    })
+
+    it('leaves a value the engine did not report absent, never zero', () => {
+        const view = parseEngineNativeView({
+            engine: 'omlx',
+            supported: true,
+            totals: { requests: 2 }
+        })
+        expect(view?.totals?.requests).toBe(2)
+        expect(view?.totals?.promptTokens).toBeUndefined()
+        expect(view?.rates).toBeUndefined()
+        expect(view?.models).toBeUndefined()
+    })
+
+    it('drops a view that names no engine', () => {
+        expect(parseEngineNativeView({ supported: true, totals: { requests: 2 } })).toBeUndefined()
+        expect(parseEngineNativeView(undefined)).toBeUndefined()
+        expect(parseEngineNativeView('nope')).toBeUndefined()
     })
 })

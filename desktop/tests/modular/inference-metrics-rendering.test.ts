@@ -5,10 +5,15 @@
 import { act, createElement, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InferenceMetricsTotals, NodeInferenceMetrics } from '@/shared/types/metrics'
+import type {
+    EngineNativeView,
+    InferenceMetricsTotals,
+    NodeInferenceMetrics
+} from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { Workload } from '@/shared/types/workloads'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
+import { useNodesStore } from '@/ui/stores/nodes.store'
 import NodeCardDetails from '@/ui/components/NodeList/NodeCardDetails'
 import NodeInferenceMetricsSection from '@/ui/components/NodeList/NodeInferenceMetricsSection'
 import WorkloadItemCard from '@/ui/components/Workloads/WorkloadItemCard'
@@ -98,6 +103,7 @@ afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
     useMetricsStore.getState().clearAll()
+    useNodesStore.setState({ nodes: new Map() })
     vi.unstubAllGlobals()
 })
 
@@ -318,5 +324,128 @@ describe('the job card measurement', () => {
         )
         expect(text()).not.toContain('Prefill')
         expect(text()).not.toContain('tok/s')
+    })
+})
+
+describe("the node card's engine-native section", () => {
+    /** A node whose engine publishes a view of itself. */
+    function nodeWithEngineNative(engineNative: EngineNativeView): NodeItem {
+        const node: NodeItem = {
+            id: 'node-a',
+            name: 'Fixture node',
+            ipAddress: '192.0.2.1',
+            port: 14318,
+            allIpAddresses: [],
+            status: 'active',
+            os: 'Linux',
+            topology: {
+                gpus: [],
+                cpu: { model: 'Fixture CPU', cores: 4, threads: 4 },
+                ram: 16 * 1024 ** 3,
+                storage: []
+            },
+            engineNative
+        }
+        act(() => {
+            useNodesStore.setState({ nodes: new Map([['node-a', node]]) })
+        })
+        return node
+    }
+
+    it("heads the engine's own counters and says what they are", async () => {
+        nodeWithEngineNative({
+            engine: 'omlx',
+            supported: true,
+            totals: { requests: 3270, promptTokens: 212978711, cachedTokens: 157045860 },
+            rates: { prefillTokensPerSecond: 1553.2, generationTokensPerSecond: 32.5 },
+            observedAt: Date.now()
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        const rendered = text()
+        expect(rendered).toContain("Engine's own counters (oMLX)")
+        // The engine's counters include traffic PAIR did not route, so the
+        // card has to say so: they are never mixed into PAIR's own numbers.
+        expect(rendered).toContain('they include traffic PAIR did not route')
+        expect(rendered).toContain('Requests (engine total) 3,270')
+        expect(rendered).toContain('Prompt tokens (engine total) 212,978,711')
+        expect(rendered).toContain('Cached tokens (engine total) 157,045,860')
+        expect(rendered).toContain('Prefill (engine average) 1553 tok/s')
+        expect(rendered).toContain('Generation (engine average) 33 tok/s')
+    })
+
+    it("shows the engine's view beside PAIR's own numbers, never mixed into them", async () => {
+        nodeWithEngineNative({
+            engine: 'omlx',
+            supported: true,
+            totals: { requests: 3270 },
+            observedAt: Date.now()
+        })
+        useMetricsStore.setState({
+            nodeInferenceMetrics: new Map([['node-a', nodeMetrics(reportedTotals)]])
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        const rendered = text()
+        expect(rendered).toContain('Prefill (last 60 s) 100 tok/s')
+        expect(rendered).toContain("Engine's own counters (oMLX)")
+        // PAIR's own token count is the sum of its own two counters; the
+        // engine's request count is the engine's own and is never added to it.
+        expect(rendered).toContain('Prefill + decode tokens (since broker start) 120')
+        expect(rendered).toContain('Requests (engine total) 3,270')
+    })
+
+    it("shows how fresh the engine's own view is, and when it has gone stale", async () => {
+        nodeWithEngineNative({
+            engine: 'omlx',
+            supported: true,
+            totals: { requests: 2 },
+            observedAt: Date.now()
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toContain('Observed just now.')
+
+        // The engine stopped answering: the node keeps its last good view and
+        // the stamp freezes, so the card has to say the view is stale.
+        nodeWithEngineNative({
+            engine: 'omlx',
+            supported: true,
+            totals: { requests: 2 },
+            observedAt: Date.now() - 600_000
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toContain('Stale — last observed 10 minutes ago.')
+    })
+
+    it("keeps the engine's own model list apart from the loaded models", async () => {
+        nodeWithEngineNative({
+            engine: 'omlx',
+            supported: true,
+            models: [
+                { model: 'mlx-community/Llama-3.2-3B-Instruct-4bit', loaded: true },
+                { model: 'mlx-community/Qwen3-0.6B-4bit', loaded: false }
+            ],
+            observedAt: Date.now()
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        const rendered = text()
+        // The engine says which models it lists as active. The engine-manager's
+        // loaded set says which are resident in memory, which is a different
+        // thing and never says the same word here.
+        expect(rendered).toContain('Models the engine lists:')
+        expect(rendered).toContain('Llama 3.2 3B Instruct 4bit (active)')
+        expect(rendered).toContain('Qwen3 0.6B 4bit (not active)')
+    })
+
+    it('renders nothing for a node whose engine has no native view', async () => {
+        nodeWithEngineNative({ engine: 'ollama', supported: false })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toBe('')
+    })
+
+    it('renders nothing for a node that publishes no view at all', async () => {
+        act(() => {
+            useNodesStore.setState({ nodes: new Map() })
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toBe('')
     })
 })

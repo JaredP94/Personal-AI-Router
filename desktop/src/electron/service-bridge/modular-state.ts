@@ -14,6 +14,10 @@ import type {
 import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type {
+    EngineNativeModel,
+    EngineNativeRates,
+    EngineNativeTotals,
+    EngineNativeView,
     InferenceMetricsRates,
     InferenceMetricsTotals,
     NodeInferenceMetrics,
@@ -190,6 +194,12 @@ interface ModularNode {
     // engine reports loaded state. Mirrors noderec.DirectoryNode.LoadedByEngine.
     loadedByEngine: Record<string, string[]>
     engines: Record<ProxyEngine, EnginePresence>
+    // The engine's own view of itself, as the broker carries it on the node
+    // record (`AvailableNode.engineNative`). The engine's own counters: they
+    // include the traffic PAIR did not route, so they are shown beside
+    // PAIR's own numbers and never merged into them. Absent when the engine
+    // publishes no native view.
+    engineNative?: EngineNativeView
     lastSeen: number
 }
 
@@ -311,6 +321,176 @@ function nullableStringValue(value: JsonValue | undefined): string | null {
 
 function nullableNumberValue(value: JsonValue | undefined): number | null {
     return typeof value === 'number' ? value : null
+}
+
+/**
+ * Read an optional number: a field that is absent, or that does not hold a
+ * number, is absent.
+ *
+ * The engine publishes its counters with `omitempty`, so an absent key means
+ * "the engine did not report this value" — never a measured zero. A zero the
+ * engine did report is present in the payload and reads as a zero here.
+ */
+function optionalNumberValue(value: JsonValue | undefined): number | undefined {
+    return typeof value === 'number' ? value : undefined
+}
+
+/**
+ * Parse the engine's own counters, as the engine published them.
+ *
+ * Every counter the engine did not report stays absent, so a value nobody
+ * reported never becomes a zero.
+ */
+function parseEngineNativeTotals(value: JsonValue | undefined): EngineNativeTotals | undefined {
+    const obj = objectValue(value)
+    if (!obj) return undefined
+    const totals: EngineNativeTotals = {}
+    const requests = optionalNumberValue(obj.requests)
+    if (requests !== undefined) totals.requests = requests
+    const promptTokens = optionalNumberValue(obj.promptTokens)
+    if (promptTokens !== undefined) totals.promptTokens = promptTokens
+    const completionTokens = optionalNumberValue(obj.completionTokens)
+    if (completionTokens !== undefined) totals.completionTokens = completionTokens
+    const cachedTokens = optionalNumberValue(obj.cachedTokens)
+    if (cachedTokens !== undefined) totals.cachedTokens = cachedTokens
+    const cacheEfficiency = optionalNumberValue(obj.cacheEfficiency)
+    if (cacheEfficiency !== undefined) totals.cacheEfficiency = cacheEfficiency
+    return totals
+}
+
+/**
+ * Parse the engine's own throughput numbers, as the engine published them.
+ *
+ * A rate the engine did not report stays absent, so it never reads as a
+ * measured zero.
+ */
+function parseEngineNativeRates(value: JsonValue | undefined): EngineNativeRates | undefined {
+    const obj = objectValue(value)
+    if (!obj) return undefined
+    const rates: EngineNativeRates = {}
+    const prefill = optionalNumberValue(obj.prefillTokensPerSecond)
+    if (prefill !== undefined) rates.prefillTokensPerSecond = prefill
+    const generation = optionalNumberValue(obj.generationTokensPerSecond)
+    if (generation !== undefined) rates.generationTokensPerSecond = generation
+    return rates
+}
+
+/**
+ * Parse the models the engine lists as active.
+ *
+ * An entry that carries no readable name is skipped: the engine's payload
+ * shape is inferred rather than documented, and a model without a name is not
+ * a model the card can name.
+ */
+function parseEngineNativeModels(value: JsonValue | undefined): EngineNativeModel[] {
+    if (!Array.isArray(value)) return []
+    const models: EngineNativeModel[] = []
+    for (const entry of value) {
+        const obj = objectValue(entry)
+        if (!obj) continue
+        const model = stringValue(obj.model)
+        if (!model) continue
+        models.push({ model, loaded: booleanValue(obj.loaded) })
+    }
+    return models
+}
+
+/**
+ * Parse the engine's own view of itself, as the broker carries it on the node
+ * record (`AvailableNode.engineNative`).
+ *
+ * Every numeric field is optional: the engine publishes its counters with
+ * `omitempty`, so an absent key means the engine did not report that value —
+ * never a measured zero. The totals and the rates are objects that are
+ * always present on the wire but can be empty, so an empty object means "the
+ * engine reported no numbers", not "the engine reported zeros".
+ *
+ * A view that names no engine is dropped: it cannot be attributed to an
+ * engine, so it is not a view of anything.
+ */
+export function parseEngineNativeView(value: JsonValue | undefined): EngineNativeView | undefined {
+    const obj = objectValue(value)
+    if (!obj) return undefined
+    const engine = stringValue(obj.engine)
+    if (!engine) return undefined
+    const observedAt = optionalNumberValue(obj.observedAt)
+    const view: EngineNativeView = {
+        engine,
+        supported: booleanValue(obj.supported)
+    }
+    const totals = parseEngineNativeTotals(obj.totals)
+    if (totals) view.totals = totals
+    const rates = parseEngineNativeRates(obj.rates)
+    if (rates) view.rates = rates
+    const models = parseEngineNativeModels(obj.models)
+    if (models.length > 0) view.models = models
+    if (observedAt !== undefined) view.observedAt = observedAt
+    return view
+}
+
+/**
+ * Whether two engine-native views are the same reading.
+ *
+ * The observation stamp is part of the comparison: it is what tells a reader
+ * how old the reading is, so a fresher reading is not the same as the one it
+ * replaces. The model list is compared as a set of (name, active) pairs,
+ * because the engine lists its models in no particular order.
+ */
+function sameEngineNativeView(left?: EngineNativeView, right?: EngineNativeView): boolean {
+    if (!left || !right) return left === right
+    if (left.engine !== right.engine || left.supported !== right.supported) return false
+    if (left.observedAt !== right.observedAt) return false
+    if (!sameEngineNativeTotals(left.totals, right.totals)) return false
+    if (!sameEngineNativeRates(left.rates, right.rates)) return false
+    return sameEngineNativeModels(left.models, right.models)
+}
+
+function sameEngineNativeTotals(
+    left: EngineNativeTotals | undefined,
+    right: EngineNativeTotals | undefined
+): boolean {
+    const a = left ?? {}
+    const b = right ?? {}
+    return (
+        a.requests === b.requests &&
+        a.promptTokens === b.promptTokens &&
+        a.completionTokens === b.completionTokens &&
+        a.cachedTokens === b.cachedTokens &&
+        a.cacheEfficiency === b.cacheEfficiency
+    )
+}
+
+function sameEngineNativeRates(
+    left: EngineNativeRates | undefined,
+    right: EngineNativeRates | undefined
+): boolean {
+    const a = left ?? {}
+    const b = right ?? {}
+    return (
+        a.prefillTokensPerSecond === b.prefillTokensPerSecond &&
+        a.generationTokensPerSecond === b.generationTokensPerSecond
+    )
+}
+
+function sameEngineNativeModels(
+    left: EngineNativeModel[] | undefined,
+    right: EngineNativeModel[] | undefined
+): boolean {
+    const a = left ?? []
+    const b = right ?? []
+    if (a.length !== b.length) return false
+    const counts = new Map<string, number>()
+    for (const model of a) {
+        const key = `${model.model}\u0000${model.loaded ? '1' : '0'}`
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    for (const model of b) {
+        const key = `${model.model}\u0000${model.loaded ? '1' : '0'}`
+        const count = counts.get(key) ?? 0
+        if (count === 0) return false
+        counts.set(key, count - 1)
+    }
+    return true
 }
 
 function serviceErrorSeverity(value: JsonValue | undefined): ServiceErrorSeverity | undefined {
@@ -876,7 +1056,12 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
         // discovery/node-info plane reports no OS for remote nodes, so they fall
         // back to a placeholder. Remote OS is not reported by the current
         // discovery/node-info contract.
-        os: node.id === selfId ? platformDisplayName(currentPlatform()) : 'Windows'
+        os: node.id === selfId ? platformDisplayName(currentPlatform()) : 'Windows',
+        // The engine's own view of itself, when the node's engine publishes
+        // one. It is the engine's own account of its work — including the
+        // traffic PAIR did not route — so the card shows it as a separate,
+        // labelled view and never mixes it into PAIR's own numbers.
+        engineNative: node.engineNative
     }
 }
 
@@ -1054,6 +1239,11 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // `/v1/models`. `omitempty` on the wire — absent for a peer that reports
         // no loaded state, which stamps every model `idle`.
         loadedByEngine: parseModelsByEngine(obj.loadedByEngine),
+        // Broker `AvailableNode.engineNative`: the engine's own report of
+        // itself — its counters, its rates and the models it lists as active.
+        // `omitempty` on the wire — absent for a node whose engine publishes no
+        // native view, which is a normal state and never a zero.
+        engineNative: parseEngineNativeView(obj.engineNative),
         engines: emptyEngines(),
         lastSeen: normalizeLastSeen(numberValue(obj.lastSeen) || numberValue(obj.last_seen))
     }
@@ -1106,6 +1296,10 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
         sameEngines(left.engines, right.engines) &&
+        // The engine's own view is compared as a reading, stamp included: a
+        // fresher reading is not the same as the one it replaces, because the
+        // stamp is what tells the card how old the reading is.
+        sameEngineNativeView(left.engineNative, right.engineNative) &&
         left.lastSeen === right.lastSeen
     )
 }
@@ -3016,6 +3210,9 @@ class ModularBridgeState {
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
             loadedByEngine: existing.loadedByEngine,
+            // A proxy event carries no engine-native view; keep the
+            // broker-enriched one we already merged.
+            engineNative: existing.engineNative,
             engines: setEngine(existing.engines, engine, next.engines[engine]),
             lastSeen: Math.max(existing.lastSeen, next.lastSeen)
         }
