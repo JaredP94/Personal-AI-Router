@@ -74,7 +74,11 @@ func TestWindowExpiryZeroesRatesButKeepsTotals(t *testing.T) {
 		t.Fatalf("rates: %+v", inside[0].Rates)
 	}
 	// Move the store's clock past the window: the sample leaves the window,
-	// the rates go to zero, and the lifetime totals stay.
+	// the rates go to zero, and the lifetime totals stay. Note that this
+	// exercises the negative-age tolerance, not the ordinary ageing: the
+	// moved-back clock puts the sample ahead of the window end, so it is
+	// dropped because it lies too far in the future. The ordinary ageing
+	// path is covered by TestAgedSampleLeavesTheWindow.
 	s.now = func() time.Time { return t0.Add(61 * time.Second) }
 	after := s.Snapshot()
 	if after[0].Rates.PrefillTokensPerSecond != 0 {
@@ -192,6 +196,103 @@ func TestMeanTtftCountsOnlyRequestsThatReportedOne(t *testing.T) {
 	}
 	if snap.Rates.MeanTtftMs != 200 {
 		t.Fatalf("mean ttft: %v", snap.Rates.MeanTtftMs)
+	}
+}
+
+// TestPresenceCountersAreZeroWhenNothingWasReported pins that a request the
+// engine reported nothing about is still a request, but counts towards none
+// of the presence counters: the counters say what the engine reported, not
+// what the node saw.
+func TestPresenceCountersAreZeroWhenNothingWasReported(t *testing.T) {
+	s := NewStore(60 * time.Second)
+	t0 := time.Unix(1700000000, 0)
+	s.now = func() time.Time { return t0 }
+	s.Record("node-a", "m", inferencemetrics.Measurement{}, t0)
+	totals := s.Snapshot()[0].Totals
+	if totals.Requests != 1 {
+		t.Fatalf("requests: %+v", totals)
+	}
+	if totals.TokenRequests != 0 || totals.PrefillRequests != 0 ||
+		totals.DecodeRequests != 0 || totals.TtftRequests != 0 {
+		t.Fatalf("presence counters must be zero: %+v", totals)
+	}
+}
+
+// TestPresenceCounterCountsOnlyTheReportedValue pins that each presence
+// counter tracks its own value: a measurement that reported tokens and a
+// prefill duration increments the token and prefill counters, and leaves the
+// decode and TTFT counters at zero even though it was a request.
+func TestPresenceCounterCountsOnlyTheReportedValue(t *testing.T) {
+	s := NewStore(60 * time.Second)
+	t0 := time.Unix(1700000000, 0)
+	s.now = func() time.Time { return t0 }
+	s.Record("node-a", "m", inferencemetrics.Measurement{
+		PrefillTokens: inferencemetrics.IntPtr(100),
+		PrefillMs:     inferencemetrics.Int64Ptr(1000),
+	}, t0)
+	totals := s.Snapshot()[0].Totals
+	if totals.Requests != 1 {
+		t.Fatalf("requests: %+v", totals)
+	}
+	if totals.TokenRequests != 1 {
+		t.Fatalf("token requests: %+v", totals)
+	}
+	if totals.PrefillRequests != 1 {
+		t.Fatalf("prefill requests: %+v", totals)
+	}
+	if totals.DecodeRequests != 0 {
+		t.Fatalf("decode requests: %+v", totals)
+	}
+	if totals.TtftRequests != 0 {
+		t.Fatalf("ttft requests: %+v", totals)
+	}
+}
+
+// TestPerModelTotalsSumToNodeTotals pins that the per-model breakdown is a
+// partition of the node's totals: the per-model entries sum to the node's
+// totals for every field, the presence counters included.
+func TestPerModelTotalsSumToNodeTotals(t *testing.T) {
+	s := NewStore(60 * time.Second)
+	t0 := time.Unix(1700000000, 0)
+	s.now = func() time.Time { return t0 }
+	s.Record("node-a", "model-x", inferencemetrics.Measurement{
+		PrefillTokens: inferencemetrics.IntPtr(100),
+		DecodeTokens:  inferencemetrics.IntPtr(50),
+		PrefillMs:     inferencemetrics.Int64Ptr(1000),
+		DecodeMs:      inferencemetrics.Int64Ptr(2000),
+		TtftMs:        inferencemetrics.Int64Ptr(300),
+	}, t0)
+	s.Record("node-a", "model-x", inferencemetrics.Measurement{
+		DecodeTokens: inferencemetrics.IntPtr(25),
+	}, t0)
+	s.Record("node-a", "model-y", inferencemetrics.Measurement{
+		CachedTokens: inferencemetrics.IntPtr(10),
+		TtftMs:       inferencemetrics.Int64Ptr(100),
+	}, t0)
+	s.Record("node-a", "model-y", inferencemetrics.Measurement{}, t0)
+
+	snap := s.Snapshot()[0]
+	var sum Totals
+	for _, m := range snap.Models {
+		sum.Requests += m.Totals.Requests
+		sum.PrefillTokens += m.Totals.PrefillTokens
+		sum.DecodeTokens += m.Totals.DecodeTokens
+		sum.CachedTokens += m.Totals.CachedTokens
+		sum.PrefillMs += m.Totals.PrefillMs
+		sum.DecodeMs += m.Totals.DecodeMs
+		sum.TtftMs += m.Totals.TtftMs
+		sum.TtftRequests += m.Totals.TtftRequests
+		sum.TokenRequests += m.Totals.TokenRequests
+		sum.PrefillRequests += m.Totals.PrefillRequests
+		sum.DecodeRequests += m.Totals.DecodeRequests
+	}
+	if sum != snap.Totals {
+		t.Fatalf("per-model sum %+v must equal node totals %+v", sum, snap.Totals)
+	}
+	// The counters must not be trivially equal because they are all zero.
+	if snap.Totals.TokenRequests != 3 || snap.Totals.PrefillRequests != 1 ||
+		snap.Totals.DecodeRequests != 1 || snap.Totals.TtftRequests != 2 {
+		t.Fatalf("totals: %+v", snap.Totals)
 	}
 }
 

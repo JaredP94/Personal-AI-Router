@@ -62,6 +62,22 @@ type Totals struct {
 	// because a request that reported no TTFT must not dilute the mean of the
 	// ones that did.
 	TtftRequests int `json:"ttftRequests"`
+	// TokenRequests counts the requests that reported a token count, that is
+	// at least one of the prefill, decode or cached counts. It is the
+	// denominator of a "tokens per request" figure, so a request that
+	// reported no tokens at all must not count towards it.
+	TokenRequests int `json:"tokenRequests"`
+	// PrefillRequests counts the requests that reported a prefill duration.
+	// It is the denominator of a prefill rate and of a mean prefill
+	// duration, and it separates "the engine reported no prefill phase" from
+	// "the engine reported a zero-length prefill", which a rate of zero
+	// cannot express on its own.
+	PrefillRequests int `json:"prefillRequests"`
+	// DecodeRequests counts the requests that reported a decode duration.
+	// It is the denominator of a decode rate and of a mean decode duration,
+	// and it separates "the engine reported no decode phase" from "the
+	// engine reported a zero-length decode".
+	DecodeRequests int `json:"decodeRequests"`
 }
 
 // Rates are the node's current throughput, computed over the rolling window.
@@ -94,6 +110,10 @@ type NodeSnapshot struct {
 //
 // The state is per node id: the lifetime totals, a per-model map of the same
 // totals, and the rolling window of recent completions.
+//
+// A Store must be created with NewStore. The zero value has no clock and no
+// node map, so its first use panics on a nil map write or a nil clock call;
+// NewStore is the only supported constructor.
 type Store struct {
 	mu sync.Mutex
 	// window is the length of the rolling window. A non-positive window
@@ -142,15 +162,20 @@ func NewStore(window time.Duration) *Store {
 // Record folds one completed inference into the node's lifetime totals, into
 // the model's totals, and into the rolling window.
 //
-// The now argument is the instant the completion arrived at this broker. The
-// sample is stamped with the store's own clock reading, because that is the
-// clock the window is measured on and the arrival instant may come from a
-// different clock domain (a relayed event carries the origin's timestamps,
-// and the repo already defends against cross-node clock skew elsewhere). The
-// arrival instant is honoured only as far as it does not lead the store's
-// clock: a caller ahead of it is on a clock the store does not share, and
-// such a sample must not be reported as a rate over an interval that never
-// happened here.
+// The now argument is the caller's instant of the completion — the moment the
+// caller saw it arrive. The store measures its window on its own clock: the
+// sample is stamped with the store's own reading, and the caller's instant is
+// honoured only as a lower bound on that stamp. A caller ahead of the
+// store's clock is on a clock the store does not share (a relayed event
+// carries the origin's timestamps, and the repo already defends against
+// cross-node clock skew elsewhere), and such a sample must not be reported as
+// a rate over an interval that never happened here.
+//
+// The consequence for a caller that passes a remote event's timestamp is
+// worth stating plainly: the timestamp is not what ages the sample. The
+// sample ages against the store's clock; the caller's instant can only pull
+// the stamp forward, never pull it back, so the window keeps advancing on the
+// broker's own timeline.
 func (s *Store) Record(nodeID, model string, m inferencemetrics.Measurement, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,6 +341,13 @@ func (s *Store) pruneLocked(n *nodeState, now time.Time) {
 // value never contributes a zero to a sum it did not measure — and a
 // measured zero contributes a zero, which is the same number, but for a
 // reason the consumer can rely on.
+//
+// The presence counters follow the same rule: a request counts towards a
+// counter only when the engine reported that value, so a request that
+// reported nothing is a request and nothing more. This is what lets a
+// consumer tell "the engine reported no prefill phase" from "the engine
+// reported a zero-length prefill": the two differ in the counter even though
+// their rates are both zero.
 func accumulate(t *Totals, m inferencemetrics.Measurement) {
 	t.Requests++
 	t.PrefillTokens += valueOf(m.PrefillTokens)
@@ -323,6 +355,15 @@ func accumulate(t *Totals, m inferencemetrics.Measurement) {
 	t.CachedTokens += valueOf(m.CachedTokens)
 	t.PrefillMs += valueOf64(m.PrefillMs)
 	t.DecodeMs += valueOf64(m.DecodeMs)
+	if m.PrefillTokens != nil || m.DecodeTokens != nil || m.CachedTokens != nil {
+		t.TokenRequests++
+	}
+	if m.PrefillMs != nil {
+		t.PrefillRequests++
+	}
+	if m.DecodeMs != nil {
+		t.DecodeRequests++
+	}
 	if m.TtftMs != nil {
 		t.TtftMs += *m.TtftMs
 		t.TtftRequests++
