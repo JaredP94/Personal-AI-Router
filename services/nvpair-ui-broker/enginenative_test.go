@@ -89,8 +89,9 @@ func TestBrokerCarriesTheEngineNativeView(t *testing.T) {
 
 // TestEngineNativeViewChangeIsAnnounced pins the change detection: a node
 // whose engine's own counters moved is a change a consumer must hear about,
-// and a re-read of the same numbers is not — the observation stamp moves on
-// every read, but the numbers did not.
+// and a re-read of the same numbers is a change too — every read is a new
+// observation, so the stamp advances and a consumer can tell a fresh reading
+// from a stale one.
 func TestEngineNativeViewChangeIsAnnounced(t *testing.T) {
 	store := newDiscoveryStore()
 	changes := 0
@@ -109,18 +110,26 @@ func TestEngineNativeViewChangeIsAnnounced(t *testing.T) {
 	}
 
 	// The same numbers, read again: the stamp moved, the counters did not.
+	// The observation is still newer, so it is still a change.
 	same := *view
 	same.ObservedAt = 2000
 	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: &same}, sourceScanner)
-	if changes != 1 {
-		t.Fatalf("an unchanged engine-native view reported %d changes, want 1", changes)
+	if changes != 2 {
+		t.Fatalf("a newer observation reported %d changes, want 2", changes)
 	}
 
-	// The engine's own counters moved: that is a change.
+	// The engine's own counters moved: that is a change too.
 	moved := same
 	moved.Totals.Requests = 3
 	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: &moved}, sourceScanner)
-	if changes != 2 {
-		t.Fatalf("a changed engine-native view reported %d changes, want 2", changes)
+	if changes != 3 {
+		t.Fatalf("a changed engine-native view reported %d changes, want 3", changes)
+	}
+
+	// The same reading again — same numbers, same stamp — is not a change:
+	// nothing about it moved.
+	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: &moved}, sourceScanner)
+	if changes != 3 {
+		t.Fatalf("an unchanged engine-native view reported %d changes, want 3", changes)
 	}
 }

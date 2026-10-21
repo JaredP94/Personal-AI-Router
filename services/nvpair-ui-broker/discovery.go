@@ -354,10 +354,11 @@ func enrichedNodeEqual(a, b EnrichedNode) bool {
 			return false
 		}
 	}
-	// The engine's own view is compared by its numbers, not by its observation
-	// stamp: a view whose numbers did not move is not a change a consumer
-	// needs to hear about, and the stamp moves on every read.
-	if !enginenative.SameNumbers(a.EngineNative, b.EngineNative) {
+	// The engine's own view is compared as a reading: the same engine
+	// numbers observed at the same moment. A fresher reading is not the
+	// same as the one it replaces, because the stamp is what tells a
+	// consumer how old the reading is.
+	if !enginenative.SameView(a.EngineNative, b.EngineNative) {
 		return false
 	}
 	return true

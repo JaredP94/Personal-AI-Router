@@ -612,6 +612,10 @@ type DirectoryNode struct {
 	// a normal state, never a zero, so a consumer can tell "the engine
 	// reported nothing" from "the engine reported nothing happened".
 	//
+	// A node that has never produced a view has none. A node whose fetch
+	// failed keeps the view it had: the last-good rule the model list
+	// follows too, so a transient miss does not blank the card.
+	//
 	// It is the engine's own account of its work, which includes traffic PAIR
 	// did not route, so a consumer must present it beside PAIR's own numbers
 	// and never merged into them.

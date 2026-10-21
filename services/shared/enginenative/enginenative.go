@@ -129,10 +129,16 @@ type ActivityRow struct {
 
 // SameNumbers reports whether two views carry the same engine numbers.
 //
-// The observation stamp is deliberately not part of the comparison: it moves
-// on every fetch, because every fetch is a new observation, and a view whose
-// numbers did not move is not a new observation worth announcing. Two absent
-// views are the same; an absent view and a present one are not.
+// The observation stamp is deliberately not part of the comparison: it is a
+// separate question — when the numbers were seen — and Changed asks about it
+// on its own. Two absent views are the same; an absent view and a present
+// one are not.
+//
+// The model list is compared as a set of (name, loaded) pairs, not element by
+// element: the engine lists its active models in no particular order, so the
+// same models in a different order are the same models. This matches how the
+// repo compares model lists everywhere else (the scanner's sameStringSet, the
+// broker's SameStringSet).
 func SameNumbers(a, b *Stats) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -143,15 +149,69 @@ func SameNumbers(a, b *Stats) bool {
 	if a.Totals != b.Totals || a.Rates != b.Rates {
 		return false
 	}
-	if len(a.Models) != len(b.Models) {
+	return sameModelSet(a.Models, b.Models)
+}
+
+// sameModelSet reports whether two model lists hold the same (name, loaded)
+// pairs, order-insensitively. A pair that appears twice counts twice, so a
+// list with a duplicate entry does not compare equal to one without it.
+func sameModelSet(a, b []Model) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	for i := range a.Models {
-		if a.Models[i] != b.Models[i] {
+	counts := make(map[Model]int, len(a))
+	for _, m := range a {
+		counts[m]++
+	}
+	for _, m := range b {
+		if counts[m] == 0 {
 			return false
 		}
+		counts[m]--
 	}
 	return true
+}
+
+// Changed reports whether next is a view worth announcing over prev.
+//
+// Two things make a view worth announcing. The engine's numbers moved, which
+// is what SameNumbers answers. Or the observation itself is newer: every
+// fetch is a new observation, so a reading whose counters did not move is
+// still a fresher reading, and a reader that takes observedAt at face value
+// ("when was this observed") needs the stamp to advance. That is what lets a
+// client compute staleness as now - observedAt, and what tells a live but idle
+// engine apart from one that died an hour ago.
+//
+// The two questions stay separate: the numbers decide whether the engine's
+// account changed, the stamp decides whether the reading is fresh. A model
+// list in a different order is neither (see SameNumbers), so the stamp is the
+// only thing that moves on a sweep of an idle engine.
+//
+// It is directional: next is the reading that follows prev. SameView is the
+// symmetric question, for the places that compare two records rather than a
+// record with its successor.
+func Changed(prev, next *Stats) bool {
+	if !SameNumbers(prev, next) {
+		return true
+	}
+	if next == nil {
+		// No view now, and none before: nothing changed.
+		return false
+	}
+	if prev == nil {
+		return true
+	}
+	return next.ObservedAt > prev.ObservedAt
+}
+
+// SameView reports whether two views are the same reading: the same engine
+// numbers, observed at the same moment.
+//
+// It is the symmetric counterpart of Changed: two readings are the same only
+// when neither is newer than the other, so a fresher reading is never the
+// same as the one it replaces.
+func SameView(a, b *Stats) bool {
+	return !Changed(a, b) && !Changed(b, a)
 }
 
 // ParseStats maps oMLX's /admin/api/stats payload onto Stats.

@@ -511,7 +511,22 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		d.supersedingUpsert(node)
 		method = noderec.NotifyNodeDiscovered
 	}
-	d.emit(method, node)
+	d.emit(method, d.storedOr(node))
+}
+
+// storedOr returns the record the directory holds for a node, falling back to
+// the record the caller holds when the directory holds none.
+//
+// The browse path rebuilds a node from the mDNS record, which carries no
+// engine-native view, while the directory keeps the view the sweep stored. The
+// record that is announced is therefore the one the directory holds: announcing
+// the rebuilt one would show the client the view disappearing on every
+// advertisement, and reappearing at the next sweep.
+func (d *daemon) storedOr(node noderec.DirectoryNode) noderec.DirectoryNode {
+	if stored, ok := d.dir.get(node.HostUUID); ok {
+		return stored
+	}
+	return node
 }
 
 // supersedingUpsert folds a browsed peer into the directory, evicting any record
@@ -931,7 +946,7 @@ func (d *daemon) publishSelfLocked() {
 	if isNew := d.dir.upsert(node); isNew {
 		method = noderec.NotifyNodeDiscovered
 	}
-	d.emit(method, node)
+	d.emit(method, d.storedOr(node))
 }
 
 // watchAddress re-derives the advertised ip= whenever the host's network changes
@@ -1517,7 +1532,16 @@ func (d *daemon) modelsClient(ip, clusterUUID string) (*http.Client, string, boo
 // neither is a view, so neither is carried. Every failure — no pin, an
 // unreachable engine, a malformed answer — leaves the caller with no view: a
 // node with no engine-native view is a normal state, not a fault.
-func (d *daemon) fetchEngineStats(ip string, port int, clusterUUID string) (*enginenative.Stats, bool) {
+//
+// The caller decides what a failure means for the node it was reading: the
+// sweep keeps the last view it had (the last-good rule the model list follows
+// too), so a node that has never produced a view has none and a node whose
+// fetch fails keeps the view it had.
+//
+// ctx is the daemon's own context, so a shutdown cancels an in-flight read
+// rather than leaving it to run out its deadline; the read is bounded by
+// engineNativeFetchTimeout on top of that.
+func (d *daemon) fetchEngineStats(ctx context.Context, ip string, port int, clusterUUID string) (*enginenative.Stats, bool) {
 	client, scheme, ok := d.modelsClient(ip, clusterUUID)
 	if !ok {
 		slog.Debug("engine-native view skipped: peer is not a pinned cluster member",
@@ -1525,7 +1549,7 @@ func (d *daemon) fetchEngineStats(ip string, port int, clusterUUID string) (*eng
 		return nil, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/engine-stats"
-	ctx, cancel := context.WithTimeout(context.Background(), engineNativeFetchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, engineNativeFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -1539,6 +1563,10 @@ func (d *daemon) fetchEngineStats(ip string, port int, clusterUUID string) (*eng
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Drain the answer before letting it go: an unread body keeps the
+		// pooled connection from being reused, so every non-200 would cost
+		// the next fetch a fresh handshake.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, engineNativeResponseLimit))
 		return nil, false
 	}
 	var stats enginenative.Stats
@@ -1993,6 +2021,11 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 // as it needs to be. The fetch rides the same per-peer client pool the models
 // fetch uses, so the extra cadence costs no extra connections to a peer.
 //
+// Every sweep is a new observation, so the view's stamp advances each time and
+// the update is announced: the stamp is what tells a reader how old the
+// reading is, and a reader that never saw it advance could not tell a live
+// but idle engine apart from one that stopped answering.
+//
 // Stops when ctx is cancelled (the daemon's existing shutdown path).
 func (d *daemon) refreshEngineNativeLoop(ctx context.Context) {
 	ticker := time.NewTicker(engineNativeRefreshInterval)
@@ -2001,13 +2034,13 @@ func (d *daemon) refreshEngineNativeLoop(ctx context.Context) {
 	// whole interval. The engine-manager service may not be registered yet at
 	// this point, in which case there is nothing to ask and the first tick
 	// picks it up.
-	d.refreshEngineNativeOnce()
+	d.refreshEngineNativeOnce(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.refreshEngineNativeOnce()
+			d.refreshEngineNativeOnce(ctx)
 		}
 	}
 }
@@ -2018,7 +2051,10 @@ func (d *daemon) refreshEngineNativeLoop(ctx context.Context) {
 // an unbounded burst of fetches. It mirrors refreshModelsOnce: the sweep runs
 // to completion before the next tick, and each per-node fetch is bounded by
 // the client's own timeout, so one slow peer never consumes another's budget.
-func (d *daemon) refreshEngineNativeOnce() {
+//
+// ctx is the daemon's context: it cancels the reads a shutdown leaves in
+// flight, on top of each read's own deadline.
+func (d *daemon) refreshEngineNativeOnce(ctx context.Context) {
 	sem := make(chan struct{}, engineNativeRefreshConcurrency)
 	var wg sync.WaitGroup
 	for _, n := range d.dir.snapshot(noderec.ServiceEngineManager) {
@@ -2032,7 +2068,7 @@ func (d *daemon) refreshEngineNativeOnce() {
 		go func(hostUUID, guardIP string, hosts []string, port int, clusterUUID string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			d.refreshNodeEngineNative(hostUUID, guardIP, hosts, port, clusterUUID)
+			d.refreshNodeEngineNative(ctx, hostUUID, guardIP, hosts, port, clusterUUID)
 		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
 	}
 	wg.Wait()
@@ -2041,9 +2077,14 @@ func (d *daemon) refreshEngineNativeOnce() {
 // refreshNodeEngineNative fetches one node's /v1/engine-stats and, on success,
 // applies it to the directory under the removed/re-addressed guard
 // (directory.applyEngineNative). A failed fetch leaves the node's view as it
-// was: no cache write, no directory change, no event. On a change it emits
-// exactly one discovery:node-updated carrying the full node. Returns whether it
-// emitted an update (used by tests).
+// was — the last-good rule the model list follows too: a node that has never
+// produced a view has none, and a node whose fetch fails keeps the view it
+// had. On a change it emits exactly one discovery:node-updated carrying the
+// full node. Returns whether it emitted an update (used by tests).
+//
+// A change is either the engine's numbers moving or the observation being
+// newer: every sweep is a new observation, so the stamp advances even when the
+// counters do not, and a client can tell a fresh reading from a stale one.
 //
 // The fetch dials our OWN engine-manager over loopback, for the same reason the
 // models refresh does: this loop is what converges a view that does not move
@@ -2052,12 +2093,12 @@ func (d *daemon) refreshEngineNativeOnce() {
 // stale-address guard, so an in-flight result cannot overwrite a re-addressed
 // node. Peers are dialed at their published addresses, over the pinned mTLS
 // client (see fetchEngineStats).
-func (d *daemon) refreshNodeEngineNative(hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
+func (d *daemon) refreshNodeEngineNative(ctx context.Context, hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
 	if d.reg != nil && hostUUID == d.reg.record().HostUUID {
 		hosts = []string{loopbackHost}
 	}
 	ask := func(host string) (*enginenative.Stats, bool) {
-		return d.fetchEngineStats(host, emPort, clusterUUID)
+		return d.fetchEngineStats(ctx, host, emPort, clusterUUID)
 	}
 	// The address memory is shared with the models fetch (same node, same
 	// service), so both converge on the one address that answered instead of

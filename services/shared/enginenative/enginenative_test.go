@@ -425,3 +425,135 @@ func TestParseActivityAcceptsAnEmptyPayload(t *testing.T) {
 		t.Fatalf("rows: %+v", a.Rows)
 	}
 }
+
+// TestSameNumbersIgnoresModelOrder pins the model list comparison: the engine
+// lists its active models in no particular order, so the same models in a
+// different order are the same models, and only a real difference counts.
+func TestSameNumbersIgnoresModelOrder(t *testing.T) {
+	a := &Stats{
+		Engine:    EngineOmlx,
+		Supported: true,
+		Models: []Model{
+			{Model: "mlx-community/Llama-3.2-3B-Instruct-4bit", Loaded: true},
+			{Model: "mlx-community/Qwen3-4B-4bit", Loaded: false},
+		},
+	}
+	b := &Stats{
+		Engine:    EngineOmlx,
+		Supported: true,
+		Models: []Model{
+			{Model: "mlx-community/Qwen3-4B-4bit", Loaded: false},
+			{Model: "mlx-community/Llama-3.2-3B-Instruct-4bit", Loaded: true},
+		},
+	}
+	if !SameNumbers(a, b) {
+		t.Error("the same models in a different order read as a change")
+	}
+
+	// A different loaded flag is a real difference.
+	c := *b
+	c.Models = []Model{
+		{Model: "mlx-community/Qwen3-4B-4bit", Loaded: true},
+		{Model: "mlx-community/Llama-3.2-3B-Instruct-4bit", Loaded: true},
+	}
+	if SameNumbers(a, &c) {
+		t.Error("a model that changed its loaded flag read as the same")
+	}
+
+	// A different model is a real difference.
+	d := *b
+	d.Models = []Model{{Model: "mlx-community/Qwen3-4B-4bit", Loaded: false}}
+	if SameNumbers(a, &d) {
+		t.Error("a different model list read as the same")
+	}
+}
+
+// TestSameNumbersIgnoresTheObservationStamp pins the separation of the two
+// questions: the numbers and the freshness of the reading are different
+// things, and the numbers comparison answers only the first.
+func TestSameNumbersIgnoresTheObservationStamp(t *testing.T) {
+	a := &Stats{Engine: EngineOmlx, Supported: true, Totals: Totals{Requests: 2}, ObservedAt: 1000}
+	b := &Stats{Engine: EngineOmlx, Supported: true, Totals: Totals{Requests: 2}, ObservedAt: 2000}
+	if !SameNumbers(a, b) {
+		t.Error("the observation stamp was taken for a change in the numbers")
+	}
+	if SameNumbers(nil, nil) != true {
+		t.Error("two absent views are not the same")
+	}
+	if SameNumbers(a, nil) || SameNumbers(nil, a) {
+		t.Error("an absent view and a present one are the same")
+	}
+}
+
+// TestChangedReportsNumbersAndFreshness pins what is worth announcing: the
+// engine's numbers moved, or the observation is newer. The stamp is the only
+// thing that moves on a sweep of an idle engine, and it has to move, or a
+// reader could not tell a live engine from one that died an hour ago.
+func TestChangedReportsNumbersAndFreshness(t *testing.T) {
+	view := &Stats{Engine: EngineOmlx, Supported: true, Totals: Totals{Requests: 2}, ObservedAt: 1000}
+
+	// A newer observation of the same numbers is a change.
+	newer := *view
+	newer.ObservedAt = 2000
+	if !Changed(view, &newer) {
+		t.Error("a newer observation was not reported as a change")
+	}
+
+	// The same observation again is not.
+	if Changed(view, view) {
+		t.Error("the same reading was reported as a change")
+	}
+	if Changed(&newer, view) {
+		t.Error("an older observation was reported as a change")
+	}
+
+	// Moved numbers are a change even at the same stamp.
+	moved := *view
+	moved.Totals.Requests = 3
+	if !Changed(view, &moved) {
+		t.Error("moved numbers were not reported as a change")
+	}
+
+	// A view appearing where there was none is a change; two absent views
+	// are not.
+	if !Changed(nil, view) {
+		t.Error("a first view was not reported as a change")
+	}
+	if Changed(nil, nil) {
+		t.Error("two absent views were reported as a change")
+	}
+}
+
+// TestSameViewIsTheSymmetricReading pins the symmetric comparison the
+// relay and the broker use: two views are the same reading only when they
+// carry the same numbers AND were observed at the same moment, so a fresher
+// reading is never the same as the one it replaces.
+func TestSameViewIsTheSymmetricReading(t *testing.T) {
+	view := &Stats{Engine: EngineOmlx, Supported: true, Totals: Totals{Requests: 2}, ObservedAt: 1000}
+
+	if !SameView(view, view) {
+		t.Error("a view is not the same as itself")
+	}
+
+	newer := *view
+	newer.ObservedAt = 2000
+	if SameView(view, &newer) {
+		t.Error("a newer observation read as the same reading")
+	}
+	if SameView(&newer, view) {
+		t.Error("the comparison is not symmetric")
+	}
+
+	moved := *view
+	moved.Totals.Requests = 3
+	if SameView(view, &moved) {
+		t.Error("moved numbers read as the same reading")
+	}
+
+	if !SameView(nil, nil) {
+		t.Error("two absent views are not the same reading")
+	}
+	if SameView(view, nil) || SameView(nil, view) {
+		t.Error("an absent view and a present one are the same reading")
+	}
+}

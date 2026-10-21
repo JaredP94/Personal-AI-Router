@@ -124,9 +124,12 @@ type AvailableNode struct {
 	//
 	// It is the engine's own account of its work, which includes traffic PAIR
 	// did not route, so a consumer must show it separately from PAIR's own
-	// numbers and never add the two together. Omitted when the engine
-	// reported no view: it publishes no admin API, or it could not be
-	// reached.
+	// numbers and never add the two together. Omitted when the node never
+	// produced a view: its engine publishes no admin API, or it could not be
+	// reached. A node whose fetch failed keeps the view it had.
+	//
+	// observedAt is when the reading was taken, and it advances on every
+	// sweep: a consumer computes staleness as now - observedAt.
 	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
 }
 

@@ -77,12 +77,32 @@ func newDirectory() *directory {
 }
 
 // upsert stores a node and reports whether it was new (vs. an update).
+//
+// The stored engine-native view is carried across the replacement: a record
+// built from the browse path carries no view (the mDNS TXT has none), so a
+// plain replacement would delete the view the sweep had stored, and the client
+// would watch the field disappear and reappear on every advertisement. The
+// models field survives the same replacement through the enrichment cache;
+// this is the same rule for the engine's own view.
 func (d *directory) upsert(n noderec.DirectoryNode) (isNew bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	_, existed := d.nodes[n.HostUUID]
-	d.nodes[n.HostUUID] = n
+	d.nodes[n.HostUUID] = carryEngineNative(d.nodes[n.HostUUID], n)
 	return !existed
+}
+
+// carryEngineNative keeps the engine-native view a stored record already held
+// when the record arriving in its place carries none.
+//
+// A node that has never produced a view has none, and a node whose view is
+// deliberately replaced by a record that carries one takes the new one: only
+// the absent case is carried forward.
+func carryEngineNative(stored, incoming noderec.DirectoryNode) noderec.DirectoryNode {
+	if incoming.EngineNative == nil && stored.EngineNative != nil {
+		incoming.EngineNative = stored.EngineNative
+	}
+	return incoming
 }
 
 // supersedeMinAge is how much older a record must be than the one arriving at
@@ -187,7 +207,7 @@ func (d *directory) upsertEvicting(n noderec.DirectoryNode, proven []noderec.Dir
 		evicted = append(evicted, current)
 	}
 	sort.Slice(evicted, func(i, j int) bool { return evicted[i].HostUUID < evicted[j].HostUUID })
-	d.nodes[n.HostUUID] = n
+	d.nodes[n.HostUUID] = carryEngineNative(d.nodes[n.HostUUID], n)
 	return evicted
 }
 
@@ -271,14 +291,18 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, models []string
 // It confirms the node still exists AND still advertises the same em endpoint
 // (ip + port) the fetch targeted, so an in-flight result can never resurrect a
 // removed node or overwrite one that has since been re-addressed. It then
-// compares the fetched view with the stored one and, only when the engine's
-// numbers moved, updates the field in place — preserving every other field
-// (identity, services, node-info, trust) the browse path owns.
+// compares the fetched view with the stored one and updates the field in
+// place — preserving every other field (identity, services, node-info, trust)
+// the browse path owns.
 //
-// The comparison is over the numbers, not the observation stamp: the stamp
-// moves on every fetch, and a view whose numbers did not move is not a change
-// worth announcing. The fresh view is stored either way, so the scanner's own
+// The change is decided by two questions, kept apart: whether the engine's
+// numbers moved, and whether the observation is newer. A newer observation is
+// a change worth reporting, because the stamp is what tells a reader how old
+// the reading is; the fresh view is stored either way, so the scanner's own
 // record carries the latest reading.
+//
+// A nil view is a fetch that failed: the node keeps the view it had (the
+// last-good rule the model list follows too), and no change is reported.
 //
 // Returns the (possibly updated) node, whether the view changed, and whether the
 // guarded apply was valid. ok == false means the result is stale (node gone or
@@ -294,7 +318,11 @@ func (d *directory) applyEngineNative(hostUUID, ip string, emPort int, stats *en
 	if !has || n.IP != ip || em.Port != emPort {
 		return n, false, false
 	}
-	moved := !enginenative.SameNumbers(n.EngineNative, stats)
+	if stats == nil {
+		// A failed fetch leaves the node with the view it had.
+		return n, false, true
+	}
+	moved := enginenative.Changed(n.EngineNative, stats)
 	n.EngineNative = stats
 	d.nodes[hostUUID] = n
 	return n, moved, true
