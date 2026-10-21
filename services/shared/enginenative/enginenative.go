@@ -127,6 +127,33 @@ type ActivityRow struct {
 	PromptTokens    *int     `json:"promptTokens,omitempty"`
 }
 
+// SameNumbers reports whether two views carry the same engine numbers.
+//
+// The observation stamp is deliberately not part of the comparison: it moves
+// on every fetch, because every fetch is a new observation, and a view whose
+// numbers did not move is not a new observation worth announcing. Two absent
+// views are the same; an absent view and a present one are not.
+func SameNumbers(a, b *Stats) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Engine != b.Engine || a.Supported != b.Supported || a.Error != b.Error {
+		return false
+	}
+	if a.Totals != b.Totals || a.Rates != b.Rates {
+		return false
+	}
+	if len(a.Models) != len(b.Models) {
+		return false
+	}
+	for i := range a.Models {
+		if a.Models[i] != b.Models[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ParseStats maps oMLX's /admin/api/stats payload onto Stats.
 //
 // The payload's api_key, host, port and cli_prefix fields are dropped by

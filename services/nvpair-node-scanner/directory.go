@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"nvpair-shared/enginenative"
 	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
 )
@@ -260,6 +261,43 @@ func (d *directory) applyModels(hostUUID, ip string, emPort int, models []string
 	n.LoadedByEngine = loadedByEngine
 	d.nodes[hostUUID] = n
 	return n, true, true
+}
+
+// applyEngineNative atomically reconciles one node's engine-native view from a
+// completed /v1/engine-stats fetch, guarded against a node that was removed or
+// re-addressed while the fetch was in flight. It is the engine-native sweep's
+// write path (daemon.refreshNodeEngineNative).
+//
+// It confirms the node still exists AND still advertises the same em endpoint
+// (ip + port) the fetch targeted, so an in-flight result can never resurrect a
+// removed node or overwrite one that has since been re-addressed. It then
+// compares the fetched view with the stored one and, only when the engine's
+// numbers moved, updates the field in place — preserving every other field
+// (identity, services, node-info, trust) the browse path owns.
+//
+// The comparison is over the numbers, not the observation stamp: the stamp
+// moves on every fetch, and a view whose numbers did not move is not a change
+// worth announcing. The fresh view is stored either way, so the scanner's own
+// record carries the latest reading.
+//
+// Returns the (possibly updated) node, whether the view changed, and whether the
+// guarded apply was valid. ok == false means the result is stale (node gone or
+// re-addressed) and the caller must not emit it.
+func (d *directory) applyEngineNative(hostUUID, ip string, emPort int, stats *enginenative.Stats) (node noderec.DirectoryNode, changed, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n, present := d.nodes[hostUUID]
+	if !present {
+		return noderec.DirectoryNode{}, false, false
+	}
+	em, has := n.Services[noderec.ServiceEngineManager]
+	if !has || n.IP != ip || em.Port != emPort {
+		return n, false, false
+	}
+	moved := !enginenative.SameNumbers(n.EngineNative, stats)
+	n.EngineNative = stats
+	d.nodes[hostUUID] = n
+	return n, moved, true
 }
 
 // applyClusterIdentity sets one node's cluster principal and the trust annotation

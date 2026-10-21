@@ -22,6 +22,7 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/enginenative"
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
@@ -116,6 +117,17 @@ type AvailableNode struct {
 	// consumer show which of a remote node's models are loaded. Omitted
 	// when no engine reports loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// EngineNative is the engine's own report of itself: the counters, the
+	// rates and the models it lists as active, as the engine published them.
+	// Enriched by the daemon from the node's engine-manager
+	// /v1/engine-stats.
+	//
+	// It is the engine's own account of its work, which includes traffic PAIR
+	// did not route, so a consumer must show it separately from PAIR's own
+	// numbers and never add the two together. Omitted when the engine
+	// reported no view: it publishes no admin API, or it could not be
+	// reached.
+	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
 }
 
 // GetNodesResult is the response to "discovery:get-nodes". Wrapped in an

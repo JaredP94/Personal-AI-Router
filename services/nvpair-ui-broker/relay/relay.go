@@ -20,6 +20,7 @@ import (
 	"sort"
 	"sync"
 
+	"nvpair-shared/enginenative"
 	"nvpair-shared/noderec"
 )
 
@@ -182,6 +183,12 @@ func directoryNodeEqual(a, b noderec.DirectoryNode) bool {
 		return false
 	}
 	if (a.Memory == nil) != (b.Memory == nil) || (a.Memory != nil && *a.Memory != *b.Memory) {
+		return false
+	}
+	// The engine's own view is compared by its numbers, not by its observation
+	// stamp: a view whose numbers did not move is not a change worth
+	// delivering, and the stamp moves on every read.
+	if !enginenative.SameNumbers(a.EngineNative, b.EngineNative) {
 		return false
 	}
 	return true
