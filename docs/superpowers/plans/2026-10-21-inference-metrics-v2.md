@@ -313,7 +313,7 @@ it('labels the engine self-report separately from the router's own numbers', () 
     const rows = buildEngineNativeRows({
         engine: 'omlx', supported: true,
         totals: { requests: 2, promptTokens: 120, completionTokens: 34, cachedTokens: 90,
-            prefillSeconds: 1.25, generationSeconds: 4.5, cacheEfficiency: 75 },
+            cacheEfficiency: 75 },
         rates: { prefillTokensPerSecond: 100, generationTokensPerSecond: 50 },
         models: [{ model: 'm', loaded: true }]
     })
