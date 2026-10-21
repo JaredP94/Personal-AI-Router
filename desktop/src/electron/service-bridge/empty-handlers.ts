@@ -6,6 +6,7 @@ import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
+import type { NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type {
     TelemetryConfig,
     TelemetryConfigRequest,
@@ -823,6 +824,33 @@ async function handleWorkersGetStatus(): Promise<WorkerStatus[]> {
 }
 
 /**
+ * The broker's per-node inference metrics snapshot: the totals since the
+ * broker started, the windowed rates and the per-model rows of every node
+ * that served traffic.
+ *
+ * The read goes to the broker rather than to the cached push. The broker only
+ * pushes when a measurement was recorded, so a rate that decays towards zero
+ * as the broker's 60-second window empties is never pushed — a client that
+ * read the cache alone would show the last pushed rate until the next
+ * completion. On a broker that cannot be reached, the last snapshot it
+ * reported answers, so a restarting broker leaves the last measurement on
+ * screen instead of an empty snapshot that would read as "this node never
+ * served anything".
+ */
+async function handleNodeMetricsGet(): Promise<NodeInferenceMetricsSnapshot> {
+    const supervisor = getModularSupervisor()
+    if (supervisor.hasProcess('broker')) {
+        try {
+            const result = await supervisor.callProcess('broker', 'metrics:get-node-metrics')
+            return getModularBridgeState().setNodeMetrics(result)
+        } catch {
+            return getModularBridgeState().getNodeMetrics()
+        }
+    }
+    return getModularBridgeState().getNodeMetrics()
+}
+
+/**
  * Relay an operator-requested restart. The broker decides whether the worker is
  * eligible and what the restart does; the renderer only asks.
  */
@@ -1144,6 +1172,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     }),
 
     'metrics:get-routing': () => getModularBridgeState().getRoutingMetrics(),
+    'metrics:get-node-metrics': () => handleNodeMetricsGet(),
     'nodes:get-initial': () => getModularBridgeState().getNodesInitial(),
     'nodes:remove-member': payload => handleNodeRemoveMember(payload),
 

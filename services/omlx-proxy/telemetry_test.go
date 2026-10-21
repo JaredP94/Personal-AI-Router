@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,6 +257,131 @@ func TestOMLXProxyCandidateFailureTelemetry(t *testing.T) {
 	}
 	if successAttrs["pair.route.failover"] != true {
 		t.Errorf("expected pair.route.failover = true on second attempt")
+	}
+}
+
+// omlxUsageStream is a terminal oMLX chunk carrying the phase values the
+// engine reports in its usage block.
+const omlxUsageStream = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"m\"," +
+	"\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":34," +
+	"\"prompt_eval_duration\":1.25,\"generation_duration\":4.5," +
+	"\"time_to_first_token\":1.3,\"total_time\":5.9," +
+	"\"prompt_tokens_details\":{\"cached_tokens\":90}}}\n\n"
+
+func omlxEngineWith(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestWorkloadCarriesOMLXMeasurement(t *testing.T) {
+	srv := omlxEngineWith(t, omlxUsageStream)
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "m"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)))
+
+	for _, want := range []string{
+		`"method":"workload:completed"`,
+		`"prefillTokens":120`, `"decodeTokens":34`, `"cachedTokens":90`,
+		`"prefillMs":1250`, `"decodeMs":4500`, `"ttftMs":1300`, `"totalMs":5900`,
+	} {
+		if !rec.has(want) {
+			t.Fatalf("workload event missing %s", want)
+		}
+	}
+}
+
+// omlxCachedZeroStream is a terminal oMLX chunk whose usage block reports a
+// cached-token count of zero. That is the common case: the engine measured
+// its prefix cache and found nothing to reuse. The zero is a measurement,
+// so it must reach the workload event instead of being dropped as if the
+// engine had said nothing.
+const omlxCachedZeroStream = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120," +
+	"\"completion_tokens\":34,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n"
+
+// TestReportedZeroCachedTokensSurvives covers the provenance rule: a count
+// the engine reported as zero stays a zero on the workload event, while a
+// field the engine did not report at all stays absent.
+func TestReportedZeroCachedTokensSurvives(t *testing.T) {
+	srv := omlxEngineWith(t, omlxCachedZeroStream)
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "m"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)))
+
+	if !rec.has(`"cachedTokens":0`) {
+		t.Fatal("a reported zero must survive to the workload payload")
+	}
+	if !rec.has(`"prefillTokens":120`) || !rec.has(`"decodeTokens":34`) {
+		t.Fatal("the reported token counts must survive to the workload payload")
+	}
+	// The engine reported no phase durations in this chunk, so they stay
+	// absent rather than becoming zeros.
+	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"totalMs"`} {
+		if rec.has(absent) {
+			t.Fatalf("an unreported duration must stay absent: %s", absent)
+		}
+	}
+}
+
+func TestMeasurementPresentWithoutTelemetry(t *testing.T) {
+	// unconfiguredTelemetryProxy's manager is never enabled, so the session's
+	// tracer is a noop and no span is recording. The measurement must still
+	// reach the workload event.
+	p, _, rec := unconfiguredTelemetryProxy(t)
+	srv := omlxEngineWith(t, omlxUsageStream)
+	p.discovery.AddManual(nodeForModel(t, "serving-node", srv.URL, "m"))
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)))
+
+	if !rec.has(`"prefillMs":1250`) {
+		t.Fatal("measurement missing with telemetry disabled")
+	}
+}
+
+func TestUnreportedPhasesStayAbsent(t *testing.T) {
+	srv := omlxEngineWith(t, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n")
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "m"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)))
+
+	if !rec.has(`"prefillTokens":5`) {
+		t.Fatal("token counts missing")
+	}
+	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"cachedTokens"`} {
+		if rec.has(absent) {
+			t.Fatalf("unreported phase must stay absent: %s", absent)
+		}
+	}
+}
+
+func TestRejectedRequestEmitsNoWorkload(t *testing.T) {
+	// No node advertises the requested model, so the proxy rejects with 502
+	// before it creates a workload.
+	rec := &prRec{}
+	p := NewProxy(NewCodec(rec), NewDiscovery(), 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"absent"}`)))
+
+	if rec.has(`"method":"workload:`) {
+		t.Fatal("a rejected request must not create a workload")
 	}
 }
 

@@ -12,7 +12,7 @@ import type {
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
-import type { NodeItemMetrics } from '@/shared/types/metrics'
+import type { NodeItemMetrics, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
@@ -130,6 +130,15 @@ export interface IMetricsApi {
     onRoutingUpdate(callback: (metrics: RoutingMetrics[]) => void): () => void
     /** Periodic hardware metrics update (CPU, GPU, memory) for a node. */
     onUpdate(callback: (metrics: NodeItemMetrics) => void): () => void
+    /**
+     * Read the per-node prefill/decode inference metrics snapshot. The read
+     * goes to the broker rather than to a cached push, because the broker only
+     * pushes when a measurement was recorded — a rate that decays as the
+     * broker's window empties is never pushed.
+     */
+    getNodeMetrics(): Promise<NodeInferenceMetricsSnapshot>
+    /** The broker reported a new per-node inference metrics snapshot. */
+    onNodeMetrics(callback: (snapshot: NodeInferenceMetricsSnapshot) => void): () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +228,9 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
         metrics: {
             getRouting: () => transport.invoke('metrics:get-routing'),
             onRoutingUpdate: cb => transport.subscribePush('metrics:routing-update', cb),
-            onUpdate: cb => transport.subscribePush('metrics:update', cb)
+            onUpdate: cb => transport.subscribePush('metrics:update', cb),
+            getNodeMetrics: () => transport.invoke('metrics:get-node-metrics'),
+            onNodeMetrics: cb => transport.subscribePush('metrics:node-metrics', cb)
         },
         telemetry: {
             getStatus: () => transport.invoke('telemetry:get-status'),

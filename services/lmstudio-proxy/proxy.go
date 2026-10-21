@@ -33,6 +33,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/cors"
 	"nvpair-shared/errors"
+	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
@@ -185,7 +186,8 @@ func isInferenceRequest(method, path string) bool {
 // authoritative attribution handle), so a consumer can attribute the workload
 // to where it ran rather than to where it came from. requesterId is omitted.
 // Pointer fields serialize as JSON null when unset, matching the spec's
-// nullable columns.
+// nullable columns. The embedded measurement is the exception: its fields are
+// omitted entirely when the engine did not report them.
 type Workload struct {
 	ID             string  `json:"id"`
 	Model          string  `json:"model"`
@@ -199,6 +201,12 @@ type Workload struct {
 	CompletedAt    *int64  `json:"completedAt"`
 	Error          *string `json:"error"`
 	RequesterID    *string `json:"requesterId"`
+
+	// Measurement carries the engine's own prefill/decode numbers for this
+	// request. It is embedded anonymously so its fields appear inline in
+	// the workload JSON, and it stays empty for a workload that never
+	// reached an engine (a rejected or cancelled request).
+	inferencemetrics.Measurement
 }
 
 // workloadParams is the params envelope for a workload:* notification
@@ -1142,6 +1150,13 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		proxyErr     string
 		started      bool
 		wl           *Workload
+
+		// telReader wraps the body of the candidate we committed to and
+		// carries the engine's own prefill/decode measurement. It is declared
+		// here, outside the failover loop and before emitTerminal, so the
+		// measurement is reachable where the workload is finalized below.
+		// Only the committed candidate sets it.
+		telReader *telemetryBodyReader
 	)
 
 	// Emit workload:started up front, the moment we begin forwarding, naming
@@ -1247,7 +1262,6 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK, idle: idleClientWriteTimeout}
 
 		var dispatchSpan trace.Span
-		var telReader *telemetryBodyReader
 		dispatchStart := time.Now()
 		if isInf {
 			_, dispatchSpan = session.Tracer().Start(ctx, "pair.engine.dispatch", trace.WithSpanKind(trace.SpanKindClient))
@@ -1451,6 +1465,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	reqs, hits := p.recordRoutingMetric(r.Method, r.URL.Path, cacheAffinity)
+	// The proxy's own measured request duration. It is operational metadata
+	// about the request, not a measurement of the engine: LM Studio reports
+	// no total time, so the workload's totalMs stays absent rather than
+	// carrying a number this proxy made up.
+	durationMs := time.Since(start).Milliseconds()
 	p.codec.Notify("proxy/request", RequestEvent{
 		ID:                reqID,
 		NodeID:            servedNodeID,
@@ -1459,12 +1478,33 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		Path:              r.URL.Path,
 		Target:            servedTarget,
 		Status:            finalStatus,
-		Duration:          time.Since(start).Milliseconds(),
+		Duration:          durationMs,
 		TTFB:              ttfbMs,
 		Error:             proxyErr,
 		Requests:          reqs,
 		CacheAffinityHits: hits,
 	})
+
+	// Attach the engine's own prefill/decode measurement to the workload. The
+	// measurement is read from the committed reader once the copy unwinds and
+	// written under wlMu, alongside the other shared workload fields. The
+	// disconnect watcher may already have emitted the terminal event (the
+	// request was cancelled before it finished); that event legitimately
+	// carries no measurement.
+	if wl != nil {
+		var measurement inferencemetrics.Measurement
+		if telReader != nil {
+			measurement = telReader.Measurement()
+		}
+		// The measurement carries the engine's own numbers and nothing
+		// else. LM Studio reports no total request time, so totalMs stays
+		// absent: the proxy's own wall-clock duration would include
+		// queueing, transport and client write time, and would not mean
+		// the same thing as the engine-reported total oMLX reports.
+		wlMu.Lock()
+		wl.Measurement = measurement
+		wlMu.Unlock()
+	}
 
 	// Terminal workload transition pairs with the workload:started emitted at
 	// the commit point above. Cancellation, an upstream/transport error, a

@@ -28,6 +28,7 @@ import (
 	"nvpair-shared/noderec"
 	"nvpair-shared/schedulerwire"
 
+	"nvpair-ui-broker/nodemetrics"
 	"nvpair-ui-broker/relay"
 	"nvpair-ui-broker/workloadstore"
 )
@@ -320,6 +321,30 @@ type Broker struct {
 	// demand covers work anywhere and raises every node to the scheduling cadence.
 	lastSchedulingDemand atomic.Bool
 
+	// nodeMetrics is the per-node inference-metrics accumulator. It is fed
+	// from the workload-ingest path — the terminal workload event carries
+	// the engine's measurement and names the node that served the job — and
+	// read by the metrics: RPC surface. It is in-memory and starts empty on
+	// every broker start, so its totals are "since this broker started".
+	// The surface that serves it — the ingest, the snapshot and the push —
+	// lives in node_metrics.go.
+	nodeMetrics *nodemetrics.Store
+
+	// metricsMu guards metricsSubscribed and metricsDirty. The
+	// metrics:node-metrics stream is opt-in like workloads': the push loop
+	// (its own goroutine) reads the flags while the metrics:subscribe /
+	// metrics:unsubscribe handlers (on the read-loop goroutine) flip them.
+	metricsMu         sync.Mutex
+	metricsSubscribed bool
+	// metricsDirty marks the snapshot as changed since the last push, so a
+	// burst of completions coalesces into a single push.
+	metricsDirty bool
+
+	// nodeMetricsPushInterval is the period of the metrics push ticker. It
+	// is a field so a test can drive the coalescing without waiting out a
+	// second; NewBroker defaults it to nodeMetricsPushIntervalDefault.
+	nodeMetricsPushInterval time.Duration
+
 	// engineMu guards engineSubscribed. The engine:<event> stream is
 	// opt-in like proxy's: forwardEngineNotification (engine-manager reader
 	// goroutine) reads the flag while the engine:subscribe /
@@ -412,35 +437,37 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	b := &Broker{
-		workerHealthInterval: paths.workerHealthInterval,
-		codec:                codec,
-		closeTransport:       paths.closeTransport,
-		startedAt:            time.Now(),
-		heartbeatInterval:    jsonrpc.HeartbeatInterval,
-		nodeID:               nodeID,
-		scannerPath:          paths.scanner,
-		nodeInfoPath:         paths.nodeInfo,
-		proxyPath:            paths.proxy,
-		lmstudioProxyPath:    paths.lmstudioProxy,
-		omlxProxyPath:        paths.omlxProxy,
-		workloadMgrPath:      paths.workloadMgr,
-		errorsPath:           paths.errors,
-		engineMgrPath:        paths.engineMgr,
-		manualNodesPath:      paths.manualNodes,
-		settingsPath:         paths.settings,
-		clusterMgrPath:       paths.clusterMgr,
-		schedulerPath:        paths.scheduler,
-		clusterDir:           paths.clusterDir,
-		mesh:                 clustertrust.Open(paths.clusterDir),
-		store:                newDiscoveryStore(),
-		telemetry:            newTelemetryCache(),
-		relayDir:             relay.NewDirectory(),
-		regCache:             relay.NewRegistrationCache(),
-		manualNodeKeys:       make(map[string]string),
-		manualNodeStatuses:   make(map[string]manualNodeStatusEntry),
-		workloads:            workloadstore.New(),
-		ollamaPortReady:      make(chan struct{}),
-		lmstudioPortReady:    make(chan struct{}),
+		workerHealthInterval:    paths.workerHealthInterval,
+		codec:                   codec,
+		closeTransport:          paths.closeTransport,
+		startedAt:               time.Now(),
+		heartbeatInterval:       jsonrpc.HeartbeatInterval,
+		nodeID:                  nodeID,
+		scannerPath:             paths.scanner,
+		nodeInfoPath:            paths.nodeInfo,
+		proxyPath:               paths.proxy,
+		lmstudioProxyPath:       paths.lmstudioProxy,
+		omlxProxyPath:           paths.omlxProxy,
+		workloadMgrPath:         paths.workloadMgr,
+		errorsPath:              paths.errors,
+		engineMgrPath:           paths.engineMgr,
+		manualNodesPath:         paths.manualNodes,
+		settingsPath:            paths.settings,
+		clusterMgrPath:          paths.clusterMgr,
+		schedulerPath:           paths.scheduler,
+		clusterDir:              paths.clusterDir,
+		mesh:                    clustertrust.Open(paths.clusterDir),
+		store:                   newDiscoveryStore(),
+		telemetry:               newTelemetryCache(),
+		relayDir:                relay.NewDirectory(),
+		regCache:                relay.NewRegistrationCache(),
+		manualNodeKeys:          make(map[string]string),
+		manualNodeStatuses:      make(map[string]manualNodeStatusEntry),
+		workloads:               workloadstore.New(),
+		nodeMetrics:             nodemetrics.NewStore(nodeMetricsWindow),
+		nodeMetricsPushInterval: nodeMetricsPushIntervalDefault,
+		ollamaPortReady:         make(chan struct{}),
+		lmstudioPortReady:       make(chan struct{}),
 	}
 	b.initWorkerRegistry()
 	return b
@@ -1890,6 +1917,10 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
 
+	// Push the per-node inference metrics on a coalescing cadence: at most
+	// one snapshot per second, however many completions arrived in between.
+	go b.runNodeMetricsPush(ctx)
+
 	// One heartbeat stream per client connection. The client relies on it as
 	// liveness (§2.1): a silent channel is presumed dead after
 	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
@@ -2608,7 +2639,17 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 			}
 			return b.workloads.ApplyInferred(in)
 		}
-		return b.workloads.Apply(in)
+		if !b.workloads.Apply(in) {
+			return false
+		}
+		// The merge was accepted, so this is the one authoritative statement
+		// about this workload. A duplicate — the workload-manager's heartbeat
+		// re-assert, a peer's backfill — is rejected by the store above and
+		// never reaches the accumulator, and the inferred path above returns
+		// before this point, so the node-loss sweep's synthesized failure
+		// never counts either.
+		b.recordNodeMetrics(env.WorkloadInfo)
+		return true
 	case "workloads:remove":
 		var rm struct {
 			WorkloadID     string `json:"workloadId"`
@@ -3090,6 +3131,15 @@ func (b *Broker) handleMessage(msg *Message) {
 		if err := b.codec.Respond(msg.ID, workloadsInitialResult{Workloads: snapshot}); err != nil {
 			log.Printf("failed to respond to workloads:get-initial: %v", err)
 		}
+
+	case "metrics:get-node-metrics":
+		b.handleGetNodeMetrics(msg)
+
+	case "metrics:subscribe":
+		b.subscribeNodeMetrics(msg)
+
+	case "metrics:unsubscribe":
+		b.unsubscribeNodeMetrics(msg)
 
 	case "node/add", "node/remove", "nodes/list":
 		b.relayToManualNodes(msg)

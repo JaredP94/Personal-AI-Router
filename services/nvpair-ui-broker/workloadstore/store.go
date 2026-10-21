@@ -576,15 +576,20 @@ func recordFrom(in Incoming, now time.Time) Record {
 		CreatedAt:   in.CreatedAt,
 		CompletedAt: in.CompletedAt,
 		ScheduledOn: in.ScheduledOn,
-		Terminal:    isTerminal(in.State),
+		Terminal:    IsTerminal(in.State),
 		Info:        in.Info,
 		LastUpdated: now.UnixMilli(),
 		LastSeen:    now,
 	}
 }
 
-// isTerminal reports whether a state ends a workload's life.
-func isTerminal(state string) bool {
+// IsTerminal reports whether a state ends a workload's life.
+//
+// It is exported because the lifecycle of a workload has one owner: a
+// caller that kept its own copy of "what ends a job's life" would drift
+// from the store's rule, and the two would then disagree about the same
+// event.
+func IsTerminal(state string) bool {
 	return state == "completed" || state == "failed"
 }
 

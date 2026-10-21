@@ -24,6 +24,7 @@ import { buildRadialChartMetrics } from '@/ui/utils/build-radial-chart-metrics'
 import { hasInferenceReadyGpu, isGpuInferenceReady } from '@/ui/utils/gpu-inference'
 import NodeEnginesInline from './NodeEnginesInline'
 import NodeEngineSettings from './NodeEngineSettings'
+import NodeInferenceMetricsSection from './NodeInferenceMetricsSection'
 
 const MAX_CHART_SIZE = 60
 
@@ -277,6 +278,7 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                         >
                             <NodeEnginesInline nodeId={node.id} />
                         </Flex>
+                        <NodeInferenceMetricsSection nodeId={node.id} />
                         {isNarrow && (
                             <Flex align="center" gap="2" className="ml-1 -mt-0.5">
                                 {expandButtons('top')}

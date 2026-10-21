@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,6 +257,105 @@ func TestOllamaProxyCandidateFailureTelemetry(t *testing.T) {
 	}
 	if successAttrs["pair.route.failover"] != true {
 		t.Errorf("expected pair.route.failover = true on second attempt")
+	}
+}
+
+// ollamaEngineWith serves body as an Ollama NDJSON response.
+func ollamaEngineWith(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestWorkloadCarriesOllamaMeasurement(t *testing.T) {
+	srv := ollamaEngineWith(t, `{"model":"llama3.2:3b","done":true,"prompt_eval_count":15,`+
+		`"eval_count":8,"prompt_eval_duration":1200000000,"eval_duration":4000000000}`+"\n")
+	rec := &recRW{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "llama3.2:3b"))
+	p := NewProxy(NewCodec(rec), disc, 11434)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3.2:3b"}`)))
+
+	for _, want := range []string{
+		`"method":"workload:completed"`,
+		`"prefillTokens":15`, `"decodeTokens":8`,
+		`"prefillMs":1200`, `"decodeMs":4000`,
+	} {
+		if !rec.has(want) {
+			t.Fatalf("workload event missing %s", want)
+		}
+	}
+	// Ollama reports no time to first token and no cached-token count, so
+	// those two stay absent rather than becoming zeros. It reports no total
+	// time either: the measurement carries engine-reported values only, so
+	// the proxy's own wall-clock duration must not stand in for it.
+	for _, absent := range []string{`"ttftMs"`, `"cachedTokens"`, `"totalMs"`} {
+		if rec.has(absent) {
+			t.Fatalf("ollama reports no %s; it must stay absent", absent)
+		}
+	}
+}
+
+func TestOllamaMeasurementPresentWithoutTelemetry(t *testing.T) {
+	// unconfiguredTelemetryProxy's manager is never enabled, so the session's
+	// tracer is a noop and no span is recording. The measurement must still
+	// reach the workload event.
+	p, _, rec := unconfiguredTelemetryProxy(t)
+	srv := ollamaEngineWith(t, `{"model":"llama3.2:3b","done":true,"prompt_eval_count":15,`+
+		`"eval_count":8,"prompt_eval_duration":1200000000,"eval_duration":4000000000}`+"\n")
+	p.discovery.AddManual(nodeForModel(t, "serving-node", srv.URL, "llama3.2:3b"))
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3.2:3b"}`)))
+
+	if !rec.has(`"prefillMs":1200`) {
+		t.Fatal("measurement missing with telemetry disabled")
+	}
+}
+
+func TestOllamaUnreportedPhasesStayAbsent(t *testing.T) {
+	// Ollama's counts but no durations: the phase fields stay absent.
+	srv := ollamaEngineWith(t, `{"model":"llama3.2:3b","done":true,"prompt_eval_count":15,"eval_count":8}`+"\n")
+	rec := &recRW{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "llama3.2:3b"))
+	p := NewProxy(NewCodec(rec), disc, 11434)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3.2:3b"}`)))
+
+	if !rec.has(`"prefillTokens":15`) || !rec.has(`"decodeTokens":8`) {
+		t.Fatal("token counts missing")
+	}
+	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"cachedTokens"`} {
+		if rec.has(absent) {
+			t.Fatalf("an unreported phase must stay absent: %s", absent)
+		}
+	}
+}
+
+func TestOllamaMeasuredZeroTokenCountIsKept(t *testing.T) {
+	// A count Ollama reported as zero is a measured zero, not an absent value.
+	srv := ollamaEngineWith(t, `{"model":"llama3.2:3b","done":true,"prompt_eval_count":0,"eval_count":0}`+"\n")
+	rec := &recRW{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "llama3.2:3b"))
+	p := NewProxy(NewCodec(rec), disc, 11434)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"llama3.2:3b"}`)))
+
+	if !rec.has(`"prefillTokens":0`) {
+		t.Fatal("a reported zero prefill count must be preserved")
+	}
+	if !rec.has(`"decodeTokens":0`) {
+		t.Fatal("a reported zero decode count must be preserved")
 	}
 }
 

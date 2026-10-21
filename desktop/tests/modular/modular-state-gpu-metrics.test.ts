@@ -51,7 +51,9 @@ describe('GPU memory semantics from node-info through metrics history', () => {
                     onUpdate: (callback: (metrics: NodeItemMetrics) => void) =>
                         subscribePush(event => {
                             if (event.channel === 'metrics:update') callback(event.payload)
-                        })
+                        }),
+                    getNodeMetrics: async () => ({ nodes: [] }),
+                    onNodeMetrics: () => () => {}
                 },
                 nodes: { onRemove: () => () => {} }
             }

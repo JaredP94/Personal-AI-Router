@@ -13,7 +13,14 @@ import type {
 } from '@/shared/types/engines'
 import type { LogEntry, LogPage } from '@/shared/types/log'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
-import type { NodeItemMetrics } from '@/shared/types/metrics'
+import type {
+    InferenceMetricsRates,
+    InferenceMetricsTotals,
+    NodeInferenceMetrics,
+    NodeInferenceMetricsSnapshot,
+    NodeItemMetrics,
+    NodeModelMetrics
+} from '@/shared/types/metrics'
 import type { GpuMemoryKind } from '@/shared/types/hardware'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
@@ -478,7 +485,18 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
         startedAt: nullableNumberValue(obj.startedAt),
         completedAt: nullableNumberValue(obj.completedAt),
         error: nullableStringValue(obj.error),
-        requesterId: nullableStringValue(obj.requesterId)
+        requesterId: nullableStringValue(obj.requesterId),
+        // The engine's own prefill/decode measurement, carried inline by the
+        // workload object. A field the engine did not report reads as null —
+        // "not reported by this engine", which is not the same as a measured
+        // zero.
+        prefillTokens: nullableNumberValue(obj.prefillTokens),
+        decodeTokens: nullableNumberValue(obj.decodeTokens),
+        cachedTokens: nullableNumberValue(obj.cachedTokens),
+        prefillMs: nullableNumberValue(obj.prefillMs),
+        decodeMs: nullableNumberValue(obj.decodeMs),
+        ttftMs: nullableNumberValue(obj.ttftMs),
+        totalMs: nullableNumberValue(obj.totalMs)
     }
     const scheduledOn = nullableStringValue(obj.scheduledOn)
     if (scheduledOn) workload.scheduledOn = scheduledOn
@@ -500,6 +518,88 @@ export function parseWorkloadsInitial(value: JsonValue | undefined): Workload[] 
         if (workload) workloads.push(workload)
     }
     return workloads
+}
+
+/**
+ * Parse the broker's per-node inference metrics totals.
+ *
+ * Every value is the broker's own and is kept as it arrived: the desktop
+ * renders these numbers and never derives one. A field the broker did not
+ * send reads as zero, which is the same number the broker reports for a
+ * value nobody reported — the presence counters are what tell "this engine
+ * never reported a prefill phase" from "this engine reported a zero-length
+ * prefill".
+ */
+function parseInferenceMetricsTotals(value: JsonValue | undefined): InferenceMetricsTotals {
+    const obj = objectValue(value)
+    return {
+        requests: numberValue(obj?.requests),
+        prefillTokens: numberValue(obj?.prefillTokens),
+        decodeTokens: numberValue(obj?.decodeTokens),
+        cachedTokens: numberValue(obj?.cachedTokens),
+        prefillMs: numberValue(obj?.prefillMs),
+        decodeMs: numberValue(obj?.decodeMs),
+        ttftMs: numberValue(obj?.ttftMs),
+        ttftRequests: numberValue(obj?.ttftRequests),
+        tokenRequests: numberValue(obj?.tokenRequests),
+        prefillRequests: numberValue(obj?.prefillRequests),
+        decodeRequests: numberValue(obj?.decodeRequests)
+    }
+}
+
+/** Parse the broker's per-node throughput rates. */
+function parseInferenceMetricsRates(value: JsonValue | undefined): InferenceMetricsRates {
+    const obj = objectValue(value)
+    return {
+        prefillTokensPerSecond: numberValue(obj?.prefillTokensPerSecond),
+        decodeTokensPerSecond: numberValue(obj?.decodeTokensPerSecond),
+        meanTtftMs: numberValue(obj?.meanTtftMs)
+    }
+}
+
+/** Parse one model's totals on one node, as of since the broker started. */
+function parseNodeModelMetrics(value: JsonValue | undefined): NodeModelMetrics | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const model = stringValue(obj.model)
+    if (!model) return null
+    return { model, totals: parseInferenceMetricsTotals(obj.totals) }
+}
+
+/**
+ * Parse a broker per-node inference metrics snapshot (`{ nodes: [...] }`) —
+ * the response of `metrics:get-node-metrics` and the payload of the
+ * `metrics:node-metrics` push.
+ *
+ * A node without an id is dropped rather than reported: the id is what the
+ * renderer keys the snapshot by, and an entry the desktop cannot place would
+ * be attributed to the wrong node.
+ */
+export function parseNodeMetricsSnapshot(
+    value: JsonValue | undefined
+): NodeInferenceMetricsSnapshot {
+    const obj = objectValue(value)
+    const entries = Array.isArray(obj?.nodes) ? obj.nodes : []
+    const nodes: NodeInferenceMetrics[] = []
+    for (const entry of entries) {
+        const node = objectValue(entry)
+        if (!node) continue
+        const nodeId = stringValue(node.nodeId)
+        if (!nodeId) continue
+        const rawModels = Array.isArray(node.models) ? node.models : []
+        const models: NodeModelMetrics[] = []
+        for (const rawModel of rawModels) {
+            const model = parseNodeModelMetrics(rawModel)
+            if (model) models.push(model)
+        }
+        nodes.push({
+            nodeId,
+            totals: parseInferenceMetricsTotals(node.totals),
+            rates: parseInferenceMetricsRates(node.rates),
+            models
+        })
+    }
+    return { nodes }
 }
 
 /** True for an engine fronted by a broker-supervised reverse proxy. */
@@ -1051,6 +1151,39 @@ class ModularBridgeState {
             engineType,
             ...(this.routingTotals.get(engineType) ?? { requests: 0, cacheAffinityHits: 0 })
         }))
+    }
+
+    /**
+     * The last per-node inference metrics snapshot the broker reported, as a
+     * push or as the answer of a direct read. It answers the invoke when the
+     * broker cannot be reached, so a restarting broker leaves the last
+     * measurement on screen instead of an empty snapshot that would read as
+     * "this node never served anything".
+     */
+    private nodeInferenceMetrics: NodeInferenceMetricsSnapshot = { nodes: [] }
+
+    /** The last known per-node inference metrics snapshot. */
+    getNodeMetrics(): NodeInferenceMetricsSnapshot {
+        return this.nodeInferenceMetrics
+    }
+
+    /**
+     * Cache a per-node inference metrics snapshot the broker reported and
+     * return it. The snapshot is kept verbatim — the desktop never sums,
+     * averages or derives a rate.
+     */
+    setNodeMetrics(value: JsonValue | undefined): NodeInferenceMetricsSnapshot {
+        this.nodeInferenceMetrics = parseNodeMetricsSnapshot(value)
+        return this.nodeInferenceMetrics
+    }
+
+    /**
+     * Relay a broker `metrics:node-metrics` push into the renderer. The push
+     * carries the whole snapshot, so it replaces the cached one.
+     */
+    upsertNodeMetricsFromParams(params: JsonValue | undefined): void {
+        const snapshot = this.setNodeMetrics(params)
+        emitBridgePush('metrics:node-metrics', snapshot)
     }
 
     private nodes = new Map<string, ModularNode>()

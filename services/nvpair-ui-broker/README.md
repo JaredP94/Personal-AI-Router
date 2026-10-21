@@ -57,6 +57,11 @@ These responsibilities live in the broker itself rather than in a worker:
   source-aware cache keyed by `hostUuid`; scanner data takes precedence. The
   broker advances sample age locally, feeds compact maximum-GPU telemetry to the
   scheduler, and replays it after a scheduler restart.
+- **Per-node inference metrics.** The broker aggregates the engines' own
+  prefill/decode measurements into a per-node accumulator — totals since the
+  broker started, a 60-second rolling window of rates, presence counters and a
+  per-model breakdown — and serves it as `metrics:get-node-metrics` and the
+  `metrics:node-metrics` push.
 
 ### Supervision & recovery
 
@@ -324,6 +329,18 @@ A few semantics worth knowing:
 - **`upsert`, not a method replay.** A local `workload:completed` and a peer's running-state update both arrive as `workloads:upsert`; key on `(originatedFrom, engine, runId, id)` so concurrent engines and proxy restarts cannot collide.
 - **Best-effort delivery**, like the other streams: one write attempt per event, transient errors logged not retried.
 
+#### `metrics:node-metrics`
+
+**Opt-in.** Only delivered to a peer that has called `metrics:subscribe`; silent otherwise. The per-node inference-metrics snapshot: for every node that has served traffic, its totals since the broker started, its current rates over the broker's 60-second rolling window, and the same totals broken down per model. The payload is the **full snapshot, never a delta** — a client that missed a push recovers by re-reading everything rather than by accumulating differences it never saw.
+
+The broker coalesces the pushes: at most one snapshot per second, carrying the newest state, however many completions arrived in between. A push per completion would put the broker's write path under load for no benefit.
+
+The numbers are the engines' own measurements, aggregated by the broker; the broker never estimates a phase it cannot observe. See [`nvpair-ui-broker/nodemetrics`](nodemetrics/store.go) for the aggregation rules, and the `metrics:get-node-metrics` request below for the exact shape.
+
+```json
+{"jsonrpc":"2.0","method":"metrics:node-metrics","params":{"nodes":[{"nodeId":"22222222-2222-2222-2222-222222222222","totals":{"requests":12,"prefillTokens":1440,"decodeTokens":408,"cachedTokens":900,"prefillMs":15000,"decodeMs":54000,"ttftMs":15600,"ttftRequests":12,"tokenRequests":12,"prefillRequests":12,"decodeRequests":12},"rates":{"prefillTokensPerSecond":96,"decodeTokensPerSecond":7.55,"meanTtftMs":1300},"models":[{"model":"mlx-community/Qwen2.5-Coder-7B-Instruct-4bit","totals":{"requests":12,"prefillTokens":1440,"decodeTokens":408,"cachedTokens":900,"prefillMs":15000,"decodeMs":54000,"ttftMs":15600,"ttftRequests":12,"tokenRequests":12,"prefillRequests":12,"decodeRequests":12}}]}]}}
+```
+
 #### `errors:update`
 
 The full service-error snapshot from `nvpair-errors`, relayed verbatim on every change (a bare `ServiceError[]`). **Not opt-in:** following the established error-reporting protocol the broker forwards it unconditionally. Every supervised worker's `errors:report` / `errors:clear` — proxy upstream-unreachable, engine-manager install/exit failures, manual-node probe failures, and the supervisor's own `supervisor:subprocess-crashed:<name>` — is forwarded into `nvpair-errors`, deduped there, and re-emitted here. A client can also inject its own `errors:report` (see Requests below); it is forwarded into `nvpair-errors` the same way a worker's is.
@@ -574,6 +591,38 @@ Response:
 #### `workloads:get-initial`
 
 Returns `{ "workloads": [Workload, ...] }`, the broker's full-fidelity current and historic workload snapshot. Active records are kept in memory; bounded completed/failed history is persisted across broker restarts. The scheduler uses an internal active-only replay of the same catalog when its subprocess restarts.
+
+#### `metrics:get-node-metrics`
+
+Returns `{ "nodes": [NodeSnapshot, ...] }`, the broker's full per-node inference-metrics snapshot. It is the same object the `metrics:node-metrics` push carries, and is how a client hydrates after subscribing.
+
+The request is safe to call on a cadence: it is a pure read of the broker's current state, and it returns the broker's own windowed rates rather than the last pushed ones. The desktop re-reads it every five seconds, because the push is measurement-driven — a node's rate decays toward zero as its 60-second window empties, and that decay is never pushed because nothing was measured, so a push-only client would show the last pushed rate indefinitely.
+
+Each entry holds:
+
+| Field | Meaning |
+| --- | --- |
+| `nodeId` | The node the totals belong to. A node that has served traffic but is idle now still appears, with zeroed rates. |
+| `totals` | Totals **since the broker started** — they restart with the broker and are not the life of the engine: `requests`, the summed `prefillTokens`, `decodeTokens`, `cachedTokens`, `prefillMs`, `decodeMs` and `ttftMs`, plus the presence counters `tokenRequests`, `prefillRequests`, `decodeRequests` and `ttftRequests`. |
+| `rates` | The node's current throughput over the broker's 60-second rolling window: `prefillTokensPerSecond`, `decodeTokensPerSecond` and the mean `meanTtftMs`. A rate whose denominator is zero is zero, never NaN. |
+| `models` | The same totals broken down per model, ordered by model id. |
+
+The **presence counters** are what make the totals readable. A rate of `0` is ambiguous on its own: an engine that reported no prefill duration looks identical to one that reported a zero-length prefill. A counter of zero means the engine never reported that value at all, so a consumer can show "not reported" instead of a real `0 tok/s`. `tokenRequests` counts the requests that reported at least one token count, `prefillRequests` and `decodeRequests` the requests that reported each phase duration, and `ttftRequests` the requests that reported a time-to-first-token — which is also the denominator of `meanTtftMs`, so a request without a TTFT cannot dilute the mean of the ones that had one.
+
+The rates are computed over the broker's own clock, never by comparing a relayed event's timestamp to the local clock. Two members of the cluster can therefore hold slightly different sample sets at a window boundary and report slightly different instantaneous rates, while their totals agree exactly.
+
+Only the values the engine reported are summed, so an absent value never contributes a zero to a sum it did not measure, and a reported zero contributes a zero for the reason a consumer can rely on. `cachedTokens` is the total the engines reported for the node's traffic — only oMLX reports a cached-token count, and a request that missed the prefix cache reports zero. The desktop shows that count per job, where the engine reported one; it shows no node-level cached total, because the node's totals carry no counter for the requests that reported a cached count, and such a total would read as a measured zero on a node whose engine never measured one.
+
+#### `metrics:subscribe` / `metrics:unsubscribe`
+
+Opt into / out of the `metrics:node-metrics` push (off by default, like `workloads:subscribe`). Acks `{ subscribed: bool }`. No baseline is pushed automatically — call `metrics:get-node-metrics` for the initial snapshot, exactly as with the workload stream.
+
+```json
+{"jsonrpc":"2.0","id":16,"method":"metrics:subscribe"}
+{"jsonrpc":"2.0","id":16,"result":{"subscribed":true}}
+```
+
+Idempotent; per-connection state, not persisted across reconnects.
 
 #### `errors:get-initial`
 

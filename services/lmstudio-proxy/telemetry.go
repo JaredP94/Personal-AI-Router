@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/telemetry"
 )
 
@@ -119,6 +120,13 @@ type telemetryBodyReader struct {
 	promptTokens        int
 	outputTokens        int
 	responseModel       string
+
+	// measurementMu guards measurement, which is accumulated while the
+	// response streams in and read once the stream is done. The measurement
+	// is kept independently of the span: with telemetry disabled no span is
+	// recording, but the engine's numbers are still reported.
+	measurementMu sync.Mutex
+	measurement   inferencemetrics.Measurement
 }
 
 func newTelemetryBodyReader(body io.ReadCloser, span trace.Span, start time.Time, session *telemetry.Session) *telemetryBodyReader {
@@ -195,12 +203,15 @@ type streamChunk struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-	Done            bool `json:"done"`
-	PromptEvalCount int  `json:"prompt_eval_count"`
-	EvalCount       int  `json:"eval_count"`
-	Usage           *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+	Done bool `json:"done"`
+	// The token counts LM Studio reports on its OpenAI-compatible surface.
+	// They are pointer-typed so a count the engine reported as zero stays a
+	// measured zero, while a chunk that carries no usage at all leaves the
+	// field absent. This proxy only ever fronts LM Studio, so the usage
+	// block is the engine's own source of truth for both counts.
+	Usage *struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
 	} `json:"usage"`
 }
 
@@ -223,19 +234,25 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 	if chunk.Model != "" && r.responseModel == "" {
 		r.responseModel, _ = telemetry.TruncateUTF8(chunk.Model, 256)
 	}
-	if chunk.PromptEvalCount > 0 {
-		r.promptTokens = chunk.PromptEvalCount
-	}
-	if chunk.EvalCount > 0 {
-		r.outputTokens = chunk.EvalCount
-	}
 	if chunk.Usage != nil {
-		if chunk.Usage.PromptTokens > 0 {
-			r.promptTokens = chunk.Usage.PromptTokens
+		if chunk.Usage.PromptTokens != nil && *chunk.Usage.PromptTokens > 0 {
+			r.promptTokens = *chunk.Usage.PromptTokens
 		}
-		if chunk.Usage.CompletionTokens > 0 {
-			r.outputTokens = chunk.Usage.CompletionTokens
+		if chunk.Usage.CompletionTokens != nil && *chunk.Usage.CompletionTokens > 0 {
+			r.outputTokens = *chunk.Usage.CompletionTokens
 		}
+		// The engine's own token counts. Only what the engine reported is
+		// recorded: a value it did not report stays absent instead of
+		// becoming a zero. LM Studio reports no phase split, so every
+		// duration stays absent.
+		r.measurementMu.Lock()
+		if chunk.Usage.PromptTokens != nil {
+			r.measurement.PrefillTokens = inferencemetrics.IntPtr(*chunk.Usage.PromptTokens)
+		}
+		if chunk.Usage.CompletionTokens != nil {
+			r.measurement.DecodeTokens = inferencemetrics.IntPtr(*chunk.Usage.CompletionTokens)
+		}
+		r.measurementMu.Unlock()
 	}
 	if r.session.RecordPayloads() && !r.completionTruncated {
 		var toAppend string
@@ -256,6 +273,15 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 		r.completionBuf.WriteString(part)
 		r.completionTruncated = truncated
 	}
+}
+
+// Measurement returns the inference measurement parsed from the response
+// stream so far. It is readable whether or not a span is recording, so the
+// workload event carries the engine's numbers even with telemetry disabled.
+func (r *telemetryBodyReader) Measurement() inferencemetrics.Measurement {
+	r.measurementMu.Lock()
+	defer r.measurementMu.Unlock()
+	return r.measurement
 }
 
 func (r *telemetryBodyReader) finalize() {
