@@ -186,11 +186,25 @@ One lifecycle transition per forwarded inference request, carrying a single `wor
 {"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"17","model":"mlx-community/Qwen2.5-Coder-7B-Instruct-4bit","engine":"omlx","runId":"3ce8a1740b62df95","state":"running","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}
 ```
 
-The terminal transition also carries the engine's own inference measurement, taken from the `usage` block oMLX reports on its final chunk: `prefillTokens`, `decodeTokens` and `cachedTokens` are token counts, and `prefillMs`, `decodeMs`, `ttftMs` and `totalMs` are the phase durations in milliseconds. Every field is optional and present only when oMLX reported that value — a phase the engine did not measure stays absent rather than becoming a zero. The measurement is reported whether or not telemetry is enabled, and is absent for a request that was cancelled before the engine finished.
+The terminal transition also carries the engine's own inference measurement, taken from the `usage` block oMLX reports on its final chunk:
 
 ```json
 {"jsonrpc":"2.0","method":"workload:completed","params":{"workloadInfo":{"id":"17","model":"mlx-community/Qwen2.5-Coder-7B-Instruct-4bit","engine":"omlx","runId":"3ce8a1740b62df95","state":"completed","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":1716998406120,"error":null,"requesterId":null,"prefillTokens":120,"decodeTokens":34,"cachedTokens":90,"prefillMs":1250,"decodeMs":4500,"ttftMs":1300,"totalMs":5900}}}
 ```
+
+| Field | Meaning | oMLX source |
+| --- | --- | --- |
+| `prefillTokens` | Prompt tokens processed before the first output token | `usage.prompt_tokens`, or the chunk's `prompt_eval_count` |
+| `decodeTokens` | Output tokens generated | `usage.completion_tokens`, or the chunk's `eval_count` |
+| `cachedTokens` | Prompt tokens served from the engine's prefix cache | `usage.prompt_tokens_details.cached_tokens` |
+| `prefillMs` | Time the engine spent prefilling | `usage.prompt_eval_duration` (seconds, converted to milliseconds) |
+| `decodeMs` | Time the engine spent generating | `usage.generation_duration` (seconds, converted to milliseconds) |
+| `ttftMs` | Time to first token | `usage.time_to_first_token` (seconds, converted to milliseconds) |
+| `totalMs` | Total generation time | `usage.total_time` (seconds, converted to milliseconds) |
+
+Every field is optional and present only when oMLX reported that value — a phase the engine did not measure stays absent rather than becoming a zero. The numbers are the engine's own measurements; the proxy never estimates a phase it cannot observe. The measurement is reported whether or not telemetry is enabled, and is absent for a request that was cancelled before the engine finished. `cachedTokens` is the cached subset of the prompt, reported separately: it is not subtracted from `prefillTokens`.
+
+oMLX emits that streaming `usage` chunk only when the request asks for it, so the proxy asks on the client's behalf: for a streaming request to an inference route whose body is a JSON object and carries no `stream_options` of its own, the forwarded body is a copy with `{"stream_options":{"include_usage":true}}` added. The client's own body is never modified in place, a client-supplied `stream_options` is never overridden, a non-streaming request is forwarded unchanged, and every failover attempt replays the same body.
 
 #### `node/activity`
 

@@ -104,12 +104,32 @@ Defined in [`workload.go`](workload.go):
 | `createdAt`, `startedAt`, `completedAt` | Epoch milliseconds; the last two are nullable |
 | `error` | Normalized failure text, nullable |
 | `requesterId` | Optional client attribution, nullable |
+| `prefillTokens`, `decodeTokens`, `cachedTokens` | Optional token counts the engine reported for this request, nullable |
+| `prefillMs`, `decodeMs`, `ttftMs`, `totalMs` | Optional phase durations in milliseconds, nullable |
 
 Optional and nullable fields use pointers so a peer's payload round-trips without
 inventing zero values.
 
 Prompts, messages, and response bodies are **not** part of this contract and must
 never be added to it.
+
+### The inference measurement
+
+The token counts and phase durations above are the engine's own measurement of
+the request, taken by the proxy that forwarded it. They are the only inference
+performance data the workload contract carries, and they are metadata: counts
+and durations, never content.
+
+The manager treats them as opaque payload. It broadcasts every lifecycle frame
+to the pinned peers unchanged, so a measurement taken on one node reaches every
+other node in the cluster, where each broker attributes it to the node that
+served the request. A member running an older workload-manager drops the
+measurement from remote jobs, so the cluster-wide view of the numbers is only
+as complete as its newest members.
+
+A value the engine did not report stays absent, and stays absent through the
+broadcast: the manager never fills in a zero and never rejects a lifecycle
+event over a missing measurement.
 
 ## Output to the broker
 

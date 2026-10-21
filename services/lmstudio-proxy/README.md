@@ -186,6 +186,17 @@ One lifecycle transition per forwarded inference request, carrying a single `wor
 {"jsonrpc":"2.0","method":"workload:started","params":{"workloadInfo":{"id":"17","model":"lmstudio-community/Qwen3-8B-GGUF","engine":"lmstudio","runId":"3ce8a1740b62df95","state":"running","originatedFrom":"","scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,"startedAt":1716998400000,"completedAt":null,"error":null,"requesterId":null}}}
 ```
 
+The terminal transition also carries the engine's own inference measurement, taken from the values LM Studio reports in the response's `usage` block:
+
+| Field | Meaning | LM Studio source |
+| --- | --- | --- |
+| `prefillTokens` | Prompt tokens processed before the first output token | `usage.prompt_tokens` |
+| `decodeTokens` | Output tokens generated | `usage.completion_tokens` |
+
+Every field is optional and present only when LM Studio reported that value. The numbers are the engine's own measurements; the proxy never estimates a phase it cannot observe. The measurement is reported whether or not telemetry is enabled, and is absent for a request that was cancelled before the engine finished.
+
+**LM Studio reports no phase split.** It publishes token counts but no prefill or decode duration, no time to first token and no total duration, so `prefillMs`, `decodeMs`, `ttftMs` and `totalMs` are always absent for this engine, as is `cachedTokens`. The desktop renders those phases as "not reported" rather than as a zero. Deriving them from PAIR's own timings would be wrong on both request shapes — a streaming response's first bytes are often a role-only delta emitted before the engine has prefilled anything, and a non-streaming response is computed in full before the headers arrive, which would collapse the split into "all prefill, no decode".
+
 #### `node/activity`
 
 Raised while a node's engine is streaming a response back through the proxy: every successful write of upstream body bytes reports the node that produced them. The broker relays it to `nvpair-node-scanner`, which treats it as proof of life and cancels that node's eviction — a node saturated by inference cannot answer a liveness probe, but it is demonstrably alive precisely because it is streaming. Coalesced to one report per node per 2s (`nvpair-shared/nodeactivity`), since a generation writes hundreds of chunks and the scanner treats one report as good for a minute. `msSince` is the age of the observation; the broker adds its own relay delay before passing it on.
