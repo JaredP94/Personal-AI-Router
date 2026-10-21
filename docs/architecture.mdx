@@ -993,10 +993,14 @@ finish.
   never enters the workload catalog and never changes a job's state; a
   terminal event retires the job's live view, so a frame that arrives late
   cannot bring a finished job back to life.
-- **The job's identity:** A live view is keyed by the origin node plus
-  PAIR's job id, the same pair the workload catalog uses. PAIR's job id is a
-  per-proxy counter, so two origins can both hold a job "1"; only the origin
-  tells their jobs apart.
+- **The job's identity:** A live view is keyed by the origin node, the
+  engine and PAIR's job id, the same identity the workload catalog uses
+  (which adds the run id). PAIR's job id is a per-proxy counter, so two
+  origins can both hold a job "1" — and every engine's proxy counts from 1
+  as well, so an oMLX job "1" and an Ollama job "1" on one node are two
+  different jobs. Only the origin and the engine together tell two jobs
+  apart. The run id says which run a job id belongs to, so a proxy that
+  restarted and counts from 1 again never inherits the old job's numbers.
 - **What the desktop shows:** A running job shows the live line — the elapsed
   time and the chunks and bytes that arrived — plus the engine's own live
   reading when the engine reported one. A finished job shows the final exact

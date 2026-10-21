@@ -1412,8 +1412,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					telReader = reader
 					resp.Body = reader
-					if engineReqID != "" {
-						p.bindEngineJob(&engineJob{jobID: reqID, engineReqID: engineReqID})
+					if engineReqID != "" && bindsLocalEngineJob(cand) {
+						p.bindEngineJob(&engineJob{jobID: reqID, engineReqID: engineReqID, runID: p.runID})
 						boundEngineReqIDs = append(boundEngineReqIDs, engineReqID)
 					}
 				} else {
@@ -1644,6 +1644,18 @@ func serveReverseProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *h
 	return false
 }
 
+// bindsLocalEngineJob reports whether this proxy's own activity poller should
+// pair the engine's request id of a job served by the given candidate.
+//
+// Only a job this node's own engine serves is bound locally. A peer
+// candidate is served by the PEER's engine: the peer pairs the engine's
+// request id with the job id itself and publishes the engine's rows, so
+// binding it here would only make the local poller hunt a peer engine's
+// request id in the local engine's rows.
+func bindsLocalEngineJob(cand candidate) bool {
+	return cand.peerUUID == ""
+}
+
 // forwardDirector rewrites a request for the candidate it is about to be
 // forwarded to.
 //
@@ -1651,8 +1663,10 @@ func serveReverseProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *h
 // serving peer can pair the engine's request id with it and publish the
 // engine's live rows already keyed by that job id. It carries the origin
 // node's id too: the job id is a per-proxy counter, so two origins can both
-// hold a job "1", and only the origin tells their jobs apart. Both headers
-// are random per-request identifiers that carry no content, and they are not
+// hold a job "1", and only the origin tells their jobs apart. It carries the
+// run nonce as well: a proxy that restarts counts its jobs from 1 again, and
+// the run nonce says which run the job id belongs to. All three headers are
+// random per-request identifiers that carry no content, and they are not
 // routing inputs: the ingress stays strictly terminal and never re-routes a
 // peer's request onward.
 func (p *Proxy) forwardDirector(cand candidate, jobID string) func(*http.Request) {
@@ -1669,6 +1683,9 @@ func (p *Proxy) forwardDirector(cand candidate, jobID string) func(*http.Request
 			req.Header.Set(nvpairRequestIDHeader, jobID)
 			if p.nodeID != "" {
 				req.Header.Set(nvpairOriginNodeHeader, p.nodeID)
+			}
+			if p.runID != "" {
+				req.Header.Set(nvpairRunIDHeader, p.runID)
 			}
 		}
 		stripTraceContext(req.Header)

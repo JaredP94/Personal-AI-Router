@@ -337,7 +337,8 @@ broker's **live view of one running request** — a snapshot, not a state
 transition. It never enters the workload catalog and never changes a job's
 state; a `workloads:upsert` that reports a job finished retires its live
 view, so a frame that arrives after the terminal event is dropped rather than
-resurrecting a finished job.
+resurrecting a finished job. A `workloads:remove` retires the job wherever
+it ran, and the retirement covers every view it removed.
 
 A frame is a **partial** view, and merging is field by field. Two different
 nodes publish under the same job id: the origin proxy publishes the facts
@@ -345,7 +346,7 @@ PAIR measured of the client's stream (the elapsed time, the content chunks
 received, the response bytes received, the time to the first byte), and the
 serving node publishes what the engine reported of its own request. Neither
 publisher can see the other's facts, so a field a frame does not carry means
-"not measured here" and never "zero". The engine's object is the one
+"not measured here" and never "zero". The engine's reading is the one
 exception: it is a single reading of a single engine row, so it is replaced
 as a unit rather than merged field by field. What the client receives is the
 **merged** view, so it always sees the fullest picture the node has of that
@@ -354,21 +355,31 @@ job.
 | Field | Notes |
 | --- | --- |
 | `jobId` | PAIR's own id for the request; the same id the workload lifecycle events carry |
-| `originatedFrom` | the node the request entered the cluster on — the origin, and the half of the identity a job is keyed by (PAIR's job id is a per-proxy counter, so two origins can both hold a job "1") |
+| `originatedFrom` | the node the request entered the cluster on — the origin, and part of the identity a job is keyed by (PAIR's job id is a per-proxy counter, so two origins can both hold a job "1") |
+| `engine` | the engine that serves the job — `omlx`, `ollama` or `lmstudio`. It is part of the identity too: every proxy counts its own requests from 1, so an oMLX job "1" and an Ollama job "1" on one node are two different jobs |
+| `runId` | the origin proxy's per-process run nonce, the same value the workload carries. It tells a recycled job id from the job it replaced: a proxy that restarts counts from 1 again |
 | `nodeId` | the node that is **serving** the request, when the request was forwarded to a peer |
 | `elapsedMs` | the time since the request reached the proxy |
 | `chunks` | the content chunks received so far — a chunk count is never a token count |
 | `bytes` | the response body bytes received so far |
 | `ttfbMs` | the time to the first response byte, absent until a byte has arrived |
-| `engine` | the engine's own live reading: `requestId`, `phase` (`waiting`, `prefilling`, `generating`), `generatedTokens`, `tokensPerSecond`, `prefillProgress`, `queuePosition`. Absent when the engine reported nothing (only oMLX reports live numbers) |
+| `engineProgress` | the engine's own live reading: `requestId`, `phase` (`waiting`, `prefilling`, `generating`), `generatedTokens`, `tokensPerSecond`, `prefillProgress`, `queuePosition`. Absent when the engine reported nothing (only oMLX reports live numbers) |
 
-Every field but the job id is optional and omitted when it was not measured,
-so a measured zero stays distinguishable from an absent measurement. The
-broker keeps a bounded number of live views, so a node that never sees a
-job's terminal event cannot accumulate them forever.
+The broker keys a live view by the **origin, the engine and the job id** —
+the same identity the frames carry. The engine is in the key because every
+proxy counts its own requests from 1: without it, an oMLX job "1" and an
+Ollama job "1" on the same node would share one view, and one job's counts
+would be shown on the other job's card. The serving node is deliberately
+**not** in the key: the origin, the engine and the job id already identify
+the job, and every frame of one job carries the same origin and engine.
+
+Every field but the job id and the engine is optional and omitted when it was
+not measured, so a measured zero stays distinguishable from an absent
+measurement. The broker keeps a bounded number of live views, so a node that
+never sees a job's terminal event cannot accumulate them forever.
 
 ```json
-{"jsonrpc":"2.0","method":"workloads:progress","params":{"jobId":"42","originatedFrom":"MY-PC","nodeId":"GPU-RIG","elapsedMs":1840,"chunks":96,"bytes":24576,"ttfbMs":112}}
+{"jsonrpc":"2.0","method":"workloads:progress","params":{"jobId":"42","originatedFrom":"MY-PC","engine":"omlx","runId":"a1b2c3","nodeId":"GPU-RIG","elapsedMs":1840,"chunks":96,"bytes":24576,"ttfbMs":112}}
 ```
 
 #### `metrics:node-metrics`

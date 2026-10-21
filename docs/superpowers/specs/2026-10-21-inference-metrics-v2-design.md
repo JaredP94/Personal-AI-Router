@@ -107,9 +107,13 @@ papering over it.
 **A1. A new endpoint on the engine-manager's em surface.**
 
 `GET /v1/engine-stats` and `GET /v1/engine-activity`, registered on the same
-listener as `/v1/models` and behind the same two gates (plaintext → loopback
-only; TLS → pinned peers). The engine-manager already holds the local engine's
-URL and the oMLX API key (`services/nvpair-engine-manager/actions.go`).
+listener as `/v1/models`. The stats path is cluster inventory and is served
+behind the same two gates as `/v1/models` (plaintext → loopback only; TLS →
+pinned peers). The activity path is this node's own live engine rows: only
+this node's own proxy reads it, over loopback, so the TLS personality does
+not serve the path at all — no peer reads another node's live engine rows.
+The engine-manager already holds the local engine's URL and the oMLX API key
+(`services/nvpair-engine-manager/actions.go`).
 
 The response is **PAIR's own type, not oMLX's payload**. That is a security
 decision as much as a stability one: oMLX's `/admin/api/stats` includes
@@ -218,7 +222,7 @@ switches to v1's final, exact numbers.
 
 | Frame | Contents | Never included |
 | --- | --- | --- |
-| `workload:progress` | PAIR job id, node id, elapsed, chunks, bytes, and (oMLX) the engine's token count, rate, prefill progress | prompt text, response text, model prompt content, the oMLX API key |
+| `workload:progress` | PAIR job id, origin, engine, run id, node id, elapsed, chunks, bytes, and (oMLX) the engine's token count, rate, prefill progress | prompt text, response text, model prompt content, the oMLX API key |
 | engine-native node record | totals, rates, cache efficiency, loaded model names | the API key (not in PAIR's type), prompt or response content, engine-internal paths |
 
 The engine-native record includes **model names**, which is the same class of
@@ -243,8 +247,12 @@ publishes):
 }
 ```
 
-Absent when the engine has no admin API or the fetch failed — absence is
-"unknown", never a zero.
+A node that has **never produced** a view has none: its engine publishes no
+admin API, or it could not be reached. A node whose **fetch fails** keeps the
+view it had — the last-good rule the model list follows too — so a transient
+engine outage never blanks a card. The stale `observedAt` is how a reader
+sees it: it does not advance while the fetch fails, and the age of the stamp
+is the signal that the view is no longer fresh.
 
 **Progress frame** (a new workload-manager pass-through method):
 
@@ -252,17 +260,33 @@ Absent when the engine has no admin API or the fetch failed — absence is
 {
   "jobId": "17",
   "nodeId": "<the node serving the job>",
+  "originatedFrom": "<the node the request entered the cluster on>",
+  "engine": "omlx",
+  "runId": "<the origin proxy's per-process run nonce>",
   "elapsedMs": 4200,
   "chunks": 34,
   "bytes": 1820,
   "ttfbMs": 260,
-  "engine": { "requestId": "...", "generatedTokens": 34, "tokensPerSecond": 62.1,
-              "prefillProgress": 0.62, "queuePosition": 0 }
+  "engineProgress": { "requestId": "...", "generatedTokens": 34, "tokensPerSecond": 62.1,
+                      "prefillProgress": 0.62, "queuePosition": 0 }
 }
 ```
 
-The `engine` object is absent when the engine reports no live progress. Every
-number in it is measured by the engine.
+`originatedFrom` is absent on a frame a proxy publishes — the proxy cannot
+know it is the origin of a job it forwarded onward — and the origin's own
+broker stamps it, exactly as it stamps `originatedFrom` onto a workload
+lifecycle event. A frame that already names an origin is not re-stamped.
+
+`engine` names the engine that serves the job and `runId` the origin proxy's
+per-process run nonce. Both are part of the job's identity: every proxy
+counts its own requests from 1, so an oMLX job "1" and an Ollama job "1" on
+one node are two different jobs, and a proxy that restarts counts from 1
+again. The broker keys a live view by `(originatedFrom, engine, jobId)` — the
+serving node is deliberately not in the key — and a client looks the view up
+by the same triple.
+
+The `engineProgress` object is absent when the engine reports no live
+progress. Every number in it is measured by the engine.
 
 ## 6. Testing
 
@@ -289,6 +313,9 @@ number in it is measured by the engine.
   against the lifecycle event that shares its job id.
 - Rate limiting: twenty frames for one job in a second produce at most one
   emission per two-second window.
+- The live view is keyed by `(originatedFrom, engine, jobId)`: an oMLX job "1"
+  and an Ollama job "1" on one node keep separate views, and a frame that
+  arrives after the job's terminal event does not resurrect a finished job.
 
 **Desktop**
 - A running oMLX job shows the engine's live token count and rate; a running

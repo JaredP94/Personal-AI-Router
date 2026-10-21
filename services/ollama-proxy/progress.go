@@ -49,6 +49,15 @@ type ProgressFrame struct {
 	// proxy forwarded to a peer it is the peer's id, not this node's: the
 	// frame describes where the work runs.
 	NodeID string `json:"nodeId,omitempty"`
+	// Engine is the engine that serves the job. It is part of the job's
+	// identity, not decoration: every proxy counts its own requests from
+	// 1, so an Ollama job "1" and an oMLX job "1" on the same node are two
+	// different jobs, and only the engine tells them apart.
+	Engine string `json:"engine"`
+	// RunID is this proxy's per-process run nonce — the same value the
+	// workload carries as `runId`. It tells a recycled job id from the job
+	// it replaced: a proxy that restarts counts its jobs from 1 again.
+	RunID string `json:"runId,omitempty"`
 	// ElapsedMs is the time since the request reached the proxy.
 	ElapsedMs *int64 `json:"elapsedMs,omitempty"`
 	// Chunks is the number of content chunks received so far.
@@ -102,6 +111,8 @@ func (p *Proxy) publishProgress(jobID, nodeID string, start time.Time, limiter *
 	frame := ProgressFrame{
 		JobID:     jobID,
 		NodeID:    nodeID,
+		Engine:    workloadEngine,
+		RunID:     p.runID,
 		ElapsedMs: inferencemetrics.Int64Ptr(now.Sub(start).Milliseconds()),
 		Chunks:    inferencemetrics.Int64Ptr(prog.Chunks),
 		Bytes:     inferencemetrics.Int64Ptr(prog.Bytes),

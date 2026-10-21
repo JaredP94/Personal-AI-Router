@@ -125,7 +125,10 @@ func TestIngressPairsTheEngineRequestIdWithTheJobId(t *testing.T) {
 		defer close(done)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
 		req.Header.Set(nvpairRequestIDHeader, "job-42")
-		p.serveLocalEngine(httptest.NewRecorder(), req, target, req.Header.Get(nvpairRequestIDHeader), req.Header.Get(nvpairOriginNodeHeader))
+		p.serveLocalEngine(httptest.NewRecorder(), req, target,
+			req.Header.Get(nvpairRequestIDHeader),
+			req.Header.Get(nvpairOriginNodeHeader),
+			req.Header.Get(nvpairRunIDHeader))
 	}()
 
 	waitFor(t, "the engine request id to be paired with the job id", func() bool {
@@ -282,7 +285,7 @@ func TestPublishedEngineRowsCarryOnlyReportedValues(t *testing.T) {
 	var frame *ProgressFrame
 	waitFor(t, "a progress frame carrying the engine's row", func() bool {
 		for _, candidate := range progressFrames(t, rec) {
-			if candidate.Engine != nil && candidate.Engine.RequestID == "eng-123" {
+			if candidate.EngineProgress != nil && candidate.EngineProgress.RequestID == "eng-123" {
 				frame = &candidate
 				return true
 			}
@@ -290,7 +293,7 @@ func TestPublishedEngineRowsCarryOnlyReportedValues(t *testing.T) {
 		return false
 	})
 
-	engineProgress := frame.Engine
+	engineProgress := frame.EngineProgress
 	if engineProgress.Phase != enginenative.PhaseGenerating {
 		t.Fatalf("phase = %q, want %q", engineProgress.Phase, enginenative.PhaseGenerating)
 	}
@@ -363,13 +366,16 @@ func TestPeerPublishesTheEngineRowsUnderTheOriginsJobId(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
 		req.Header.Set(nvpairRequestIDHeader, "job-99")
 		req.Header.Set(nvpairOriginNodeHeader, "origin-a")
-		p.serveLocalEngine(httptest.NewRecorder(), req, target, req.Header.Get(nvpairRequestIDHeader), req.Header.Get(nvpairOriginNodeHeader))
+		p.serveLocalEngine(httptest.NewRecorder(), req, target,
+			req.Header.Get(nvpairRequestIDHeader),
+			req.Header.Get(nvpairOriginNodeHeader),
+			req.Header.Get(nvpairRunIDHeader))
 	}()
 
 	var frame *ProgressFrame
 	waitFor(t, "a progress frame carrying the engine's row", func() bool {
 		for _, candidate := range progressFrames(t, rec) {
-			if candidate.Engine != nil && candidate.Engine.RequestID == "eng-789" {
+			if candidate.EngineProgress != nil && candidate.EngineProgress.RequestID == "eng-789" {
 				frame = &candidate
 				return true
 			}
@@ -386,11 +392,11 @@ func TestPeerPublishesTheEngineRowsUnderTheOriginsJobId(t *testing.T) {
 	if frame.NodeID != "node-peer" {
 		t.Fatalf("the frame names node %q, want the serving node", frame.NodeID)
 	}
-	if frame.Engine.Phase != enginenative.PhasePrefilling {
-		t.Fatalf("phase = %q, want %q", frame.Engine.Phase, enginenative.PhasePrefilling)
+	if frame.EngineProgress.Phase != enginenative.PhasePrefilling {
+		t.Fatalf("phase = %q, want %q", frame.EngineProgress.Phase, enginenative.PhasePrefilling)
 	}
-	if frame.Engine.GeneratedTokens == nil || *frame.Engine.GeneratedTokens != 12 {
-		t.Fatalf("generated tokens = %v, want the engine's reported 12", frame.Engine.GeneratedTokens)
+	if frame.EngineProgress.GeneratedTokens == nil || *frame.EngineProgress.GeneratedTokens != 12 {
+		t.Fatalf("generated tokens = %v, want the engine's reported 12", frame.EngineProgress.GeneratedTokens)
 	}
 
 	releaseEngine()
@@ -440,7 +446,7 @@ func TestEngineActivityFallsBackToTheEngineAdminAPI(t *testing.T) {
 	disc.AddManual(nodeForModel(t, "serving-node", engine.URL, "llama"))
 	p := NewProxy(NewCodec(rec), disc, 1235)
 	p.nodeID = "node-self"
-	// The local backend is the engine the fallback reads.
+	// The local engine is the one the fallback reads.
 	target, err := url.Parse(engine.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -465,7 +471,7 @@ func TestEngineActivityFallsBackToTheEngineAdminAPI(t *testing.T) {
 	var frame *ProgressFrame
 	waitFor(t, "a progress frame carrying the engine's row", func() bool {
 		for _, candidate := range progressFrames(t, rec) {
-			if candidate.Engine != nil && candidate.Engine.RequestID == "eng-321" {
+			if candidate.EngineProgress != nil && candidate.EngineProgress.RequestID == "eng-321" {
 				frame = &candidate
 				return true
 			}
@@ -473,16 +479,72 @@ func TestEngineActivityFallsBackToTheEngineAdminAPI(t *testing.T) {
 		return false
 	})
 
-	if frame.Engine.GeneratedTokens == nil || *frame.Engine.GeneratedTokens != 5 {
-		t.Fatalf("generated tokens = %v, want the engine's reported 5", frame.Engine.GeneratedTokens)
+	if frame.EngineProgress.GeneratedTokens == nil || *frame.EngineProgress.GeneratedTokens != 5 {
+		t.Fatalf("generated tokens = %v, want the engine's reported 5", frame.EngineProgress.GeneratedTokens)
 	}
-	if frame.Engine.TokensPerSecond == nil || *frame.Engine.TokensPerSecond != 12.5 {
-		t.Fatalf("tokens per second = %v, want the engine's reported 12.5", frame.Engine.TokensPerSecond)
+	if frame.EngineProgress.TokensPerSecond == nil || *frame.EngineProgress.TokensPerSecond != 12.5 {
+		t.Fatalf("tokens per second = %v, want the engine's reported 12.5", frame.EngineProgress.TokensPerSecond)
 	}
-	if frame.Engine.Phase != enginenative.PhaseGenerating {
-		t.Fatalf("phase = %q, want %q", frame.Engine.Phase, enginenative.PhaseGenerating)
+	if frame.EngineProgress.Phase != enginenative.PhaseGenerating {
+		t.Fatalf("phase = %q, want %q", frame.EngineProgress.Phase, enginenative.PhaseGenerating)
 	}
 
 	releaseEngine()
 	<-done
+}
+
+// TestForwardedPeerRequestCarriesTheRunId: a request forwarded to a cluster
+// peer carries the origin proxy's run nonce alongside the job id. A proxy
+// that restarts counts its jobs from 1 again, and the run nonce says which
+// run the job id belongs to, so the serving peer never takes the job "1" of
+// the new run for the job "1" of the old one.
+func TestForwardedPeerRequestCarriesTheRunId(t *testing.T) {
+	p := testProxy(NewDiscovery(), 1235)
+	p.nodeID = "node-origin"
+
+	peer := candidate{
+		id:       "peer-a",
+		url:      &url.URL{Scheme: "https", Host: "192.0.2.10:1234"},
+		peerUUID: "principal-peer",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	p.forwardDirector(peer, "42")(req)
+	if got := req.Header.Get(nvpairRunIDHeader); got != p.runID {
+		t.Fatalf("%s = %q, want the proxy's run nonce %q", nvpairRunIDHeader, got, p.runID)
+	}
+
+	// A request that is not forwarded to a peer carries no run nonce: the
+	// peer is the only node that needs it.
+	local := candidate{
+		id:  "local-node",
+		url: &url.URL{Scheme: "http", Host: "127.0.0.1:8000"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	p.forwardDirector(local, "42")(req)
+	if got := req.Header.Get(nvpairRunIDHeader); got != "" {
+		t.Fatalf("%s = %q, want it absent on a request that is not forwarded to a peer", nvpairRunIDHeader, got)
+	}
+}
+
+// TestTheLocalPollerDoesNotBindAPeerServedJob: a job served by a cluster
+// peer is served by the PEER's engine, and the peer pairs the engine's
+// request id with the job id itself. The local poller must not bind it: it
+// would hunt a peer engine's request id in the local engine's rows.
+func TestTheLocalPollerDoesNotBindAPeerServedJob(t *testing.T) {
+	peer := candidate{
+		id:       "peer-a",
+		url:      &url.URL{Scheme: "https", Host: "192.0.2.10:1234"},
+		peerUUID: "principal-peer",
+	}
+	if bindsLocalEngineJob(peer) {
+		t.Fatal("a peer-served job is bound in the local activity poller")
+	}
+
+	local := candidate{
+		id:  "local-node",
+		url: &url.URL{Scheme: "http", Host: "127.0.0.1:8000"},
+	}
+	if !bindsLocalEngineJob(local) {
+		t.Fatal("a job the local engine serves is not bound in the local activity poller")
+	}
 }

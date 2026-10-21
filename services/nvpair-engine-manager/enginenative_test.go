@@ -384,14 +384,6 @@ func TestEngineNativeSurfaceIsGatedLikeTheModelList(t *testing.T) {
 			t.Fatalf("%s from a LAN caller: code = %d, want 403", path, rec.Code)
 		}
 
-		// The mTLS personality admits no unpinned caller.
-		rec = httptest.NewRecorder()
-		req = httptest.NewRequest(http.MethodGet, path, nil)
-		tlsMux.ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("%s over mTLS without a pin: code = %d, want 403", path, rec.Code)
-		}
-
 		// The paths are GET-only.
 		rec = httptest.NewRecorder()
 		req = httptest.NewRequest(http.MethodPost, path, nil)
@@ -400,5 +392,40 @@ func TestEngineNativeSurfaceIsGatedLikeTheModelList(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s over POST: code = %d, want 405", path, rec.Code)
 		}
+	}
+
+	// The mTLS personality admits no unpinned caller.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, engineStatsPath, nil)
+	tlsMux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("%s over mTLS without a pin: code = %d, want 403", engineStatsPath, rec.Code)
+	}
+}
+
+// TestTheLiveActivityPathIsNotServedToPeers: the engine's live rows are this
+// node's own business — only this node's own proxy reads them, over
+// loopback. The mTLS personality does not serve the path at all, so no peer
+// can read another node's live engine rows.
+func TestTheLiveActivityPathIsNotServedToPeers(t *testing.T) {
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	plainMux, tlsMux := emSurface(ex, clustertrust.Open(t.TempDir()))
+
+	// The local read still works: this node's own proxy reads it over
+	// loopback.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, engineActivityPath, nil)
+	req.RemoteAddr = "127.0.0.1:51234"
+	plainMux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s over loopback: code = %d, want 200", engineActivityPath, rec.Code)
+	}
+
+	// A peer (or any other mTLS caller) gets no path at all.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, engineActivityPath, nil)
+	tlsMux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("%s over mTLS: code = %d, want 404 (the path is not served to peers)", engineActivityPath, rec.Code)
 	}
 }

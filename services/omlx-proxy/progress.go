@@ -34,8 +34,8 @@ var progressInterval = 2 * time.Second
 // not know the engine's token count until the response ends, and a chunk is
 // not a token.
 //
-// The engine's own live numbers (oMLX only) ride in Engine, keyed by the
-// same job id, on frames the engine's poller publishes.
+// The engine's own live numbers (oMLX only) ride in EngineProgress, keyed by
+// the same job id, on frames the engine's poller publishes.
 //
 // Every field but the job id is optional: a frame that carries only part of
 // the view says so instead of claiming zeros. A consumer merges the frames
@@ -60,6 +60,15 @@ type ProgressFrame struct {
 	// received directly leaves it empty, and the origin's own broker stamps
 	// this node's id onto the frame.
 	OriginatedFrom string `json:"originatedFrom,omitempty"`
+	// Engine is the engine that serves the job. It is part of the job's
+	// identity, not decoration: every proxy counts its own requests from
+	// 1, so an oMLX job "1" and an Ollama job "1" on the same node are two
+	// different jobs, and only the engine tells them apart.
+	Engine string `json:"engine"`
+	// RunID is this proxy's per-process run nonce — the same value the
+	// workload carries as `runId`. It tells a recycled job id from the job
+	// it replaced: a proxy that restarts counts its jobs from 1 again.
+	RunID string `json:"runId,omitempty"`
 	// ElapsedMs is the time since the request reached the proxy.
 	ElapsedMs *int64 `json:"elapsedMs,omitempty"`
 	// Chunks is the number of content chunks received so far.
@@ -69,9 +78,9 @@ type ProgressFrame struct {
 	// TTFBMs is the time to the first response byte. It is absent until a
 	// byte has arrived.
 	TTFBMs *int64 `json:"ttfbMs,omitempty"`
-	// Engine is the engine's own live reading for this request. It is
-	// absent when the engine reported nothing.
-	Engine *EngineProgress `json:"engine,omitempty"`
+	// EngineProgress is the engine's own live reading for this request. It
+	// is absent when the engine reported nothing.
+	EngineProgress *EngineProgress `json:"engineProgress,omitempty"`
 }
 
 // EngineProgress is the engine's own live reading for one request.
@@ -140,6 +149,8 @@ func (p *Proxy) publishProgress(jobID, nodeID string, start time.Time, limiter *
 	frame := ProgressFrame{
 		JobID:     jobID,
 		NodeID:    nodeID,
+		Engine:    workloadEngine,
+		RunID:     p.runID,
 		ElapsedMs: inferencemetrics.Int64Ptr(now.Sub(start).Milliseconds()),
 		Chunks:    inferencemetrics.Int64Ptr(prog.Chunks),
 		Bytes:     inferencemetrics.Int64Ptr(prog.Bytes),

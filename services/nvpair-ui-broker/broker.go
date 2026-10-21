@@ -2347,6 +2347,13 @@ func (b *Broker) routeProxyProgress(params json.RawMessage) {
 		slog.Debug("dropping malformed progress frame", "err", err)
 		return
 	}
+	// A frame that names no engine cannot be told apart from another
+	// engine's job with the same id, so it joins no job: it is dropped
+	// here and never broadcast.
+	if frame.Engine == "" {
+		slog.Debug("dropping progress frame with no engine", "job_id", frame.JobID)
+		return
+	}
 	frame = stampProgressOrigin(frame, b.nodeID)
 	b.ingestProgress(frame)
 	stamped, err := json.Marshal(frame)
@@ -2784,10 +2791,16 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		b.recordNodeMetrics(env.WorkloadInfo)
 		// A terminal event retires the job's live view: the job is over, so
 		// no frame that arrives after this may bring it back to life. The
-		// key is the origin plus the job id — the identity the frames
-		// carry, and the identity the catalog keys the job by.
+		// rule names the job the way the frames do — the origin, the engine
+		// and the job id — and the run id tells a recycled job id from the
+		// job it replaced.
 		if workloadstore.IsTerminal(in.State) {
-			b.liveViews().retire(in.Origin, in.ID)
+			b.liveViews().retire(retiredRule{
+				origin: in.Origin,
+				engine: in.Engine,
+				runID:  in.RunID,
+				jobID:  in.ID,
+			})
 		}
 		return true
 	case "workloads:remove":
@@ -2799,11 +2812,14 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 			return false
 		}
 		// A removal retires the job too. The removal wire carries the
-		// origin (the workload's `originatedFrom`), which is the half of
-		// the live view's key the frames carry; without it the job is
-		// retired on every origin.
+		// origin (the workload's `originatedFrom`) but no engine and no
+		// run id, so the rule retires the job on every engine of that
+		// origin; without an origin it retires the job wherever it ran.
 		b.workloads.Remove(rm.OriginatedFrom, rm.WorkloadID)
-		b.liveViews().retire(rm.OriginatedFrom, rm.WorkloadID)
+		b.liveViews().retire(retiredRule{
+			origin: rm.OriginatedFrom,
+			jobID:  rm.WorkloadID,
+		})
 		return true
 	default:
 		return false

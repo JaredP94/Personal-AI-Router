@@ -80,9 +80,10 @@ export interface WorkloadLiveEngine {
  * sees the other's facts, so a field a frame does not carry means "not
  * measured here" — never zero.
  *
- * `jobId` plus `originatedFrom` is the job's identity, the same pair the
- * catalog keys a workload by: PAIR's job id is a per-proxy counter, so two
- * origins can both hold a job "1".
+ * `jobId` plus `originatedFrom` plus `engine` is the job's identity, the same
+ * triple the live view is keyed by: PAIR's job id is a per-proxy counter, so
+ * two origins can both hold a job "1", and two engines on one node each
+ * count from 1 as well.
  */
 export interface WorkloadLiveProgress {
     /** PAIR's own id for the request — the same id the workload carries. */
@@ -95,6 +96,15 @@ export interface WorkloadLiveProgress {
      * present; a frame that somehow carries none joins no job.
      */
     originatedFrom: string | null
+    /**
+     * The engine that serves the job — the same engine the workload
+     * carries.
+     *
+     * It is part of the job's identity: every proxy counts its own requests
+     * from 1, so an oMLX job "1" and an Ollama job "1" on one node are two
+     * different jobs, and only the engine tells them apart.
+     */
+    engine: EngineType | null
     /** The node that is serving the request. */
     nodeId?: string | null
     /** The time since the request reached the proxy. */
@@ -105,6 +115,9 @@ export interface WorkloadLiveProgress {
     bytes?: number | null
     /** The time to the first response byte. */
     ttfbMs?: number | null
-    /** The engine's own live reading, absent when the engine reported nothing. */
-    engine?: WorkloadLiveEngine | null
+    /**
+     * The engine's own live reading, absent when the engine reported
+     * nothing.
+     */
+    engineProgress?: WorkloadLiveEngine | null
 }

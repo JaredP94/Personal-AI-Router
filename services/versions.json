@@ -1,21 +1,21 @@
 {
   "$comment": "Single source of truth for all version numbers. See VERSIONING.md for bump rules.",
-  "product": "2.4.0",
-  "installer": "2.4.0",
+  "product": "2.4.1",
+  "installer": "2.4.1",
   "components": {
-    "ollama-proxy": "1.4.0",
-    "lmstudio-proxy": "1.4.0",
+    "ollama-proxy": "1.4.1",
+    "lmstudio-proxy": "1.4.1",
     "nvpair-node-info": "1.2.0",
     "nvpair-node-scanner": "1.2.0",
     "nvpair-manual-nodes": "1.2.0",
     "nvpair-workload-manager": "1.3.0",
     "nvpair-errors": "1.1.0",
     "nvpair-node-settings": "3.1.0",
-    "nvpair-ui-broker": "2.4.0",
-    "nvpair-engine-manager": "1.2.1",
+    "nvpair-ui-broker": "2.4.1",
+    "nvpair-engine-manager": "1.2.2",
     "nvpair-cluster-manager": "2.1.0",
     "nvpair-job-scheduler": "1.1.0",
     "nvpair-tui": "1.2.0",
-    "omlx-proxy": "1.4.0"
+    "omlx-proxy": "1.4.1"
   }
 }

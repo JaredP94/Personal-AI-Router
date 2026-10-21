@@ -625,7 +625,7 @@ export function buildWorkloadLiveRows(live: WorkloadLiveProgress): InferenceMetr
         }
     ]
 
-    const engine = live.engine
+    const engine = live.engineProgress
     if (!engine) {
         rows.push({
             label: 'Engine live progress',

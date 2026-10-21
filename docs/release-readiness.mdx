@@ -227,7 +227,10 @@ tracing-enabled profiling scenarios are still open.
   the frame to every pinned peer; each broker keeps a bounded live view and
   pushes the merged view to its clients as `workloads:progress`. The desktop
   shows the live line on a running job and the final exact numbers on a
-  finished one.
+  finished one. A live view is keyed by the origin, the engine and the job
+  id, so an oMLX job "1" and an Ollama job "1" on one node never share a
+  view; the run id says which run a job id belongs to, so a restarted proxy's
+  job "1" never inherits the old job's numbers.
 - **No estimates:** Nothing on these surfaces is estimated, interpolated, or
   derived from a different quantity. A chunk count is never presented as a
   token count. A value nobody reported stays absent and reads as "not

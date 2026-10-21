@@ -714,7 +714,10 @@ function parseWorkloadLiveEngine(value: JsonValue | undefined): WorkloadLiveEngi
  * The frame is a partial view of a running request, so every measurement but
  * the job id is optional: a field the frame does not carry reads as null
  * ("not measured here"), which is never a measured zero. A frame that names
- * no job is dropped — it would join no job's card.
+ * no job is dropped — it would join no job's card — and so is a frame that
+ * names no engine: the engine is part of the job's identity (every proxy
+ * counts its own requests from 1), so a frame without one cannot be told
+ * apart from another engine's job with the same id.
  */
 export function parseWorkloadLiveProgress(
     value: JsonValue | undefined
@@ -723,15 +726,18 @@ export function parseWorkloadLiveProgress(
     if (!obj) return null
     const jobId = stringValue(obj.jobId)
     if (!jobId) return null
+    const engine = engineManagerEngineType(stringValue(obj.engine))
+    if (!engine) return null
     return {
         jobId,
         originatedFrom: nullableStringValue(obj.originatedFrom),
+        engine,
         nodeId: nullableStringValue(obj.nodeId),
         elapsedMs: nullableNumberValue(obj.elapsedMs),
         chunks: nullableNumberValue(obj.chunks),
         bytes: nullableNumberValue(obj.bytes),
         ttfbMs: nullableNumberValue(obj.ttfbMs),
-        engine: parseWorkloadLiveEngine(obj.engine)
+        engineProgress: parseWorkloadLiveEngine(obj.engineProgress)
     }
 }
 

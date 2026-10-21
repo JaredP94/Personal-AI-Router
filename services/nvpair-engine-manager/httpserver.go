@@ -24,9 +24,9 @@ import (
 const modelsPath = "/v1/models"
 
 // The engine-native paths: the engine's own counters and the engine's own
-// live rows. They sit on the same listener as the model list and behind the
-// same two gates, so a peer and this node's own scanner read them the same
-// way.
+// live rows. They sit on the same listener as the model list, but they are
+// not the same audience: the stats are cluster inventory and are read by
+// every peer's scanner, while the live rows are this node's own business.
 const (
 	engineStatsPath    = "/v1/engine-stats"
 	engineActivityPath = "/v1/engine-activity"
@@ -87,7 +87,8 @@ func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust
 // emSurface builds the two personalities of the em surface: the plaintext
 // mux, which serves this node's own loopback callers, and the cluster mTLS
 // mux, which serves pinned peers. Both carry the same paths behind the same
-// gates, so a peer and this node's own scanner read the same data.
+// gates, so a peer and this node's own scanner read the same data — except
+// the live-activity path, which only this node's own proxy reads.
 //
 // The engine-native paths answer with PAIR's own type, mapped field by field
 // from the engine's admin API, so the engine's api_key has nowhere to go.
@@ -128,7 +129,10 @@ func emSurface(exec *Executor, mesh *clustertrust.Mesh) (plainMux, tlsMux *http.
 	tlsMux = http.NewServeMux()
 	tlsMux.Handle(modelsPath, requirePinnedPeer(mesh, models))
 	tlsMux.Handle(engineStatsPath, requirePinnedPeer(mesh, stats))
-	tlsMux.Handle(engineActivityPath, requirePinnedPeer(mesh, activity))
+	// The live activity path is NOT served to peers. It is this node's own
+	// proxy that reads it, over loopback: the rows are the requests the
+	// local engine is working on right now, and no peer reads another
+	// node's live engine rows.
 	return plainMux, tlsMux
 }
 

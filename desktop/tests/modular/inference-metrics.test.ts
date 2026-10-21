@@ -23,7 +23,7 @@ import {
 } from '@/ui/utils/inference-metrics'
 import type { InferenceMetricsTotals, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
-import { mergeWorkloadLiveProgress, workloadKey } from '@/shared/utils/workloads'
+import { liveProgressKey, mergeWorkloadLiveProgress, workloadKey } from '@/shared/utils/workloads'
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
@@ -812,11 +812,12 @@ describe('the live progress frame on the wire', () => {
             jobId: 'w1',
             nodeId: 'node-b',
             originatedFrom: 'node-a',
+            engine: 'omlx',
             elapsedMs: 4200,
             chunks: 12,
             bytes: 2048,
             ttfbMs: 300,
-            engine: {
+            engineProgress: {
                 requestId: 'eng-1',
                 phase: 'generating',
                 generatedTokens: 34,
@@ -835,28 +836,39 @@ describe('the live progress frame on the wire', () => {
         expect(parsed?.chunks).toBe(12)
         expect(parsed?.bytes).toBe(2048)
         expect(parsed?.ttfbMs).toBe(300)
-        expect(parsed?.engine?.requestId).toBe('eng-1')
-        expect(parsed?.engine?.generatedTokens).toBe(34)
-        expect(parsed?.engine?.tokensPerSecond).toBe(62.1)
+        // The engine is part of the job's identity: every proxy counts its
+        // own requests from 1, so an oMLX job "1" and an Ollama job "1" on
+        // one node are two different jobs.
+        expect(parsed?.engine).toBe('omlx')
+        expect(parsed?.engineProgress?.requestId).toBe('eng-1')
+        expect(parsed?.engineProgress?.generatedTokens).toBe(34)
+        expect(parsed?.engineProgress?.tokensPerSecond).toBe(62.1)
     })
 
     it('leaves a measurement nobody reported absent, never zero', () => {
         const parsed = parseWorkloadLiveProgress({
             jobId: 'w1',
-            originatedFrom: 'node-a'
+            originatedFrom: 'node-a',
+            engine: 'omlx'
         })
         expect(parsed?.elapsedMs).toBeNull()
         expect(parsed?.chunks).toBeNull()
         expect(parsed?.bytes).toBeNull()
         expect(parsed?.ttfbMs).toBeNull()
         // The engine published no live reading at all.
-        expect(parsed?.engine).toBeNull()
+        expect(parsed?.engineProgress).toBeNull()
     })
 
     it('drops a frame that names no job', () => {
         // A frame without a job id would join no job's card.
         expect(parseWorkloadLiveProgress({ originatedFrom: 'node-a' })).toBeNull()
         expect(parseWorkloadLiveProgress(undefined)).toBeNull()
+    })
+
+    it('drops a frame that names no engine', () => {
+        // The engine is part of the job's identity, so a frame without one
+        // cannot be told apart from another engine's job with the same id.
+        expect(parseWorkloadLiveProgress({ jobId: 'w1', originatedFrom: 'node-a' })).toBeNull()
     })
 })
 
@@ -865,12 +877,13 @@ describe('the live progress of a running job', () => {
     const omlxLive: WorkloadLiveProgress = {
         jobId: 'w1',
         originatedFrom: 'node-a',
+        engine: 'omlx',
         nodeId: 'node-b',
         elapsedMs: 4200,
         chunks: 12,
         bytes: 2048,
         ttfbMs: 300,
-        engine: {
+        engineProgress: {
             requestId: 'eng-1',
             phase: 'generating',
             generatedTokens: 34,
@@ -897,12 +910,12 @@ describe('the live progress of a running job', () => {
         expect(rows.find(r => r.label === 'Tokens (engine)')?.value).not.toContain('12')
         // An engine that published no live reading reported no token count
         // either, so there is no token row at all.
-        const silent = buildWorkloadLiveRows({ ...omlxLive, engine: null })
+        const silent = buildWorkloadLiveRows({ ...omlxLive, engineProgress: null })
         expect(silent.find(r => r.label === 'Tokens (engine)')).toBeUndefined()
     })
 
     it('says that an engine publishes no live progress instead of a row of gaps', () => {
-        const rows = buildWorkloadLiveRows({ ...omlxLive, engine: null })
+        const rows = buildWorkloadLiveRows({ ...omlxLive, engineProgress: null })
         expect(rows.find(r => r.label === 'Elapsed')?.value).toBe('4.2 s')
         expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
         expect(rows.find(r => r.label === 'Engine live progress')?.value).toBe(
@@ -919,7 +932,7 @@ describe('the live progress of a running job', () => {
     it('reports a reading the engine did not make as not reported, never as zero', () => {
         const rows = buildWorkloadLiveRows({
             ...omlxLive,
-            engine: {
+            engineProgress: {
                 requestId: 'eng-1',
                 phase: 'waiting',
                 generatedTokens: null,
@@ -941,20 +954,22 @@ describe('merging a live progress frame', () => {
     const facts: WorkloadLiveProgress = {
         jobId: 'w1',
         originatedFrom: 'node-a',
+        engine: 'omlx',
         nodeId: 'node-b',
         elapsedMs: 4200,
         chunks: 12,
         bytes: 2048,
         ttfbMs: 300,
-        engine: null
+        engineProgress: null
     }
 
     /** What the serving node's engine reported of its own request. */
     const engineOnly: WorkloadLiveProgress = {
         jobId: 'w1',
         originatedFrom: 'node-a',
+        engine: 'omlx',
         nodeId: 'node-b',
-        engine: {
+        engineProgress: {
             requestId: 'eng-1',
             phase: 'generating',
             generatedTokens: 34,
@@ -966,7 +981,7 @@ describe('merging a live progress frame', () => {
 
     it('keeps the engine reading when the next frame carries only the PAIR facts', () => {
         const merged = mergeWorkloadLiveProgress(engineOnly, facts)
-        expect(merged.engine?.generatedTokens).toBe(34)
+        expect(merged.engineProgress?.generatedTokens).toBe(34)
         expect(merged.elapsedMs).toBe(4200)
         expect(merged.chunks).toBe(12)
         expect(merged.bytes).toBe(2048)
@@ -977,7 +992,7 @@ describe('merging a live progress frame', () => {
         expect(merged.elapsedMs).toBe(4200)
         expect(merged.chunks).toBe(12)
         expect(merged.bytes).toBe(2048)
-        expect(merged.engine?.generatedTokens).toBe(34)
+        expect(merged.engineProgress?.generatedTokens).toBe(34)
     })
 
     it('overwrites the value a frame does carry', () => {
@@ -991,7 +1006,7 @@ describe('merging a live progress frame', () => {
         // shown rather than falling back to the earlier reading.
         const later: WorkloadLiveProgress = {
             ...engineOnly,
-            engine: {
+            engineProgress: {
                 requestId: 'eng-2',
                 phase: 'generating',
                 generatedTokens: 90,
@@ -1001,20 +1016,21 @@ describe('merging a live progress frame', () => {
             }
         }
         const merged = mergeWorkloadLiveProgress(engineOnly, later)
-        expect(merged.engine?.requestId).toBe('eng-2')
-        expect(merged.engine?.generatedTokens).toBe(90)
-        expect(merged.engine?.tokensPerSecond).toBeNull()
+        expect(merged.engineProgress?.requestId).toBe('eng-2')
+        expect(merged.engineProgress?.generatedTokens).toBe(90)
+        expect(merged.engineProgress?.tokensPerSecond).toBeNull()
     })
 
     it('never turns an absent measurement into a zero', () => {
         const merged = mergeWorkloadLiveProgress(undefined, {
             jobId: 'w1',
-            originatedFrom: 'node-a'
+            originatedFrom: 'node-a',
+            engine: 'omlx'
         })
         expect(merged.elapsedMs).toBeNull()
         expect(merged.chunks).toBeNull()
         expect(merged.bytes).toBeNull()
-        expect(merged.engine).toBeNull()
+        expect(merged.engineProgress).toBeNull()
     })
 })
 
@@ -1089,13 +1105,16 @@ describe('the workloads store keeps the live view of a running job', () => {
         pushProgress({
             jobId: 'w1',
             originatedFrom: 'node-a',
+            engine: 'omlx',
             elapsedMs: 4200,
             chunks: 12,
             bytes: 2048
         })
         flush()
         const state = useWorkloadsStore.getState()
-        expect(state.liveProgress.get(workloadKey('node-a', 'w1'))?.elapsedMs).toBe(4200)
+        expect(state.liveProgress.get(liveProgressKey('node-a', 'omlx', 'w1'))?.elapsedMs).toBe(
+            4200
+        )
         // A live frame is a snapshot of a running request, not a catalog
         // event: it never enters the catalog.
         expect(state.workloads.has(workloadKey('node-a', 'w1'))).toBe(false)
@@ -1105,12 +1124,27 @@ describe('the workloads store keeps the live view of a running job', () => {
         await initialize()
         // PAIR's job id is a per-proxy counter, so two origins can both hold
         // a job "1" — and only the origin tells their jobs apart.
-        pushProgress({ jobId: '1', originatedFrom: 'origin-a', elapsedMs: 4200 })
-        pushProgress({ jobId: '1', originatedFrom: 'origin-c', elapsedMs: 4300 })
+        pushProgress({ jobId: '1', originatedFrom: 'origin-a', engine: 'omlx', elapsedMs: 4200 })
+        pushProgress({ jobId: '1', originatedFrom: 'origin-c', engine: 'omlx', elapsedMs: 4300 })
         flush()
         const live = useWorkloadsStore.getState().liveProgress
-        expect(live.get(workloadKey('origin-a', '1'))?.elapsedMs).toBe(4200)
-        expect(live.get(workloadKey('origin-c', '1'))?.elapsedMs).toBe(4300)
+        expect(live.get(liveProgressKey('origin-a', 'omlx', '1'))?.elapsedMs).toBe(4200)
+        expect(live.get(liveProgressKey('origin-c', 'omlx', '1'))?.elapsedMs).toBe(4300)
+    })
+
+    it('keys the live view by the engine as well', async () => {
+        await initialize()
+        // Every proxy counts its own requests from 1, so an oMLX job "1" and
+        // an Ollama job "1" on the SAME node are two different jobs. The
+        // engine is what tells them apart: without it, the last frame
+        // would overwrite the other's counts and one job's card would show
+        // the other job's numbers.
+        pushProgress({ jobId: '1', originatedFrom: 'node-a', engine: 'omlx', elapsedMs: 4200 })
+        pushProgress({ jobId: '1', originatedFrom: 'node-a', engine: 'ollama', elapsedMs: 4300 })
+        flush()
+        const live = useWorkloadsStore.getState().liveProgress
+        expect(live.get(liveProgressKey('node-a', 'omlx', '1'))?.elapsedMs).toBe(4200)
+        expect(live.get(liveProgressKey('node-a', 'ollama', '1'))?.elapsedMs).toBe(4300)
     })
 
     it('keeps what an earlier frame supplied when the next frame is partial', async () => {
@@ -1118,6 +1152,7 @@ describe('the workloads store keeps the live view of a running job', () => {
         pushProgress({
             jobId: 'w1',
             originatedFrom: 'node-a',
+            engine: 'omlx',
             elapsedMs: 4200,
             chunks: 12,
             bytes: 2048
@@ -1125,7 +1160,8 @@ describe('the workloads store keeps the live view of a running job', () => {
         pushProgress({
             jobId: 'w1',
             originatedFrom: 'node-a',
-            engine: {
+            engine: 'omlx',
+            engineProgress: {
                 requestId: 'eng-1',
                 phase: 'generating',
                 generatedTokens: 34,
@@ -1133,11 +1169,13 @@ describe('the workloads store keeps the live view of a running job', () => {
             }
         })
         flush()
-        const view = useWorkloadsStore.getState().liveProgress.get(workloadKey('node-a', 'w1'))
+        const view = useWorkloadsStore
+            .getState()
+            .liveProgress.get(liveProgressKey('node-a', 'omlx', 'w1'))
         expect(view?.elapsedMs).toBe(4200)
         expect(view?.chunks).toBe(12)
         expect(view?.bytes).toBe(2048)
-        expect(view?.engine?.generatedTokens).toBe(34)
+        expect(view?.engineProgress?.generatedTokens).toBe(34)
     })
 
     it('keeps the engine reading when a later frame carries only the PAIR facts', async () => {
@@ -1145,40 +1183,43 @@ describe('the workloads store keeps the live view of a running job', () => {
         pushProgress({
             jobId: 'w1',
             originatedFrom: 'node-a',
-            engine: {
+            engine: 'omlx',
+            engineProgress: {
                 requestId: 'eng-1',
                 phase: 'generating',
                 generatedTokens: 34,
                 tokensPerSecond: 62.1
             }
         })
-        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', elapsedMs: 4200 })
+        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', engine: 'omlx', elapsedMs: 4200 })
         flush()
-        const view = useWorkloadsStore.getState().liveProgress.get(workloadKey('node-a', 'w1'))
+        const view = useWorkloadsStore
+            .getState()
+            .liveProgress.get(liveProgressKey('node-a', 'omlx', 'w1'))
         expect(view?.elapsedMs).toBe(4200)
-        expect(view?.engine?.generatedTokens).toBe(34)
+        expect(view?.engineProgress?.generatedTokens).toBe(34)
     })
 
     it('retires the live view of a finished job and never resurrects it', async () => {
         await initialize()
         pushUpsert(runningJob)
-        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', elapsedMs: 4200 })
+        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', engine: 'omlx', elapsedMs: 4200 })
         flush()
-        expect(useWorkloadsStore.getState().liveProgress.has(workloadKey('node-a', 'w1'))).toBe(
-            true
-        )
+        expect(
+            useWorkloadsStore.getState().liveProgress.has(liveProgressKey('node-a', 'omlx', 'w1'))
+        ).toBe(true)
 
         pushUpsert({ ...runningJob, state: 'completed', completedAt: 3 })
         flush()
-        expect(useWorkloadsStore.getState().liveProgress.has(workloadKey('node-a', 'w1'))).toBe(
-            false
-        )
+        expect(
+            useWorkloadsStore.getState().liveProgress.has(liveProgressKey('node-a', 'omlx', 'w1'))
+        ).toBe(false)
 
         // A frame that was already on its way must not bring the job back.
-        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', elapsedMs: 4400 })
+        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', engine: 'omlx', elapsedMs: 4400 })
         flush()
-        expect(useWorkloadsStore.getState().liveProgress.has(workloadKey('node-a', 'w1'))).toBe(
-            false
-        )
+        expect(
+            useWorkloadsStore.getState().liveProgress.has(liveProgressKey('node-a', 'omlx', 'w1'))
+        ).toBe(false)
     })
 })

@@ -163,12 +163,14 @@ here", never "zero". Each broker merges the frames of one job field by field.
 | --- | --- |
 | `jobId` | PAIR's own id for the request; the same id the lifecycle events carry |
 | `originatedFrom` | the node the request entered the cluster on, stamped by the origin's broker |
+| `engine` | the engine that serves the job — part of the identity, since every proxy counts its own requests from 1 |
+| `runId` | the origin proxy's per-process run nonce — it tells a recycled job id from the job it replaced |
 | `nodeId` | the node that is serving the request |
 | `elapsedMs` | the time since the request reached the proxy |
 | `chunks` | the content chunks received so far — a chunk count is never a token count |
 | `bytes` | the response body bytes received so far |
 | `ttfbMs` | the time to the first response byte, absent until a byte has arrived |
-| `engine` | the engine's own live reading, absent when the engine reported nothing |
+| `engineProgress` | the engine's own live reading, absent when the engine reported nothing |
 
 ## Output to the broker
 

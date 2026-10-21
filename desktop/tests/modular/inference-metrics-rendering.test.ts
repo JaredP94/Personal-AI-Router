@@ -12,7 +12,7 @@ import type {
 } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
-import { mergeWorkloadLiveProgress, workloadKey } from '@/shared/utils/workloads'
+import { liveProgressKey, mergeWorkloadLiveProgress } from '@/shared/utils/workloads'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useWorkloadsStore } from '@/ui/stores/workloads.store'
@@ -357,12 +357,13 @@ describe('the live line of a running job', () => {
     const omlxLive: WorkloadLiveProgress = {
         jobId: 'w1',
         originatedFrom: 'node-a',
+        engine: 'omlx',
         nodeId: 'node-b',
         elapsedMs: 4200,
         chunks: 12,
         bytes: 2048,
         ttfbMs: 300,
-        engine: {
+        engineProgress: {
             requestId: 'eng-1',
             phase: 'generating',
             generatedTokens: 34,
@@ -379,19 +380,22 @@ describe('the live line of a running job', () => {
     const ollamaLive: WorkloadLiveProgress = {
         jobId: 'w2',
         originatedFrom: 'node-a',
+        engine: 'ollama',
         nodeId: 'node-a',
         elapsedMs: 4200,
         chunks: 12,
         bytes: 2048,
         ttfbMs: 300,
-        engine: null
+        engineProgress: null
     }
 
     /** The live view of one job, as the store holds it. */
     function setLiveProgress(view: WorkloadLiveProgress) {
         act(() => {
             useWorkloadsStore.setState({
-                liveProgress: new Map([[workloadKey(view.originatedFrom, view.jobId), view]])
+                liveProgress: new Map([
+                    [liveProgressKey(view.originatedFrom, view.engine, view.jobId), view]
+                ])
             })
         })
     }
@@ -438,6 +442,37 @@ describe('the live line of a running job', () => {
         rendered = text()
         expect(rendered).not.toContain('Tokens')
         expect(rendered).not.toContain('tok')
+    })
+
+    it('shows each job its own live view when two engines number their jobs alike', async () => {
+        // Every proxy counts its own requests from 1, so an oMLX job "1" and
+        // an Ollama job "1" on the same node are two different jobs. Each
+        // card must show its own job's live numbers — the oMLX card the
+        // engine's token count, the Ollama card its own chunks.
+        const omlxJob: Workload = { ...runningOmlxJob, id: '1' }
+        const ollamaJob: Workload = { ...runningOllamaJob, id: '1' }
+        act(() => {
+            useWorkloadsStore.setState({
+                liveProgress: new Map([
+                    [liveProgressKey('node-a', 'omlx', '1'), { ...omlxLive, jobId: '1' }],
+                    [
+                        liveProgressKey('node-a', 'ollama', '1'),
+                        { ...ollamaLive, jobId: '1', chunks: 30 }
+                    ]
+                ])
+            })
+        })
+
+        await render(createElement(WorkloadItemCard, { workload: omlxJob }))
+        let rendered = text()
+        expect(rendered).toContain('Tokens (engine) 34')
+        expect(rendered).toContain('Received 12 chunks · 2,048 bytes')
+
+        await render(createElement(WorkloadItemCard, { workload: ollamaJob }))
+        rendered = text()
+        // The Ollama job's own numbers, and none of the oMLX job's.
+        expect(rendered).toContain('Received 30 chunks · 2,048 bytes')
+        expect(rendered).not.toContain('Tokens (engine)')
     })
 
     it('shows the final numbers of a finished job and no live line', async () => {
@@ -489,17 +524,19 @@ describe('the live line of a running job', () => {
         const facts: WorkloadLiveProgress = {
             jobId: 'w1',
             originatedFrom: 'node-a',
+            engine: 'omlx',
             nodeId: 'node-b',
             elapsedMs: 4200,
             chunks: 12,
             bytes: 2048,
-            engine: null
+            engineProgress: null
         }
         const engineOnly: WorkloadLiveProgress = {
             jobId: 'w1',
             originatedFrom: 'node-a',
+            engine: 'omlx',
             nodeId: 'node-b',
-            engine: omlxLive.engine
+            engineProgress: omlxLive.engineProgress
         }
 
         // The engine's frame arrives second and carries no PAIR facts.

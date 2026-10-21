@@ -33,6 +33,14 @@ const nvpairRequestIDHeader = "X-NVPAIR-Request-Id"
 // identity the workload catalog keys a job by (`originatedFrom` + `id`).
 const nvpairOriginNodeHeader = "X-NVPAIR-Origin-Node"
 
+// nvpairRunIDHeader carries the ORIGIN proxy's run nonce from the origin
+// proxy to the peer that serves the request.
+//
+// It rides alongside the job id because a proxy that restarts counts its jobs
+// from 1 again: the run nonce says which run the job id belongs to, so a
+// recycled job id is never taken for the job it replaced.
+const nvpairRunIDHeader = "X-NVPAIR-Run-Id"
+
 // engineRequestIDHeader is the header the engine answers with, carrying the
 // engine's own request id — the id the engine's live rows are keyed by.
 const engineRequestIDHeader = "X-oMLX-Request-ID"
@@ -152,17 +160,20 @@ func (p *Proxy) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 	// published under the origin's job id, so without the origin two
 	// origins' job "1" would be one job.
 	originNodeID := r.Header.Get(nvpairOriginNodeHeader)
+	// The origin proxy's run nonce, when the request came from a peer. It
+	// says which run the job id belongs to.
+	runID := r.Header.Get(nvpairRunIDHeader)
 	slog.Debug("cluster ingress forwarding to local backend",
 		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host,
-		"job_id", jobID, "origin_node_id", originNodeID)
-	p.reverseProxyToLocal(w, r, target, jobID, originNodeID)
+		"job_id", jobID, "origin_node_id", originNodeID, "run_id", runID)
+	p.reverseProxyToLocal(w, r, target, jobID, originNodeID, runID)
 }
 
 // reverseProxyToLocal streams the request to the local engine, preserving
 // cancellation (the request context is the proxy's root context, so a client
 // disconnect or shutdown tears down the upstream call and stops generation).
-func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL, jobID, originNodeID string) {
-	p.serveLocalEngine(w, r, target, jobID, originNodeID)
+func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL, jobID, originNodeID, runID string) {
+	p.serveLocalEngine(w, r, target, jobID, originNodeID, runID)
 }
 
 // serveLocalEngine streams a request to the local engine and holds, for as
@@ -172,8 +183,8 @@ func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, targ
 // The pairing is what lets the engine's live rows be published already keyed
 // by PAIR's job id: the engine keys its rows by its own request id, and a
 // client never joins anything. It is in memory and dies with the request.
-func (p *Proxy) serveLocalEngine(w http.ResponseWriter, r *http.Request, target *url.URL, jobID, originNodeID string) {
-	rp, release := p.newLocalReverseProxyForJob(target, jobID, originNodeID)
+func (p *Proxy) serveLocalEngine(w http.ResponseWriter, r *http.Request, target *url.URL, jobID, originNodeID, runID string) {
+	rp, release := p.newLocalReverseProxyForJob(target, jobID, originNodeID, runID)
 	defer release()
 	rp.ServeHTTP(w, r)
 }
@@ -181,7 +192,7 @@ func (p *Proxy) serveLocalEngine(w http.ResponseWriter, r *http.Request, target 
 // newLocalReverseProxy builds the ingress's reverse proxy to the local
 // engine, for a request that carries no PAIR job id.
 func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
-	rp, _ := p.newLocalReverseProxyForJob(target, "", "")
+	rp, _ := p.newLocalReverseProxyForJob(target, "", "", "")
 	return rp
 }
 
@@ -191,7 +202,7 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 //
 // The returned function releases the pairing; the caller runs it when the
 // request is done.
-func (p *Proxy) newLocalReverseProxyForJob(target *url.URL, jobID, originNodeID string) (*httputil.ReverseProxy, func()) {
+func (p *Proxy) newLocalReverseProxyForJob(target *url.URL, jobID, originNodeID, runID string) (*httputil.ReverseProxy, func()) {
 	var bound []string
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -216,6 +227,7 @@ func (p *Proxy) newLocalReverseProxyForJob(target *url.URL, jobID, originNodeID 
 					jobID:        jobID,
 					engineReqID:  engineReqID,
 					originNodeID: originNodeID,
+					runID:        runID,
 				})
 				bound = append(bound, engineReqID)
 			}

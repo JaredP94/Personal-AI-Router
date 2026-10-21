@@ -261,8 +261,17 @@ The model-list surface (`--http-port`) carries two more paths besides
 | `GET /v1/engine-activity` | `{ engine, supported, rows?, error? }` — the requests the engine is working on right now, one row per request, each with the phase the engine reported (`waiting`, `prefilling`, `generating`). |
 
 Both are GET-only and answer `application/json`. Both are registered on the
-same listener and behind the same two gates as `/v1/models`: plaintext for
-loopback only, cluster mTLS for pinned peers only.
+same listener as `/v1/models`, but they are not the same audience:
+
+- `GET /v1/engine-stats` is **cluster inventory** — the engine's counters for
+  this node — so it is served behind the same two gates as `/v1/models`:
+  plaintext for loopback only, cluster mTLS for pinned peers only. Every
+  peer's scanner reads it.
+- `GET /v1/engine-activity` is **this node's own business** — the requests
+  the local engine is working on right now — so it is served over **loopback
+  plaintext only**. The mTLS personality does not serve the path at all, so
+  no peer can read another node's live engine rows. The only reader is this
+  node's own oMLX proxy, which polls it while it serves a request.
 
 The answers are **PAIR's own type**, mapped field by field from the engine's
 admin API (`/admin/api/stats` and `/admin/api/activity` on the engine's own
@@ -456,12 +465,13 @@ and while this node belongs to no cluster it presents no leaf so no handshake
 completes:
 
 - **`--http-port`** — the model-list surface (`em`, `GET /v1/models` and the
-  engine-native paths `GET /v1/engine-stats` / `GET /v1/engine-activity`; the
-  broker passes `:14322`). A node's model inventory is cluster data, so LAN
-  callers must be pinned peers. This port additionally serves **plaintext on
-  loopback only**, which is how this node's own scanner enriches its own card —
-  including when the node belongs to no cluster, so a standalone machine still
-  shows its own models.
+  engine-native path `GET /v1/engine-stats`; the broker passes `:14322`). A
+  node's model inventory is cluster data, so LAN callers must be pinned peers.
+  This port additionally serves **plaintext on loopback only**, which is how
+  this node's own scanner enriches its own card — including when the node
+  belongs to no cluster, so a standalone machine still shows its own models.
+  The engine's live rows (`GET /v1/engine-activity`) are served over that
+  loopback plaintext only, never to a peer.
 - **`--control-port`** — the remote-control surface (`ec`, the `engine:remote-*`
   targets; the broker passes `:14323`). mTLS only, no plaintext personality, since
   every route performs a privileged operation.

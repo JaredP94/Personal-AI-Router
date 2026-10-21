@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
+import type { EngineType } from '@/shared/types/engines'
 
 /**
  * Stable catalog key for a workload.
@@ -18,6 +19,41 @@ import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
  */
 export function workloadKey(originatedFrom: string | null, id: string): string {
     return `${originatedFrom ?? ''}\u0000${id}`
+}
+
+/**
+ * Stable key for the live view of a running job.
+ *
+ * The live view is keyed by the origin, the engine and the job id — the same
+ * identity the live frame carries. The engine is part of it because every
+ * proxy counts its own requests from 1: an oMLX job "1" and an Ollama job "1"
+ * on one node are two different jobs, and a live view keyed without the engine
+ * would show one job's counts on the other job's card.
+ *
+ * The catalog key is NOT used here: it leaves the engine out (the removal
+ * push names no engine), so it cannot tell two engines' jobs apart.
+ */
+export function liveProgressKey(
+    originatedFrom: string | null,
+    engine: EngineType | null,
+    id: string
+): string {
+    return `${originatedFrom ?? ''}\u0000${engine ?? ''}\u0000${id}`
+}
+
+/**
+ * Whether a live key belongs to the job `(originatedFrom, id)` on any engine.
+ *
+ * A removal names no engine — the removal wire carries only the job id and
+ * the origin — so it retires the live view of the job on every engine of
+ * that origin.
+ */
+export function liveProgressKeyIsJob(
+    key: string,
+    originatedFrom: string | null,
+    id: string
+): boolean {
+    return key.startsWith(`${originatedFrom ?? ''}\u0000`) && key.endsWith(`\u0000${id}`)
 }
 
 /**
@@ -47,7 +83,7 @@ export function workloadExecutionNodeId(workload: Pick<Workload, 'scheduledOn'>)
  * alone — "not measured here" is never a zero — and a field it does carry
  * overwrites it.
  *
- * The engine's object is the one exception: it is a single reading of a
+ * The engine's reading is the one exception: it is a single reading of a
  * single engine row, so it is replaced as a unit rather than merged field by
  * field. A later row supersedes the earlier one — it does not blend with it,
  * and a field the engine has stopped reporting stops being shown.
@@ -59,12 +95,13 @@ export function mergeWorkloadLiveProgress(
     const merged: WorkloadLiveProgress = {
         jobId: incoming.jobId,
         originatedFrom: incoming.originatedFrom ?? stored?.originatedFrom ?? null,
+        engine: incoming.engine ?? stored?.engine ?? null,
         nodeId: incoming.nodeId ?? stored?.nodeId ?? null,
         elapsedMs: incoming.elapsedMs ?? stored?.elapsedMs ?? null,
         chunks: incoming.chunks ?? stored?.chunks ?? null,
         bytes: incoming.bytes ?? stored?.bytes ?? null,
         ttfbMs: incoming.ttfbMs ?? stored?.ttfbMs ?? null,
-        engine: incoming.engine ?? stored?.engine ?? null
+        engineProgress: incoming.engineProgress ?? stored?.engineProgress ?? null
     }
     return merged
 }

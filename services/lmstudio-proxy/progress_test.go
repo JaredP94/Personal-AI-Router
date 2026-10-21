@@ -121,6 +121,18 @@ func TestInFlightRequestEmitsOneProgressFrame(t *testing.T) {
 	if frame.NodeID != "serving-node" {
 		t.Fatalf("the progress frame names node %q, want the serving node", frame.NodeID)
 	}
+	// The engine is part of the job's identity: every proxy counts its own
+	// requests from 1, so an lmstudio job "1" and another engine's job "1" on
+	// the same node are two different jobs.
+	if frame.Engine != workloadEngine {
+		t.Fatalf("the progress frame names engine %q, want %q", frame.Engine, workloadEngine)
+	}
+	// The run nonce says which run the job id belongs to, so a proxy that
+	// restarted and counts from 1 again never takes the old job for the
+	// new one.
+	if frame.RunID != p.runID {
+		t.Fatalf("the progress frame carries run id %q, want the proxy's run nonce %q", frame.RunID, p.runID)
+	}
 	if frame.Chunks == nil || *frame.Chunks != 3 {
 		t.Fatalf("the progress frame reports chunks %v, want the 3 content chunks the engine sent", frame.Chunks)
 	}

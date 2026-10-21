@@ -6,6 +6,8 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 import deepEqual from '@/ui/utils/deep-equal'
 import {
+    liveProgressKey,
+    liveProgressKeyIsJob,
     mergeWorkloadLiveProgress,
     workloadExecutionNodeId,
     workloadKey
@@ -15,10 +17,10 @@ import { stateOrder, MAX_HISTORY_ITEMS } from '@/ui/constants/app'
 interface WorkloadsStore {
     workloads: Map<string, Workload>
     /**
-     * The live view of every running job, keyed like the catalog
-     * (`originatedFrom` + `id`). A job's live view is a snapshot of a running
-     * request, so it never enters the catalog — it is shown as the live line
-     * of the job it names.
+     * The live view of every running job, keyed by the origin, the engine
+     * and the job id. A job's live view is a snapshot of a running request,
+     * so it never enters the catalog — it is shown as the live line of the
+     * job it names.
      */
     liveProgress: Map<string, WorkloadLiveProgress>
     initialize: () => Promise<void>
@@ -46,7 +48,7 @@ let unsubs: Array<() => void> = []
 // buffer pushes and flush them in a single commit on the next animation frame.
 type PendingOp =
     | { kind: 'upsert'; workload: Workload }
-    | { kind: 'remove'; key: string }
+    | { kind: 'remove'; key: string; originatedFrom: string | null; id: string }
     | { kind: 'live'; key: string; frame: WorkloadLiveProgress }
 let pendingOps: PendingOp[] = []
 let flushHandle = 0
@@ -74,9 +76,12 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                     // A job that has already finished has no live line: the
                     // broker retires its live view, so a frame that arrives
                     // after the terminal event must not bring it back.
-                    const workload = (updated ?? prev).get(op.key)
+                    const workload = (updated ?? prev).get(
+                        workloadKey(op.frame.originatedFrom, op.frame.jobId)
+                    )
                     if (
                         workload &&
+                        workload.engine === op.frame.engine &&
                         (workload.state === 'completed' || workload.state === 'failed')
                     ) {
                         continue
@@ -107,14 +112,26 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                     // A finished job's live line goes away with it.
                     if (op.workload.state === 'completed' || op.workload.state === 'failed') {
                         if (!updatedLive) updatedLive = new Map(prevLive)
-                        updatedLive.delete(key)
+                        updatedLive.delete(
+                            liveProgressKey(
+                                op.workload.originatedFrom,
+                                op.workload.engine,
+                                op.workload.id
+                            )
+                        )
                     }
                 } else {
                     if (!base.has(op.key)) continue
                     if (!updated) updated = new Map(prev)
                     updated.delete(op.key)
                     if (!updatedLive) updatedLive = new Map(prevLive)
-                    updatedLive.delete(op.key)
+                    // A removal names no engine, so it retires the live view
+                    // of the job on every engine of that origin.
+                    for (const liveKey of [...updatedLive.keys()]) {
+                        if (liveProgressKeyIsJob(liveKey, op.originatedFrom, op.id)) {
+                            updatedLive.delete(liveKey)
+                        }
+                    }
                 }
             }
 
@@ -152,14 +169,14 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                 window.pairApi.workloads.onRemove(({ workloadId, originatedFrom }) => {
                     const key = workloadKey(originatedFrom, workloadId)
                     if (initializing) removedDuringInit.add(key)
-                    pendingOps.push({ kind: 'remove', key })
+                    pendingOps.push({ kind: 'remove', key, originatedFrom, id: workloadId })
                     schedule()
                 }),
                 // The live view of a running job. It is a snapshot, not a
                 // catalog event, so it lands in the live map and never in the
                 // catalog.
                 window.pairApi.workloads.onProgress((frame: WorkloadLiveProgress) => {
-                    const key = workloadKey(frame.originatedFrom, frame.jobId)
+                    const key = liveProgressKey(frame.originatedFrom, frame.engine, frame.jobId)
                     pendingOps.push({ kind: 'live', key, frame })
                     schedule()
                 })
@@ -217,12 +234,13 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
 /**
  * The live view of a running job, if the broker reported one.
  *
- * The view is keyed like the catalog (`originatedFrom` + `id`), because
- * PAIR's job id is a per-proxy counter: two origins can both hold a job "1",
- * and only the origin tells their jobs apart.
+ * The view is keyed by the origin, the engine and the job id: PAIR's job id
+ * is a per-proxy counter, so two origins can both hold a job "1" and two
+ * engines on one node each count from 1 as well. Only the origin and the
+ * engine together tell two jobs apart.
  */
 export function useWorkloadLiveProgress(workload: Workload): WorkloadLiveProgress | undefined {
-    const key = workloadKey(workload.originatedFrom, workload.id)
+    const key = liveProgressKey(workload.originatedFrom, workload.engine, workload.id)
     return useWorkloadsStore(state => state.liveProgress.get(key))
 }
 

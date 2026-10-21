@@ -70,6 +70,11 @@ type engineJob struct {
 	// request a peer forwarded — PAIR's job id is a per-proxy counter, so
 	// the origin is what tells two peers' job "1" apart.
 	originNodeID string
+	// runID is the run the job belongs to: this proxy's own run nonce for
+	// a request it received directly, and the origin's run nonce for a
+	// request a peer forwarded (it travelled with the request). It tells a
+	// recycled job id from the job it replaced.
+	runID string
 }
 
 // engineActivity holds the pairing between the engine's request ids and
@@ -213,7 +218,9 @@ func (p *Proxy) refreshEngineActivity(ctx context.Context) {
 			JobID:          job.jobID,
 			NodeID:         p.nodeID,
 			OriginatedFrom: job.originNodeID,
-			Engine:         engineProgressOf(row),
+			Engine:         workloadEngine,
+			RunID:          job.runID,
+			EngineProgress: engineProgressOf(row),
 		})
 	}
 }

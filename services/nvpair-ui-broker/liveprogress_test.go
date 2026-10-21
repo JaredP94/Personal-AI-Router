@@ -33,9 +33,19 @@ func progressParams(t *testing.T, frame inferencemetrics.ProgressFrame) json.Raw
 // It carries no origin: the proxy cannot know it is the origin of a job it
 // forwarded onward, so the origin's own broker stamps the origin onto it.
 func pairFactsFrame(jobID, nodeID string, elapsed int64) inferencemetrics.ProgressFrame {
+	return pairFactsFrameFor(jobID, nodeID, "omlx", "r1", elapsed)
+}
+
+// pairFactsFrameFor is the PAIR-derived frame of a job on a named engine and
+// run. The engine is part of the job's identity: every proxy counts its own
+// requests from 1, so an oMLX job "1" and an Ollama job "1" on the same node
+// are two different jobs.
+func pairFactsFrameFor(jobID, nodeID, engine, runID string, elapsed int64) inferencemetrics.ProgressFrame {
 	return inferencemetrics.ProgressFrame{
 		JobID:     jobID,
 		NodeID:    nodeID,
+		Engine:    engine,
+		RunID:     runID,
 		ElapsedMs: inferencemetrics.Int64Ptr(elapsed),
 		Chunks:    inferencemetrics.Int64Ptr(34),
 		Bytes:     inferencemetrics.Int64Ptr(1820),
@@ -50,11 +60,19 @@ func pairFactsFrame(jobID, nodeID string, elapsed int64) inferencemetrics.Progre
 // job id is a per-proxy counter, so the origin is what tells two jobs that
 // share a job id apart.
 func engineFrame(jobID, nodeID, origin, requestID string) inferencemetrics.ProgressFrame {
+	return engineFrameFor(jobID, nodeID, origin, "omlx", "r1", requestID)
+}
+
+// engineFrameFor is the engine's own reading of a job on a named engine and
+// run.
+func engineFrameFor(jobID, nodeID, origin, engine, runID, requestID string) inferencemetrics.ProgressFrame {
 	return inferencemetrics.ProgressFrame{
 		JobID:          jobID,
 		NodeID:         nodeID,
 		OriginatedFrom: origin,
-		Engine: &inferencemetrics.EngineProgress{
+		Engine:         engine,
+		RunID:          runID,
+		EngineProgress: &inferencemetrics.EngineProgress{
 			RequestID:       requestID,
 			Phase:           "generating",
 			GeneratedTokens: inferencemetrics.IntPtr(34),
@@ -79,6 +97,17 @@ func workloadUpsertParams(t *testing.T, id, origin, scheduledOn, state string) j
 		"createdAt":      1,
 	}
 	raw, err := json.Marshal(map[string]any{"workloadInfo": info})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// workloadRemovalParams builds a workloads:remove notification. The removal
+// wire carries only the job id and the origin: no engine, no run id.
+func workloadRemovalParams(t *testing.T, id, origin string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"workloadId": id, "originatedFrom": origin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +164,7 @@ func TestProgressFrameUpdatesLiveView(t *testing.T) {
 
 	b.routeProxyProgress(progressParams(t, pairFactsFrame("17", "node-b", 4200)))
 
-	view, ok := b.liveViews().get("host", "17")
+	view, ok := b.liveViews().get("host", "omlx", "17")
 	if !ok {
 		t.Fatal("the live view of job 17 is missing")
 	}
@@ -164,15 +193,15 @@ func TestProgressFrameFromPeerUpdatesTheSameView(t *testing.T) {
 	b.forwardWorkloadManagerNotification(methodWorkloadsProgress,
 		progressParams(t, engineFrame("17", "node-b", "host", "engine-req-1")))
 
-	view, ok := b.liveViews().get("host", "17")
+	view, ok := b.liveViews().get("host", "omlx", "17")
 	if !ok {
 		t.Fatal("the live view of job 17 is missing")
 	}
-	if view.Engine == nil {
+	if view.EngineProgress == nil {
 		t.Fatal("the relayed engine reading is missing from the live view")
 	}
-	if view.Engine.GeneratedTokens == nil || *view.Engine.GeneratedTokens != 34 {
-		t.Fatalf("live generated tokens = %v, want 34", view.Engine.GeneratedTokens)
+	if view.EngineProgress.GeneratedTokens == nil || *view.EngineProgress.GeneratedTokens != 34 {
+		t.Fatalf("live generated tokens = %v, want 34", view.EngineProgress.GeneratedTokens)
 	}
 	if view.ElapsedMs == nil || *view.ElapsedMs != 4200 {
 		t.Fatalf("live elapsed = %v, want 4200 (the PAIR facts must survive the engine frame)", view.ElapsedMs)
@@ -197,12 +226,12 @@ func TestProgressFrameMergeKeepsBothSides(t *testing.T) {
 				b.routeProxyProgress(progressParams(t, facts))
 			}
 
-			view, ok := b.liveViews().get("host", "17")
+			view, ok := b.liveViews().get("host", "omlx", "17")
 			if !ok {
 				t.Fatal("the live view of job 17 is missing")
 			}
-			if view.Engine == nil || view.Engine.RequestID != "engine-req-1" {
-				t.Fatalf("live engine reading = %+v, want the engine's own reading", view.Engine)
+			if view.EngineProgress == nil || view.EngineProgress.RequestID != "engine-req-1" {
+				t.Fatalf("live engine reading = %+v, want the engine's own reading", view.EngineProgress)
 			}
 			if view.ElapsedMs == nil || *view.ElapsedMs != 4200 {
 				t.Fatalf("live elapsed = %v, want 4200 (PAIR's own facts must survive)", view.ElapsedMs)
@@ -235,7 +264,7 @@ func TestProgressFrameReachesTheLiveViewFromEveryProxy(t *testing.T) {
 			b := newLiveBroker()
 			forward(b, progressParams(t, pairFactsFrame("17", "node-b", 4200)))
 
-			view, ok := b.liveViews().get("host", "17")
+			view, ok := b.liveViews().get("host", "omlx", "17")
 			if !ok {
 				t.Fatal("the live view of job 17 is missing")
 			}
@@ -265,20 +294,20 @@ func TestTerminalWorkloadEventRemovesLiveView(t *testing.T) {
 	b := newLiveBroker()
 
 	b.routeProxyProgress(progressParams(t, pairFactsFrame("17", "node-b", 4200)))
-	if _, ok := b.liveViews().get("host", "17"); !ok {
+	if _, ok := b.liveViews().get("host", "omlx", "17"); !ok {
 		t.Fatal("the live view of job 17 is missing")
 	}
 
 	b.emitWorkloadEvent("workloads:upsert", workloadUpsertParams(t, "17", "host", "node-b", "running"))
 	b.emitWorkloadEvent("workloads:upsert", workloadUpsertParams(t, "17", "host", "node-b", "completed"))
 
-	if _, ok := b.liveViews().get("host", "17"); ok {
+	if _, ok := b.liveViews().get("host", "omlx", "17"); ok {
 		t.Fatal("the live view survived the job's terminal event")
 	}
 
 	// A frame that was already on its way must not resurrect the job.
 	b.routeProxyProgress(progressParams(t, pairFactsFrame("17", "node-b", 4400)))
-	if _, ok := b.liveViews().get("host", "17"); ok {
+	if _, ok := b.liveViews().get("host", "omlx", "17"); ok {
 		t.Fatal("a late frame resurrected a retired job's live view")
 	}
 }
@@ -297,10 +326,10 @@ func TestLiveViewIsBounded(t *testing.T) {
 	if got := b.liveViews().len(); got != 4 {
 		t.Fatalf("the live map holds %d views, want 4 (it must be bounded)", got)
 	}
-	if _, ok := b.liveViews().get("host", "0"); ok {
+	if _, ok := b.liveViews().get("host", "omlx", "0"); ok {
 		t.Fatal("the oldest live view was kept, want it dropped")
 	}
-	if _, ok := b.liveViews().get("host", "9"); !ok {
+	if _, ok := b.liveViews().get("host", "omlx", "9"); !ok {
 		t.Fatal("the newest live view is missing")
 	}
 }
@@ -381,10 +410,10 @@ func TestProgressFrameStampsTheOriginOnlyWhenItIsMissing(t *testing.T) {
 	// must not re-stamp a peer's job with its own id.
 	b.routeProxyProgress(progressParams(t, engineFrame("17", "node-c", "origin-c", "engine-req-c")))
 
-	if _, ok := b.liveViews().get("origin-c", "17"); !ok {
+	if _, ok := b.liveViews().get("origin-c", "omlx", "17"); !ok {
 		t.Fatal("the frame's own origin was not used as the key")
 	}
-	if _, ok := b.liveViews().get("node-b", "17"); ok {
+	if _, ok := b.liveViews().get("node-b", "omlx", "17"); ok {
 		t.Fatal("the broker re-stamped a frame that already named an origin")
 	}
 
@@ -392,7 +421,7 @@ func TestProgressFrameStampsTheOriginOnlyWhenItIsMissing(t *testing.T) {
 	// origin's own broker is the only node that knows the job is its own.
 	b.routeProxyProgress(progressParams(t, pairFactsFrame("18", "node-c", 4200)))
 
-	if _, ok := b.liveViews().get("node-b", "18"); !ok {
+	if _, ok := b.liveViews().get("node-b", "omlx", "18"); !ok {
 		t.Fatal("the broker did not stamp its own id onto a frame that named no origin")
 	}
 }
@@ -477,11 +506,11 @@ func TestTwoOriginsWithTheSameJobIdKeepSeparateLiveViews(t *testing.T) {
 	peer.routeProxyProgress(progressParams(t, engineFrame("1", "node-b", "origin-a", "engine-req-a")))
 	peer.routeProxyProgress(progressParams(t, engineFrame("1", "node-b", "origin-c", "engine-req-c")))
 
-	viewA, ok := peer.liveViews().get("origin-a", "1")
+	viewA, ok := peer.liveViews().get("origin-a", "omlx", "1")
 	if !ok {
 		t.Fatal("the peer's live view of origin-a's job 1 is missing")
 	}
-	viewC, ok := peer.liveViews().get("origin-c", "1")
+	viewC, ok := peer.liveViews().get("origin-c", "omlx", "1")
 	if !ok {
 		t.Fatal("the peer's live view of origin-c's job 1 is missing")
 	}
@@ -493,18 +522,18 @@ func TestTwoOriginsWithTheSameJobIdKeepSeparateLiveViews(t *testing.T) {
 	if viewC.ElapsedMs == nil || *viewC.ElapsedMs != 4300 {
 		t.Fatalf("origin-c's elapsed = %v, want 4300", viewC.ElapsedMs)
 	}
-	if viewA.Engine == nil || viewA.Engine.RequestID != "engine-req-a" {
-		t.Fatalf("origin-a's engine reading = %+v, want the engine request of origin-a's job", viewA.Engine)
+	if viewA.EngineProgress == nil || viewA.EngineProgress.RequestID != "engine-req-a" {
+		t.Fatalf("origin-a's engine reading = %+v, want the engine request of origin-a's job", viewA.EngineProgress)
 	}
-	if viewC.Engine == nil || viewC.Engine.RequestID != "engine-req-c" {
-		t.Fatalf("origin-c's engine reading = %+v, want the engine request of origin-c's job", viewC.Engine)
+	if viewC.EngineProgress == nil || viewC.EngineProgress.RequestID != "engine-req-c" {
+		t.Fatalf("origin-c's engine reading = %+v, want the engine request of origin-c's job", viewC.EngineProgress)
 	}
 
 	// Each origin's own broker holds only its own job's view.
-	if _, ok := originA.liveViews().get("origin-a", "1"); !ok {
+	if _, ok := originA.liveViews().get("origin-a", "omlx", "1"); !ok {
 		t.Fatal("the first origin's live view of its own job is missing")
 	}
-	if _, ok := originA.liveViews().get("origin-c", "1"); ok {
+	if _, ok := originA.liveViews().get("origin-c", "omlx", "1"); ok {
 		t.Fatal("the first origin holds a live view of another origin's job")
 	}
 }
@@ -520,10 +549,123 @@ func TestTerminalEventRetiresOnlyItsOwnOrigin(t *testing.T) {
 
 	peer.emitWorkloadEvent("workloads:upsert", workloadUpsertParams(t, "1", "origin-a", "node-b", "completed"))
 
-	if _, ok := peer.liveViews().get("origin-a", "1"); ok {
+	if _, ok := peer.liveViews().get("origin-a", "omlx", "1"); ok {
 		t.Fatal("the finished job's live view survived its terminal event")
 	}
-	if _, ok := peer.liveViews().get("origin-c", "1"); !ok {
+	if _, ok := peer.liveViews().get("origin-c", "omlx", "1"); !ok {
+		t.Fatal("another origin's job with the same job id lost its live view")
+	}
+}
+
+// TestTwoEnginesWithTheSameJobIdKeepSeparateLiveViews: every proxy counts
+// its own requests from 1, so an oMLX job "1" and an Ollama job "1" on the
+// same node are two DIFFERENT jobs. Their live views must stay separate: the
+// last frame of one job must not overwrite the other's counts, and the
+// engine's own reading must never end up on the other job's card.
+func TestTwoEnginesWithTheSameJobIdKeepSeparateLiveViews(t *testing.T) {
+	b := newLiveBroker()
+
+	// Two jobs of the same node, both numbered "1", served by the same
+	// node: one on oMLX, one on Ollama.
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-b", "omlx", "r1", 4200)))
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-b", "ollama", "r2", 4300)))
+	// The serving node's poller reports the oMLX job's own reading.
+	b.forwardWorkloadManagerNotification(methodWorkloadsProgress,
+		progressParams(t, engineFrameFor("1", "node-b", "host", "omlx", "r1", "engine-req-omlx")))
+
+	omlx, ok := b.liveViews().get("host", "omlx", "1")
+	if !ok {
+		t.Fatal("the live view of the oMLX job 1 is missing")
+	}
+	ollama, ok := b.liveViews().get("host", "ollama", "1")
+	if !ok {
+		t.Fatal("the live view of the Ollama job 1 is missing")
+	}
+
+	// Each view holds its own job's numbers.
+	if omlx.ElapsedMs == nil || *omlx.ElapsedMs != 4200 {
+		t.Fatalf("the oMLX job's elapsed = %v, want 4200", omlx.ElapsedMs)
+	}
+	if ollama.ElapsedMs == nil || *ollama.ElapsedMs != 4300 {
+		t.Fatalf("the Ollama job's elapsed = %v, want 4300", ollama.ElapsedMs)
+	}
+	// The engine's own reading belongs to the oMLX job alone.
+	if omlx.EngineProgress == nil || omlx.EngineProgress.RequestID != "engine-req-omlx" {
+		t.Fatalf("the oMLX job's engine reading = %+v, want the engine's own reading", omlx.EngineProgress)
+	}
+	if ollama.EngineProgress != nil {
+		t.Fatalf("the Ollama job's view carries an engine reading (%+v), want none", ollama.EngineProgress)
+	}
+}
+
+// TestARecycledJobIdIsADifferentJob: a proxy that restarts counts its jobs
+// from 1 again, so the job "1" of the new run is not the job "1" of the old
+// one. The run id says so, and the old view is replaced rather than merged —
+// otherwise the new job would inherit the old job's counts.
+func TestARecycledJobIdIsADifferentJob(t *testing.T) {
+	b := newLiveBroker()
+
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-b", "omlx", "run-1", 4200)))
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-b", "omlx", "run-2", 5000)))
+
+	view, ok := b.liveViews().get("host", "omlx", "1")
+	if !ok {
+		t.Fatal("the live view of job 1 is missing")
+	}
+	if view.ElapsedMs == nil || *view.ElapsedMs != 5000 {
+		t.Fatalf("the live elapsed = %v, want 5000 (the new run's own numbers)", view.ElapsedMs)
+	}
+	if view.RunID != "run-2" {
+		t.Fatalf("the live run id = %q, want run-2", view.RunID)
+	}
+}
+
+// TestRetirementWithoutAnOriginCoversEveryViewItRemoves: a removal that
+// names no origin retires the job wherever it ran — and the retirement
+// covers exactly the views it removed, so a frame that arrives late cannot
+// recreate the live view of a job that is over.
+func TestRetirementWithoutAnOriginCoversEveryViewItRemoves(t *testing.T) {
+	b := newLiveBroker()
+
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-b", "omlx", "r1", 4200)))
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-c", "ollama", "r2", 4300)))
+
+	// The removal names no origin: the job is over wherever it ran.
+	b.emitWorkloadEvent("workloads:remove", workloadRemovalParams(t, "1", ""))
+
+	if _, ok := b.liveViews().get("host", "omlx", "1"); ok {
+		t.Fatal("the removed job's live view survived the removal")
+	}
+	if _, ok := b.liveViews().get("host", "ollama", "1"); ok {
+		t.Fatal("the removed job's live view survived the removal on the other engine")
+	}
+
+	// A frame that was already on its way must not bring either job back.
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-b", "omlx", "r1", 4400)))
+	b.routeProxyProgress(progressParams(t, pairFactsFrameFor("1", "node-c", "ollama", "r2", 4400)))
+	if _, ok := b.liveViews().get("host", "omlx", "1"); ok {
+		t.Fatal("a late frame resurrected a retired job's live view")
+	}
+	if _, ok := b.liveViews().get("host", "ollama", "1"); ok {
+		t.Fatal("a late frame resurrected a retired job's live view on the other engine")
+	}
+}
+
+// TestARemovalWithAnOriginRetiresOnlyThatOrigin: a removal names the origin
+// whose job it retires, so another origin's job with the same job id keeps
+// its live view.
+func TestARemovalWithAnOriginRetiresOnlyThatOrigin(t *testing.T) {
+	peer := newLiveBrokerFor("node-b")
+
+	peer.routeProxyProgress(progressParams(t, engineFrameFor("1", "node-b", "origin-a", "omlx", "r1", "engine-req-a")))
+	peer.routeProxyProgress(progressParams(t, engineFrameFor("1", "node-b", "origin-c", "omlx", "r1", "engine-req-c")))
+
+	peer.emitWorkloadEvent("workloads:remove", workloadRemovalParams(t, "1", "origin-a"))
+
+	if _, ok := peer.liveViews().get("origin-a", "omlx", "1"); ok {
+		t.Fatal("the removed job's live view survived the removal")
+	}
+	if _, ok := peer.liveViews().get("origin-c", "omlx", "1"); !ok {
 		t.Fatal("another origin's job with the same job id lost its live view")
 	}
 }
