@@ -30,10 +30,18 @@
  * never reported a rate at all, which reads as a measurement the engine
  * never made.
  *
- * The optional extras are omitted rather than filled in. The cached-token
- * count, the total duration and the node's cached total are values some
- * engines never report; a row for one of them is added only when the value
- * is there, so an engine that reports nothing extra shows no row for it.
+ * The optional extras are omitted rather than filled in. The job's
+ * cached-token count and its total duration are values some engines never
+ * report; a row for one of them is added only when the value is there, so an
+ * engine that reports nothing extra shows no row for it.
+ *
+ * The node carries no cached-token row at all. Only oMLX reports a cached
+ * count, and the broker's node totals hold no counter for the requests that
+ * reported one — so a node-level total would read as a measured zero on a
+ * node whose engine never measured a cached count. The per-job row carries
+ * the count where the engine did report it; a node-level total needs a
+ * presence counter in the broker's totals, which the engine-cache work
+ * brings.
  */
 import type {
     InferenceMetricsTotals,
@@ -247,17 +255,6 @@ export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): Infere
             unavailable: !tokens
         }
     ]
-    // The cached count is an optional extra: only oMLX reports it. The row
-    // is added once the node has served a request that reported token counts
-    // at all — before that the node's total is a zero with nothing behind
-    // it, and a row reading "0" would claim a measurement nobody made.
-    if (tokens) {
-        rows.push({
-            label: `Cached tokens (${TOTAL_LABEL})`,
-            value: formatTokenCount(totals.cachedTokens),
-            unavailable: false
-        })
-    }
     return rows
 }
 

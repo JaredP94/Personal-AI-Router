@@ -214,7 +214,13 @@ type Measurement struct {
    UI omits it. It is *not* subtracted from prefill tokens: oMLX's own
    `prompt_tokens_per_second` already uses `prompt − cached`, and PAIR's
    `prefill_tokens` remains the full prompt count. The UI shows the cached
-   count separately; it does not recompute oMLX's rate.
+   count separately; it does not recompute oMLX's rate. The count is shown
+   **per job**, where the engine reported one. The node card shows no
+   cached-token row at all: the broker's node totals carry no counter for the
+   requests that reported a cached count, so a node-level total would read as
+   a measured zero on a node whose engine never measured one. Such a total
+   needs a presence counter (`cachedRequests`) in the broker's totals, which
+   the engine-cache work (§6.7) brings.
 5. **Provenance is presence.** A present value was measured by the engine; an
    absent one means the engine does not report it. There is no separate
    "measured vs. estimated" label, because there are no estimates. A value the
@@ -487,22 +493,26 @@ returns the same snapshot for hydration on connect.
   ratio is **labelled with the window it covers**, so a 60-second windowed
   rate and a since-broker-start ratio are never shown under the same label.
 - **Node card** (`desktop/src/ui/components/NodeList/NodeCardDetails.tsx`):
-  a prefill/decode section — prefill tok/s, decode tok/s, TTFT, the
-  prefill + decode token count and the cached-token count. Every figure is
+  a prefill/decode section — prefill tok/s, decode tok/s, TTFT and the
+  prefill + decode token count. Every figure is
   labelled with the window it covers: the node's rates with the broker's
   60-second window, the totals and the per-model breakdown with the broker's
   start, the job card with the request.
   Absent phases are shown as "not reported by this engine" rather than as 0.
-  The optional extras — the cached-token count and the job card's total
-  duration — are **omitted** when the engine did not report them: an engine
-  that reports no cached count and no total time has no row for them, and no
-  zero is shown in their place. The phase rows stay in every case, because
-  "this engine does not report phases" is worth saying.
+  The node card carries **no cached-token row**: only oMLX reports a cached
+  count, and the node's totals hold no counter for the requests that reported
+  one, so a node-level total would read as a measured zero on a node whose
+  engine never measured one (rule 4).
   A per-node disclosure lists the per-model breakdown; it is collapsed by
   default.
 - **Job card** (`desktop/src/ui/components/Workloads/WorkloadItemCard.tsx`):
   per-job prefill/decode tokens, the cached-token count, the phase durations,
   the total duration and the rates, shown once the job is terminal.
+  The optional extras — the cached-token count and the total duration — are
+  **omitted** when the engine did not report them: an engine that reports no
+  cached count and no total time has no row for them, and no zero is shown in
+  their place. The phase rows stay in every case, because "this engine does
+  not report phases" is worth saying.
 - **Relay:** the broker's push reaches the renderer through the existing
   bridge push path (`emitBridgePush`).
 
@@ -668,6 +678,15 @@ land on the node that already holds the prefix). v2 can show both side by
 side, which is the only way to answer "is the cache helping, and is the
 routing helping?" — they are different mechanisms with different effects.
 
+The node-level cached total belongs here as well. Showing a node's cached
+tokens needs a presence counter in the broker's totals — `cachedRequests`,
+how many requests reported a cached count — because without it the total is
+indistinguishable from a measured zero on an engine that reports no cached
+count at all (rule 4). That counter is a wire-contract change and is
+deliberately deferred to this section, where the engine-cache comparison is
+built. Until then, the cached count is shown per job, where the engine
+reported one.
+
 ### 6.8 Persistence across broker restarts
 
 The per-node accumulator is in-memory in v1 and resets when the broker
@@ -769,9 +788,11 @@ side by the broker's ingest test.
 - Type mapping and store updates for the new channels.
 - The node card and job card render a present measurement and an absent one
   distinctly (the latter must not read as 0).
-- The optional extras — the cached-token count and the job card's total
+- The optional extras — the job card's cached-token count and its total
   duration — are **omitted** when the engine reported none, and shown when it
   did, including a reported zero.
+- The node card has no cached-token row: a node-level cached total would read
+  as a measured zero on a node whose engine never reported a cached count.
 - The node card says what its totals cover: they are the totals the broker
   has kept since it started, not the life of the engine.
 

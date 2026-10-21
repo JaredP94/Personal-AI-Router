@@ -859,7 +859,7 @@ describe('node inference metrics rows', () => {
     })
 })
 ```
-Add `buildInferenceMetricsRows` to `ui/utils/inference-metrics.ts` returning `{ label: string; value: string; unavailable: boolean }[]` for the rows `Prefill (last 60 s)`, `Decode (last 60 s)`, `TTFT (last 60 s)`, `Prefill + decode tokens (since broker start)` and — once the node has served a request that reported token counts — `Cached tokens (since broker start)`.
+Add `buildInferenceMetricsRows` to `ui/utils/inference-metrics.ts` returning `{ label: string; value: string; unavailable: boolean }[]` for the rows `Prefill (last 60 s)`, `Decode (last 60 s)`, `TTFT (last 60 s)` and `Prefill + decode tokens (since broker start)`. The node's rows carry **no cached-token row**: only oMLX reports a cached count, and the node's totals hold no counter for the requests that reported one, so a node-level total would read as a measured zero on a node whose engine never measured one. The per-job rows keep their own `Cached tokens (this request)` row, added only when the job carries a `cachedTokens`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -879,9 +879,13 @@ Expected: FAIL — `buildInferenceMetricsRows` not exported.
   `cachedTokens` — only oMLX reports either, so for Ollama and LM Studio those
   rows are simply absent, and no zero is shown in their place. A reported zero
   (oMLX's `cached_tokens: 0` on a prefix-cache miss) is shown as `0`.
-- The **node card** gains a **Cached tokens** row carrying the node's
-  `cachedTokens` total, added once the node's `tokenRequests` counter is above
-  zero (a node that never served a measured request has no total to show).
+- The **node card** gains no cached-token row. A node-level cached total
+  needs a presence counter in the broker's totals (`cachedRequests`, how many
+  requests reported a cached count); without it the total is
+  indistinguishable from a measured zero on an engine that reports no cached
+  count. That counter is a wire-contract change and belongs to the v2
+  engine-cache work (spec §6.7). Until then, the cached count is shown per
+  job, where the engine reported one.
 - Label the windows: the node's Prefill/Decode rates are the broker's **60-second window** rates, while a per-model or per-job ratio derived from the totals is a **since broker start** figure. Say which is which — the two must never appear under the same label, and the totals must say that they restart with the broker rather than reading as "lifetime".
 - Say "engine" in user-facing copy, never "backend".
 
@@ -948,6 +952,6 @@ git commit -s -m "chore: version bump, contracts and docs for inference metrics"
 - [ ] oMLX: with a running engine, one streaming request through the proxy shows non-zero prefill and decode numbers on the job card, and the values match `/admin/api/stats` deltas.
 - [ ] Ollama: the same request shows prefill and decode durations converted from nanoseconds, and no Total row (Ollama reports no total time).
 - [ ] LM Studio: the same request shows token counts and shows the phase rows as "not reported".
-- [ ] oMLX: a request that missed the prefix cache shows `Cached tokens 0` on the job card and the node card — a reported zero, not an absent value.
+- [ ] oMLX: a request that missed the prefix cache shows `Cached tokens 0` on the job card — a reported zero, not an absent value. The node card shows no cached-token row.
 - [ ] A request against a node that advertises no matching model is rejected with 502 and creates no job and no per-node traffic.
 - [ ] Two nodes in a cluster report the same per-node totals for the same job.

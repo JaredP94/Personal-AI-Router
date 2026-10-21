@@ -900,8 +900,12 @@ rendered by the desktop.
   LM Studio it stays absent, because the proxy's own wall-clock duration
   includes queueing, transport and client write time and would not mean the
   same thing. The desktop leaves the optional extras out entirely when the
-  engine reported none: the Total row and the cached-token rows are absent
-  rather than zero, while the phase rows stay and say "not reported".
+  engine reported none: the Total row and the cached-token row are absent
+  rather than zero, while the phase rows stay and say "not reported". The
+  node card shows no cached-token row at all: the broker's node totals carry
+  no counter for the requests that reported a cached count, so a node-level
+  total would read as a measured zero on a node whose engine never measured
+  one. The cached count is shown per job, where the engine reported it.
 - **Cluster-wide lifecycle:** The terminal `workload:completed` /
   `workload:errored` event carries the measurement on the workload object. The
   workload lifecycle stream already reaches every broker in the cluster, so the

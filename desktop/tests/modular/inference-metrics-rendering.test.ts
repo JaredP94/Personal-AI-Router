@@ -131,27 +131,21 @@ describe('the node card prefill/decode section', () => {
         expect(text()).toContain('Prefill + decode tokens (since broker start) 120')
     })
 
-    it('renders the cached tokens the node served', async () => {
+    it('renders no cached-token row for a node', async () => {
+        // Only oMLX reports a cached count, and the node's totals carry no
+        // counter for the requests that reported one, so a node-level total
+        // would read as a measured zero on a node whose engine never
+        // measured one. The row is left out; the job card carries the count.
         useMetricsStore.setState({
             nodeInferenceMetrics: new Map([
                 ['node-a', nodeMetrics({ ...reportedTotals, cachedTokens: 900 })]
             ])
         })
         await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
-        expect(text()).toContain('Cached tokens (since broker start) 900')
+        expect(text()).not.toContain('Cached tokens')
     })
 
-    it('renders a zero cached count for a node whose traffic missed the cache', async () => {
-        useMetricsStore.setState({
-            nodeInferenceMetrics: new Map([['node-a', nodeMetrics(tokenOnlyTotals)]])
-        })
-        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
-        // The node served requests that reported token counts, so the row is
-        // there, and the count it reported was zero.
-        expect(text()).toContain('Cached tokens (since broker start) 0')
-    })
-
-    it('renders no cached tokens for a node that served no measured request', async () => {
+    it('renders no cached-token row for a node that served no measured request', async () => {
         useMetricsStore.setState({
             nodeInferenceMetrics: new Map([
                 [

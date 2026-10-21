@@ -412,32 +412,32 @@ describe('the node inference metrics rows', () => {
         ).toBe('not reported')
     })
 
-    it('shows the cached tokens the node served', () => {
-        // The cached count is the broker's own total for the node, shown
-        // alongside the other totals. It appears once the node has served a
-        // request that reported token counts at all.
+    it('shows no cached-token row for a node', () => {
+        // Only oMLX reports a cached count, and the node's totals carry no
+        // counter for the requests that reported one. A node-level total
+        // would therefore read as a measured zero on a node whose engine
+        // never measured a cached count, so the row is left out entirely.
+        // The per-job row carries the count where the engine did report it.
         const rows = buildInferenceMetricsRows({
             nodeId: 'n1',
             totals: { ...reportedTotals, cachedTokens: 900 },
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')?.value).toBe('900')
-        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')?.unavailable).toBe(
-            false
-        )
+        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')).toBeUndefined()
+        expect(rows.some(r => r.label.startsWith('Cached tokens'))).toBe(false)
     })
 
-    it('omits the cached tokens for a node that served no measured request', () => {
+    it('shows no cached-token row for a node that served no measured request', () => {
         // A node whose engine reported no token count has no cached total to
-        // show, so the row is left out rather than reading as a zero.
+        // show either, so the row is left out rather than reading as a zero.
         const rows = buildInferenceMetricsRows({
             nodeId: 'n1',
             totals: silentTotals,
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')).toBeUndefined()
+        expect(rows.some(r => r.label.startsWith('Cached tokens'))).toBe(false)
     })
 })
 
@@ -456,6 +456,9 @@ describe('the per-model breakdown of a node', () => {
             models[0].rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')
                 ?.value
         ).toBe('120')
+        // The per-model breakdown carries no cached row either: the same
+        // absence the node's rows have.
+        expect(models[0].rows.some(r => r.label.startsWith('Cached tokens'))).toBe(false)
     })
 
     it('marks a model whose engine reported no phase as unavailable', () => {

@@ -609,7 +609,7 @@ The **presence counters** are what make the totals readable. A rate of `0` is am
 
 The rates are computed over the broker's own clock, never by comparing a relayed event's timestamp to the local clock. Two members of the cluster can therefore hold slightly different sample sets at a window boundary and report slightly different instantaneous rates, while their totals agree exactly.
 
-Only the values the engine reported are summed, so an absent value never contributes a zero to a sum it did not measure, and a reported zero contributes a zero for the reason a consumer can rely on. `cachedTokens` is the total the engines reported for the node's traffic — only oMLX reports a cached-token count, and a request that missed the prefix cache reports zero. The desktop shows the node's cached total once the node has served a request that reported token counts at all.
+Only the values the engine reported are summed, so an absent value never contributes a zero to a sum it did not measure, and a reported zero contributes a zero for the reason a consumer can rely on. `cachedTokens` is the total the engines reported for the node's traffic — only oMLX reports a cached-token count, and a request that missed the prefix cache reports zero. The desktop shows that count per job, where the engine reported one; it shows no node-level cached total, because the node's totals carry no counter for the requests that reported a cached count, and such a total would read as a measured zero on a node whose engine never measured one.
 
 #### `metrics:subscribe` / `metrics:unsubscribe`
 
