@@ -117,6 +117,25 @@ type telemetryBodyReader struct {
 	outputTokens        int
 	responseModel       string
 
+	// requestStart is the instant the request reached the proxy. The live
+	// progress frame measures its timings from here, so the elapsed time and
+	// the time to the first byte are the client's own, not the engine's.
+	requestStart time.Time
+
+	// progressMu guards the live counters below. They are written by the
+	// response copy goroutine and read by whoever asks the reader for a
+	// snapshot, which need not be that goroutine.
+	progressMu     sync.Mutex
+	chunks         int64
+	bytes          int64
+	firstByteAt    time.Time
+	firstContentAt time.Time
+
+	// onProgress is called whenever the reader observes something new. It
+	// runs on the response copy goroutine, so it must be cheap and must not
+	// block.
+	onProgress func(LiveProgress)
+
 	// measurementMu guards measurement, which is accumulated while the
 	// response streams in and read once the stream is done. The measurement
 	// is kept independently of the span: with telemetry disabled no span is
@@ -125,20 +144,49 @@ type telemetryBodyReader struct {
 	measurement   inferencemetrics.Measurement
 }
 
-func newTelemetryBodyReader(body io.ReadCloser, span trace.Span, start time.Time, session *telemetry.Session) *telemetryBodyReader {
+func newTelemetryBodyReader(body io.ReadCloser, span trace.Span, start, requestStart time.Time, session *telemetry.Session) *telemetryBodyReader {
 	return &telemetryBodyReader{
-		ReadCloser: body,
-		span:       span,
-		start:      start,
-		session:    session,
+		ReadCloser:   body,
+		span:         span,
+		start:        start,
+		requestStart: requestStart,
+		session:      session,
 	}
+}
+
+// LiveProgress is what the reader has measured of the response so far.
+//
+// Every number in it is exact. The bytes are the bytes the engine sent, the
+// chunks are the content chunks that arrived, and the timings are measured
+// instants — never an estimate. There is deliberately no token count and no
+// rate: a chunk is not a token, and PAIR does not know the engine's token
+// count until the response ends.
+type LiveProgress struct {
+	// Chunks is the number of content chunks received — chunks that carried
+	// text, not every frame the engine sent.
+	Chunks int64
+	// Bytes is the number of response body bytes received.
+	Bytes int64
+	// TTFBMs is the time to the first response byte, in milliseconds.
+	TTFBMs int64
+	// TTFCMs is the time to the first content chunk, in milliseconds.
+	TTFCMs int64
+	// HasByte reports whether a response byte has arrived at all.
+	HasByte bool
+	// HasContent reports whether a content chunk has arrived at all.
+	HasContent bool
 }
 
 func (r *telemetryBodyReader) Read(b []byte) (int, error) {
 	n, err := r.ReadCloser.Read(b)
 	if n > 0 {
 		r.recordFirstToken()
+		r.recordBytes(n)
 		r.observe(b[:n])
+		// One notification per read, after the read's bytes have been
+		// counted and its lines parsed: the snapshot a frame carries is
+		// the state at the end of the read, not the state before it.
+		r.notifyProgress()
 	}
 	if err == io.EOF {
 		if len(r.lineBuf) > 0 {
@@ -158,6 +206,61 @@ func (r *telemetryBodyReader) recordFirstToken() {
 			r.span.AddEvent("first_token")
 		}
 	})
+}
+
+// recordBytes counts the response bytes as they arrive and notes the instant
+// the first byte came.
+func (r *telemetryBodyReader) recordBytes(n int) {
+	r.progressMu.Lock()
+	if r.firstByteAt.IsZero() {
+		r.firstByteAt = time.Now()
+	}
+	r.bytes += int64(n)
+	r.progressMu.Unlock()
+}
+
+// recordContent counts a content chunk — a chunk that carried text — and
+// notes the instant the first one came.
+func (r *telemetryBodyReader) recordContent() {
+	r.progressMu.Lock()
+	r.chunks++
+	if r.firstContentAt.IsZero() {
+		r.firstContentAt = time.Now()
+	}
+	r.progressMu.Unlock()
+}
+
+// progressLocked returns the live snapshot. The caller holds progressMu.
+func (r *telemetryBodyReader) progressLocked() LiveProgress {
+	prog := LiveProgress{
+		Chunks:  r.chunks,
+		Bytes:   r.bytes,
+		HasByte: !r.firstByteAt.IsZero(),
+	}
+	if prog.HasByte {
+		prog.TTFBMs = r.firstByteAt.Sub(r.requestStart).Milliseconds()
+	}
+	if !r.firstContentAt.IsZero() {
+		prog.HasContent = true
+		prog.TTFCMs = r.firstContentAt.Sub(r.requestStart).Milliseconds()
+	}
+	return prog
+}
+
+// Progress returns the live counters of the response read so far.
+func (r *telemetryBodyReader) Progress() LiveProgress {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	return r.progressLocked()
+}
+
+// notifyProgress hands the current snapshot to the progress callback, if one
+// is installed. It runs on the response copy goroutine.
+func (r *telemetryBodyReader) notifyProgress() {
+	if r.onProgress == nil {
+		return
+	}
+	r.onProgress(r.Progress())
 }
 
 const maxTelemetryLineBytes = 4 << 20 // 4 MiB max line buffer for large non-streaming frames
@@ -270,23 +373,41 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 	setDurationMs(&r.measurement.PrefillMs, chunk.PromptEvalDuration)
 	setDurationMs(&r.measurement.DecodeMs, chunk.EvalDuration)
 	r.measurementMu.Unlock()
+	// The chunk's text is read whether or not the telemetry session records
+	// payloads: the live progress frame counts content chunks whatever the
+	// telemetry settings are, and a chunk that carries text is what makes a
+	// request a content chunk.
+	content := chunkContent(chunk)
+	if content != "" {
+		r.recordContent()
+	}
 	if r.session.RecordPayloads() && !r.completionTruncated {
-		var toAppend string
-		if chunk.Response != "" {
-			toAppend = chunk.Response
-		} else if chunk.Message != nil && chunk.Message.Content != "" {
-			toAppend = chunk.Message.Content
-		} else if len(chunk.Choices) > 0 {
-			if chunk.Choices[0].Delta.Content != "" {
-				toAppend = chunk.Choices[0].Delta.Content
-			} else if chunk.Choices[0].Message.Content != "" {
-				toAppend = chunk.Choices[0].Message.Content
-			}
-		}
+		toAppend := content
 		part, truncated := telemetry.TruncateUTF8(toAppend, telemetry.MaxPayloadBytes-r.completionBuf.Len())
 		r.completionBuf.WriteString(part)
 		r.completionTruncated = truncated
 	}
+}
+
+// chunkContent returns the text a streamed chunk carries, if any. A chunk that
+// carries no text — a role-only delta, a usage block, a keep-alive — is not
+// a content chunk.
+func chunkContent(chunk streamChunk) string {
+	if chunk.Response != "" {
+		return chunk.Response
+	}
+	if chunk.Message != nil && chunk.Message.Content != "" {
+		return chunk.Message.Content
+	}
+	if len(chunk.Choices) > 0 {
+		if chunk.Choices[0].Delta.Content != "" {
+			return chunk.Choices[0].Delta.Content
+		}
+		if chunk.Choices[0].Message.Content != "" {
+			return chunk.Choices[0].Message.Content
+		}
+	}
+	return ""
 }
 
 // setDurationMs records an engine-reported duration, converted from the

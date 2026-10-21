@@ -1431,6 +1431,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var committedSC *statusCapture
 	var upstreamBody *affinityBodyReader
 
+	// progressLim rate-limits this request's live frames to one every
+	// progressInterval. It is per request: one busy job must not silence
+	// another job's frames.
+	var progressLim progressLimiter
+
 	// Failover loop: try candidates in order until one returns a
 	// usable response or the list is exhausted. We can only retry before the
 	// first byte reaches the client; once a response starts streaming we're
@@ -1499,8 +1504,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				cors.CompletePreflightFallback(resp)
 				upstreamBody = newAffinityBodyReader(resp.Body, resp.Header.Get("Content-Type"), r.URL.Path)
 				if isInf && dispatchSpan != nil {
-					telReader = newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, session)
-					resp.Body = telReader
+					reader := newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, start, session)
+					reader.onProgress = func(prog LiveProgress) {
+						p.publishProgress(reqID, cand.id, start, &progressLim, prog)
+					}
+					telReader = reader
+					resp.Body = reader
 				} else {
 					resp.Body = upstreamBody
 				}

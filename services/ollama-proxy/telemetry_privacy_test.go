@@ -224,7 +224,7 @@ func TestTelemetryBodyReaderRevokesBufferedCompletion(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	defer tp.Shutdown(context.Background())
 	_, span := tp.Tracer("reader").Start(context.Background(), "reader")
-	r := newTelemetryBodyReader(io.NopCloser(strings.NewReader("")), span, time.Now(), p.telemetry.Session())
+	r := newTelemetryBodyReader(io.NopCloser(strings.NewReader("")), span, time.Now(), time.Now(), p.telemetry.Session())
 	r.observe([]byte(`{"response":"before"}` + "\n"))
 	if r.completionBuf.Len() == 0 {
 		t.Fatal("fixture did not buffer completion")

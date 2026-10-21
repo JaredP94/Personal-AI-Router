@@ -69,6 +69,7 @@
 | `proxy/request` | notification (we consume) | ✅ yes |
 | `proxy/request-started` | notification (we consume) | ➖ ignored |
 | `ready` | notification (we consume) | ✅ yes |
+| `workload:progress` | notification (we consume) | ➖ ignored |
 | `node/add-manual` | request (we call) | ✅ yes |
 | `node/remove-manual` | request (we call) | ✅ yes |
 | `node/select` | request (we call) | ✅ yes |
@@ -378,6 +379,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `proxy/request` | notification (we consume) | ✅ yes |
 | `proxy/request-started` | notification (we consume) | ➖ ignored |
 | `ready` | notification (we consume) | ✅ yes |
+| `workload:progress` | notification (we consume) | ➖ ignored |
 | `node/add-manual` | request (we call) | ✅ yes |
 | `node/remove-manual` | request (we call) | ✅ yes |
 | `node/select` | request (we call) | ✅ yes |
@@ -405,6 +407,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `proxy/request` | notification (we consume) | ✅ yes |
 | `proxy/request-started` | notification (we consume) | ➖ ignored |
 | `ready` | notification (we consume) | ✅ yes |
+| `workload:progress` | notification (we consume) | ➖ ignored |
 | `node/add-manual` | request (we call) | ✅ yes |
 | `node/remove-manual` | request (we call) | ✅ yes |
 | `node/select` | request (we call) | ✅ yes |
