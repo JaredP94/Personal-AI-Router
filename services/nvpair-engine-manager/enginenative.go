@@ -120,6 +120,10 @@ func (e *Executor) EngineNativeActivity(ctx context.Context) enginenative.Activi
 // engine-native timeout, and the answer is a failure rather than a hang. The
 // engine's API key is sent as a bearer token, exactly as the engine's own
 // actions send it, and it never appears in what this returns.
+//
+// An engine that answers "not found" or "not implemented" has no admin API:
+// that is a normal state, reported as errNoEngineAdminAPI, so the answer
+// carries no error. Every other failing status is a sanitised error.
 func (e *Executor) fetchEngineAdmin(ctx context.Context, path string) ([]byte, error) {
 	port, ok := e.omlxAdminPort()
 	if !ok {
@@ -152,6 +156,13 @@ func (e *Executor) fetchEngineAdmin(ctx context.Context, path string) ([]byte, e
 	body, err := io.ReadAll(io.LimitReader(resp.Body, engineNativeMaxBody))
 	if err != nil {
 		return nil, adminFailure(ctx, err)
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented {
+		// The engine answered, and it has no admin API: either the build
+		// does not publish one, or it is disabled. That is the same normal
+		// state as a host that knows no engine with an admin API, so it
+		// answers "unsupported" with no error.
+		return nil, errNoEngineAdminAPI
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &engineAdminFailure{message: fmt.Sprintf("the engine answered HTTP %d", resp.StatusCode)}
@@ -191,7 +202,9 @@ func causeOf(err error) error {
 //
 // A host that does know oMLX is asked, even when the engine is not running:
 // the fetch fails, and the answer says so. That is what separates "there is
-// no admin API here" from "the admin API did not answer".
+// no admin API here" from "the admin API did not answer". An engine that
+// answers but has no admin API to offer is separated the same way, by its
+// own answer.
 func (e *Executor) omlxAdminPort() (int, bool) {
 	st, err := e.state(enginenative.EngineOmlx)
 	if err != nil {

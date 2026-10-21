@@ -131,6 +131,63 @@ func TestParseStatsIgnoresAModelItCannotRead(t *testing.T) {
 	}
 }
 
+// TestParseStatsReadsTheObjectKeyedModelList: the engine's payload shape is
+// inferred rather than documented, so the model list is read as an object
+// keyed by model name too, exactly as the activity rows are read.
+func TestParseStatsReadsTheObjectKeyedModelList(t *testing.T) {
+	raw := []byte(`{"active_models":{"mlx-community/Llama-3.2-3B-Instruct-4bit":{"loaded":true},` +
+		`"mlx-community/Qwen3-0.6B-4bit":{"loaded":false}}}`)
+	s, err := ParseStats(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Models) != 2 {
+		t.Fatalf("models: %+v", s.Models)
+	}
+	byName := map[string]Model{}
+	for _, model := range s.Models {
+		byName[model.Model] = model
+	}
+	llama, ok := byName["mlx-community/Llama-3.2-3B-Instruct-4bit"]
+	if !ok {
+		t.Fatalf("models: %+v", s.Models)
+	}
+	if !llama.Loaded {
+		t.Fatalf("models: %+v", s.Models)
+	}
+	qwen, ok := byName["mlx-community/Qwen3-0.6B-4bit"]
+	if !ok {
+		t.Fatalf("models: %+v", s.Models)
+	}
+	if qwen.Loaded {
+		t.Fatalf("models: %+v", s.Models)
+	}
+}
+
+// TestParseActivityReadsTheObjectKeyedModelList: the activity rows are read
+// from the same shapes the model list is read from, so an object keyed by
+// model name yields the same rows.
+func TestParseActivityReadsTheObjectKeyedModelList(t *testing.T) {
+	raw := []byte(`{"active_models":{"mlx-community/Llama-3.2-3B-Instruct-4bit":` +
+		`{"generating":[{"request_id":"req-gen","generated_tokens":34}]}}}`)
+	a, err := ParseActivity(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Rows) != 1 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if a.Rows[0].RequestID != "req-gen" {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if a.Rows[0].GeneratedTokens == nil || *a.Rows[0].GeneratedTokens != 34 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if a.Rows[0].Phase != PhaseGenerating {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+}
+
 func TestParseActivityMapsRows(t *testing.T) {
 	raw := []byte(`{"active_models":[{"model":"mlx-community/Llama-3.2-3B-Instruct-4bit",` +
 		`"waiting":[{"request_id":"req-wait","queue_position":2,"elapsed_seconds":1.5,"prompt_tokens":128}],` +

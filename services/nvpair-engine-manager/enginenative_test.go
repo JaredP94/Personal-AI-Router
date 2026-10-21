@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -145,16 +146,41 @@ func TestEngineNativeStatsReportsUnsupportedWhenTheEngineHasNoAdminAPI(t *testin
 	}
 }
 
-// TestEngineNativeStatsSurvivesAnUnreachableEngine: an engine that is not
-// listening answers "unsupported" with a short, sanitised error — never a
-// hang, never a crash, and never the engine's raw answer.
-func TestEngineNativeStatsSurvivesAnUnreachableEngine(t *testing.T) {
-	ex := newTestExecutor(t, omlxTestManifest(closedPort(t)))
-	start := time.Now()
-	got := ex.EngineNativeStats(context.Background())
-	if time.Since(start) > 5*time.Second {
-		t.Fatalf("the fetch took %s, want a bounded wait", time.Since(start))
+// TestEngineNativeStatsReportsUnsupportedWhenTheEngineHasNoAdminAPIEndpoint:
+// an engine that answers "not found" is an engine that has no admin API — the
+// build does not publish one, or it is disabled. The engine answered, so this
+// is the normal unsupported state, and the answer carries no error.
+func TestEngineNativeStatsReportsUnsupportedWhenTheEngineHasNoAdminAPIEndpoint(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusNotImplemented} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		ex := newTestExecutor(t, omlxTestManifest(listenerPort(t, srv)))
+		got := ex.EngineNativeStats(context.Background())
+		srv.Close()
+
+		if got.Supported {
+			t.Fatalf("HTTP %d: supported = true, want false (%+v)", status, got)
+		}
+		if got.Error != "" {
+			t.Fatalf("HTTP %d: error = %q, want empty — an engine that answers %d has no admin API",
+				status, got.Error, status)
+		}
 	}
+}
+
+// TestEngineNativeStatsReportsASanitisedErrorOnAFailingEngine: an engine
+// that answers with a failing status is not an engine without an admin API —
+// it is an engine whose admin API failed. The answer carries a short,
+// sanitised error.
+func TestEngineNativeStatsReportsASanitisedErrorOnAFailingEngine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ex := newTestExecutor(t, omlxTestManifest(listenerPort(t, srv)))
+	got := ex.EngineNativeStats(context.Background())
 	if got.Supported {
 		t.Fatalf("supported = true, want false (%+v)", got)
 	}
@@ -163,6 +189,41 @@ func TestEngineNativeStatsSurvivesAnUnreachableEngine(t *testing.T) {
 	}
 	if len(got.Error) > 120 {
 		t.Fatalf("error = %q, want a short message", got.Error)
+	}
+	if strings.Contains(got.Error, "dial tcp") {
+		t.Fatalf("the error leaked a transport detail: %q", got.Error)
+	}
+}
+
+// TestEngineNativeStatsSurvivesAnUnreachableEngine: an engine that is not
+// listening answers "unsupported" with a short, sanitised error — never a
+// hang, never a crash, and never the engine's raw answer.
+func TestEngineNativeStatsSurvivesAnUnreachableEngine(t *testing.T) {
+	t.Setenv("OMLX_API_KEY", "sk-test-secret")
+	port := closedPort(t)
+	ex := newTestExecutor(t, omlxTestManifest(port))
+	start := time.Now()
+	got := ex.EngineNativeStats(context.Background())
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("the fetch took %s, want a bounded wait", time.Since(start))
+	}
+	if got.Supported {
+		t.Fatalf("supported = true, want false (%+v)", got)
+	}
+	if got.Error != engineNativeUnreachable {
+		t.Fatalf("error = %q, want the sanitised %q", got.Error, engineNativeUnreachable)
+	}
+	if len(got.Error) > 120 {
+		t.Fatalf("error = %q, want a short message", got.Error)
+	}
+	if strings.Contains(got.Error, strconv.Itoa(port)) {
+		t.Fatalf("the error leaked the port: %q", got.Error)
+	}
+	if strings.Contains(got.Error, "dial tcp") {
+		t.Fatalf("the error leaked the transport error: %q", got.Error)
+	}
+	if strings.Contains(got.Error, "sk-test-secret") {
+		t.Fatalf("the error leaked the api key: %q", got.Error)
 	}
 	if strings.Contains(got.Error, "api_key") {
 		t.Fatalf("the error leaked the api key field: %q", got.Error)
@@ -181,7 +242,8 @@ func TestEngineNativeStatsTimesOutOnASlowEngine(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ex := newTestExecutor(t, omlxTestManifest(listenerPort(t, srv)))
+	port := listenerPort(t, srv)
+	ex := newTestExecutor(t, omlxTestManifest(port))
 	ex.engineNativeTimeout = 100 * time.Millisecond
 	start := time.Now()
 	got := ex.EngineNativeStats(context.Background())
@@ -191,8 +253,14 @@ func TestEngineNativeStatsTimesOutOnASlowEngine(t *testing.T) {
 	if got.Supported {
 		t.Fatalf("supported = true, want false (%+v)", got)
 	}
-	if got.Error == "" {
-		t.Fatal("error = empty, want a sanitised error")
+	if got.Error != engineNativeTimedOut {
+		t.Fatalf("error = %q, want the sanitised %q", got.Error, engineNativeTimedOut)
+	}
+	if strings.Contains(got.Error, strconv.Itoa(port)) {
+		t.Fatalf("the error leaked the port: %q", got.Error)
+	}
+	if strings.Contains(got.Error, "dial tcp") {
+		t.Fatalf("the error leaked the transport error: %q", got.Error)
 	}
 }
 

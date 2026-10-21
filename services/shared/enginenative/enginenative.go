@@ -169,9 +169,9 @@ func ParseActivity(raw []byte) (Activity, error) {
 	}
 	a := Activity{Engine: EngineOmlx, Supported: true}
 	for _, model := range decodeModelEntries(fields["active_models"]) {
-		a.Rows = append(a.Rows, parseRows(model, PhaseWaiting, "waiting")...)
-		a.Rows = append(a.Rows, parseRows(model, PhasePrefilling, "prefilling")...)
-		a.Rows = append(a.Rows, parseRows(model, PhaseGenerating, "generating")...)
+		a.Rows = append(a.Rows, parseRows(model.fields, PhaseWaiting, "waiting")...)
+		a.Rows = append(a.Rows, parseRows(model.fields, PhasePrefilling, "prefilling")...)
+		a.Rows = append(a.Rows, parseRows(model.fields, PhaseGenerating, "generating")...)
 	}
 	return a, nil
 }
@@ -280,80 +280,82 @@ func optionalNumber(fields map[string]json.RawMessage, key string) *float64 {
 	return &value
 }
 
-// parseModels reads the engine's list of active models. The list holds either
-// model names or objects carrying a name and a loaded flag; an entry that is
-// neither is skipped.
+// parseModels reads the engine's list of active models.
+//
+// It reads the same shapes the activity rows are read from, because the
+// engine's exact payload shape is inferred rather than documented: the list
+// holds either model names or objects carrying a name and a loaded flag, and
+// it is accepted as an object keyed by model name too. An entry that carries
+// no readable name is skipped.
 func parseModels(raw json.RawMessage) []Model {
-	entries, ok := decodeArray(raw)
-	if !ok {
-		return nil
-	}
 	var models []Model
-	for _, entry := range entries {
-		model, ok := parseModel(entry)
-		if !ok {
-			continue
-		}
-		models = append(models, model)
-	}
-	return models
-}
-
-// parseModel reads one entry of the engine's model list.
-func parseModel(raw json.RawMessage) (Model, bool) {
-	var name string
-	if err := json.Unmarshal(raw, &name); err == nil {
-		if name == "" {
-			return Model{}, false
-		}
-		return Model{Model: name, Loaded: true}, true
-	}
-	fields, err := decodeFields(raw)
-	if err != nil {
-		return Model{}, false
-	}
-	for _, key := range []string{"model", "name", "id"} {
-		value, ok := fields[key]
-		if !ok {
-			continue
-		}
-		if err := json.Unmarshal(value, &name); err != nil {
-			continue
-		}
-		if name == "" {
+	for _, entry := range decodeModelEntries(raw) {
+		if entry.name == "" {
 			continue
 		}
 		// A model the engine lists as active is loaded, even when the entry
 		// does not spell that out.
 		loaded := true
-		if raw, ok := fields["loaded"]; ok {
+		if value, ok := entry.fields["loaded"]; ok {
 			var reported bool
-			if err := json.Unmarshal(raw, &reported); err == nil {
+			if err := json.Unmarshal(value, &reported); err == nil {
 				loaded = reported
 			}
 		}
-		return Model{Model: name, Loaded: loaded}, true
+		models = append(models, Model{Model: entry.name, Loaded: loaded})
 	}
-	return Model{}, false
+	return models
+}
+
+// modelNameOf reads the name an entry carries, under any of the keys the
+// engine is known to use for it. An entry that carries no readable name is
+// reported as not named.
+func modelNameOf(fields map[string]json.RawMessage) string {
+	for _, key := range []string{"model", "name", "id"} {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		var name string
+		if err := json.Unmarshal(value, &name); err != nil {
+			continue
+		}
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// modelEntry is one entry of the engine's active model list: the name the
+// engine gave the model, when the list carries one, and the fields of the
+// entry.
+type modelEntry struct {
+	name   string
+	fields map[string]json.RawMessage
 }
 
 // decodeModelEntries reads the engine's active model list. The list is an
-// array of model objects; an object keyed by model name is accepted too, since
-// the engine's payload shape is inferred rather than documented. An entry that
-// is not an object is skipped.
-func decodeModelEntries(raw json.RawMessage) []map[string]json.RawMessage {
+// array of model objects or of model names; an object keyed by model name is
+// accepted too, since the engine's payload shape is inferred rather than
+// documented. An entry that cannot be read at all is skipped.
+func decodeModelEntries(raw json.RawMessage) []modelEntry {
 	if entries, ok := decodeArray(raw); ok {
-		models := make([]map[string]json.RawMessage, 0, len(entries))
+		models := make([]modelEntry, 0, len(entries))
 		for _, entry := range entries {
+			if name, ok := decodeModelName(entry); ok {
+				models = append(models, modelEntry{name: name})
+				continue
+			}
 			fields, err := decodeFields(entry)
 			if err != nil {
 				continue
 			}
-			models = append(models, fields)
+			models = append(models, modelEntry{name: modelNameOf(fields), fields: fields})
 		}
 		return models
 	}
-	var byName map[string]map[string]json.RawMessage
+	var byName map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &byName); err != nil {
 		return nil
 	}
@@ -362,11 +364,28 @@ func decodeModelEntries(raw json.RawMessage) []map[string]json.RawMessage {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	models := make([]map[string]json.RawMessage, 0, len(names))
+	models := make([]modelEntry, 0, len(names))
 	for _, name := range names {
-		models = append(models, byName[name])
+		fields, err := decodeFields(byName[name])
+		if err != nil {
+			continue
+		}
+		models = append(models, modelEntry{name: name, fields: fields})
 	}
 	return models
+}
+
+// decodeModelName reads an entry that is a bare model name. An entry that is
+// not a name is reported as not a name.
+func decodeModelName(raw json.RawMessage) (string, bool) {
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil {
+		return "", false
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // parseRows reads the rows of one phase of one model. A row that cannot be
