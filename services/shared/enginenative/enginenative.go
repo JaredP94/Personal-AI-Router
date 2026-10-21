@@ -12,14 +12,22 @@
 // cli_prefix, and PAIR's types have no field for any of them, so the key
 // cannot leak by accident.
 //
-// Every numeric field is omitempty. A value the engine did not report is
-// absent from the JSON rather than serialised as 0, so a consumer can tell
-// "not reported" from "reported zero".
+// The numeric fields of Stats, Totals and Rates are plain values with
+// omitempty: a value the engine did not report is absent from the JSON
+// rather than serialised as 0. For a counter a reported zero and an absent
+// value mean the same thing to a reader.
+//
+// The numeric fields of an ActivityRow are pointers instead, because they are
+// per-request readings rather than counters: there the difference between
+// "the engine reported zero" and "the engine reported nothing" is
+// meaningful, so a reported reading is always present in the JSON, even when
+// it is zero, and an unreported one is absent.
 package enginenative
 
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -40,6 +48,10 @@ const (
 )
 
 // Stats is the engine's own report of what it has done.
+//
+// The numbers it holds are counters. A numeric field with omitempty is
+// absent when the engine did not report it, and for a counter a reported zero
+// and an absent value are equivalent to a reader.
 type Stats struct {
 	Engine     string  `json:"engine"`
 	Supported  bool    `json:"supported"`
@@ -54,6 +66,10 @@ type Stats struct {
 // durations on this endpoint, so none are carried here: the durations live on
 // an endpoint whose totals are scoped to a date range rather than to the
 // engine's life, and a day-scoped number would not belong beside these.
+//
+// Every field is a counter with omitempty: a value the engine did not report
+// is absent from the JSON, and a reported zero and an absent value are
+// equivalent to a reader.
 type Totals struct {
 	Requests         int     `json:"requests,omitempty"`
 	PromptTokens     int     `json:"promptTokens,omitempty"`
@@ -63,15 +79,22 @@ type Totals struct {
 }
 
 // Rates holds the engine's own average throughput numbers.
+//
+// Every field is a plain value with omitempty: a value the engine did not
+// report is absent from the JSON, and a reported zero and an absent value are
+// equivalent to a reader.
 type Rates struct {
 	PrefillTokensPerSecond    float64 `json:"prefillTokensPerSecond,omitempty"`
 	GenerationTokensPerSecond float64 `json:"generationTokensPerSecond,omitempty"`
 }
 
-// Model is one model the engine reports as loaded.
+// Model is one model the engine lists as active.
 type Model struct {
-	Model  string `json:"model"`
-	Loaded bool   `json:"loaded"`
+	Model string `json:"model"`
+	// Loaded reports that the engine lists this model as active. It comes
+	// from the engine's active-models list, so it means the engine offers
+	// the model, not that the model is resident in memory.
+	Loaded bool `json:"loaded"`
 }
 
 // Activity is the engine's own report of the requests it is working on right
@@ -86,23 +109,31 @@ type Activity struct {
 // ActivityRow is one in-flight request as the engine reports it. The request
 // id is the engine's own, which is what the engine's activity rows are keyed
 // by.
+//
+// The numeric fields are pointers, because they are per-request readings
+// rather than counters. A present field means the engine reported that
+// reading, and its value is in the JSON even when it is zero; an absent
+// (nil) field means the engine did not report the reading, and the key is
+// not in the JSON at all. A consumer can therefore tell "the engine reported
+// zero" from "the engine reported nothing".
 type ActivityRow struct {
-	RequestID       string  `json:"requestId"`
-	Phase           string  `json:"phase"`
-	QueuePosition   int     `json:"queuePosition,omitempty"`
-	GeneratedTokens int     `json:"generatedTokens,omitempty"`
-	TokensPerSecond float64 `json:"tokensPerSecond,omitempty"`
-	PrefillProgress float64 `json:"prefillProgress,omitempty"`
-	ElapsedSeconds  float64 `json:"elapsedSeconds,omitempty"`
-	PromptTokens    int     `json:"promptTokens,omitempty"`
+	RequestID       string   `json:"requestId"`
+	Phase           string   `json:"phase"`
+	QueuePosition   *int     `json:"queuePosition,omitempty"`
+	GeneratedTokens *int     `json:"generatedTokens,omitempty"`
+	TokensPerSecond *float64 `json:"tokensPerSecond,omitempty"`
+	PrefillProgress *float64 `json:"prefillProgress,omitempty"`
+	ElapsedSeconds  *float64 `json:"elapsedSeconds,omitempty"`
+	PromptTokens    *int     `json:"promptTokens,omitempty"`
 }
 
 // ParseStats maps oMLX's /admin/api/stats payload onto Stats.
 //
 // The payload's api_key, host, port and cli_prefix fields are dropped by
 // construction: only the fields named below are read. A payload that is not a
-// JSON object is an error. A field that is absent, or that holds a value of
-// an unexpected shape, is reported as zero.
+// JSON object is an error. A field that is absent, that holds a value of an
+// unexpected shape, or that holds a number the parser cannot read as a
+// counter, is reported as zero.
 //
 // ObservedAt is left at zero: the caller stamps it, because it owns the
 // meaning of "observed" (when the fetch happened, not when the bytes were
@@ -113,13 +144,13 @@ func ParseStats(raw []byte) (Stats, error) {
 		return Stats{}, err
 	}
 	s := Stats{Engine: EngineOmlx, Supported: true}
-	s.Totals.Requests = intField(fields, "total_requests")
-	s.Totals.PromptTokens = intField(fields, "total_prompt_tokens")
-	s.Totals.CompletionTokens = intField(fields, "total_completion_tokens")
-	s.Totals.CachedTokens = intField(fields, "total_cached_tokens")
-	s.Totals.CacheEfficiency = numberField(fields, "cache_efficiency")
-	s.Rates.PrefillTokensPerSecond = numberField(fields, "avg_prefill_tps")
-	s.Rates.GenerationTokensPerSecond = numberField(fields, "avg_generation_tps")
+	s.Totals.Requests = counterField(fields, "total_requests")
+	s.Totals.PromptTokens = counterField(fields, "total_prompt_tokens")
+	s.Totals.CompletionTokens = counterField(fields, "total_completion_tokens")
+	s.Totals.CachedTokens = counterField(fields, "total_cached_tokens")
+	s.Totals.CacheEfficiency = rateField(fields, "cache_efficiency")
+	s.Rates.PrefillTokensPerSecond = rateField(fields, "avg_prefill_tps")
+	s.Rates.GenerationTokensPerSecond = rateField(fields, "avg_generation_tps")
 	s.Models = parseModels(fields["active_models"])
 	return s, nil
 }
@@ -159,30 +190,97 @@ func decodeFields(raw []byte) (map[string]json.RawMessage, error) {
 }
 
 // numberField reads a numeric field. A field that is absent, or that does not
-// hold a number, is reported as zero.
-func numberField(fields map[string]json.RawMessage, key string) float64 {
+// hold a number, is reported as not read.
+func numberField(fields map[string]json.RawMessage, key string) (float64, bool) {
 	raw, ok := fields[key]
 	if !ok {
-		return 0
+		return 0, false
 	}
 	var number json.Number
 	if err := json.Unmarshal(raw, &number); err != nil {
-		return 0
+		return 0, false
 	}
 	value, err := number.Float64()
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return value
+	return value, true
 }
 
 // intField reads a numeric field as an integer. A field that is absent, or that
-// does not hold a number, is reported as zero.
-func intField(fields map[string]json.RawMessage, key string) int {
-	return int(numberField(fields, key))
+// does not hold a number, that holds a fraction, or that holds a number
+// outside the range of an int, is reported as not read: a count is never
+// truncated to fit and never wrapped around.
+func intField(fields map[string]json.RawMessage, key string) (int, bool) {
+	raw, ok := fields[key]
+	if !ok {
+		return 0, false
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return 0, false
+	}
+	if whole, err := number.Int64(); err == nil {
+		if int64(int(whole)) != whole {
+			return 0, false
+		}
+		return int(whole), true
+	}
+	value, err := number.Float64()
+	if err != nil {
+		return 0, false
+	}
+	if value != math.Trunc(value) {
+		return 0, false
+	}
+	if value < math.MinInt64 || value >= math.MaxInt64 {
+		return 0, false
+	}
+	whole := int64(value)
+	if int64(int(whole)) != whole {
+		return 0, false
+	}
+	return int(whole), true
 }
 
-// parseModels reads the engine's list of loaded models. The list holds either
+// counterField reads a counter the engine reports. A counter the engine did
+// not report, or reported in a shape the parser cannot read, is zero: for a
+// counter a reported zero and an absent value mean the same thing.
+func counterField(fields map[string]json.RawMessage, key string) int {
+	value, _ := intField(fields, key)
+	return value
+}
+
+// rateField reads a rate the engine reports. A rate the engine did not
+// report, or reported in a shape the parser cannot read, is zero.
+func rateField(fields map[string]json.RawMessage, key string) float64 {
+	value, _ := numberField(fields, key)
+	return value
+}
+
+// optionalInt reads a per-request reading the engine reports. A reading the
+// engine did not report, or reported in a shape the parser cannot read, is
+// absent: it is not the same as a reported zero.
+func optionalInt(fields map[string]json.RawMessage, key string) *int {
+	value, ok := intField(fields, key)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+// optionalNumber reads a per-request reading the engine reports. A reading
+// the engine did not report, or reported in a shape the parser cannot read,
+// is absent: it is not the same as a reported zero.
+func optionalNumber(fields map[string]json.RawMessage, key string) *float64 {
+	value, ok := numberField(fields, key)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+// parseModels reads the engine's list of active models. The list holds either
 // model names or objects carrying a name and a loaded flag; an entry that is
 // neither is skipped.
 func parseModels(raw json.RawMessage) []Model {
@@ -317,16 +415,32 @@ func parseRow(raw json.RawMessage, phase string) (ActivityRow, bool) {
 			row.RequestID = ""
 		}
 	}
-	row.QueuePosition = intField(fields, "queue_position")
-	row.GeneratedTokens = intField(fields, "generated_tokens")
-	row.TokensPerSecond = numberField(fields, "tokens_per_second")
-	row.PrefillProgress = numberField(fields, "progress")
-	if row.PrefillProgress == 0 {
-		row.PrefillProgress = numberField(fields, "prefill_progress")
-	}
-	row.ElapsedSeconds = numberField(fields, "elapsed_seconds")
-	row.PromptTokens = intField(fields, "prompt_tokens")
+	row.QueuePosition = optionalInt(fields, "queue_position")
+	row.GeneratedTokens = optionalInt(fields, "generated_tokens")
+	row.TokensPerSecond = optionalNumber(fields, "tokens_per_second")
+	row.PrefillProgress = prefillProgress(fields)
+	row.ElapsedSeconds = optionalNumber(fields, "elapsed_seconds")
+	row.PromptTokens = optionalInt(fields, "prompt_tokens")
 	return row, true
+}
+
+// prefillProgress reads the progress of a prefilling request. The engine
+// spells this reading "progress" in one place and "prefill_progress" in
+// another, so the first is read and the second is the fallback. A reading the
+// engine did not report is absent; a reported zero stays a reported zero when
+// the other reading is not there either.
+func prefillProgress(fields map[string]json.RawMessage) *float64 {
+	value, ok := numberField(fields, "progress")
+	if ok && value != 0 {
+		return &value
+	}
+	if alternate, alternateOK := numberField(fields, "prefill_progress"); alternateOK {
+		return &alternate
+	}
+	if ok {
+		return &value
+	}
+	return nil
 }
 
 // decodeArray reads a JSON array of raw entries. A value that is not an array
