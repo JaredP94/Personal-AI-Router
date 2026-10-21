@@ -39,6 +39,7 @@
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
+- ⚠️ nvpair-ui-broker → metrics:unsubscribe
 - ⚠️ nvpair-ui-broker → proxy:get-status
 - ⚠️ nvpair-ui-broker → proxy:unsubscribe
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
@@ -296,6 +297,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
 | `heartbeat` | notification (we consume) | ✅ yes |
+| `metrics:node-metrics` | notification (we consume) | ✅ yes |
 | `proxy:ready` | notification (we consume) | ✅ yes |
 | `workers:update` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
@@ -313,6 +315,9 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `engine:unsubscribe` | request (we call) | ⚠️ not called |
 | `errors:get-initial` | request (we call) | ✅ yes |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
+| `metrics:get-node-metrics` | request (we call) | ✅ yes |
+| `metrics:subscribe` | request (we call) | ✅ yes |
+| `metrics:unsubscribe` | request (we call) | ⚠️ not called |
 | `node/add` | request (we call) | ✅ yes |
 | `node/discovered` | request (we call) | ✅ yes |
 | `node/remove` | request (we call) | ✅ yes |

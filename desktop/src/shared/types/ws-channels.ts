@@ -34,7 +34,7 @@ import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
-import type { NodeItemMetrics } from '@/shared/types/metrics'
+import type { NodeItemMetrics, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type { Workload } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type {
@@ -70,6 +70,9 @@ export interface WsInvokeChannelMap {
     'app:get-initial': { request: void; response: AppInitialSnapshot }
 
     'metrics:get-routing': { request: void; response: RoutingMetrics[] }
+    // Per-node prefill/decode inference metrics, as the broker accumulated
+    // them. The response is the full snapshot, never a delta.
+    'metrics:get-node-metrics': { request: void; response: NodeInferenceMetricsSnapshot }
 
     // Nodes
     'nodes:get-initial': { request: void; response: NodesInitialResponse }
@@ -147,6 +150,13 @@ export interface WsPushChannelMap {
     // Metrics
     'metrics:update': NodeItemMetrics
     'metrics:routing-update': RoutingMetrics[]
+    /**
+     * The broker's per-node inference metrics snapshot. It carries the whole
+     * snapshot (totals, windowed rates and the per-model rows), so a client
+     * that missed a push recovers by re-reading rather than by accumulating
+     * differences it never saw.
+     */
+    'metrics:node-metrics': NodeInferenceMetricsSnapshot
 
     // Workloads. Removal carries the origin node (`originatedFrom`) because
     // workload ids are a per-node proxy counter (the catalog is keyed by the

@@ -1148,6 +1148,7 @@ class ModularSupervisor {
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
+        await subscribe('metrics:subscribe', 'subscribe to broker node metrics stream')
         await this.seedWorkloadBaseline()
 
         await this.syncClusterIdentityToManager()
@@ -1659,6 +1660,14 @@ class ModularSupervisor {
         }
         if (notification.method === 'workloads:remove') {
             getModularBridgeState().removeWorkloadFromParams(notification.params)
+            return
+        }
+
+        // Per-node inference metrics: the broker pushes the whole snapshot
+        // whenever a measurement was recorded, coalesced to at most one push
+        // per second. The push is a state synchronization, not a delta.
+        if (notification.method === 'metrics:node-metrics') {
+            getModularBridgeState().upsertNodeMetricsFromParams(notification.params)
             return
         }
 

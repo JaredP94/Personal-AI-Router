@@ -30,4 +30,19 @@ export interface Workload {
     completedAt: number | null
     error: string | null
     requesterId: string | null
+    /**
+     * The engine's own prefill/decode measurement for this job, as the
+     * engine reported it. Every field is optional and `null` when the engine
+     * reported nothing: the measurement rides the workload object inline, and
+     * an engine that reports no phase split (LM Studio) leaves the field
+     * absent. `null` means "not reported by this engine", which is different
+     * from a measured `0`.
+     */
+    prefillTokens?: number | null
+    decodeTokens?: number | null
+    cachedTokens?: number | null
+    prefillMs?: number | null
+    decodeMs?: number | null
+    ttftMs?: number | null
+    totalMs?: number | null
 }
