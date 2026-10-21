@@ -1465,9 +1465,10 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	reqs, hits := p.recordRoutingMetric(r.Method, r.URL.Path, cacheAffinity)
-	// The proxy's own measured request duration. LM Studio reports no total
-	// request time, so this is the value the workload's totalMs carries —
-	// the same number the proxy/request event reports.
+	// The proxy's own measured request duration. It is operational metadata
+	// about the request, not a measurement of the engine: LM Studio reports
+	// no total time, so the workload's totalMs stays absent rather than
+	// carrying a number this proxy made up.
 	durationMs := time.Since(start).Milliseconds()
 	p.codec.Notify("proxy/request", RequestEvent{
 		ID:                reqID,
@@ -1495,9 +1496,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if telReader != nil {
 			measurement = telReader.Measurement()
 		}
-		// LM Studio reports no total request time, so the proxy's own
-		// measured duration stands in for it.
-		measurement.TotalMs = inferencemetrics.Int64Ptr(durationMs)
+		// The measurement carries the engine's own numbers and nothing
+		// else. LM Studio reports no total request time, so totalMs stays
+		// absent: the proxy's own wall-clock duration would include
+		// queueing, transport and client write time, and would not mean
+		// the same thing as the engine-reported total oMLX reports.
 		wlMu.Lock()
 		wl.Measurement = measurement
 		wlMu.Unlock()

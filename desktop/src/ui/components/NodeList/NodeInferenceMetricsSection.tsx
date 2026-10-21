@@ -21,10 +21,10 @@ import {
  * measurements the engine made at all.
  *
  * The window is part of every label here: the node's rates are the broker's
- * 60-second window, while the per-model breakdown below them is lifetime
- * per model. A model that has gone idle keeps a high lifetime ratio while
- * the node's windowed rate falls to zero, and the two must not read as the
- * same measurement.
+ * 60-second window, while the totals below them and the per-model breakdown
+ * are the totals the broker has kept since it started. A model that has gone
+ * idle keeps a high lifetime ratio while the node's windowed rate falls to
+ * zero, and the two must not read as the same measurement.
  *
  * The per-model breakdown sits behind a disclosure that is collapsed by
  * default: the numbers are free to compute, but "this node is slow" is

@@ -283,14 +283,16 @@ func TestWorkloadCarriesLMStudioTokensOnly(t *testing.T) {
 	for _, want := range []string{
 		`"method":"workload:completed"`,
 		`"prefillTokens":15`, `"decodeTokens":8`,
-		`"totalMs":`,
 	} {
 		if !rec.has(want) {
 			t.Fatalf("workload event missing %s", want)
 		}
 	}
-	// LM Studio reports no phase split, so every duration stays absent.
-	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"cachedTokens"`} {
+	// LM Studio reports no phase split, so every duration stays absent. It
+	// reports no total time either: the measurement carries engine-reported
+	// values only, so the proxy's own wall-clock duration must not stand in
+	// for it.
+	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"cachedTokens"`, `"totalMs"`} {
 		if rec.has(absent) {
 			t.Fatalf("lmstudio reports no phase split: %s", absent)
 		}

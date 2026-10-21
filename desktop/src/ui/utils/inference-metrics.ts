@@ -18,9 +18,10 @@
  *   record.
  *
  * Every such ratio is labelled with the window it covers. The node's rates
- * are the broker's rolling-window rates, a model's ratios are its lifetime
- * totals, and a job's ratios are that one request — so a windowed rate and
- * a lifetime ratio never appear under the same label.
+ * are the broker's rolling-window rates, a model's ratios are its totals
+ * since the broker started, and a job's ratios are that one request — so a
+ * windowed rate and a since-broker-start ratio never appear under the same
+ * label.
  *
  * Every formatter tells an absent measurement from a measured zero. An engine
  * that reports no phase split (LM Studio) leaves the measurement out
@@ -28,6 +29,11 @@
  * formatter that collapsed the two would report "0 tok/s" for an engine that
  * never reported a rate at all, which reads as a measurement the engine
  * never made.
+ *
+ * The optional extras are omitted rather than filled in. The cached-token
+ * count, the total duration and the node's cached total are values some
+ * engines never report; a row for one of them is added only when the value
+ * is there, so an engine that reports nothing extra shows no row for it.
  */
 import type {
     InferenceMetricsTotals,
@@ -50,8 +56,16 @@ const NOT_REPORTED = 'not reported'
  */
 const NODE_WINDOW_LABEL = 'last 60 s'
 
-/** The window a lifetime ratio covers, as it appears in a label. */
-const LIFETIME_LABEL = 'lifetime'
+/**
+ * The scope the broker's lifetime totals cover, as it appears in a label.
+ *
+ * The broker keeps its totals in memory and starts counting when it starts,
+ * so they cover the time since the broker started — not the life of the
+ * engine, and not the life of the machine. The label says so, because a user
+ * who reads "lifetime" as "since the beginning of time" will draw the wrong
+ * conclusion from a total that restarts with every broker.
+ */
+const TOTAL_LABEL = 'since broker start'
 
 /** The window a single request's ratio covers, as it appears in a label. */
 const REQUEST_LABEL = 'this request'
@@ -194,14 +208,14 @@ function reportedTokens(totals: InferenceMetricsTotals): number {
  * The rows of a node's prefill/decode section.
  *
  * Every value here is the broker's own: the rates are the windowed rates it
- * computed, the token count is the lifetime total it kept. A row is marked
- * unavailable when the engine never reported that measurement at all, which
- * the presence counters answer — a phase the engine does not measure must
- * not read as a rate of zero.
+ * computed, the token count is the total it has kept since it started. A row
+ * is marked unavailable when the engine never reported that measurement at
+ * all, which the presence counters answer — a phase the engine does not
+ * measure must not read as a rate of zero.
  *
  * The rates are labelled with the broker's window, and the token count names
- * the two phases it adds, so a windowed rate and a lifetime count never read
- * as the same figure.
+ * the two phases it adds and the scope the totals cover, so a windowed rate
+ * and a since-broker-start count never read as the same figure.
  */
 export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): InferenceMetricsRow[] {
     const { totals, rates } = metrics
@@ -211,7 +225,7 @@ export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): Infere
     const ttft = hasTtftMetrics(totals)
     const tokens = totals.tokenRequests > 0
 
-    return [
+    const rows: InferenceMetricsRow[] = [
         {
             label: `Prefill (${NODE_WINDOW_LABEL})`,
             value: prefill ? formatTokensPerSecond(rates.prefillTokensPerSecond) : NOT_REPORTED,
@@ -228,11 +242,23 @@ export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): Infere
             unavailable: !ttft
         },
         {
-            label: 'Prefill + decode tokens',
+            label: `Prefill + decode tokens (${TOTAL_LABEL})`,
             value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
             unavailable: !tokens
         }
     ]
+    // The cached count is an optional extra: only oMLX reports it. The row
+    // is added once the node has served a request that reported token counts
+    // at all — before that the node's total is a zero with nothing behind
+    // it, and a row reading "0" would claim a measurement nobody made.
+    if (tokens) {
+        rows.push({
+            label: `Cached tokens (${TOTAL_LABEL})`,
+            value: formatTokenCount(totals.cachedTokens),
+            unavailable: false
+        })
+    }
+    return rows
 }
 
 /** One model's rows in the per-model breakdown of a node. */
@@ -244,16 +270,16 @@ export interface ModelMetricsRows {
 /**
  * The per-model breakdown of a node.
  *
- * The broker keeps a lifetime total per model but sends no rate for it: its
- * rates are windowed over the whole node, across every model it served. The
- * rate of one model is therefore the ratio of the tokens and the duration the
- * broker reported for that model — one record, no sum across requests and no
- * average across models.
+ * The broker keeps a total per model — one kept since the broker started —
+ * but sends no rate for it: its rates are windowed over the whole node,
+ * across every model it served. The rate of one model is therefore the ratio
+ * of the tokens and the duration the broker reported for that model — one
+ * record, no sum across requests and no average across models.
  *
- * The rows are labelled with the lifetime they cover, because the node's own
+ * The rows are labelled with the scope they cover, because the node's own
  * rows above them are labelled with the broker's window: a model that has
- * gone idle keeps a high lifetime ratio while the node's windowed rate falls
- * to zero, and the two must not read as the same measurement.
+ * gone idle keeps a high ratio while the node's windowed rate falls to zero,
+ * and the two must not read as the same measurement.
  */
 export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsRows[] {
     return models.map(entry => {
@@ -269,17 +295,17 @@ export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsR
             model: entry.model,
             rows: [
                 {
-                    label: `Prefill (${LIFETIME_LABEL})`,
+                    label: `Prefill (${TOTAL_LABEL})`,
                     value: prefill ? formatTokensPerSecond(prefillRate) : NOT_REPORTED,
                     unavailable: !prefill
                 },
                 {
-                    label: `Decode (${LIFETIME_LABEL})`,
+                    label: `Decode (${TOTAL_LABEL})`,
                     value: decode ? formatTokensPerSecond(decodeRate) : NOT_REPORTED,
                     unavailable: !decode
                 },
                 {
-                    label: 'Prefill + decode tokens',
+                    label: `Prefill + decode tokens (${TOTAL_LABEL})`,
                     value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
                     unavailable: !tokens
                 }
@@ -336,16 +362,21 @@ export function hasWorkloadMeasurement(workload: Workload): boolean {
 }
 
 /**
- * The rows of a job's measurement: the prefill and decode tokens, the phase
- * durations and the rates that follow from them.
+ * The rows of a job's measurement: the prefill and decode tokens, the cached
+ * count, the phase durations, the total and the rates that follow from them.
  *
  * Every number is the one the engine reported for this job. The rate is the
  * ratio of that job's tokens and duration, the same formula the broker uses
  * for its own rate, applied to one job — so the rows are labelled with the
  * request they cover.
+ *
+ * The phase rows are always there, because "this engine does not report
+ * phases" is worth saying. The cached count and the total are optional
+ * extras: their rows are added only when the engine reported the value, so
+ * an absent value is left out rather than shown as a zero.
  */
 export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRow[] {
-    return [
+    const rows: InferenceMetricsRow[] = [
         {
             label: `Prefill (${REQUEST_LABEL})`,
             value: phaseMeasurement(workload.prefillTokens, workload.prefillMs),
@@ -360,11 +391,28 @@ export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRo
             label: `TTFT (${REQUEST_LABEL})`,
             value: formatDurationMs(workload.ttftMs),
             unavailable: !isReported(workload.ttftMs)
-        },
-        {
-            label: `Total (${REQUEST_LABEL})`,
-            value: formatDurationMs(workload.totalMs),
-            unavailable: !isReported(workload.totalMs)
         }
     ]
+    // The cached count is an optional extra: only oMLX reports it. The row
+    // is omitted when the engine reported no count, so an absent value never
+    // reads as a measured zero.
+    if (isReported(workload.cachedTokens)) {
+        rows.push({
+            label: `Cached tokens (${REQUEST_LABEL})`,
+            value: formatTokenCount(workload.cachedTokens),
+            unavailable: false
+        })
+    }
+    // The total is an optional extra too, and for the same reason: only an
+    // engine that reports a total time fills it. The phase rows above stay
+    // either way, because "this engine does not report phases" is worth
+    // saying, while a missing total is simply not shown.
+    if (isReported(workload.totalMs)) {
+        rows.push({
+            label: `Total (${REQUEST_LABEL})`,
+            value: formatDurationMs(workload.totalMs),
+            unavailable: false
+        })
+    }
+    return rows
 }

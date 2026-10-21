@@ -286,15 +286,16 @@ func TestWorkloadCarriesOllamaMeasurement(t *testing.T) {
 		`"method":"workload:completed"`,
 		`"prefillTokens":15`, `"decodeTokens":8`,
 		`"prefillMs":1200`, `"decodeMs":4000`,
-		`"totalMs":`,
 	} {
 		if !rec.has(want) {
 			t.Fatalf("workload event missing %s", want)
 		}
 	}
 	// Ollama reports no time to first token and no cached-token count, so
-	// those two stay absent rather than becoming zeros.
-	for _, absent := range []string{`"ttftMs"`, `"cachedTokens"`} {
+	// those two stay absent rather than becoming zeros. It reports no total
+	// time either: the measurement carries engine-reported values only, so
+	// the proxy's own wall-clock duration must not stand in for it.
+	for _, absent := range []string{`"ttftMs"`, `"cachedTokens"`, `"totalMs"`} {
 		if rec.has(absent) {
 			t.Fatalf("ollama reports no %s; it must stay absent", absent)
 		}

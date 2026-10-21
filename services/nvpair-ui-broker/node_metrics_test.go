@@ -109,6 +109,75 @@ func TestNodeMetricsAccumulateFromAcceptedWorkload(t *testing.T) {
 	}
 }
 
+// omlxWorkloadInfoLiteral is the workloadInfo the oMLX proxy recorded in its
+// end-to-end test (services/omlx-proxy/cache_affinity_e2e_test.go), copied
+// verbatim.
+//
+// The proxy leaves `originatedFrom` empty for the broker to stamp, so that is
+// the one field that differs here: the literal carries the origin the broker
+// stamps. The ids and the timestamps are the ones the fixture generates per
+// run. The measurement fields are the ones the engine reported, and they are
+// the contract between the proxy that produced the frame and the broker that
+// folds it into the per-node totals.
+//
+// The two literals must agree by eye.
+const omlxWorkloadInfoLiteral = `{"id":"17","model":"omlx-fixture-model","engine":"omlx",` +
+	`"runId":"3ce8a1740b62df95","state":"completed",` +
+	`"originatedFrom":"11111111-1111-1111-1111-111111111111",` +
+	`"scheduledOn":"22222222-2222-2222-2222-222222222222","createdAt":1716998400000,` +
+	`"startedAt":1716998400000,"completedAt":1716998406120,"error":null,"requesterId":null,` +
+	`"prefillTokens":120,"decodeTokens":34,"cachedTokens":90,"prefillMs":1250,` +
+	`"decodeMs":4500,"ttftMs":1300,"totalMs":5900}`
+
+// TestNodeMetricsAcceptsTheProxyWorkloadFrame closes the contract at the far
+// end of the hop: the workloadInfo the oMLX proxy emitted, fed into the
+// broker's workload-ingest path, must land in the per-node totals and in the
+// per-model breakdown with the values the engine reported.
+//
+// The oMLX proxy's end-to-end test asserts the same frame on the producing
+// side. The two literals agree by eye, and that agreement is the contract.
+func TestNodeMetricsAcceptsTheProxyWorkloadFrame(t *testing.T) {
+	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
+	event := json.RawMessage(`{"workloadInfo":` + omlxWorkloadInfoLiteral + `}`)
+	if !b.applyWorkloadEvent("workloads:upsert", event, false, noSightingGuard) {
+		t.Fatal("the workload event must be accepted")
+	}
+
+	snap := b.getNodeMetrics()
+	if len(snap.Nodes) != 1 {
+		t.Fatalf("nodes: %+v", snap)
+	}
+	node := snap.Nodes[0]
+	if node.NodeId != "22222222-2222-2222-2222-222222222222" {
+		t.Fatalf("the serving node: %s", node.NodeId)
+	}
+	totals := node.Totals
+	if totals.Requests != 1 {
+		t.Fatalf("requests: %+v", totals)
+	}
+	if totals.PrefillTokens != 120 || totals.DecodeTokens != 34 || totals.CachedTokens != 90 {
+		t.Fatalf("token totals: %+v", totals)
+	}
+	if totals.PrefillMs != 1250 || totals.DecodeMs != 4500 || totals.TtftMs != 1300 {
+		t.Fatalf("duration totals: %+v", totals)
+	}
+	if totals.TokenRequests != 1 || totals.PrefillRequests != 1 ||
+		totals.DecodeRequests != 1 || totals.TtftRequests != 1 {
+		t.Fatalf("presence counters: %+v", totals)
+	}
+
+	if len(node.Models) != 1 {
+		t.Fatalf("models: %+v", node.Models)
+	}
+	model := node.Models[0]
+	if model.Model != "omlx-fixture-model" {
+		t.Fatalf("model: %+v", model)
+	}
+	if model.Totals != totals {
+		t.Fatalf("the per-model breakdown must match the node totals: %+v vs %+v", model.Totals, totals)
+	}
+}
+
 // TestDuplicateWorkloadDoesNotDoubleCount covers the re-delivery case: the
 // workload-manager re-asserts a terminal workload on its heartbeat, so the
 // same event arrives twice. The second merge is a duplicate and must leave the

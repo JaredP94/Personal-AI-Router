@@ -389,8 +389,12 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.value).toBe('120')
-        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.unavailable).toBe(false)
+        expect(
+            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.value
+        ).toBe('120')
+        expect(
+            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.unavailable
+        ).toBe(false)
     })
 
     it('reports no tokens for an engine that reported no token count', () => {
@@ -400,8 +404,40 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.unavailable).toBe(true)
-        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.value).toBe('not reported')
+        expect(
+            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.unavailable
+        ).toBe(true)
+        expect(
+            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.value
+        ).toBe('not reported')
+    })
+
+    it('shows the cached tokens the node served', () => {
+        // The cached count is the broker's own total for the node, shown
+        // alongside the other totals. It appears once the node has served a
+        // request that reported token counts at all.
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: { ...reportedTotals, cachedTokens: 900 },
+            rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')?.value).toBe('900')
+        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')?.unavailable).toBe(
+            false
+        )
+    })
+
+    it('omits the cached tokens for a node that served no measured request', () => {
+        // A node whose engine reported no token count has no cached total to
+        // show, so the row is left out rather than reading as a zero.
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: silentTotals,
+            rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')).toBeUndefined()
     })
 })
 
@@ -410,20 +446,30 @@ describe('the per-model breakdown of a node', () => {
         const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: reportedTotals }])
         expect(models).toHaveLength(1)
         expect(models[0].model).toBe('llama-3.2-3b')
-        expect(models[0].rows.find(r => r.label === 'Prefill (lifetime)')?.value).toBe('100 tok/s')
-        expect(models[0].rows.find(r => r.label === 'Decode (lifetime)')?.value).toBe('10 tok/s')
-        expect(models[0].rows.find(r => r.label === 'Prefill + decode tokens')?.value).toBe('120')
+        expect(models[0].rows.find(r => r.label === 'Prefill (since broker start)')?.value).toBe(
+            '100 tok/s'
+        )
+        expect(models[0].rows.find(r => r.label === 'Decode (since broker start)')?.value).toBe(
+            '10 tok/s'
+        )
+        expect(
+            models[0].rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')
+                ?.value
+        ).toBe('120')
     })
 
     it('marks a model whose engine reported no phase as unavailable', () => {
         const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: silentTotals }])
-        expect(models[0].rows.find(r => r.label === 'Prefill (lifetime)')?.unavailable).toBe(true)
-        expect(models[0].rows.find(r => r.label === 'Prefill (lifetime)')?.value).toBe(
+        expect(
+            models[0].rows.find(r => r.label === 'Prefill (since broker start)')?.unavailable
+        ).toBe(true)
+        expect(models[0].rows.find(r => r.label === 'Prefill (since broker start)')?.value).toBe(
             'not reported'
         )
-        expect(models[0].rows.find(r => r.label === 'Prefill + decode tokens')?.unavailable).toBe(
-            true
-        )
+        expect(
+            models[0].rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')
+                ?.unavailable
+        ).toBe(true)
     })
 })
 
@@ -508,6 +554,41 @@ describe('the per-job measurement rows', () => {
             '0 tok · 0 ms · 0 tok/s'
         )
         expect(rows.find(r => r.label === 'Decode (this request)')?.unavailable).toBe(false)
+    })
+
+    it('omits the total for an engine that reports no total time', () => {
+        // Ollama and LM Studio report no total time. The measurement carries
+        // engine-reported values only, so there is no total to show and the
+        // row is left out rather than filled with a duration the proxy
+        // measured.
+        const rows = buildWorkloadMetricsRows({ ...measuredJob, totalMs: null })
+        expect(rows.find(r => r.label === 'Total (this request)')).toBeUndefined()
+        // The phase rows stay: "this engine does not report phases" is worth
+        // saying, while a missing total is simply not shown.
+        expect(rows.find(r => r.label === 'Prefill (this request)')?.value).toBe(
+            '1,200 tok · 340 ms · 3529 tok/s'
+        )
+        expect(rows.find(r => r.label === 'TTFT (this request)')?.value).toBe('80 ms')
+    })
+
+    it('shows the cached tokens the engine reported', () => {
+        const rows = buildWorkloadMetricsRows({ ...measuredJob, cachedTokens: 90 })
+        expect(rows.find(r => r.label === 'Cached tokens (this request)')?.value).toBe('90')
+        expect(rows.find(r => r.label === 'Cached tokens (this request)')?.unavailable).toBe(false)
+    })
+
+    it('omits the cached tokens for an engine that reports none', () => {
+        // Only oMLX reports a cached-token count, so for the other engines the
+        // row is absent rather than a zero.
+        const rows = buildWorkloadMetricsRows({ ...measuredJob, cachedTokens: null })
+        expect(rows.find(r => r.label === 'Cached tokens (this request)')).toBeUndefined()
+    })
+
+    it('keeps a reported zero of cached tokens a zero', () => {
+        // oMLX reports zero cached tokens on every request that missed the
+        // prefix cache. That is a measurement the engine made.
+        const rows = buildWorkloadMetricsRows(measuredJob)
+        expect(rows.find(r => r.label === 'Cached tokens (this request)')?.value).toBe('0')
     })
 
     it('has no measurement for a job that reported nothing', () => {

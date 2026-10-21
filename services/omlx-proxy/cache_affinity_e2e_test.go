@@ -76,6 +76,73 @@ func startAffinityBinary(t *testing.T, canaries ...string) (io.Writer, <-chan e2
 	return stdin, frames, fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
+// affinityUsageChunk is the terminal chunk the fixture engine reports. It
+// carries the phase values and the cached-token count oMLX puts in its usage
+// block: the prefill and decode token counts, the three phase durations and
+// the total time, plus the prompt tokens the engine served from its prefix
+// cache. The numbers are the ones the broker's counterpart test copies.
+const affinityUsageChunk = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120," +
+	"\"completion_tokens\":34,\"prompt_eval_duration\":1.25,\"generation_duration\":4.5," +
+	"\"time_to_first_token\":1.3,\"total_time\":5.9," +
+	"\"prompt_tokens_details\":{\"cached_tokens\":90}}}\n\n"
+
+// waitAffinityWorkload returns the workloadInfo of the next workload:completed
+// frame the proxy emitted.
+func waitAffinityWorkload(t *testing.T, frames <-chan e2eFrame) json.RawMessage {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case frame := <-frames:
+			if frame.Method != "workload:completed" {
+				continue
+			}
+			var params struct {
+				WorkloadInfo json.RawMessage `json:"workloadInfo"`
+			}
+			if err := json.Unmarshal(frame.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			return params.WorkloadInfo
+		case <-deadline:
+			t.Fatal("timed out waiting for workload:completed")
+			return nil
+		}
+	}
+}
+
+// assertAffinityMeasurement checks that the engine's measurement rides inline
+// in the workloadInfo — the field names and the values the engine reported,
+// not a nested object and not a proxy-measured substitute.
+//
+// The broker's counterpart test
+// (services/nvpair-ui-broker/node_metrics_test.go) copies this frame's
+// workloadInfo literal, so the two must agree by eye.
+func assertAffinityMeasurement(t *testing.T, info json.RawMessage) {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(info, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"prefillTokens": "120",
+		"decodeTokens":  "34",
+		"cachedTokens":  "90",
+		"prefillMs":     "1250",
+		"decodeMs":      "4500",
+		"ttftMs":        "1300",
+		"totalMs":       "5900",
+	} {
+		got, ok := fields[name]
+		if !ok {
+			t.Fatalf("the workload event omits %s: %s", name, info)
+		}
+		if string(got) != want {
+			t.Fatalf("%s = %s, want %s", name, got, want)
+		}
+	}
+}
+
 func waitAffinityCompletion(t *testing.T, frames <-chan e2eFrame) RequestEvent {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
@@ -163,7 +230,9 @@ func TestE2ECacheAffinityConversationAndFailover(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s-%s\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", responseCanary, id)
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s-%s\"},\"finish_reason\":\"stop\"}]}\n\n", responseCanary, id)
+			fmt.Fprint(w, affinityUsageChunk)
+			fmt.Fprint(w, "data: [DONE]\n\n")
 		}))
 	}
 	a, b := engine("a"), engine("b")
@@ -240,6 +309,12 @@ func TestE2ECacheAffinityConversationAndFailover(t *testing.T) {
 		wantAffinity := turn == 1 || turn >= 3
 		if event.Status != 200 || event.NodeID != wantNode || event.CacheAffinity != wantAffinity {
 			t.Fatalf("turn %d: completion status=%d node=%s affinity=%v; want 200/%s/%v", turn+1, event.Status, event.NodeID, event.CacheAffinity, wantNode, wantAffinity)
+		}
+		if turn == 0 {
+			// The terminal workload event carries the engine's own
+			// measurement, inline in the workloadInfo. The broker folds
+			// exactly this frame into its per-node totals.
+			assertAffinityMeasurement(t, waitAffinityWorkload(t, frames))
 		}
 		messages = append(messages, map[string]string{"role": "assistant", "content": reply}, map[string]string{"role": "user", "content": userCanary + strconv.Itoa(turn)})
 	}

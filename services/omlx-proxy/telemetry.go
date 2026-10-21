@@ -208,8 +208,13 @@ type streamChunk struct {
 	PromptEvalCount int  `json:"prompt_eval_count"`
 	EvalCount       int  `json:"eval_count"`
 	Usage           *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		// The token counts are pointer-typed so a count the engine reported
+		// as zero stays a measured zero, while a chunk that carries no
+		// count at all leaves the field absent. oMLX reports a cached-token
+		// count of zero on every request that missed the prefix cache, and
+		// that zero is a measurement, not a missing value.
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
 		// The phase durations oMLX reports on its terminal chunk, in
 		// seconds. A phase the engine did not measure is absent, not zero.
 		PromptEvalDuration  *float64 `json:"prompt_eval_duration"`
@@ -217,7 +222,7 @@ type streamChunk struct {
 		TimeToFirstToken    *float64 `json:"time_to_first_token"`
 		TotalTime           *float64 `json:"total_time"`
 		PromptTokensDetails *struct {
-			CachedTokens int `json:"cached_tokens"`
+			CachedTokens *int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
@@ -248,24 +253,32 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 		r.outputTokens = chunk.EvalCount
 	}
 	if chunk.Usage != nil {
-		if chunk.Usage.PromptTokens > 0 {
-			r.promptTokens = chunk.Usage.PromptTokens
+		// The span attributes keep their own "more than zero" gate: a count
+		// of zero says nothing about the span. The measurement below does
+		// not share that gate — presence is the provenance there.
+		if chunk.Usage.PromptTokens != nil && *chunk.Usage.PromptTokens > 0 {
+			r.promptTokens = *chunk.Usage.PromptTokens
 		}
-		if chunk.Usage.CompletionTokens > 0 {
-			r.outputTokens = chunk.Usage.CompletionTokens
+		if chunk.Usage.CompletionTokens != nil && *chunk.Usage.CompletionTokens > 0 {
+			r.outputTokens = *chunk.Usage.CompletionTokens
 		}
 		// The engine's own prefill/decode numbers, as oMLX reports them in
 		// the usage block. Only what the engine reported is recorded: a
-		// phase it did not measure stays absent instead of becoming a zero.
+		// phase it did not measure stays absent instead of becoming a
+		// zero, and a count it reported as zero stays that measured zero.
 		r.measurementMu.Lock()
-		if r.promptTokens > 0 {
+		if chunk.Usage.PromptTokens != nil {
+			r.measurement.PrefillTokens = inferencemetrics.IntPtr(*chunk.Usage.PromptTokens)
+		} else if r.promptTokens > 0 {
 			r.measurement.PrefillTokens = inferencemetrics.IntPtr(r.promptTokens)
 		}
-		if r.outputTokens > 0 {
+		if chunk.Usage.CompletionTokens != nil {
+			r.measurement.DecodeTokens = inferencemetrics.IntPtr(*chunk.Usage.CompletionTokens)
+		} else if r.outputTokens > 0 {
 			r.measurement.DecodeTokens = inferencemetrics.IntPtr(r.outputTokens)
 		}
-		if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
-			r.measurement.CachedTokens = inferencemetrics.IntPtr(chunk.Usage.PromptTokensDetails.CachedTokens)
+		if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens != nil {
+			r.measurement.CachedTokens = inferencemetrics.IntPtr(*chunk.Usage.PromptTokensDetails.CachedTokens)
 		}
 		setDurationMs(&r.measurement.PrefillMs, chunk.Usage.PromptEvalDuration)
 		setDurationMs(&r.measurement.DecodeMs, chunk.Usage.GenerationDuration)

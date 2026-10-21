@@ -886,29 +886,41 @@ rendered by the desktop.
 
 - **Engine-measured only:** The proxies read the phase values each engine
   reports in its own response `usage` block. PAIR never estimates a phase it
-  cannot observe — no duration is derived from PAIR's own timings. A value the
-  engine did not report stays absent, and the desktop shows it as
-  "not reported" rather than as a zero, so a missing phase and a measured zero
-  never look alike. LM Studio reports no phase split at all, so its phase
-  fields are always absent and only its token counts appear.
+  cannot observe — no duration is derived from PAIR's own timings, and no
+  value the engine did not report is filled in with a number PAIR measured
+  itself. A value the engine did not report stays absent, and the desktop
+  shows it as "not reported" rather than as a zero, so a missing phase and a
+  measured zero never look alike. A value the engine *did* report as zero
+  stays a zero: oMLX reports a cached-token count of zero on every request
+  that missed its prefix cache.
+- **Which engine reports what:** oMLX is the only engine that reports a
+  cached-token count and a total duration (`usage.total_time`); Ollama
+  reports token counts and the two phase durations; LM Studio reports token
+  counts only. `totalMs` is therefore engine-reported only — for Ollama and
+  LM Studio it stays absent, because the proxy's own wall-clock duration
+  includes queueing, transport and client write time and would not mean the
+  same thing. The desktop leaves the optional extras out entirely when the
+  engine reported none: the Total row and the cached-token rows are absent
+  rather than zero, while the phase rows stay and say "not reported".
 - **Cluster-wide lifecycle:** The terminal `workload:completed` /
   `workload:errored` event carries the measurement on the workload object. The
   workload lifecycle stream already reaches every broker in the cluster, so the
   measurement travels with the job and is attributed to the node that served it
   (`scheduledOn`).
 - **Per-node and per-model aggregation:** Each broker keeps a per-node
-  accumulator (`nvpair-ui-broker/nodemetrics`) holding lifetime totals, a
-  60-second rolling window used for the current rates, presence counters that
-  say how many requests reported each value, and a per-model breakdown of the
-  same totals. It is fed only from accepted workload merges, so a re-asserted
-  terminal event or a synthesized node-loss failure cannot inflate the totals.
-  The broker serves the snapshot over `metrics:get-node-metrics` and pushes it
-  to subscribed clients as `metrics:node-metrics`, coalesced to at most one
-  push per second.
+  accumulator (`nvpair-ui-broker/nodemetrics`) holding totals since the broker
+  started, a 60-second rolling window used for the current rates, presence
+  counters that say how many requests reported each value, and a per-model
+  breakdown of the same totals. It is fed only from accepted workload merges,
+  so a re-asserted terminal event or a synthesized node-loss failure cannot
+  inflate the totals. The broker serves the snapshot over
+  `metrics:get-node-metrics` and pushes it to subscribed clients as
+  `metrics:node-metrics`, coalesced to at most one push per second.
 - **Desktop rendering:** The desktop shows the per-request measurement on the
   job card and the per-node figures on the node card, with the per-model
   breakdown behind a disclosure that is collapsed by default. Every figure is
-  labelled with the window it covers.
+  labelled with the window it covers, and the node's totals say that they
+  cover the time since the broker started rather than reading as a lifetime.
 
 ## Trust Boundaries
 

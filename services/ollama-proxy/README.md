@@ -200,7 +200,9 @@ The terminal transition also carries the engine's own inference measurement, tak
 | `prefillMs` | Time the engine spent prefilling | `prompt_eval_duration` (nanoseconds, converted to milliseconds) |
 | `decodeMs` | Time the engine spent generating | `eval_duration` (nanoseconds, converted to milliseconds) |
 
-Every field is optional and present only when Ollama reported that value — a phase the engine did not measure stays absent rather than becoming a zero. The numbers are the engine's own measurements; the proxy never estimates a phase it cannot observe. The measurement is reported whether or not telemetry is enabled, and is absent for a request that was cancelled before the engine finished. Ollama reports no cached-token count and no time to first token, so `cachedTokens`, `ttftMs` and `totalMs` are always absent for this engine.
+Every field is optional and present only when Ollama reported that value — a phase the engine did not measure stays absent rather than becoming a zero. The numbers are the engine's own measurements; the proxy never estimates a phase it cannot observe. The measurement is reported whether or not telemetry is enabled, and is absent for a request that was cancelled before the engine finished.
+
+**The measurement carries engine-reported values only.** Ollama reports no cached-token count, no time to first token and no total time, so `cachedTokens`, `ttftMs` and `totalMs` are always absent for this engine. Nothing the proxy measures itself fills them: the proxy's own wall-clock request duration covers queueing, transport and client write time, so it would not mean the same thing as the engine-reported total oMLX reports, and it is reported as the `proxy/request` event's `duration_ms` instead. The desktop therefore shows no Total row and no cached-token row for an Ollama job — an absent value is left out, never rendered as a zero.
 
 #### `node/activity`
 

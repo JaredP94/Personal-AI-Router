@@ -299,6 +299,42 @@ func TestWorkloadCarriesOMLXMeasurement(t *testing.T) {
 	}
 }
 
+// omlxCachedZeroStream is a terminal oMLX chunk whose usage block reports a
+// cached-token count of zero. That is the common case: the engine measured
+// its prefix cache and found nothing to reuse. The zero is a measurement,
+// so it must reach the workload event instead of being dropped as if the
+// engine had said nothing.
+const omlxCachedZeroStream = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120," +
+	"\"completion_tokens\":34,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n"
+
+// TestReportedZeroCachedTokensSurvives covers the provenance rule: a count
+// the engine reported as zero stays a zero on the workload event, while a
+// field the engine did not report at all stays absent.
+func TestReportedZeroCachedTokensSurvives(t *testing.T) {
+	srv := omlxEngineWith(t, omlxCachedZeroStream)
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "m"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`)))
+
+	if !rec.has(`"cachedTokens":0`) {
+		t.Fatal("a reported zero must survive to the workload payload")
+	}
+	if !rec.has(`"prefillTokens":120`) || !rec.has(`"decodeTokens":34`) {
+		t.Fatal("the reported token counts must survive to the workload payload")
+	}
+	// The engine reported no phase durations in this chunk, so they stay
+	// absent rather than becoming zeros.
+	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"totalMs"`} {
+		if rec.has(absent) {
+			t.Fatalf("an unreported duration must stay absent: %s", absent)
+		}
+	}
+}
+
 func TestMeasurementPresentWithoutTelemetry(t *testing.T) {
 	// unconfiguredTelemetryProxy's manager is never enabled, so the session's
 	// tracer is a noop and no span is recording. The measurement must still

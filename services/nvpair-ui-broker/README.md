@@ -601,13 +601,15 @@ Each entry holds:
 | Field | Meaning |
 | --- | --- |
 | `nodeId` | The node the totals belong to. A node that has served traffic but is idle now still appears, with zeroed rates. |
-| `totals` | Lifetime totals since the broker started: `requests`, the summed `prefillTokens`, `decodeTokens`, `cachedTokens`, `prefillMs`, `decodeMs` and `ttftMs`, plus the presence counters `tokenRequests`, `prefillRequests`, `decodeRequests` and `ttftRequests`. |
+| `totals` | Totals **since the broker started** — they restart with the broker and are not the life of the engine: `requests`, the summed `prefillTokens`, `decodeTokens`, `cachedTokens`, `prefillMs`, `decodeMs` and `ttftMs`, plus the presence counters `tokenRequests`, `prefillRequests`, `decodeRequests` and `ttftRequests`. |
 | `rates` | The node's current throughput over the broker's 60-second rolling window: `prefillTokensPerSecond`, `decodeTokensPerSecond` and the mean `meanTtftMs`. A rate whose denominator is zero is zero, never NaN. |
 | `models` | The same totals broken down per model, ordered by model id. |
 
 The **presence counters** are what make the totals readable. A rate of `0` is ambiguous on its own: an engine that reported no prefill duration looks identical to one that reported a zero-length prefill. A counter of zero means the engine never reported that value at all, so a consumer can show "not reported" instead of a real `0 tok/s`. `tokenRequests` counts the requests that reported at least one token count, `prefillRequests` and `decodeRequests` the requests that reported each phase duration, and `ttftRequests` the requests that reported a time-to-first-token — which is also the denominator of `meanTtftMs`, so a request without a TTFT cannot dilute the mean of the ones that had one.
 
-The rates are computed over the broker's own clock, never by comparing a relayed event's timestamp to the local clock. Two members of the cluster can therefore hold slightly different sample sets at a window boundary and report slightly different instantaneous rates, while their lifetime totals agree exactly.
+The rates are computed over the broker's own clock, never by comparing a relayed event's timestamp to the local clock. Two members of the cluster can therefore hold slightly different sample sets at a window boundary and report slightly different instantaneous rates, while their totals agree exactly.
+
+Only the values the engine reported are summed, so an absent value never contributes a zero to a sum it did not measure, and a reported zero contributes a zero for the reason a consumer can rely on. `cachedTokens` is the total the engines reported for the node's traffic — only oMLX reports a cached-token count, and a request that missed the prefix cache reports zero. The desktop shows the node's cached total once the node has served a request that reported token counts at all.
 
 #### `metrics:subscribe` / `metrics:unsubscribe`
 

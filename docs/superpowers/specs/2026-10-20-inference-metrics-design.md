@@ -104,14 +104,17 @@ LM Studio's OpenAI-compatible surface reports `usage.prompt_tokens` and
 
 "Measured" means the engine reports the value itself.
 
-| Engine | Prefill tokens | Decode tokens | Prefill duration | Decode duration | TTFT | Cached tokens |
-| --- | --- | --- | --- | --- | --- | --- |
-| oMLX | usage | usage | measured (`prompt_eval_duration`) | measured (`generation_duration`) | measured (`time_to_first_token`) | measured (`prompt_tokens_details.cached_tokens`) |
-| Ollama | measured (`prompt_eval_count`) | measured (`eval_count`) | measured (`prompt_eval_duration`, ns) | measured (`eval_duration`, ns) | not reported | not reported |
-| LM Studio | measured (`usage.prompt_tokens`) | measured (`usage.completion_tokens`) | not reported | not reported | not reported | not reported |
+| Engine | Prefill tokens | Decode tokens | Prefill duration | Decode duration | TTFT | Cached tokens | Total duration |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| oMLX | usage | usage | measured (`prompt_eval_duration`) | measured (`generation_duration`) | measured (`time_to_first_token`) | measured (`prompt_tokens_details.cached_tokens`) | measured (`total_time`) |
+| Ollama | measured (`prompt_eval_count`) | measured (`eval_count`) | measured (`prompt_eval_duration`, ns) | measured (`eval_duration`, ns) | not reported | not reported | not reported |
+| LM Studio | measured (`usage.prompt_tokens`) | measured (`usage.completion_tokens`) | not reported | not reported | not reported | not reported | not reported |
 
 Two of the three engines report a full phase split. LM Studio reports none, and
-§4.1 explains why PAIR does not estimate them.
+§4.1 explains why PAIR does not estimate them. Only oMLX reports a total
+duration and a cached-token count; for the other two engines those two fields
+are absent, and the desktop leaves their rows out rather than filling them
+with a number the proxy measured itself (§4.1 rule 6).
 
 ### 2.5 Where PAIR throws the data away
 
@@ -214,7 +217,19 @@ type Measurement struct {
    count separately; it does not recompute oMLX's rate.
 5. **Provenance is presence.** A present value was measured by the engine; an
    absent one means the engine does not report it. There is no separate
-   "measured vs. estimated" label, because there are no estimates.
+   "measured vs. estimated" label, because there are no estimates. A value the
+   engine reported as **zero** is present and stays a zero: oMLX reports
+   `cached_tokens: 0` on every request that missed its prefix cache, and that
+   zero is a measurement the engine made.
+6. **`totalMs` is engine-reported only.** The total duration the measurement
+   carries is the one the engine reported (`usage.total_time`), which only
+   oMLX reports. Ollama and LM Studio report no total time, so `totalMs` is
+   always absent for them. The proxy's own wall-clock duration is **not** a
+   substitute: it includes queueing, transport and client write time, so it
+   would not mean the same thing as oMLX's engine-reported total, and a user
+   comparing an Ollama job with an oMLX job would be comparing two different
+   quantities under one label. The proxy's own duration stays where it
+   belongs — the `proxy/request` event's `duration_ms`.
 
 **Why estimation was dropped.** An earlier draft derived missing phase
 durations from PAIR's own timings (`prefill ≈ TTFT`, `decode ≈ total − TTFT`).
@@ -231,8 +246,17 @@ That does not survive contact with the two request shapes:
 
 Neither shape yields a usable estimate, and a wrong number displayed as a
 measurement is worse than an absent one. LM Studio therefore shows tokens and
-total duration, and says that the engine does not report a phase split. §6.9
-covers getting LM Studio real numbers instead.
+says that the engine does not report a phase split. §6.9 covers getting LM
+Studio real numbers instead.
+
+The same reasoning settles the total duration. An earlier draft filled
+`totalMs` for Ollama and LM Studio with the proxy's own measured request
+duration, which is not an estimate of a phase but a different quantity
+altogether: it covers everything the request did between the client's write
+and the client's read, while oMLX's `usage.total_time` covers the engine's own
+work. Rule 6 above is the ruling: the measurement carries engine-reported
+values only, so `totalMs` is absent for the two engines that report no total
+time.
 
 ### 4.2 Proxy changes (all three engines)
 
@@ -461,18 +485,24 @@ returns the same snapshot for hydration on connect.
   request's duration — which is the same kind of arithmetic it already does
   when it shows memory usage as a percentage of the reported total. Every such
   ratio is **labelled with the window it covers**, so a 60-second windowed
-  rate and a lifetime ratio are never shown under the same label.
+  rate and a since-broker-start ratio are never shown under the same label.
 - **Node card** (`desktop/src/ui/components/NodeList/NodeCardDetails.tsx`):
-  a prefill/decode section — prefill tok/s, decode tok/s, TTFT, and the
-  prefill + decode token count. Every figure is labelled with the window it
-  covers: the node's rates with the broker's 60-second window, the per-model
-  breakdown with the lifetime, the job card with the request.
+  a prefill/decode section — prefill tok/s, decode tok/s, TTFT, the
+  prefill + decode token count and the cached-token count. Every figure is
+  labelled with the window it covers: the node's rates with the broker's
+  60-second window, the totals and the per-model breakdown with the broker's
+  start, the job card with the request.
   Absent phases are shown as "not reported by this engine" rather than as 0.
+  The optional extras — the cached-token count and the job card's total
+  duration — are **omitted** when the engine did not report them: an engine
+  that reports no cached count and no total time has no row for them, and no
+  zero is shown in their place. The phase rows stay in every case, because
+  "this engine does not report phases" is worth saying.
   A per-node disclosure lists the per-model breakdown; it is collapsed by
   default.
 - **Job card** (`desktop/src/ui/components/Workloads/WorkloadItemCard.tsx`):
-  per-job prefill/decode tokens, phase durations, and rates, shown once the job
-  is terminal.
+  per-job prefill/decode tokens, the cached-token count, the phase durations,
+  the total duration and the rates, shown once the job is terminal.
 - **Relay:** the broker's push reaches the renderer through the existing
   bridge push path (`emitBridgePush`).
 
@@ -650,8 +680,8 @@ rather than "since the last broker start".
 LM Studio reports no phase split on the OpenAI-compatible surface PAIR fronts.
 Its native REST surface does report tokens/second and time-to-first-token. v2
 can either add a native-surface call for LM Studio, or accept that LM Studio
-shows tokens and total duration only. Until then, the UI says "not reported by
-this engine" rather than showing an estimate.
+shows tokens only. Until then, the UI says "not reported by this engine" rather
+than showing an estimate.
 
 ### v2 effort and dependencies
 
@@ -676,6 +706,11 @@ this engine" rather than showing an estimate.
 
 - Usage parsing: each engine's field set, streaming and non-streaming, with
   absent optional fields (oMLX's `exclude_none=True` behaviour).
+- **A reported zero survives.** oMLX reports `cached_tokens: 0` on every
+  request that missed its prefix cache; that zero reaches the workload event
+  as a measured zero, and a field the engine did not report at all stays
+  absent. The token counts on the wire are pointer-typed for exactly this
+  reason.
 - The measurement is available when telemetry is disabled (the §4.2a bug this
   design exists to prevent).
 - Injection: `stream_options.include_usage` is added for streaming oMLX
@@ -685,6 +720,10 @@ this engine" rather than showing an estimate.
   earlier one that failed.
 - The terminal workload event carries the measurement; the started event does
   not; a rejected request produces no workload event at all.
+- **`totalMs` is engine-reported only.** oMLX's terminal event carries the
+  engine's `usage.total_time`; Ollama's and LM Studio's carry no `totalMs` at
+  all, because the proxy's own wall-clock duration is not a measurement of
+  the engine (§4.1 rule 6).
 
 **Broker tests**
 
@@ -698,18 +737,43 @@ this engine" rather than showing an estimate.
 - Two brokers fed the same event stream produce identical **totals**; their
   windowed rates may differ at a boundary by design (§4.3).
 
-**Cross-process tests** (`services/tests`)
+**The proxy → broker hop**
 
-- One inference request against a **synthetic oMLX-shaped fake engine** (the
-  repo's existing inference tests already drive an `httptest` fake engine)
-  yields a terminal workload event carrying non-zero prefill and decode
-  numbers, and a per-node total in the broker.
+The one shape that catches a contract drift between two components is a
+request driven through the whole path: proxy → workload event → broker →
+per-node snapshot. v1 closes that contract **at both ends of the hop** rather
+than in the cross-process suite:
+
+- The oMLX proxy's end-to-end test
+  (`services/omlx-proxy/cache_affinity_e2e_test.go`) drives the compiled
+  service's stdio and HTTP boundaries against a fixture engine and asserts
+  that the recorded `workload:completed` frame carries the measurement
+  **inline in `workloadInfo`** — the field names and the values the engine
+  reported.
+- The broker's counterpart test
+  (`services/nvpair-ui-broker/node_metrics_test.go`) feeds a **verbatim copy
+  of that frame's `workloadInfo` JSON literal** into the broker's
+  workload-ingest path and asserts the per-node total and the per-model
+  breakdown.
+- The two literals agree by eye, and that agreement is the contract.
+
+**Why not `services/tests`.** The cross-process suite cannot run reliably in
+the review environment: fourteen of its tests fail on that machine for an
+environment reason (a running PAIR.app holds ports 11434/1234/14320), so a new
+case there could not be verified. The hop is therefore verified where it can
+be: on the producing side by the proxy's end-to-end test, on the consuming
+side by the broker's ingest test.
 
 **Desktop tests**
 
 - Type mapping and store updates for the new channels.
 - The node card and job card render a present measurement and an absent one
   distinctly (the latter must not read as 0).
+- The optional extras — the cached-token count and the job card's total
+  duration — are **omitted** when the engine reported none, and shown when it
+  did, including a reported zero.
+- The node card says what its totals cover: they are the totals the broker
+  has kept since it started, not the life of the engine.
 
 **Live verification checklist** (manual, not in CI)
 
@@ -729,7 +793,7 @@ state, which `AGENTS.md` warns against outside a controlled machine.
 
 | # | Risk | Impact | Handling |
 | --- | --- | --- | --- |
-| 1 | LM Studio's streaming responses may carry no `usage`; the flag's effect is unverified | LM Studio streaming jobs show no token counts | Verify live first. If unsupported, LM Studio contributes total duration only, and the UI says so (§6.9) |
+| 1 | LM Studio's streaming responses may carry no `usage`; the flag's effect is unverified | LM Studio streaming jobs show no token counts | Verify live first. If unsupported, LM Studio contributes token counts only, and the UI says so (§6.9) |
 | 2 | oMLX's `usage` chunk is absent unless the flag is injected | oMLX streaming jobs show nothing | v1 step 4 injects it; verify against a live engine |
 | 3 | The workload-manager's typed `Workload` drops unknown fields on the peer → broker path | Remote jobs silently lose their numbers, asymmetrically | §4.8 — the manager's struct must carry the fields; covered by a peer-relay test |
 | 4 | A member running an older workload-manager strips remote measurements | Per-node totals differ between members, silently | Restated guarantee (§4.3); documented limitation; no version gate in v1 |
@@ -786,6 +850,19 @@ state, which `AGENTS.md` warns against outside a controlled machine.
   disclosure that is collapsed by default. The workload event already carries
   `model`, so the breakdown is nearly free, and "this node is slow" is usually
   "this node is slow *for this model*". §4.4a and §4.5.
+- **`totalMs` is engine-reported only** (§4.1 rule 6). The measurement type
+  is defined as engine-measured and presence is the provenance, so a
+  proxy-measured wall-clock duration does not belong in it: oMLX fills
+  `totalMs` from `usage.total_time`, and for Ollama and LM Studio the field
+  stays absent. The proxy's own duration stays in the `proxy/request` event's
+  `duration_ms`.
+- **The proxy → broker hop is verified at both ends** rather than in
+  `services/tests` (§7): the oMLX proxy's end-to-end test asserts the
+  measurement inline in the recorded `workload:completed` frame, and the
+  broker's ingest test feeds a verbatim copy of that frame's `workloadInfo`
+  literal into the workload-ingest path. The two literals agree by eye, and
+  that agreement is the contract. `services/tests` cannot run reliably in the
+  review environment (a running PAIR.app holds ports 11434/1234/14320).
 
 ---
 
@@ -817,6 +894,6 @@ Recorded so a reviewer can see what moved after the first draft.
 | One Go struct cannot serve both the camelCase workload spec and the snake_case proxy event | §4.2f — the shared package exposes the measurement plus a tagged workload view |
 | Cross-node clock skew breaks a shared 60-second window | §4.3 — windowing uses the local arrival clock; the cluster-agreement claim is narrowed to totals |
 | A push per inference request would overload the broker's write path, and high-volume streams in this repo are subscribe-gated | §4.4 — coalesced to at most one push per second, behind `metrics:subscribe` |
-| `services/tests` has no live-engine harness, and live engine tests modify real system state | §7 — the cross-process test uses a synthetic oMLX-shaped fake engine; live checks are a manual checklist |
+| `services/tests` has no live-engine harness, and live engine tests modify real system state | §7 — the proxy → broker hop is closed at both ends (the oMLX proxy's end-to-end test and the broker's ingest test), and live checks are a manual checklist |
 | The node card's TTFT aggregate was undefined | §4.4e — a mean over the requests that reported a TTFT |
 | The renderer-side store for the new per-node metrics was not listed | §5 item 9 — `desktop/src/ui/stores/metrics.store.ts` named |
