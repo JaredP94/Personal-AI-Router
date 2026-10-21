@@ -170,6 +170,31 @@ tracing-enabled profiling scenarios are still open.
   startup/retry, manual confirmation and recovery on each release platform before
   classifying this item resolved for that release.
 
+### Inference Prefill / Decode Metrics
+
+**Implemented in source, pending live-engine and release testing.**
+
+- Each inference proxy reads the prefill and decode values the engine itself
+  reports in its response `usage` block and attaches them to the terminal
+  workload event. The oMLX proxy asks oMLX for the usage block on streaming
+  requests, because oMLX emits one only when asked.
+- The measurement is engine-measured only. A value the engine does not report
+  is absent, and the UI shows "not reported" rather than a zero. LM Studio
+  reports no phase split and Ollama reports no time to first token.
+- The workload lifecycle carries the measurement cluster-wide, and each broker
+  aggregates it per node and per model. Per-node totals cover the period since
+  the broker started; the rates cover a rolling minute.
+- **Not yet validated against live engines:** that a live oMLX emits the usage
+  chunk once the proxy asks for it and that the values match
+  `/admin/api/stats` deltas; that Ollama's nanosecond durations convert
+  correctly; and whether LM Studio's streaming responses carry a usage block at
+  all. A mixed-version cluster strips the measurement from remote jobs on a
+  member running an older workload-manager, so per-node totals are complete
+  only when every member is up to date. No release-candidate profile exists
+  for this feature. Source checks do not certify published assets. See the
+  [design](superpowers/specs/2026-10-20-inference-metrics-design.md) §7 for
+  the live checklist.
+
 ### GPU Memory Semantics
 
 **Implemented, pending release testing; Windows runtime untested on this host;

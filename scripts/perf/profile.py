@@ -73,6 +73,24 @@ class Cancellation:
             self.check()
 
 
+def desktop_version():
+    """The desktop version, which is also the release candidate directory name.
+
+    electron-builder stages its output under release/<version>, so the
+    profiling harness must follow the desktop version rather than repeat it.
+    A version that cannot be read is an error: the harness would otherwise
+    profile a directory that does not exist.
+    """
+    try:
+        data = json.loads((ROOT / "desktop/package.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read the desktop version: {exc}") from exc
+    version = str(data.get("version", "")).strip()
+    if not version:
+        raise RuntimeError("desktop/package.json has no version")
+    return version
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -646,7 +664,7 @@ def build_parser():
     parser.add_argument("--output", type=Path, required=True, help="new evidence directory (must not exist)")
     parser.add_argument("--baseline", type=Path, default=Path("/Applications/PAIR.app"))
     parser.add_argument("--candidate", type=Path,
-                        default=ROOT / "desktop/release/0.7.0-rc.2/mac/mac-arm64/PAIR.app")
+                        default=ROOT / "desktop/release" / desktop_version() / "mac/mac-arm64/PAIR.app")
     parser.add_argument("--baseline-archive", type=Path, help="optional original archive to hash")
     parser.add_argument("--candidate-archive", type=Path, help="optional original archive to hash")
     parser.add_argument("--allow-system-launcher-write", action="store_true",

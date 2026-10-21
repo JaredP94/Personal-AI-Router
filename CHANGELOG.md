@@ -31,12 +31,14 @@ are complete only once every member is upgraded.
 - **Prefill and decode metrics per job and per node**: a job card now shows how
   many tokens were prefilled versus decoded, how long each phase took, the time
   to first token and the decode rate. A node card shows the same figures for
-  everything that node has served, with a per-model breakdown behind a
-  disclosure, and its current rates over a rolling minute.
+  everything that node has served — its phase rates over a rolling minute, its
+  mean time to first token and the tokens it served — with a per-model
+  breakdown behind a disclosure.
 - The numbers are the engine's own: PAIR reads the prefill and decode
-  durations, the time to first token and the cached-token count that oMLX and
-  Ollama report. Anything an engine does not report is shown as "not reported"
-  rather than as a zero — LM Studio reports no phase split, so its phases are
+  durations that oMLX and Ollama report, and the time to first token and the
+  cached-token count that only oMLX reports. Anything an engine does not
+  report is shown as "not reported" rather than as a zero — LM Studio reports no
+  phase split and Ollama reports no time to first token, so those fields are
   always absent. Per-node totals cover the period since the broker started.
 - New broker methods `metrics:get-node-metrics`, `metrics:subscribe` and
   `metrics:unsubscribe`, plus a coalesced `metrics:node-metrics` push carrying

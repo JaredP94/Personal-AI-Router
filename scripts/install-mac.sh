@@ -8,7 +8,7 @@
 # and installs/updates PAIR.app into /Applications. GitHub regular/latest is used
 # by default, even when that release's tag contains "rc".
 #
-# The fork's v0.7.0-rc.1 candidate is unsigned, unnotarized and macOS arm64 only.
+# The fork's release candidates are unsigned, unnotarized and macOS arm64 only.
 # curl downloads do not set com.apple.quarantine. Neither that nor a matching
 # checksum provides signing, notarization, or assurance of app/helper trust.
 # SHA256SUMS detects corruption, not compromise of the release publisher.
@@ -18,13 +18,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 #
 #   # Install a specific version:
-#   ./scripts/install-mac.sh --version 0.7.0-rc.1
+#   ./scripts/install-mac.sh --version 0.7.0-rc.3
 #
 #   # Launch after install:
 #   ./scripts/install-mac.sh --launch
 #
 #   # Install from a local DMG file (offline / dev testing):
-#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.7.0-rc.1-arm64.dmg
+#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.7.0-rc.3-arm64.dmg
 
 set -euo pipefail
 
@@ -42,7 +42,7 @@ Usage:
   $(basename "$0") [options]
 
 Options:
-  -v, --version <version>  Install a specific version (e.g. 0.7.0-rc.1 or v0.7.0-rc.1).
+  -v, --version <version>  Install a specific version (e.g. 0.7.0-rc.3 or v0.7.0-rc.3).
       --repo <owner/repo>  GitHub repository to download from (default: $PAIR_REPO).
       --dmg <path>         Install a local DMG; verify it independently first.
                           Cannot be combined with --version.
@@ -50,7 +50,7 @@ Options:
   -h, --help               Show this help message.
 
 Defaults to GitHub's regular/latest release, even if its tag contains rc.
-The fork's v0.7.0-rc.1 candidate is unsigned, unnotarized and arm64 only.
+The fork's release candidates are unsigned, unnotarized and arm64 only.
 Downloaded DMGs require SHA256SUMS. Checksums and curl's lack of quarantine
 provide no signing, notarization, or assurance of app/helper trust.
 
@@ -115,7 +115,7 @@ if ! [[ "$PAIR_REPO" =~ $REPO_PATTERN ]] || [ "${PAIR_REPO#*/}" = "." ] || [ "${
     fail "Invalid repository '$PAIR_REPO'; use GitHub owner/name (no URL or extra path)."
 fi
 if [ -n "$REQUESTED_VERSION" ] && ! valid_version "$REQUESTED_VERSION"; then
-    fail "Invalid version '$REQUESTED_VERSION'; use a filename-safe version such as 0.7.0-rc.1."
+    fail "Invalid version '$REQUESTED_VERSION'; use a filename-safe version such as 0.7.0-rc.3."
 fi
 if [ -n "$LOCAL_DMG" ]; then
     [ -z "$REQUESTED_VERSION" ] || fail "--dmg and --version cannot be combined; choose one source."

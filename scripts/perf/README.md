@@ -19,7 +19,8 @@ python3 -m scripts.perf.profile --authorize-launch \
 ```
 
 Default artifacts are `/Applications/PAIR.app` (baseline rc.1) and
-`desktop/release/0.7.0-rc.2/mac/mac-arm64/PAIR.app` (candidate). Override with
+`desktop/release/<desktop version>/mac/mac-arm64/PAIR.app` (candidate, the path
+follows `desktop/package.json`). Override with
 `--baseline` / `--candidate`. Defaults: 60 s warm-up, 120 s steady sampling,
 5 repetitions **per variant per scenario**, 10 s tray intervals or 5 s
 Overview/inference intervals. The seed selects the first variant, then variants
