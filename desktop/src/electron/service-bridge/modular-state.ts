@@ -557,7 +557,7 @@ function parseInferenceMetricsRates(value: JsonValue | undefined): InferenceMetr
     }
 }
 
-/** Parse one model's lifetime totals on one node. */
+/** Parse one model's totals on one node, as of since the broker started. */
 function parseNodeModelMetrics(value: JsonValue | undefined): NodeModelMetrics | null {
     const obj = objectValue(value)
     if (!obj) return null

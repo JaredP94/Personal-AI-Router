@@ -824,8 +824,9 @@ async function handleWorkersGetStatus(): Promise<WorkerStatus[]> {
 }
 
 /**
- * The broker's per-node inference metrics snapshot: the lifetime totals, the
- * windowed rates and the per-model rows of every node that served traffic.
+ * The broker's per-node inference metrics snapshot: the totals since the
+ * broker started, the windowed rates and the per-model rows of every node
+ * that served traffic.
  *
  * The read goes to the broker rather than to the cached push. The broker only
  * pushes when a measurement was recorded, so a rate that decays towards zero

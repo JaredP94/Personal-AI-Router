@@ -122,7 +122,8 @@ with a number the proxy measured itself (§4.1 rule 6).
 
 - `services/{omlx,ollama,lmstudio}-proxy/telemetry.go` — the `streamChunk`
   struct parses only `usage.prompt_tokens` / `usage.completion_tokens` (and the
-  Ollama counts). The other fields are in the same JSON object, unparsed.
+  Ollama counts). The other fields are in the same JSON object, and were
+  unparsed until this change.
 - The reader **already retains** the parsed counts in plain struct fields
   (`r.promptTokens`, `r.outputTokens`) and is installed on every inference
   response regardless of telemetry state (a disabled session uses
