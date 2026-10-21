@@ -23,6 +23,15 @@ import (
 // alongside it under /v1.
 const modelsPath = "/v1/models"
 
+// The engine-native paths: the engine's own counters and the engine's own
+// live rows. They sit on the same listener as the model list and behind the
+// same two gates, so a peer and this node's own scanner read them the same
+// way.
+const (
+	engineStatsPath    = "/v1/engine-stats"
+	engineActivityPath = "/v1/engine-activity"
+)
+
 // serveHTTP runs engine-manager's model-list surface (the em service) on
 // 0.0.0.0:port until ctx is cancelled, backed by exec.Models. The model list
 // moved off the mDNS TXT record (which couldn't hold an unbounded list) onto
@@ -49,23 +58,7 @@ const modelsPath = "/v1/models"
 //     the same listener with no rebind.
 func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust.Mesh) {
 	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
-	models := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		// {"models":[...union...],"modelsByEngine":{"ollama":[...],...},
-		// "loadedByEngine":{"ollama":[...],...}} — the flat union stays for
-		// existing consumers; modelsByEngine and loadedByEngine are additive
-		// (both omitempty, so absent when no engine reports them).
-		_ = json.NewEncoder(w).Encode(exec.ModelsResult(r.Context()))
-	})
-
-	plainMux := http.NewServeMux()
-	plainMux.Handle(modelsPath, loopbackOnly(models))
-	tlsMux := http.NewServeMux()
-	tlsMux.Handle(modelsPath, requirePinnedPeer(mesh, models))
+	plainMux, tlsMux := emSurface(exec, mesh)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -85,9 +78,58 @@ func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust
 		_ = split.Close()
 	}()
 	slog.Info("serving engine model surface", "addr", addr, "path", modelsPath,
+		"enginePaths", []string{engineStatsPath, engineActivityPath},
 		"clustered", mesh.Clustered())
 	go serveOrWarn(tlsSrv, tls.NewListener(split.TLS(), mesh.ServerTLSConfig()))
 	serveOrWarn(plainSrv, split.Plain())
+}
+
+// emSurface builds the two personalities of the em surface: the plaintext
+// mux, which serves this node's own loopback callers, and the cluster mTLS
+// mux, which serves pinned peers. Both carry the same paths behind the same
+// gates, so a peer and this node's own scanner read the same data.
+//
+// The engine-native paths answer with PAIR's own type, mapped field by field
+// from the engine's admin API, so the engine's api_key has nowhere to go.
+func emSurface(exec *Executor, mesh *clustertrust.Mesh) (plainMux, tlsMux *http.ServeMux) {
+	models := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// {"models":[...union...],"modelsByEngine":{"ollama":[...],...},
+		// "loadedByEngine":{"ollama":[...],...}} — the flat union stays for
+		// existing consumers; modelsByEngine and loadedByEngine are additive
+		// (both omitempty, so absent when no engine reports them).
+		_ = json.NewEncoder(w).Encode(exec.ModelsResult(r.Context()))
+	})
+	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(exec.EngineNativeStats(r.Context()))
+	})
+	activity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(exec.EngineNativeActivity(r.Context()))
+	})
+
+	plainMux = http.NewServeMux()
+	plainMux.Handle(modelsPath, loopbackOnly(models))
+	plainMux.Handle(engineStatsPath, loopbackOnly(stats))
+	plainMux.Handle(engineActivityPath, loopbackOnly(activity))
+	tlsMux = http.NewServeMux()
+	tlsMux.Handle(modelsPath, requirePinnedPeer(mesh, models))
+	tlsMux.Handle(engineStatsPath, requirePinnedPeer(mesh, stats))
+	tlsMux.Handle(engineActivityPath, requirePinnedPeer(mesh, activity))
+	return plainMux, tlsMux
 }
 
 // serveOrWarn runs srv on l, treating a normal shutdown (and the sub-listener

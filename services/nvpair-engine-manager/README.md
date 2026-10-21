@@ -250,6 +250,38 @@ engine without an official stop command, is **refused** with an error (nothing
 is persisted). An identified command-mode engine with an official stop command
 can be moved; see Adoption below.
 
+## Engine-native surface (`em`)
+
+The model-list surface (`--http-port`) carries two more paths besides
+`GET /v1/models`. They answer with the **engine's own** view of itself:
+
+| Path | Answer |
+|---|---|
+| `GET /v1/engine-stats` | `{ engine, supported, totals?, rates?, models?, error?, observedAt? }` — the engine's request and token counters, its average prefill and generation throughput, its cache efficiency, and the models it lists as active. `observedAt` is the millisecond timestamp of the snapshot. |
+| `GET /v1/engine-activity` | `{ engine, supported, rows?, error? }` — the requests the engine is working on right now, one row per request, each with the phase the engine reported (`waiting`, `prefilling`, `generating`). |
+
+Both are GET-only and answer `application/json`. Both are registered on the
+same listener and behind the same two gates as `/v1/models`: plaintext for
+loopback only, cluster mTLS for pinned peers only.
+
+The answers are **PAIR's own type**, mapped field by field from the engine's
+admin API (`/admin/api/stats` and `/admin/api/activity` on the engine's own
+port, the same port as its inference API). The engine's stats payload carries
+its own `api_key`; PAIR's type has no field for it, so the key cannot leave
+the node.
+
+`supported` is `false` for an engine with no admin API — oMLX is the only
+engine that publishes one — and for a failed fetch, which also carries a short,
+sanitised `error` and never the engine's raw answer. A host that knows no oMLX
+engine at all answers `supported:false` with **no** error: that is a normal
+state, not a failure. A host that knows oMLX but cannot reach it — the engine
+is not running, or is not answering — answers `supported:false` with the
+sanitised reason. Each fetch is bounded (5 s by default), so a slow engine is
+reported rather than waited on.
+
+Every numeric field is `omitempty`: a value the engine did not report stays
+absent instead of becoming a zero.
+
 ## Lifecycle
 
 ```
@@ -374,7 +406,7 @@ its own.
 | Flag | Default | Description |
 |---|---|---|
 | `--ipc <path>` | _(stdio)_ | IPC endpoint: Unix socket or Windows named pipe |
-| `--http-port <port>` | `0` (off) | Serve the plain LAN model-list surface (`GET /v1/models`, the `em` service) on this port; the broker passes `:14322` |
+| `--http-port <port>` | `0` (off) | Serve the plain LAN model-list surface (`GET /v1/models`, the `em` service) on this port, together with the engine-native paths (`GET /v1/engine-stats`, `GET /v1/engine-activity`); the broker passes `:14322` |
 | `--control-port <port>` | `0` (off) | Serve the cluster-scoped mTLS remote-control surface (the `ec` service) on this port; callers are admitted only while this node is a cluster member. The broker passes `:14323` |
 | `--reserved-port <port>` | `0` (off) | Refuse local or remote engine starts and persisted port changes on a parent-owned proxy alias; the broker configures this from `OLLAMA_HOST` |
 | `--cluster-dir <dir>` | _(none)_ | Cluster identity/pin directory; gates the `ec` surface on and supplies the leaf/pins used to serve it and to dial peers |
@@ -405,11 +437,13 @@ caller is authorized against a per-peer pin, a non-member is refused with a `403
 and while this node belongs to no cluster it presents no leaf so no handshake
 completes:
 
-- **`--http-port`** — the model-list surface (`em`, `GET /v1/models`; the broker
-  passes `:14322`). A node's model inventory is cluster data, so LAN callers must
-  be pinned peers. This port additionally serves **plaintext on loopback only**,
-  which is how this node's own scanner enriches its own card — including when the
-  node belongs to no cluster, so a standalone machine still shows its own models.
+- **`--http-port`** — the model-list surface (`em`, `GET /v1/models` and the
+  engine-native paths `GET /v1/engine-stats` / `GET /v1/engine-activity`; the
+  broker passes `:14322`). A node's model inventory is cluster data, so LAN
+  callers must be pinned peers. This port additionally serves **plaintext on
+  loopback only**, which is how this node's own scanner enriches its own card —
+  including when the node belongs to no cluster, so a standalone machine still
+  shows its own models.
 - **`--control-port`** — the remote-control surface (`ec`, the `engine:remote-*`
   targets; the broker passes `:14323`). mTLS only, no plaintext personality, since
   every route performs a privileged operation.
