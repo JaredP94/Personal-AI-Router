@@ -35,8 +35,8 @@
  * report; a row for one of them is added only when the value is there, so an
  * engine that reports nothing extra shows no row for it.
  *
- * The node carries no cached-token row at all. Only oMLX reports a cached
- * count, and the broker's node totals hold no counter for the requests that
+ * The node carries no cached-token row at all. The broker's node totals do
+ * sum the cached counts, but they hold no counter for the requests that
  * reported one — so a node-level total would read as a measured zero on a
  * node whose engine never measured a cached count. The per-job row carries
  * the count where the engine did report it; a node-level total needs a

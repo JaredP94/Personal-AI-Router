@@ -18,7 +18,7 @@ python3 -m scripts.perf.profile --authorize-launch \
   --seed 20260421 --context 'Unclustered; tracing disabled; no loaded engine'
 ```
 
-Default artifacts are `/Applications/PAIR.app` (baseline rc.1) and
+Default artifacts are `/Applications/PAIR.app` (the installed baseline) and
 `desktop/release/<desktop version>/mac/mac-arm64/PAIR.app` (candidate, the path
 follows `desktop/package.json`). Override with
 `--baseline` / `--candidate`. Defaults: 60 s warm-up, 120 s steady sampling,

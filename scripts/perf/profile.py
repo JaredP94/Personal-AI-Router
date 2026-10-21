@@ -78,17 +78,15 @@ def desktop_version():
 
     electron-builder stages its output under release/<version>, so the
     profiling harness must follow the desktop version rather than repeat it.
-    A version that cannot be read is an error: the harness would otherwise
-    profile a directory that does not exist.
+    An unreadable version yields an empty string and a path that cannot
+    resolve: the harness then fails loudly when it is run, rather than
+    profiling a different build.
     """
     try:
         data = json.loads((ROOT / "desktop/package.json").read_text())
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(f"cannot read the desktop version: {exc}") from exc
-    version = str(data.get("version", "")).strip()
-    if not version:
-        raise RuntimeError("desktop/package.json has no version")
-    return version
+    except (OSError, ValueError):
+        return ""
+    return str(data.get("version", "")).strip()
 
 
 def now():
@@ -664,7 +662,7 @@ def build_parser():
     parser.add_argument("--output", type=Path, required=True, help="new evidence directory (must not exist)")
     parser.add_argument("--baseline", type=Path, default=Path("/Applications/PAIR.app"))
     parser.add_argument("--candidate", type=Path,
-                        default=ROOT / "desktop/release" / desktop_version() / "mac/mac-arm64/PAIR.app")
+                        default=ROOT / "desktop/release" / (desktop_version() or "_unknown-version") / "mac/mac-arm64/PAIR.app")
     parser.add_argument("--baseline-archive", type=Path, help="optional original archive to hash")
     parser.add_argument("--candidate-archive", type=Path, help="optional original archive to hash")
     parser.add_argument("--allow-system-launcher-write", action="store_true",
