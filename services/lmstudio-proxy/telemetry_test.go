@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,6 +255,83 @@ func TestLMStudioProxyCandidateFailureTelemetry(t *testing.T) {
 	}
 	if successAttrs["pair.route.failover"] != true {
 		t.Errorf("expected pair.route.failover = true on second attempt")
+	}
+}
+
+// lmStudioEngineWith serves body as an LM Studio SSE response.
+func lmStudioEngineWith(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestWorkloadCarriesLMStudioTokensOnly(t *testing.T) {
+	srv := lmStudioEngineWith(t, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\","+
+		"\"model\":\"qwen\",\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":8}}\n\n")
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "qwen"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"qwen"}`)))
+
+	for _, want := range []string{
+		`"method":"workload:completed"`,
+		`"prefillTokens":15`, `"decodeTokens":8`,
+		`"totalMs":`,
+	} {
+		if !rec.has(want) {
+			t.Fatalf("workload event missing %s", want)
+		}
+	}
+	// LM Studio reports no phase split, so every duration stays absent.
+	for _, absent := range []string{`"prefillMs"`, `"decodeMs"`, `"ttftMs"`, `"cachedTokens"`} {
+		if rec.has(absent) {
+			t.Fatalf("lmstudio reports no phase split: %s", absent)
+		}
+	}
+}
+
+func TestLMStudioMeasurementPresentWithoutTelemetry(t *testing.T) {
+	// unconfiguredTelemetryProxy's manager is never enabled, so the session's
+	// tracer is a noop and no span is recording. The measurement must still
+	// reach the workload event.
+	p, _, rec := unconfiguredTelemetryProxy(t)
+	srv := lmStudioEngineWith(t, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\","+
+		"\"model\":\"qwen\",\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":8}}\n\n")
+	p.discovery.AddManual(nodeForModel(t, "serving-node", srv.URL, "qwen"))
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"qwen"}`)))
+
+	if !rec.has(`"prefillTokens":15`) {
+		t.Fatal("measurement missing with telemetry disabled")
+	}
+}
+
+func TestLMStudioMeasuredZeroTokenCountIsKept(t *testing.T) {
+	// A count LM Studio reported as zero is a measured zero, not an absent
+	// value.
+	srv := lmStudioEngineWith(t, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\","+
+		"\"model\":\"qwen\",\"choices\":[],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0}}\n\n")
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", srv.URL, "qwen"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+
+	p.handleHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"qwen"}`)))
+
+	if !rec.has(`"prefillTokens":0`) {
+		t.Fatal("a reported zero prefill count must be preserved")
+	}
+	if !rec.has(`"decodeTokens":0`) {
+		t.Fatal("a reported zero decode count must be preserved")
 	}
 }
 

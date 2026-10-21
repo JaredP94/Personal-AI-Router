@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/telemetry"
 )
 
@@ -115,6 +116,13 @@ type telemetryBodyReader struct {
 	promptTokens        int
 	outputTokens        int
 	responseModel       string
+
+	// measurementMu guards measurement, which is accumulated while the
+	// response streams in and read once the stream is done. The measurement
+	// is kept independently of the span: with telemetry disabled no span is
+	// recording, but the engine's numbers are still reported.
+	measurementMu sync.Mutex
+	measurement   inferencemetrics.Measurement
 }
 
 func newTelemetryBodyReader(body io.ReadCloser, span trace.Span, start time.Time, session *telemetry.Session) *telemetryBodyReader {
@@ -190,12 +198,23 @@ type streamChunk struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-	Done            bool `json:"done"`
-	PromptEvalCount int  `json:"prompt_eval_count"`
-	EvalCount       int  `json:"eval_count"`
-	Usage           *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+	Done bool `json:"done"`
+	// Ollama's own token counts, taken from the native response. They are
+	// pointer-typed so a count the engine reported as zero stays a measured
+	// zero, while a chunk that carries no count at all leaves the field
+	// absent.
+	PromptEvalCount *int `json:"prompt_eval_count"`
+	EvalCount       *int `json:"eval_count"`
+	// Ollama's own phase durations, in nanoseconds. A phase the engine did
+	// not measure is absent, not zero.
+	PromptEvalDuration *int64 `json:"prompt_eval_duration"`
+	EvalDuration       *int64 `json:"eval_duration"`
+	// The OpenAI-compatible counts, reported by Ollama on its
+	// /v1/chat/completions route. They describe the same two quantities as
+	// the native counts above.
+	Usage *struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
 	} `json:"usage"`
 }
 
@@ -218,20 +237,39 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 	if chunk.Model != "" && r.responseModel == "" {
 		r.responseModel, _ = telemetry.TruncateUTF8(chunk.Model, 256)
 	}
-	if chunk.PromptEvalCount > 0 {
-		r.promptTokens = chunk.PromptEvalCount
+	if chunk.PromptEvalCount != nil && *chunk.PromptEvalCount > 0 {
+		r.promptTokens = *chunk.PromptEvalCount
 	}
-	if chunk.EvalCount > 0 {
-		r.outputTokens = chunk.EvalCount
+	if chunk.EvalCount != nil && *chunk.EvalCount > 0 {
+		r.outputTokens = *chunk.EvalCount
 	}
 	if chunk.Usage != nil {
-		if chunk.Usage.PromptTokens > 0 {
-			r.promptTokens = chunk.Usage.PromptTokens
+		if chunk.Usage.PromptTokens != nil && *chunk.Usage.PromptTokens > 0 {
+			r.promptTokens = *chunk.Usage.PromptTokens
 		}
-		if chunk.Usage.CompletionTokens > 0 {
-			r.outputTokens = chunk.Usage.CompletionTokens
+		if chunk.Usage.CompletionTokens != nil && *chunk.Usage.CompletionTokens > 0 {
+			r.outputTokens = *chunk.Usage.CompletionTokens
 		}
 	}
+	// The engine's own numbers for this request. Only what the engine
+	// reported is recorded: a value it did not report stays absent instead of
+	// becoming a zero. Ollama's native counts win over the OpenAI-compatible
+	// ones — the two describe the same quantity, and the native field is the
+	// one Ollama documents.
+	r.measurementMu.Lock()
+	if chunk.PromptEvalCount != nil {
+		r.measurement.PrefillTokens = inferencemetrics.IntPtr(*chunk.PromptEvalCount)
+	} else if r.measurement.PrefillTokens == nil && chunk.Usage != nil && chunk.Usage.PromptTokens != nil {
+		r.measurement.PrefillTokens = inferencemetrics.IntPtr(*chunk.Usage.PromptTokens)
+	}
+	if chunk.EvalCount != nil {
+		r.measurement.DecodeTokens = inferencemetrics.IntPtr(*chunk.EvalCount)
+	} else if r.measurement.DecodeTokens == nil && chunk.Usage != nil && chunk.Usage.CompletionTokens != nil {
+		r.measurement.DecodeTokens = inferencemetrics.IntPtr(*chunk.Usage.CompletionTokens)
+	}
+	setDurationMs(&r.measurement.PrefillMs, chunk.PromptEvalDuration)
+	setDurationMs(&r.measurement.DecodeMs, chunk.EvalDuration)
+	r.measurementMu.Unlock()
 	if r.session.RecordPayloads() && !r.completionTruncated {
 		var toAppend string
 		if chunk.Response != "" {
@@ -249,6 +287,25 @@ func (r *telemetryBodyReader) inspectLine(line []byte) {
 		r.completionBuf.WriteString(part)
 		r.completionTruncated = truncated
 	}
+}
+
+// setDurationMs records an engine-reported duration, converted from the
+// engine's nanoseconds to whole milliseconds. A duration the engine did not
+// report leaves the field absent.
+func setDurationMs(dst **int64, nanos *int64) {
+	if nanos == nil {
+		return
+	}
+	*dst = inferencemetrics.Int64Ptr(*nanos / 1_000_000)
+}
+
+// Measurement returns the inference measurement parsed from the response
+// stream so far. It is readable whether or not a span is recording, so the
+// workload event carries the engine's numbers even with telemetry disabled.
+func (r *telemetryBodyReader) Measurement() inferencemetrics.Measurement {
+	r.measurementMu.Lock()
+	defer r.measurementMu.Unlock()
+	return r.measurement
 }
 
 func (r *telemetryBodyReader) finalize() {
