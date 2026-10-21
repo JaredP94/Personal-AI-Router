@@ -23,11 +23,13 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
+	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 	"nvpair-shared/schedulerwire"
 
+	"nvpair-ui-broker/nodemetrics"
 	"nvpair-ui-broker/relay"
 	"nvpair-ui-broker/workloadstore"
 )
@@ -38,6 +40,18 @@ var Version = "dev"
 
 const restoreEnabledEnginesMethod = "engine:restore-enabled"
 const prepareEngineShutdownMethod = "engine:prepare-shutdown"
+
+const (
+	// nodeMetricsWindow is the length of the rolling window the per-node
+	// metrics store keeps its recent completions in. Sixty seconds is long
+	// enough to smooth a burst of traffic and short enough that an idle
+	// node's rates fall back to zero promptly.
+	nodeMetricsWindow = 60 * time.Second
+	// nodeMetricsPushIntervalDefault is the coalescing period of the
+	// metrics push: at most one snapshot push per interval, however many
+	// completions arrived in between.
+	nodeMetricsPushIntervalDefault = time.Second
+)
 
 // ReadyParams is the payload of the "app:ready" notification the broker
 // emits on every new connection (or once at startup in stdio mode).
@@ -147,6 +161,16 @@ type ProxyStatusResult struct {
 	// metrics:get-routing, so no client accumulates routing counters again.
 	Requests          uint64 `json:"requests"`
 	CacheAffinityHits uint64 `json:"cache_affinity_hits"`
+}
+
+// NodeMetricsResult is the response to "metrics:get-node-metrics" and the
+// payload of the "metrics:node-metrics" push.
+//
+// It carries the FULL snapshot, never a delta: the push is a state
+// synchronization, so a client that missed one recovers by re-reading
+// everything rather than by accumulating differences it never saw.
+type NodeMetricsResult struct {
+	Nodes []nodemetrics.NodeSnapshot `json:"nodes"`
 }
 
 // Broker holds per-session state. A new Broker is constructed for every
@@ -320,6 +344,28 @@ type Broker struct {
 	// demand covers work anywhere and raises every node to the scheduling cadence.
 	lastSchedulingDemand atomic.Bool
 
+	// nodeMetrics is the per-node inference-metrics accumulator. It is fed
+	// from the workload-ingest path — the terminal workload event carries
+	// the engine's measurement and names the node that served the job — and
+	// read by the metrics: RPC surface. It is in-memory and starts empty on
+	// every broker start, so its totals are "since this broker started".
+	nodeMetrics *nodemetrics.Store
+
+	// metricsMu guards metricsSubscribed and metricsDirty. The
+	// metrics:node-metrics stream is opt-in like workloads': the push loop
+	// (its own goroutine) reads the flags while the metrics:subscribe /
+	// metrics:unsubscribe handlers (on the read-loop goroutine) flip them.
+	metricsMu         sync.Mutex
+	metricsSubscribed bool
+	// metricsDirty marks the snapshot as changed since the last push, so a
+	// burst of completions coalesces into a single push.
+	metricsDirty bool
+
+	// nodeMetricsPushInterval is the period of the metrics push ticker. It
+	// is a field so a test can drive the coalescing without waiting out a
+	// second; NewBroker defaults it to nodeMetricsPushIntervalDefault.
+	nodeMetricsPushInterval time.Duration
+
 	// engineMu guards engineSubscribed. The engine:<event> stream is
 	// opt-in like proxy's: forwardEngineNotification (engine-manager reader
 	// goroutine) reads the flag while the engine:subscribe /
@@ -412,35 +458,37 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	b := &Broker{
-		workerHealthInterval: paths.workerHealthInterval,
-		codec:                codec,
-		closeTransport:       paths.closeTransport,
-		startedAt:            time.Now(),
-		heartbeatInterval:    jsonrpc.HeartbeatInterval,
-		nodeID:               nodeID,
-		scannerPath:          paths.scanner,
-		nodeInfoPath:         paths.nodeInfo,
-		proxyPath:            paths.proxy,
-		lmstudioProxyPath:    paths.lmstudioProxy,
-		omlxProxyPath:        paths.omlxProxy,
-		workloadMgrPath:      paths.workloadMgr,
-		errorsPath:           paths.errors,
-		engineMgrPath:        paths.engineMgr,
-		manualNodesPath:      paths.manualNodes,
-		settingsPath:         paths.settings,
-		clusterMgrPath:       paths.clusterMgr,
-		schedulerPath:        paths.scheduler,
-		clusterDir:           paths.clusterDir,
-		mesh:                 clustertrust.Open(paths.clusterDir),
-		store:                newDiscoveryStore(),
-		telemetry:            newTelemetryCache(),
-		relayDir:             relay.NewDirectory(),
-		regCache:             relay.NewRegistrationCache(),
-		manualNodeKeys:       make(map[string]string),
-		manualNodeStatuses:   make(map[string]manualNodeStatusEntry),
-		workloads:            workloadstore.New(),
-		ollamaPortReady:      make(chan struct{}),
-		lmstudioPortReady:    make(chan struct{}),
+		workerHealthInterval:    paths.workerHealthInterval,
+		codec:                   codec,
+		closeTransport:          paths.closeTransport,
+		startedAt:               time.Now(),
+		heartbeatInterval:       jsonrpc.HeartbeatInterval,
+		nodeID:                  nodeID,
+		scannerPath:             paths.scanner,
+		nodeInfoPath:            paths.nodeInfo,
+		proxyPath:               paths.proxy,
+		lmstudioProxyPath:       paths.lmstudioProxy,
+		omlxProxyPath:           paths.omlxProxy,
+		workloadMgrPath:         paths.workloadMgr,
+		errorsPath:              paths.errors,
+		engineMgrPath:           paths.engineMgr,
+		manualNodesPath:         paths.manualNodes,
+		settingsPath:            paths.settings,
+		clusterMgrPath:          paths.clusterMgr,
+		schedulerPath:           paths.scheduler,
+		clusterDir:              paths.clusterDir,
+		mesh:                    clustertrust.Open(paths.clusterDir),
+		store:                   newDiscoveryStore(),
+		telemetry:               newTelemetryCache(),
+		relayDir:                relay.NewDirectory(),
+		regCache:                relay.NewRegistrationCache(),
+		manualNodeKeys:          make(map[string]string),
+		manualNodeStatuses:      make(map[string]manualNodeStatusEntry),
+		workloads:               workloadstore.New(),
+		nodeMetrics:             nodemetrics.NewStore(nodeMetricsWindow),
+		nodeMetricsPushInterval: nodeMetricsPushIntervalDefault,
+		ollamaPortReady:         make(chan struct{}),
+		lmstudioPortReady:       make(chan struct{}),
 	}
 	b.initWorkerRegistry()
 	return b
@@ -1890,6 +1938,10 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// as in-flight. Independent of persistence above: it guards the live set.
 	go b.runStaleWorkloadSweep(ctx)
 
+	// Push the per-node inference metrics on a coalescing cadence: at most
+	// one snapshot per second, however many completions arrived in between.
+	go b.runNodeMetricsPush(ctx)
+
 	// One heartbeat stream per client connection. The client relies on it as
 	// liveness (§2.1): a silent channel is presumed dead after
 	// jsonrpc.HeartbeatTimeout and the reader reconnects, which starts a fresh
@@ -2608,7 +2660,17 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 			}
 			return b.workloads.ApplyInferred(in)
 		}
-		return b.workloads.Apply(in)
+		if !b.workloads.Apply(in) {
+			return false
+		}
+		// The merge was accepted, so this is the one authoritative statement
+		// about this workload. A duplicate — the workload-manager's heartbeat
+		// re-assert, a peer's backfill — is rejected by the store above and
+		// never reaches the accumulator, and the inferred path above returns
+		// before this point, so the node-loss sweep's synthesized failure
+		// never counts either.
+		b.recordNodeMetrics(env.WorkloadInfo)
+		return true
 	case "workloads:remove":
 		var rm struct {
 			WorkloadID     string `json:"workloadId"`
@@ -2621,6 +2683,132 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		return true
 	default:
 		return false
+	}
+}
+
+// nodeMetricsWorkload is the part of a workload event the per-node
+// accumulator needs: the model (the per-model breakdown is keyed by it), the
+// lifecycle state (only a terminal event is a served request) and the two node
+// ids (the node that served the job, and the node the job came from).
+//
+// The engine's measurement is embedded, so it is read from the workloadInfo's
+// inline fields — the same wire shape the proxy's terminal event carries.
+type nodeMetricsWorkload struct {
+	Model          string `json:"model"`
+	State          string `json:"state"`
+	OriginatedFrom string `json:"originatedFrom"`
+	ScheduledOn    string `json:"scheduledOn"`
+	inferencemetrics.Measurement
+}
+
+// recordNodeMetrics folds a terminal workload event into the per-node
+// accumulator.
+//
+// It is called only for an accepted, authoritative merge (the workload store
+// returned true) and never for an inferred event, so a re-asserted terminal
+// event (the workload-manager's heartbeat) and a synthesized failure (the
+// node-loss sweep) both leave the totals untouched.
+//
+// Only a terminal event is counted. The broker sees a non-terminal event for
+// every job it watches, and a job that is merely running is not a served
+// request yet — counting it would count every job twice and put a request in
+// the totals that the engine never measured.
+//
+// The node credited is the one that served the job (scheduledOn). A workload
+// that never picked an executor falls back to the node it came from
+// (originatedFrom), which is the only attribution such a job has.
+//
+// The store measures its rolling window on its own clock, so the instant
+// passed here is the broker's own arrival time: a relayed event carries the
+// origin's timestamps, and comparing those against the local clock is how
+// cross-node clock skew gets mistaken for real time.
+func (b *Broker) recordNodeMetrics(info json.RawMessage) {
+	// NewBroker always installs the store. A hand-built broker (a test that
+	// exercises another path) may not have one, and it then has no metrics
+	// to record — the same nil-tolerant shape the other optional broker
+	// fields (telemetry, regCache) have.
+	if b.nodeMetrics == nil {
+		return
+	}
+	var wl nodeMetricsWorkload
+	if err := json.Unmarshal(info, &wl); err != nil {
+		return
+	}
+	if !isTerminalWorkloadState(wl.State) {
+		return
+	}
+	node := wl.ScheduledOn
+	if node == "" {
+		node = wl.OriginatedFrom
+	}
+	if node == "" {
+		return
+	}
+	b.nodeMetrics.Record(node, wl.Model, wl.Measurement, time.Now())
+	b.markNodeMetricsDirty()
+}
+
+// isTerminalWorkloadState reports whether a workload state ends the job's
+// life. The terminal event is the one that carries the engine's measurement.
+func isTerminalWorkloadState(state string) bool {
+	return state == "completed" || state == "failed"
+}
+
+// markNodeMetricsDirty records that the snapshot changed since the last push.
+func (b *Broker) markNodeMetricsDirty() {
+	b.metricsMu.Lock()
+	b.metricsDirty = true
+	b.metricsMu.Unlock()
+}
+
+// getNodeMetrics returns the current per-node metrics snapshot: the lifetime
+// totals, the windowed rates and the per-model breakdown of every node that
+// has served traffic.
+func (b *Broker) getNodeMetrics() NodeMetricsResult {
+	return NodeMetricsResult{Nodes: b.nodeMetrics.Snapshot()}
+}
+
+// flushNodeMetrics pushes the current snapshot to a subscribed client, if the
+// snapshot changed since the last push.
+//
+// The dirty flag is what makes the push coalesced: a burst of completions
+// marks it dirty many times, but only the first flush after the burst pushes
+// — and it pushes the newest state, not a delta. A client that is not
+// subscribed is skipped, and the snapshot stays dirty so the first flush
+// after it subscribes still delivers the current state.
+func (b *Broker) flushNodeMetrics() {
+	b.metricsMu.Lock()
+	if !b.metricsDirty || !b.metricsSubscribed {
+		b.metricsMu.Unlock()
+		return
+	}
+	b.metricsDirty = false
+	b.metricsMu.Unlock()
+
+	if err := b.codec.Notify("metrics:node-metrics", b.getNodeMetrics()); err != nil {
+		slog.Warn("emit metrics:node-metrics failed", "err", err)
+	}
+}
+
+// runNodeMetricsPush pushes the per-node metrics snapshot on a fixed cadence.
+//
+// The cadence is the coalescing: at most one push per interval, carrying the
+// newest state, however many completions arrived in between. A push per
+// completion would put the broker's write path under load for no benefit.
+func (b *Broker) runNodeMetricsPush(ctx context.Context) {
+	interval := b.nodeMetricsPushInterval
+	if interval <= 0 {
+		interval = nodeMetricsPushIntervalDefault
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.flushNodeMetrics()
+		}
 	}
 }
 
@@ -3089,6 +3277,32 @@ func (b *Broker) handleMessage(msg *Message) {
 		}
 		if err := b.codec.Respond(msg.ID, workloadsInitialResult{Workloads: snapshot}); err != nil {
 			log.Printf("failed to respond to workloads:get-initial: %v", err)
+		}
+
+	case "metrics:get-node-metrics":
+		// The full per-node snapshot: lifetime totals, windowed rates and the
+		// per-model breakdown for every node that has served traffic. This is
+		// also how a client hydrates — the push carries the same object.
+		if err := b.codec.Respond(msg.ID, b.getNodeMetrics()); err != nil {
+			log.Printf("failed to respond to metrics:get-node-metrics: %v", err)
+		}
+
+	case "metrics:subscribe":
+		// Opt-in, like workloads:subscribe: the metrics:node-metrics push
+		// only goes to a subscribed client.
+		b.metricsMu.Lock()
+		b.metricsSubscribed = true
+		b.metricsMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to metrics:subscribe: %v", err)
+		}
+
+	case "metrics:unsubscribe":
+		b.metricsMu.Lock()
+		b.metricsSubscribed = false
+		b.metricsMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to metrics:unsubscribe: %v", err)
 		}
 
 	case "node/add", "node/remove", "nodes/list":
