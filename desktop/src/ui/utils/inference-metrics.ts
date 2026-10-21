@@ -4,8 +4,19 @@
 /**
  * Formatting for the per-job and per-node inference metrics.
  *
- * The desktop renders what the broker reported; it never sums, averages or
- * derives a rate. These helpers only turn a reported number into text.
+ * The desktop renders what the broker reported. The broker's own windowed
+ * node rates arrive in the snapshot and are rendered exactly as they came;
+ * the two quantities the desktop computes itself are stated where they are
+ * computed, and neither of them is an aggregate over requests:
+ *
+ * - a phase's rate is the ratio of the tokens and the duration the engine
+ *   reported for one model or one job, which is the same formula the broker
+ *   uses for its own windowed rate, applied to one record;
+ * - a token total adds the prefill and decode token counts of the same
+ *   record.
+ *
+ * Nothing is summed across requests, averaged across jobs or recomputed
+ * across nodes.
  *
  * Every formatter tells an absent measurement from a measured zero. An engine
  * that reports no phase split (LM Studio) leaves the measurement out
@@ -14,7 +25,12 @@
  * never reported a rate at all, which reads as a measurement the engine
  * never made.
  */
-import type { InferenceMetricsTotals } from '@/shared/types/metrics'
+import type {
+    InferenceMetricsTotals,
+    NodeInferenceMetrics,
+    NodeModelMetrics
+} from '@/shared/types/metrics'
+import type { Workload } from '@/shared/types/workloads'
 
 /** The text used for a value the engine did not report. */
 const NOT_REPORTED = 'not reported'
@@ -56,11 +72,47 @@ export function formatDurationMs(value: number | null | undefined): string {
 }
 
 /**
- * Whether the engine reported a prefill or a decode phase for this node.
+ * Whether the engine reported a prefill phase for this node.
  *
  * The presence counters answer it: a request that reported a prefill duration
  * increments `prefillRequests`, so a counter above zero means the engine
- * measured a prefill phase. The durations are consulted as well, so a
+ * measured a prefill phase. The duration is consulted as well, so a snapshot
+ * that carries a duration still counts even if its counters were lost.
+ *
+ * The duration alone cannot answer it: a reported prefill that took no time
+ * sums to zero milliseconds, exactly like an engine that never reported a
+ * prefill phase at all.
+ */
+export function hasPrefillMetrics(totals: InferenceMetricsTotals): boolean {
+    return totals.prefillRequests > 0 || totals.prefillMs > 0
+}
+
+/**
+ * Whether the engine reported a decode phase for this node. The same
+ * counter-aware rule as {@link hasPrefillMetrics}.
+ */
+export function hasDecodeMetrics(totals: InferenceMetricsTotals): boolean {
+    return totals.decodeRequests > 0 || totals.decodeMs > 0
+}
+
+/**
+ * Whether the engine reported a time-to-first-token for this node.
+ *
+ * Only the counter answers it: `meanTtftMs` is a mean over the requests that
+ * reported a TTFT, and it is zero when no request reported one — the same
+ * number an engine reports when it measures a first token that took no time.
+ * The counter is what separates the two.
+ */
+export function hasTtftMetrics(totals: InferenceMetricsTotals): boolean {
+    return totals.ttftRequests > 0
+}
+
+/**
+ * Whether the engine reported any phase split for this node.
+ *
+ * The presence counters answer it: a request that reported a prefill or a
+ * decode duration increments the matching counter, so a counter above zero
+ * means the engine measured a phase. The durations are consulted as well, so a
  * snapshot that carries a duration still counts even if its counters were
  * lost.
  *
@@ -69,10 +121,216 @@ export function formatDurationMs(value: number | null | undefined): string {
  * prefill phase at all.
  */
 export function hasPhaseMetrics(totals: InferenceMetricsTotals): boolean {
+    return hasPrefillMetrics(totals) || hasDecodeMetrics(totals)
+}
+
+/**
+ * The rate of one phase, in tokens per second.
+ *
+ * This is the ratio of the tokens and the duration the engine reported for
+ * one record — one model on one node, or one job. It is the same formula the
+ * broker uses for its own windowed rate (`tokens / (duration / 1000)`),
+ * applied to a single record, so nothing is summed across requests and no
+ * rate is averaged.
+ *
+ * `null` means there is no rate to show: the engine reported no token count,
+ * or it reported no duration for the phase. A reported duration of zero
+ * yields a zero rate, the same answer the broker gives, because a phase that
+ * took no time has no throughput — and never `Infinity` or `NaN`.
+ */
+export function phaseTokensPerSecond(
+    tokens: number | null | undefined,
+    durationMs: number | null | undefined
+): number | null {
+    if (tokens === null || tokens === undefined) return null
+    if (durationMs === null || durationMs === undefined) return null
+    if (durationMs <= 0) return 0
+    return tokens / (durationMs / 1000)
+}
+
+/** One rendered metric: its label, the text to show, and whether it is absent. */
+export interface InferenceMetricsRow {
+    label: string
+    value: string
+    /** The engine never reported this value, so the text says so. */
+    unavailable: boolean
+}
+
+/**
+ * The tokens a node or a model handled: the prefill and decode token counts
+ * the broker reported for that one record, added. The two counters describe
+ * the same traffic, so the sum is that traffic's token volume — it is not a
+ * total the broker keeps and the desktop reconstructs.
+ */
+function reportedTokens(totals: InferenceMetricsTotals): number {
+    return totals.prefillTokens + totals.decodeTokens
+}
+
+/**
+ * The rows of a node's prefill/decode section.
+ *
+ * Every value here is the broker's own: the rates are the windowed rates it
+ * computed, the token count is the lifetime total it kept. A row is marked
+ * unavailable when the engine never reported that measurement at all, which
+ * the presence counters answer — a phase the engine does not measure must
+ * not read as a rate of zero.
+ */
+export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): InferenceMetricsRow[] {
+    const { totals, rates } = metrics
+
+    const prefill = hasPrefillMetrics(totals)
+    const decode = hasDecodeMetrics(totals)
+    const ttft = hasTtftMetrics(totals)
+    const tokens = totals.tokenRequests > 0
+
+    return [
+        {
+            label: 'Prefill',
+            value: prefill ? formatTokensPerSecond(rates.prefillTokensPerSecond) : NOT_REPORTED,
+            unavailable: !prefill
+        },
+        {
+            label: 'Decode',
+            value: decode ? formatTokensPerSecond(rates.decodeTokensPerSecond) : NOT_REPORTED,
+            unavailable: !decode
+        },
+        {
+            label: 'TTFT',
+            value: ttft ? formatDurationMs(rates.meanTtftMs) : NOT_REPORTED,
+            unavailable: !ttft
+        },
+        {
+            label: 'Tokens served',
+            value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
+            unavailable: !tokens
+        }
+    ]
+}
+
+/** One model's rows in the per-model breakdown of a node. */
+export interface ModelMetricsRows {
+    model: string
+    rows: InferenceMetricsRow[]
+}
+
+/**
+ * The per-model breakdown of a node.
+ *
+ * The broker keeps a lifetime total per model but sends no rate for it: its
+ * rates are windowed over the whole node, across every model it served. The
+ * rate of one model is therefore the ratio of the tokens and the duration the
+ * broker reported for that model — one record, no sum across requests and no
+ * average across models.
+ */
+export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsRows[] {
+    return models.map(entry => {
+        const { totals } = entry
+
+        const prefillRate = phaseTokensPerSecond(totals.prefillTokens, totals.prefillMs)
+        const decodeRate = phaseTokensPerSecond(totals.decodeTokens, totals.decodeMs)
+        const prefill = hasPrefillMetrics(totals) && prefillRate !== null
+        const decode = hasDecodeMetrics(totals) && decodeRate !== null
+        const tokens = totals.tokenRequests > 0
+
+        return {
+            model: entry.model,
+            rows: [
+                {
+                    label: 'Prefill',
+                    value: prefill ? formatTokensPerSecond(prefillRate) : NOT_REPORTED,
+                    unavailable: !prefill
+                },
+                {
+                    label: 'Decode',
+                    value: decode ? formatTokensPerSecond(decodeRate) : NOT_REPORTED,
+                    unavailable: !decode
+                },
+                {
+                    label: 'Tokens served',
+                    value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
+                    unavailable: !tokens
+                }
+            ]
+        }
+    })
+}
+
+/**
+ * The measurement of one phase: the tokens the engine reported, the duration
+ * it reported, and the rate that follows from the two.
+ *
+ * The rate is shown only when the engine reported a duration, because a rate
+ * without a duration is not a rate. When the engine reported no duration at
+ * all (an engine that reports token counts but no phase split), the timing
+ * reads as "not reported" rather than as a zero — and the rate is left out
+ * rather than shown as "0 tok/s".
+ */
+function phaseMeasurement(
+    tokens: number | null | undefined,
+    durationMs: number | null | undefined
+): string {
+    const tokenPart = isReported(tokens) ? `${formatTokenCount(tokens)} tok` : NOT_REPORTED
+    const parts = [tokenPart, formatDurationMs(durationMs)]
+    const rate = phaseTokensPerSecond(tokens, durationMs)
+    if (rate !== null) {
+        parts.push(formatTokensPerSecond(rate))
+    }
+    return parts.join(' · ')
+}
+
+/** Whether a value was reported at all, as opposed to being absent. */
+function isReported(value: number | null | undefined): boolean {
+    return value !== null && value !== undefined
+}
+
+/**
+ * Whether the engine reported anything at all about this job.
+ *
+ * A job that is still running has no measurement: the numbers only exist
+ * once the engine has answered. A job whose engine reported nothing reads
+ * the same way, and neither shows a measurement row.
+ */
+export function hasWorkloadMeasurement(workload: Workload): boolean {
     return (
-        totals.prefillRequests > 0 ||
-        totals.decodeRequests > 0 ||
-        totals.prefillMs > 0 ||
-        totals.decodeMs > 0
+        isReported(workload.prefillTokens) ||
+        isReported(workload.decodeTokens) ||
+        isReported(workload.cachedTokens) ||
+        isReported(workload.prefillMs) ||
+        isReported(workload.decodeMs) ||
+        isReported(workload.ttftMs) ||
+        isReported(workload.totalMs)
     )
+}
+
+/**
+ * The rows of a job's measurement: the prefill and decode tokens, the phase
+ * durations and the rates that follow from them.
+ *
+ * Every number is the one the engine reported for this job. The rate is the
+ * ratio of that job's tokens and duration, the same formula the broker uses
+ * for its own rate, applied to one job.
+ */
+export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRow[] {
+    return [
+        {
+            label: 'Prefill',
+            value: phaseMeasurement(workload.prefillTokens, workload.prefillMs),
+            unavailable: !isReported(workload.prefillTokens) && !isReported(workload.prefillMs)
+        },
+        {
+            label: 'Decode',
+            value: phaseMeasurement(workload.decodeTokens, workload.decodeMs),
+            unavailable: !isReported(workload.decodeTokens) && !isReported(workload.decodeMs)
+        },
+        {
+            label: 'TTFT',
+            value: formatDurationMs(workload.ttftMs),
+            unavailable: !isReported(workload.ttftMs)
+        },
+        {
+            label: 'Total',
+            value: formatDurationMs(workload.totalMs),
+            unavailable: !isReported(workload.totalMs)
+        }
+    ]
 }

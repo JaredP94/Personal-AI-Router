@@ -59,8 +59,6 @@ interface MetricsStore {
     nodeInferenceMetrics: Map<string, NodeInferenceMetrics>
     generation: number
     initialize: () => void
-    /** Re-read the per-node inference metrics snapshot from the broker. */
-    refreshNodeMetrics: () => void
     clearAll: () => void
     cleanup: () => void
 }
@@ -125,10 +123,6 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
         // The snapshot is the broker's current state, not a history: drop it
         // and read it back rather than leaving the view empty until the next
         // interval tick.
-        readNodeMetrics()
-    },
-
-    refreshNodeMetrics: () => {
         readNodeMetrics()
     },
 

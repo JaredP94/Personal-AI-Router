@@ -3,12 +3,21 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+    buildInferenceMetricsRows,
+    buildModelMetricsRows,
+    buildWorkloadMetricsRows,
     formatDurationMs,
     formatTokenCount,
     formatTokensPerSecond,
-    hasPhaseMetrics
+    hasDecodeMetrics,
+    hasPhaseMetrics,
+    hasPrefillMetrics,
+    hasTtftMetrics,
+    hasWorkloadMeasurement,
+    phaseTokensPerSecond
 } from '@/ui/utils/inference-metrics'
 import type { InferenceMetricsTotals, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
+import type { Workload } from '@/shared/types/workloads'
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
@@ -287,5 +296,233 @@ describe('the metrics store holds the per-node inference metrics', () => {
         const before = getNodeMetrics.mock.calls.length
         await vi.advanceTimersByTimeAsync(60_000)
         expect(getNodeMetrics.mock.calls.length).toBe(before)
+    })
+})
+
+describe('the presence counters', () => {
+    it('tells a phase the engine never reported from one it did', () => {
+        expect(hasPrefillMetrics(silentTotals)).toBe(false)
+        expect(hasDecodeMetrics(silentTotals)).toBe(false)
+        expect(hasTtftMetrics(silentTotals)).toBe(false)
+    })
+
+    it('counts a reported zero-length phase as reported', () => {
+        expect(hasPrefillMetrics({ ...silentTotals, prefillRequests: 1 })).toBe(true)
+        expect(hasDecodeMetrics({ ...silentTotals, decodeRequests: 1 })).toBe(true)
+        expect(hasTtftMetrics({ ...silentTotals, ttftRequests: 1 })).toBe(true)
+    })
+
+    it('still counts a duration whose counter was lost', () => {
+        expect(hasPrefillMetrics({ ...silentTotals, prefillMs: 10 })).toBe(true)
+        expect(hasDecodeMetrics({ ...silentTotals, decodeMs: 10 })).toBe(true)
+    })
+})
+
+describe('the node inference metrics rows', () => {
+    it('marks an engine that reports no phase split as unavailable', () => {
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: {
+                requests: 3,
+                prefillTokens: 100,
+                decodeTokens: 20,
+                cachedTokens: 0,
+                prefillMs: 0,
+                decodeMs: 0,
+                ttftMs: 0,
+                ttftRequests: 0,
+                tokenRequests: 3,
+                prefillRequests: 0,
+                decodeRequests: 0
+            },
+            rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'Prefill')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Decode')?.unavailable).toBe(true)
+    })
+
+    it('shows a measured phase', () => {
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: {
+                requests: 3,
+                prefillTokens: 100,
+                decodeTokens: 20,
+                cachedTokens: 0,
+                prefillMs: 1000,
+                decodeMs: 2000,
+                ttftMs: 300,
+                ttftRequests: 3,
+                tokenRequests: 3,
+                prefillRequests: 3,
+                decodeRequests: 3
+            },
+            rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'Prefill')?.unavailable).toBe(false)
+        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('100 tok/s')
+        expect(rows.find(r => r.label === 'Decode')?.value).toBe('10 tok/s')
+        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('100 ms')
+    })
+
+    it('gates the mean TTFT on the requests that reported one', () => {
+        // The mean is zero when no request reported a TTFT, which is the same
+        // number an engine reports for a first token that took no time. Only
+        // the counter separates the two.
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: { ...reportedTotals, ttftRequests: 0 },
+            rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 0 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'TTFT')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('not reported')
+    })
+
+    it('reports the tokens a node served', () => {
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: reportedTotals,
+            rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'Tokens served')?.value).toBe('120')
+        expect(rows.find(r => r.label === 'Tokens served')?.unavailable).toBe(false)
+    })
+
+    it('reports no tokens for an engine that reported no token count', () => {
+        const rows = buildInferenceMetricsRows({
+            nodeId: 'n1',
+            totals: silentTotals,
+            rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
+            models: []
+        })
+        expect(rows.find(r => r.label === 'Tokens served')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'Tokens served')?.value).toBe('not reported')
+    })
+})
+
+describe('the per-model breakdown of a node', () => {
+    it('rates a model by the tokens and the duration the broker reported for it', () => {
+        const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: reportedTotals }])
+        expect(models).toHaveLength(1)
+        expect(models[0].model).toBe('llama-3.2-3b')
+        expect(models[0].rows.find(r => r.label === 'Prefill')?.value).toBe('100 tok/s')
+        expect(models[0].rows.find(r => r.label === 'Decode')?.value).toBe('10 tok/s')
+        expect(models[0].rows.find(r => r.label === 'Tokens served')?.value).toBe('120')
+    })
+
+    it('marks a model whose engine reported no phase as unavailable', () => {
+        const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: silentTotals }])
+        expect(models[0].rows.find(r => r.label === 'Prefill')?.unavailable).toBe(true)
+        expect(models[0].rows.find(r => r.label === 'Prefill')?.value).toBe('not reported')
+        expect(models[0].rows.find(r => r.label === 'Tokens served')?.unavailable).toBe(true)
+    })
+})
+
+describe('a phase rate', () => {
+    it('divides the tokens by the duration', () => {
+        expect(phaseTokensPerSecond(1200, 340)).toBeCloseTo(3529.41, 2)
+        expect(phaseTokensPerSecond(900, 2100)).toBeCloseTo(428.57, 2)
+    })
+
+    it('has no rate without a token count or a duration', () => {
+        expect(phaseTokensPerSecond(null, 340)).toBeNull()
+        expect(phaseTokensPerSecond(1200, null)).toBeNull()
+        expect(phaseTokensPerSecond(undefined, undefined)).toBeNull()
+    })
+
+    it('never divides by a zero duration', () => {
+        expect(phaseTokensPerSecond(1200, 0)).toBe(0)
+    })
+})
+
+describe('the per-job measurement rows', () => {
+    const measuredJob: Workload = {
+        id: 'w1',
+        model: 'llama-3.2-3b',
+        engine: 'omlx',
+        state: 'completed',
+        originatedFrom: 'node-a',
+        createdAt: 1,
+        startedAt: 2,
+        completedAt: 3,
+        error: null,
+        requesterId: null,
+        prefillTokens: 1200,
+        decodeTokens: 900,
+        cachedTokens: 0,
+        prefillMs: 340,
+        decodeMs: 2100,
+        ttftMs: 80,
+        totalMs: 2440
+    }
+
+    it('shows the tokens, the phase durations and the rates', () => {
+        const rows = buildWorkloadMetricsRows(measuredJob)
+        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('1,200 tok · 340 ms · 3529 tok/s')
+        expect(rows.find(r => r.label === 'Decode')?.value).toBe('900 tok · 2.1 s · 429 tok/s')
+        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('80 ms')
+        expect(rows.find(r => r.label === 'Total')?.value).toBe('2.4 s')
+        expect(rows.every(r => !r.unavailable)).toBe(true)
+    })
+
+    it('reports the timing an engine did not report as not reported', () => {
+        // An engine that reports token counts but no phase split (LM Studio)
+        // leaves the duration out. It must not read as a zero duration, and it
+        // must not carry a rate that no duration supports.
+        const rows = buildWorkloadMetricsRows({
+            ...measuredJob,
+            prefillMs: null,
+            decodeMs: null,
+            ttftMs: null
+        })
+        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('1,200 tok · not reported')
+        expect(rows.find(r => r.label === 'Decode')?.value).toBe('900 tok · not reported')
+        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'TTFT')?.unavailable).toBe(true)
+    })
+
+    it('reports a measured zero as a zero', () => {
+        const rows = buildWorkloadMetricsRows({
+            ...measuredJob,
+            decodeTokens: 0,
+            decodeMs: 0
+        })
+        expect(rows.find(r => r.label === 'Decode')?.value).toBe('0 tok · 0 ms · 0 tok/s')
+        expect(rows.find(r => r.label === 'Decode')?.unavailable).toBe(false)
+    })
+
+    it('has no measurement for a job that reported nothing', () => {
+        const running: Workload = {
+            id: 'w3',
+            model: 'llama-3.2-3b',
+            engine: 'omlx',
+            state: 'running',
+            originatedFrom: 'node-a',
+            createdAt: 1,
+            startedAt: 2,
+            completedAt: null,
+            error: null,
+            requesterId: null
+        }
+        const silent: Workload = {
+            id: 'w2',
+            model: 'llama-3.2-3b',
+            engine: 'ollama',
+            state: 'failed',
+            originatedFrom: 'node-a',
+            createdAt: 1,
+            startedAt: 2,
+            completedAt: 3,
+            error: 'the engine refused the request',
+            requesterId: null
+        }
+        expect(hasWorkloadMeasurement(running)).toBe(false)
+        expect(hasWorkloadMeasurement(silent)).toBe(false)
+        expect(hasWorkloadMeasurement(measuredJob)).toBe(true)
     })
 })

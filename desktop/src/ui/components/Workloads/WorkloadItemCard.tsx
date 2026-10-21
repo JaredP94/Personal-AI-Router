@@ -7,6 +7,7 @@ import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
+import { buildWorkloadMetricsRows, hasWorkloadMeasurement } from '@/ui/utils/inference-metrics'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
 import EngineIcon from '@/ui/components/EngineIcon'
 
@@ -56,6 +57,16 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
     })
     const ranOnLabel = workload.state === 'running' ? 'Running on' : 'Ran on'
     const barColor = useMemo(() => getWorkloadColorBar(workload.state), [workload.state])
+
+    // The engine's own measurement of this job. It exists only once the job
+    // is terminal — a running job has no numbers yet, so it shows no
+    // measurement row at all rather than a row of zeros. A phase the engine
+    // never reported reads as "not reported" inside the row.
+    const measurementRows = useMemo(() => {
+        if (workload.state !== 'completed' && workload.state !== 'failed') return []
+        if (!hasWorkloadMeasurement(workload)) return []
+        return buildWorkloadMetricsRows(workload)
+    }, [workload])
 
     const subtext = useMemo(() => {
         const state = workload.state
@@ -156,6 +167,23 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                 <Flex align="center" gap="2">
                     {subtext}
                 </Flex>
+                {measurementRows.length > 0 && (
+                    <Stack gap="0" className="mt-1 min-w-0">
+                        {measurementRows.map(row => (
+                            <Flex key={row.label} align="center" gap="2" className="min-w-0">
+                                <Text kind="body/regular/sm" className="text-subtle-color">
+                                    {row.label}
+                                </Text>
+                                <Text
+                                    kind="body/semibold/sm"
+                                    className={row.unavailable ? 'text-subtle-color' : undefined}
+                                >
+                                    {row.value}
+                                </Text>
+                            </Flex>
+                        ))}
+                    </Stack>
+                )}
                 {workload.error && workload.state === 'failed' && (
                     <Text
                         kind="body/regular/sm"
