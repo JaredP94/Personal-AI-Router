@@ -123,8 +123,7 @@ PAIR does not need.
   "supported": true,
   "totals": {
     "requests": 3270, "promptTokens": 212978711, "completionTokens": 2147906,
-    "cachedTokens": 157045860, "prefillSeconds": 71573.37,
-    "generationSeconds": 66173.68, "cacheEfficiency": 73.7
+    "cachedTokens": 157045860, "cacheEfficiency": 73.7
   },
   "rates": { "prefillTokensPerSecond": 1553.2, "generationTokensPerSecond": 32.5 },
   "models": [{ "model": "mlx-community/Llama-3.2-3B-Instruct-4bit", "loaded": true }]
@@ -331,3 +330,11 @@ number in it is measured by the engine.
   method, rate-limited at the source, rather than a new cluster channel.
 - **The engine-native numbers are never merged with PAIR's own.** They are a
   separate, labelled view, because they count traffic PAIR did not route.
+- **The engine-native view carries no phase durations.** oMLX's stats endpoint
+  has no duration fields — its speeds (`avg_prefill_tps`, `avg_generation_tps`)
+  are what it reports, and those are what the view carries. The durations live
+  in oMLX's *usage* endpoint, whose totals are scoped to a date range
+  ("today" by default) rather than to the engine's life; mixing a day-scoped
+  number into a session-scoped view would be a trap. The durations arrive with
+  the trends work (slice C), where the hourly buckets are the natural source
+  and the scope is explicit.
