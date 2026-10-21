@@ -12,6 +12,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.3] - 2026-10-21
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
+Linux desktop and Intel Mac packages are not published. Privileged-helper
+registration and helper-based firewall setup remain unavailable in unsigned builds;
+Settings → Service shows manual firewall guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.3)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.7.0-rc.3` ships service product `2.3.0`. Relay
+protocol stays v2. The new broker methods and the new workload fields are
+additive, so a mixed cluster keeps working — but a node running an older
+workload-manager drops the measurement from remote jobs, so its per-node totals
+are complete only once every member is upgraded.
+
+### Added
+- **Prefill and decode metrics per job and per node**: a job card now shows how
+  many tokens were prefilled versus decoded, how long each phase took, the time
+  to first token and the decode rate. A node card shows the same figures for
+  everything that node has served, with a per-model breakdown behind a
+  disclosure, and its current rates over a rolling minute.
+- The numbers are the engine's own: PAIR reads the prefill and decode
+  durations, the time to first token and the cached-token count that oMLX and
+  Ollama report. Anything an engine does not report is shown as "not reported"
+  rather than as a zero — LM Studio reports no phase split, so its phases are
+  always absent. Per-node totals cover the period since the broker started.
+- New broker methods `metrics:get-node-metrics`, `metrics:subscribe` and
+  `metrics:unsubscribe`, plus a coalesced `metrics:node-metrics` push carrying
+  the full per-node snapshot.
+- The oMLX proxy now asks oMLX for the usage block on streaming requests, so
+  oMLX's own prefill and decode numbers reach the job card instead of being
+  missing.
+
 ## [0.7.0-rc.2] - 2026-10-20
 
 Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
