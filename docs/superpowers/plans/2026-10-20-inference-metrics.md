@@ -706,7 +706,14 @@ git commit -s -m "feat(broker): expose per-node inference metrics"
       prefillMs: number
       decodeMs: number
       ttftMs: number
+      /** Requests that reported a time-to-first-token. */
       ttftRequests: number
+      /** Requests that reported at least one token count. */
+      tokenRequests: number
+      /** Requests that reported a prefill duration. */
+      prefillRequests: number
+      /** Requests that reported a decode duration. */
+      decodeRequests: number
   }
   export interface InferenceMetricsRates {
       prefillTokensPerSecond: number
@@ -821,7 +828,8 @@ describe('node inference metrics rows', () => {
         const rows = buildInferenceMetricsRows({
             nodeId: 'n1',
             totals: { requests: 3, prefillTokens: 100, decodeTokens: 20, cachedTokens: 0,
-                prefillMs: 0, decodeMs: 0, ttftMs: 0, ttftRequests: 0 },
+                prefillMs: 0, decodeMs: 0, ttftMs: 0, ttftRequests: 0,
+                tokenRequests: 3, prefillRequests: 0, decodeRequests: 0 },
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
@@ -832,7 +840,8 @@ describe('node inference metrics rows', () => {
         const rows = buildInferenceMetricsRows({
             nodeId: 'n1',
             totals: { requests: 3, prefillTokens: 100, decodeTokens: 20, cachedTokens: 0,
-                prefillMs: 1000, decodeMs: 2000, ttftMs: 300, ttftRequests: 3 },
+                prefillMs: 1000, decodeMs: 2000, ttftMs: 300, ttftRequests: 3,
+                tokenRequests: 3, prefillRequests: 3, decodeRequests: 3 },
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
