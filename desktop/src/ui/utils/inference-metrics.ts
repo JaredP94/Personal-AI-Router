@@ -4,10 +4,12 @@
 /**
  * Formatting for the per-job and per-node inference metrics.
  *
- * The desktop renders what the broker reported. The broker's own windowed
- * node rates arrive in the snapshot and are rendered exactly as they came;
- * the two quantities the desktop computes itself are stated where they are
- * computed, and neither of them is an aggregate over requests:
+ * The rule this file follows: Go owns all counting, all filtering, all
+ * aggregation across records, and every windowed rate. The desktop never
+ * counts, never filters and never aggregates across records — it renders
+ * what the broker sent.
+ *
+ * Two figures are derived here, and both stay inside one record:
  *
  * - a phase's rate is the ratio of the tokens and the duration the engine
  *   reported for one model or one job, which is the same formula the broker
@@ -15,8 +17,10 @@
  * - a token total adds the prefill and decode token counts of the same
  *   record.
  *
- * Nothing is summed across requests, averaged across jobs or recomputed
- * across nodes.
+ * Every such ratio is labelled with the window it covers. The node's rates
+ * are the broker's rolling-window rates, a model's ratios are its lifetime
+ * totals, and a job's ratios are that one request — so a windowed rate and
+ * a lifetime ratio never appear under the same label.
  *
  * Every formatter tells an absent measurement from a measured zero. An engine
  * that reports no phase split (LM Studio) leaves the measurement out
@@ -34,6 +38,23 @@ import type { Workload } from '@/shared/types/workloads'
 
 /** The text used for a value the engine did not report. */
 const NOT_REPORTED = 'not reported'
+
+/**
+ * The window the broker's node rates cover, as it appears in a label.
+ *
+ * The broker computes a node's rates over a 60-second rolling window (its
+ * `nodeMetricsWindow` constant). The label says so, because the same
+ * section also shows lifetime figures, and the two must not read as the
+ * same measurement: a model that has gone idle keeps a high lifetime ratio
+ * while the node's windowed rate falls to zero.
+ */
+const NODE_WINDOW_LABEL = 'last 60 s'
+
+/** The window a lifetime ratio covers, as it appears in a label. */
+const LIFETIME_LABEL = 'lifetime'
+
+/** The window a single request's ratio covers, as it appears in a label. */
+const REQUEST_LABEL = 'this request'
 
 /**
  * Format a token count with thousands separators.
@@ -131,7 +152,7 @@ export function hasPhaseMetrics(totals: InferenceMetricsTotals): boolean {
  * one record — one model on one node, or one job. It is the same formula the
  * broker uses for its own windowed rate (`tokens / (duration / 1000)`),
  * applied to a single record, so nothing is summed across requests and no
- * rate is averaged.
+ * rate is averaged. The caller labels the ratio with the window it covers.
  *
  * `null` means there is no rate to show: the engine reported no token count,
  * or it reported no duration for the phase. A reported duration of zero
@@ -161,6 +182,9 @@ export interface InferenceMetricsRow {
  * the broker reported for that one record, added. The two counters describe
  * the same traffic, so the sum is that traffic's token volume — it is not a
  * total the broker keeps and the desktop reconstructs.
+ *
+ * The cached count is not part of the sum: cached tokens are a subset of
+ * the prompt tokens, so adding them would count the same tokens twice.
  */
 function reportedTokens(totals: InferenceMetricsTotals): number {
     return totals.prefillTokens + totals.decodeTokens
@@ -174,6 +198,10 @@ function reportedTokens(totals: InferenceMetricsTotals): number {
  * unavailable when the engine never reported that measurement at all, which
  * the presence counters answer — a phase the engine does not measure must
  * not read as a rate of zero.
+ *
+ * The rates are labelled with the broker's window, and the token count names
+ * the two phases it adds, so a windowed rate and a lifetime count never read
+ * as the same figure.
  */
 export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): InferenceMetricsRow[] {
     const { totals, rates } = metrics
@@ -185,22 +213,22 @@ export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): Infere
 
     return [
         {
-            label: 'Prefill',
+            label: `Prefill (${NODE_WINDOW_LABEL})`,
             value: prefill ? formatTokensPerSecond(rates.prefillTokensPerSecond) : NOT_REPORTED,
             unavailable: !prefill
         },
         {
-            label: 'Decode',
+            label: `Decode (${NODE_WINDOW_LABEL})`,
             value: decode ? formatTokensPerSecond(rates.decodeTokensPerSecond) : NOT_REPORTED,
             unavailable: !decode
         },
         {
-            label: 'TTFT',
+            label: `TTFT (${NODE_WINDOW_LABEL})`,
             value: ttft ? formatDurationMs(rates.meanTtftMs) : NOT_REPORTED,
             unavailable: !ttft
         },
         {
-            label: 'Tokens served',
+            label: 'Prefill + decode tokens',
             value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
             unavailable: !tokens
         }
@@ -221,6 +249,11 @@ export interface ModelMetricsRows {
  * rate of one model is therefore the ratio of the tokens and the duration the
  * broker reported for that model — one record, no sum across requests and no
  * average across models.
+ *
+ * The rows are labelled with the lifetime they cover, because the node's own
+ * rows above them are labelled with the broker's window: a model that has
+ * gone idle keeps a high lifetime ratio while the node's windowed rate falls
+ * to zero, and the two must not read as the same measurement.
  */
 export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsRows[] {
     return models.map(entry => {
@@ -236,17 +269,17 @@ export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsR
             model: entry.model,
             rows: [
                 {
-                    label: 'Prefill',
+                    label: `Prefill (${LIFETIME_LABEL})`,
                     value: prefill ? formatTokensPerSecond(prefillRate) : NOT_REPORTED,
                     unavailable: !prefill
                 },
                 {
-                    label: 'Decode',
+                    label: `Decode (${LIFETIME_LABEL})`,
                     value: decode ? formatTokensPerSecond(decodeRate) : NOT_REPORTED,
                     unavailable: !decode
                 },
                 {
-                    label: 'Tokens served',
+                    label: 'Prefill + decode tokens',
                     value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
                     unavailable: !tokens
                 }
@@ -308,27 +341,28 @@ export function hasWorkloadMeasurement(workload: Workload): boolean {
  *
  * Every number is the one the engine reported for this job. The rate is the
  * ratio of that job's tokens and duration, the same formula the broker uses
- * for its own rate, applied to one job.
+ * for its own rate, applied to one job — so the rows are labelled with the
+ * request they cover.
  */
 export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRow[] {
     return [
         {
-            label: 'Prefill',
+            label: `Prefill (${REQUEST_LABEL})`,
             value: phaseMeasurement(workload.prefillTokens, workload.prefillMs),
             unavailable: !isReported(workload.prefillTokens) && !isReported(workload.prefillMs)
         },
         {
-            label: 'Decode',
+            label: `Decode (${REQUEST_LABEL})`,
             value: phaseMeasurement(workload.decodeTokens, workload.decodeMs),
             unavailable: !isReported(workload.decodeTokens) && !isReported(workload.decodeMs)
         },
         {
-            label: 'TTFT',
+            label: `TTFT (${REQUEST_LABEL})`,
             value: formatDurationMs(workload.ttftMs),
             unavailable: !isReported(workload.ttftMs)
         },
         {
-            label: 'Total',
+            label: `Total (${REQUEST_LABEL})`,
             value: formatDurationMs(workload.totalMs),
             unavailable: !isReported(workload.totalMs)
         }

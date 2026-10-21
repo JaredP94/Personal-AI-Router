@@ -239,6 +239,22 @@ func TestNodeMetricsRPCSurface(t *testing.T) {
 	}
 }
 
+// TestNodeMetricsToleratesAMissingStore covers the hand-built broker: it has
+// no accumulator installed, so the snapshot and the push must not panic — the
+// write path already returns early in that case, and the read path now
+// answers with an empty snapshot.
+func TestNodeMetricsToleratesAMissingStore(t *testing.T) {
+	b := &Broker{}
+	if snap := b.getNodeMetrics(); len(snap.Nodes) != 0 {
+		t.Fatalf("a broker without a store has no metrics: %+v", snap)
+	}
+
+	// A subscribed broker with a pending push must not panic either.
+	b.metricsSubscribed = true
+	b.metricsDirty = true
+	b.flushNodeMetrics()
+}
+
 // TestNodeMetricsPushIsGatedOnSubscription covers the push gate: the snapshot
 // is only pushed to a subscribed client.
 func TestNodeMetricsPushIsGatedOnSubscription(t *testing.T) {

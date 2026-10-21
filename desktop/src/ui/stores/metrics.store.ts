@@ -53,8 +53,10 @@ interface MetricsStore {
     nodeMetrics: Map<string, NodeMetricsHistory>
     /**
      * The latest per-node inference metrics, keyed by node id. The values are
-     * the broker's own: the desktop never sums, averages or derives a rate
-     * from them.
+     * the broker's own: the desktop never counts, filters or aggregates
+     * across them, and never owns a windowed rate. The only figures it
+     * derives are per-record ratios of two reported values, and every one of
+     * them is labelled with the window it covers.
      */
     nodeInferenceMetrics: Map<string, NodeInferenceMetrics>
     generation: number

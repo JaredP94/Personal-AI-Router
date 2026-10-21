@@ -116,8 +116,8 @@ describe('the node card prefill/decode section', () => {
             nodeInferenceMetrics: new Map([['node-a', nodeMetrics(reportedTotals)]])
         })
         await render(createElement(NodeCardDetails, { node }))
-        expect(text()).toContain('Prefill 100 tok/s')
-        expect(text()).toContain('Tokens served 120')
+        expect(text()).toContain('Prefill (last 60 s) 100 tok/s')
+        expect(text()).toContain('Prefill + decode tokens 120')
     })
 
     it('renders the rates, the mean TTFT and the tokens the node served', async () => {
@@ -125,10 +125,28 @@ describe('the node card prefill/decode section', () => {
             nodeInferenceMetrics: new Map([['node-a', nodeMetrics(reportedTotals)]])
         })
         await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
-        expect(text()).toContain('Prefill 100 tok/s')
-        expect(text()).toContain('Decode 10 tok/s')
-        expect(text()).toContain('TTFT 100 ms')
-        expect(text()).toContain('Tokens served 120')
+        expect(text()).toContain('Prefill (last 60 s) 100 tok/s')
+        expect(text()).toContain('Decode (last 60 s) 10 tok/s')
+        expect(text()).toContain('TTFT (last 60 s) 100 ms')
+        expect(text()).toContain('Prefill + decode tokens 120')
+    })
+
+    it('labels the node rates with the window they cover', async () => {
+        // The node's rates are the broker's 60-second window; the per-model
+        // ratios are lifetime figures. The two must never answer to the same
+        // label, or a model that has gone idle reads as contradictory.
+        useMetricsStore.setState({
+            nodeInferenceMetrics: new Map([['node-a', nodeMetrics(reportedTotals)]])
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        expect(text()).toContain('Prefill (last 60 s)')
+        expect(text()).not.toContain('Prefill (lifetime)')
+
+        const toggle = container.querySelector('button')
+        if (toggle === null) throw new Error('expected a per-model toggle')
+        await click(toggle)
+        expect(text()).toContain('Prefill (lifetime)')
+        expect(text()).toContain('Decode (lifetime)')
     })
 
     it('renders a phase the engine never reported as not reported', async () => {
@@ -136,11 +154,11 @@ describe('the node card prefill/decode section', () => {
             nodeInferenceMetrics: new Map([['node-a', nodeMetrics(tokenOnlyTotals)]])
         })
         await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
-        expect(text()).toContain('Prefill not reported')
-        expect(text()).toContain('Decode not reported')
-        expect(text()).toContain('TTFT not reported')
+        expect(text()).toContain('Prefill (last 60 s) not reported')
+        expect(text()).toContain('Decode (last 60 s) not reported')
+        expect(text()).toContain('TTFT (last 60 s) not reported')
         // The token counts were reported, so they are shown.
-        expect(text()).toContain('Tokens served 120')
+        expect(text()).toContain('Prefill + decode tokens 120')
         expect(text()).not.toContain('0 tok/s')
         expect(text()).not.toContain('0 ms')
     })
@@ -153,10 +171,10 @@ describe('the node card prefill/decode section', () => {
         expect(text()).not.toContain('llama-3.2-3b')
 
         const toggle = container.querySelector('button')
-        expect(toggle).not.toBeNull()
-        await click(toggle as Element)
+        if (toggle === null) throw new Error('expected a per-model toggle')
+        await click(toggle)
         expect(text()).toContain('llama-3.2-3b')
-        expect(text()).toContain('Prefill 100 tok/s')
+        expect(text()).toContain('Prefill (lifetime) 100 tok/s')
     })
 
     it('renders nothing for a node that never served anything', async () => {
@@ -188,10 +206,10 @@ describe('the job card measurement', () => {
 
     it('renders the tokens, the phase durations and the rates of a finished job', async () => {
         await render(createElement(WorkloadItemCard, { workload: measuredJob }))
-        expect(text()).toContain('Prefill 1,200 tok · 340 ms · 3529 tok/s')
-        expect(text()).toContain('Decode 900 tok · 2.1 s · 429 tok/s')
-        expect(text()).toContain('TTFT 80 ms')
-        expect(text()).toContain('Total 2.4 s')
+        expect(text()).toContain('Prefill (this request) 1,200 tok · 340 ms · 3529 tok/s')
+        expect(text()).toContain('Decode (this request) 900 tok · 2.1 s · 429 tok/s')
+        expect(text()).toContain('TTFT (this request) 80 ms')
+        expect(text()).toContain('Total (this request) 2.4 s')
     })
 
     it('renders the timing an engine did not report as not reported', async () => {
@@ -200,9 +218,9 @@ describe('the job card measurement', () => {
                 workload: { ...measuredJob, prefillMs: null, decodeMs: null, ttftMs: null }
             })
         )
-        expect(text()).toContain('Prefill 1,200 tok · not reported')
-        expect(text()).toContain('Decode 900 tok · not reported')
-        expect(text()).toContain('TTFT not reported')
+        expect(text()).toContain('Prefill (this request) 1,200 tok · not reported')
+        expect(text()).toContain('Decode (this request) 900 tok · not reported')
+        expect(text()).toContain('TTFT (this request) not reported')
         expect(text()).not.toContain('0 ms')
     })
 

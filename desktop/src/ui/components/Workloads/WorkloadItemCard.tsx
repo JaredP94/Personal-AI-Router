@@ -61,7 +61,8 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
     // The engine's own measurement of this job. It exists only once the job
     // is terminal — a running job has no numbers yet, so it shows no
     // measurement row at all rather than a row of zeros. A phase the engine
-    // never reported reads as "not reported" inside the row.
+    // never reported reads as "not reported" inside the row, and every row
+    // is labelled with the request it covers.
     const measurementRows = useMemo(() => {
         if (workload.state !== 'completed' && workload.state !== 'failed') return []
         if (!hasWorkloadMeasurement(workload)) return []

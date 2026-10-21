@@ -68,15 +68,17 @@ type Totals struct {
 	// reported no tokens at all must not count towards it.
 	TokenRequests int `json:"tokenRequests"`
 	// PrefillRequests counts the requests that reported a prefill duration.
-	// It is the denominator of a prefill rate and of a mean prefill
-	// duration, and it separates "the engine reported no prefill phase" from
-	// "the engine reported a zero-length prefill", which a rate of zero
-	// cannot express on its own.
+	// It separates "the engine reported no prefill phase" from "the engine
+	// reported a zero-length prefill", which a rate of zero cannot express
+	// on its own. It is not the denominator of the prefill rate — that rate
+	// divides the summed tokens by the summed duration — but it is the
+	// denominator of a mean prefill duration.
 	PrefillRequests int `json:"prefillRequests"`
 	// DecodeRequests counts the requests that reported a decode duration.
-	// It is the denominator of a decode rate and of a mean decode duration,
-	// and it separates "the engine reported no decode phase" from "the
-	// engine reported a zero-length decode".
+	// It separates "the engine reported no decode phase" from "the engine
+	// reported a zero-length decode". It is not the denominator of the
+	// decode rate — that rate divides the summed tokens by the summed
+	// duration — but it is the denominator of a mean decode duration.
 	DecodeRequests int `json:"decodeRequests"`
 }
 

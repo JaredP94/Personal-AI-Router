@@ -80,7 +80,9 @@ type Workload struct {
 	// Measurement carries the engine's own prefill/decode numbers for this
 	// request. It is embedded anonymously so its fields appear inline in the
 	// workload JSON, and it stays empty for a workload that never reached an
-	// engine or that came from a peer running an older workload-manager.
+	// engine, that was cancelled before the engine reported any numbers (the
+	// proxy emits that terminal event before it attaches them), or that came
+	// from a peer running an older workload-manager.
 	// The measurement is optional and never affects acceptance.
 	inferencemetrics.Measurement
 }

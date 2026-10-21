@@ -20,6 +20,12 @@ import {
  * rate of zero — the presence counters in the snapshot's totals say which
  * measurements the engine made at all.
  *
+ * The window is part of every label here: the node's rates are the broker's
+ * 60-second window, while the per-model breakdown below them is lifetime
+ * per model. A model that has gone idle keeps a high lifetime ratio while
+ * the node's windowed rate falls to zero, and the two must not read as the
+ * same measurement.
+ *
  * The per-model breakdown sits behind a disclosure that is collapsed by
  * default: the numbers are free to compute, but "this node is slow" is
  * usually "this node is slow for this model", and a node that served several
@@ -58,9 +64,7 @@ function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
                         onClick={() => setShowModels(open => !open)}
                         aria-expanded={showModels}
                         aria-label={
-                            showModels
-                                ? 'Hide the per-model breakdown'
-                                : 'Show the per-model breakdown'
+                            showModels ? 'Hide per-model metrics' : 'Show per-model metrics'
                         }
                     >
                         {showModels ? 'Hide per-model metrics' : 'Show per-model metrics'}

@@ -845,11 +845,11 @@ describe('node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill')?.unavailable).toBe(false)
+        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.unavailable).toBe(false)
     })
 })
 ```
-Add `buildInferenceMetricsRows` to `ui/utils/inference-metrics.ts` returning `{ label: string; value: string; unavailable: boolean }[]` for the rows `Prefill`, `Decode`, `TTFT`, `Tokens served`.
+Add `buildInferenceMetricsRows` to `ui/utils/inference-metrics.ts` returning `{ label: string; value: string; unavailable: boolean }[]` for the rows `Prefill (last 60 s)`, `Decode (last 60 s)`, `TTFT (last 60 s)`, `Prefill + decode tokens`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 

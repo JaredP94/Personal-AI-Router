@@ -463,7 +463,10 @@ returns the same snapshot for hydration on connect.
   ratio is **labelled with the window it covers**, so a 60-second windowed
   rate and a lifetime ratio are never shown under the same label.
 - **Node card** (`desktop/src/ui/components/NodeList/NodeCardDetails.tsx`):
-  a prefill/decode section — prefill tok/s, decode tok/s, TTFT, tokens served.
+  a prefill/decode section — prefill tok/s, decode tok/s, TTFT, and the
+  prefill + decode token count. Every figure is labelled with the window it
+  covers: the node's rates with the broker's 60-second window, the per-model
+  breakdown with the lifetime, the job card with the request.
   Absent phases are shown as "not reported by this engine" rather than as 0.
   A per-node disclosure lists the per-model breakdown; it is collapsed by
   default.

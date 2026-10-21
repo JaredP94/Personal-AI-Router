@@ -207,8 +207,12 @@ type Workload struct {
 
 	// Measurement carries the engine's own prefill/decode numbers for this
 	// request. It is embedded anonymously so its fields appear inline in
-	// the workload JSON, and it stays empty for a workload that never
-	// reached an engine (a rejected or cancelled request).
+	// the workload JSON. It stays empty for a workload that never reached an
+	// engine (a rejected request), and for a request the disconnect watcher
+	// terminated: that path emits the terminal event before the engine's
+	// numbers are read, so there is nothing to attach yet. A request that
+	// was cancelled but whose main path won the race, and a request that
+	// failed after the engine answered, both carry the measurement.
 	inferencemetrics.Measurement
 }
 

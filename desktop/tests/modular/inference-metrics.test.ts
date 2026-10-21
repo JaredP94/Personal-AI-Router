@@ -338,9 +338,9 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill')?.unavailable).toBe(true)
-        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'Decode')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Decode (last 60 s)')?.unavailable).toBe(true)
     })
 
     it('shows a measured phase', () => {
@@ -362,10 +362,10 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill')?.unavailable).toBe(false)
-        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('100 tok/s')
-        expect(rows.find(r => r.label === 'Decode')?.value).toBe('10 tok/s')
-        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('100 ms')
+        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.unavailable).toBe(false)
+        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.value).toBe('100 tok/s')
+        expect(rows.find(r => r.label === 'Decode (last 60 s)')?.value).toBe('10 tok/s')
+        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('100 ms')
     })
 
     it('gates the mean TTFT on the requests that reported one', () => {
@@ -378,8 +378,8 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'TTFT')?.unavailable).toBe(true)
-        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('not reported')
     })
 
     it('reports the tokens a node served', () => {
@@ -389,8 +389,8 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Tokens served')?.value).toBe('120')
-        expect(rows.find(r => r.label === 'Tokens served')?.unavailable).toBe(false)
+        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.value).toBe('120')
+        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.unavailable).toBe(false)
     })
 
     it('reports no tokens for an engine that reported no token count', () => {
@@ -400,8 +400,8 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Tokens served')?.unavailable).toBe(true)
-        expect(rows.find(r => r.label === 'Tokens served')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'Prefill + decode tokens')?.value).toBe('not reported')
     })
 })
 
@@ -410,16 +410,20 @@ describe('the per-model breakdown of a node', () => {
         const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: reportedTotals }])
         expect(models).toHaveLength(1)
         expect(models[0].model).toBe('llama-3.2-3b')
-        expect(models[0].rows.find(r => r.label === 'Prefill')?.value).toBe('100 tok/s')
-        expect(models[0].rows.find(r => r.label === 'Decode')?.value).toBe('10 tok/s')
-        expect(models[0].rows.find(r => r.label === 'Tokens served')?.value).toBe('120')
+        expect(models[0].rows.find(r => r.label === 'Prefill (lifetime)')?.value).toBe('100 tok/s')
+        expect(models[0].rows.find(r => r.label === 'Decode (lifetime)')?.value).toBe('10 tok/s')
+        expect(models[0].rows.find(r => r.label === 'Prefill + decode tokens')?.value).toBe('120')
     })
 
     it('marks a model whose engine reported no phase as unavailable', () => {
         const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: silentTotals }])
-        expect(models[0].rows.find(r => r.label === 'Prefill')?.unavailable).toBe(true)
-        expect(models[0].rows.find(r => r.label === 'Prefill')?.value).toBe('not reported')
-        expect(models[0].rows.find(r => r.label === 'Tokens served')?.unavailable).toBe(true)
+        expect(models[0].rows.find(r => r.label === 'Prefill (lifetime)')?.unavailable).toBe(true)
+        expect(models[0].rows.find(r => r.label === 'Prefill (lifetime)')?.value).toBe(
+            'not reported'
+        )
+        expect(models[0].rows.find(r => r.label === 'Prefill + decode tokens')?.unavailable).toBe(
+            true
+        )
     })
 })
 
@@ -463,10 +467,14 @@ describe('the per-job measurement rows', () => {
 
     it('shows the tokens, the phase durations and the rates', () => {
         const rows = buildWorkloadMetricsRows(measuredJob)
-        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('1,200 tok · 340 ms · 3529 tok/s')
-        expect(rows.find(r => r.label === 'Decode')?.value).toBe('900 tok · 2.1 s · 429 tok/s')
-        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('80 ms')
-        expect(rows.find(r => r.label === 'Total')?.value).toBe('2.4 s')
+        expect(rows.find(r => r.label === 'Prefill (this request)')?.value).toBe(
+            '1,200 tok · 340 ms · 3529 tok/s'
+        )
+        expect(rows.find(r => r.label === 'Decode (this request)')?.value).toBe(
+            '900 tok · 2.1 s · 429 tok/s'
+        )
+        expect(rows.find(r => r.label === 'TTFT (this request)')?.value).toBe('80 ms')
+        expect(rows.find(r => r.label === 'Total (this request)')?.value).toBe('2.4 s')
         expect(rows.every(r => !r.unavailable)).toBe(true)
     })
 
@@ -480,10 +488,14 @@ describe('the per-job measurement rows', () => {
             decodeMs: null,
             ttftMs: null
         })
-        expect(rows.find(r => r.label === 'Prefill')?.value).toBe('1,200 tok · not reported')
-        expect(rows.find(r => r.label === 'Decode')?.value).toBe('900 tok · not reported')
-        expect(rows.find(r => r.label === 'TTFT')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'TTFT')?.unavailable).toBe(true)
+        expect(rows.find(r => r.label === 'Prefill (this request)')?.value).toBe(
+            '1,200 tok · not reported'
+        )
+        expect(rows.find(r => r.label === 'Decode (this request)')?.value).toBe(
+            '900 tok · not reported'
+        )
+        expect(rows.find(r => r.label === 'TTFT (this request)')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'TTFT (this request)')?.unavailable).toBe(true)
     })
 
     it('reports a measured zero as a zero', () => {
@@ -492,8 +504,10 @@ describe('the per-job measurement rows', () => {
             decodeTokens: 0,
             decodeMs: 0
         })
-        expect(rows.find(r => r.label === 'Decode')?.value).toBe('0 tok · 0 ms · 0 tok/s')
-        expect(rows.find(r => r.label === 'Decode')?.unavailable).toBe(false)
+        expect(rows.find(r => r.label === 'Decode (this request)')?.value).toBe(
+            '0 tok · 0 ms · 0 tok/s'
+        )
+        expect(rows.find(r => r.label === 'Decode (this request)')?.unavailable).toBe(false)
     })
 
     it('has no measurement for a job that reported nothing', () => {
