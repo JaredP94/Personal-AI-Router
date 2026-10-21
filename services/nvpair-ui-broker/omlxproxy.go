@@ -110,8 +110,7 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 			slog.Warn("oMLX proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
 		}
 	}
-	if proxyWorkloadMethods[method] {
-		b.routeProxyWorkload(method, params)
+	if b.routeProxyWorkloadMethod(method, params) {
 		return
 	}
 	if method == noderec.NotifyNodeActivity {

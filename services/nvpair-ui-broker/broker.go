@@ -24,6 +24,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/enginenative"
 	"nvpair-shared/errors"
+	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
@@ -320,6 +321,17 @@ type Broker struct {
 	// push cannot overwrite a concurrent transition.
 	workloadEmitMu sync.Mutex
 
+	// liveProgress is the broker's map of live job views: the merged
+	// in-flight numbers of every job this node knows about, from the local
+	// proxy's frames and from the frames a peer relayed. It is separate
+	// from the workload catalog on purpose: a progress frame is a snapshot
+	// of a running request, not a state transition, so it never changes a
+	// job's state and never outlives the job's terminal event.
+	liveProgress *liveProgressIndex
+	// liveMu guards the lazy creation of liveProgress. The map is created
+	// on first use, so a Broker assembled without one still works.
+	liveMu sync.Mutex
+
 	// workloads is the broker's authoritative index of cluster workloads
 	// (current + historic), keyed by (originatedFrom, id). It applies an
 	// order-independent, monotonic merge so a stale/out-of-order event can't
@@ -479,6 +491,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		manualNodeKeys:          make(map[string]string),
 		manualNodeStatuses:      make(map[string]manualNodeStatusEntry),
 		workloads:               workloadstore.New(),
+		liveProgress:            newLiveProgressIndex(liveProgressCapacity),
 		nodeMetrics:             nodemetrics.NewStore(nodeMetricsWindow),
 		nodeMetricsPushInterval: nodeMetricsPushIntervalDefault,
 		ollamaPortReady:         make(chan struct{}),
@@ -2165,9 +2178,9 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 	// Workload lifecycle / removal events are not proxy control-plane
 	// events: instead of being re-emitted to proxy:subscribe clients they
 	// are stamped with the local node id and forwarded to the
-	// workload-manager for cluster broadcast.
-	if proxyWorkloadMethods[method] {
-		b.routeProxyWorkload(method, params)
+	// workload-manager for cluster broadcast. A live progress frame takes
+	// the same road, but it never enters the catalog.
+	if b.routeProxyWorkloadMethod(method, params) {
 		return
 	}
 	if method == noderec.NotifyNodeActivity {
@@ -2283,6 +2296,54 @@ func (b *Broker) routeProxyWorkload(method string, params json.RawMessage) {
 		}
 	} else {
 		slog.Debug("no workload-manager supervised; workload event not broadcast", "method", method)
+	}
+}
+
+// routeProxyWorkloadMethod routes a workload-related notification published
+// by one of the three inference proxies, and reports whether it handled it.
+//
+// A lifecycle event or a removal goes into the catalog and out to the
+// cluster; a live progress frame goes into the live view of its job and out
+// to the cluster, but never into the catalog — it is a snapshot of a running
+// request, not a state transition.
+//
+// All three proxies publish both kinds, so the routing is shared: a frame
+// that only the Ollama proxy's path recognised would leave the LM Studio and
+// oMLX jobs without a live view.
+func (b *Broker) routeProxyWorkloadMethod(method string, params json.RawMessage) bool {
+	switch {
+	case proxyWorkloadMethods[method]:
+		b.routeProxyWorkload(method, params)
+		return true
+	case method == methodProgress:
+		b.routeProxyProgress(params)
+		return true
+	default:
+		return false
+	}
+}
+
+// routeProxyProgress handles a live progress frame published by a local
+// proxy: it merges the frame into this node's view of the job and hands the
+// frame to the workload-manager, which broadcasts it to every pinned peer.
+//
+// The frame never enters the workload catalog — it is a snapshot of a
+// running request, not a state transition — and it is forwarded unchanged, so
+// each peer merges the facts this node measured with the facts it measured
+// itself.
+func (b *Broker) routeProxyProgress(params json.RawMessage) {
+	var frame inferencemetrics.ProgressFrame
+	if err := json.Unmarshal(params, &frame); err != nil || frame.JobID == "" {
+		slog.Debug("dropping malformed progress frame", "err", err)
+		return
+	}
+	b.ingestProgress(frame)
+	if wm := b.getWorkloadMgr(); wm != nil {
+		if err := wm.Forward(methodProgress, params); err != nil {
+			slog.Warn("failed to forward progress frame to workload-manager", "err", err)
+		}
+	} else {
+		slog.Debug("no workload-manager supervised; progress frame not broadcast")
 	}
 }
 
@@ -2531,14 +2592,51 @@ func (b *Broker) applyClusterTrustChange() {
 // invokes on the manager's reader goroutine for every notification it emits
 // on stdout. The manager translates peer-origin lifecycle events into
 // workloads:upsert and peer-origin removals into workloads:remove (spec
-// 7.0); those are relayed to subscribed clients verbatim. Its startup
-// "ready" (and anything else) is internal and dropped.
+// 7.0); those are relayed to subscribed clients verbatim. It relays a peer's
+// live progress frame as workloads:progress, which is merged into this
+// node's live view of the job and pushed to the subscribed clients. Its
+// startup "ready" (and anything else) is internal and dropped.
 func (b *Broker) forwardWorkloadManagerNotification(method string, params json.RawMessage) {
 	switch method {
 	case "workloads:upsert", "workloads:remove":
 		b.emitWorkloadEvent(method, params)
+	case methodWorkloadsProgress:
+		// A live frame a peer relayed. It is merged into this node's view
+		// of the job — never into the catalog — and never handed back to
+		// the workload-manager: the peer that sent it has already fanned
+		// it out to the cluster, and re-broadcasting it would loop.
+		var frame inferencemetrics.ProgressFrame
+		if err := json.Unmarshal(params, &frame); err != nil || frame.JobID == "" {
+			slog.Debug("dropping malformed relayed progress frame", "err", err)
+			return
+		}
+		b.ingestProgress(frame)
 	default:
 		slog.Debug("ignoring workload-manager notification", "method", method)
+	}
+}
+
+// ingestProgress merges a live frame into this node's view of the job and
+// pushes the merged view to the clients subscribed to the workload stream.
+//
+// The merge is field by field: a frame that carries only what PAIR measured
+// leaves the engine's own reading alone, and a frame that carries only the
+// engine's reading leaves PAIR's own numbers alone. The push is the merged
+// view, not the frame, so a client always sees the fullest picture the node
+// has of that job.
+func (b *Broker) ingestProgress(frame inferencemetrics.ProgressFrame) {
+	merged, ok := b.liveViews().merge(frame)
+	if !ok {
+		return
+	}
+	b.workloadsMu.Lock()
+	subscribed := b.workloadsSubscribed
+	b.workloadsMu.Unlock()
+	if !subscribed {
+		return
+	}
+	if err := b.codec.Notify(methodWorkloadsProgress, merged); err != nil {
+		slog.Warn("emit workloads:progress failed", "err", err)
 	}
 }
 
@@ -2664,6 +2762,13 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		// before this point, so the node-loss sweep's synthesized failure
 		// never counts either.
 		b.recordNodeMetrics(env.WorkloadInfo)
+		// A terminal event retires the job's live view: the job is over, so
+		// no frame that arrives after this may bring it back to life. The
+		// serving node is part of the key, and it is the node the frame
+		// named — the one the work ran on.
+		if workloadstore.IsTerminal(in.State) {
+			b.liveViews().retire(in.ID, in.ScheduledOn)
+		}
 		return true
 	case "workloads:remove":
 		var rm struct {
@@ -2673,7 +2778,15 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		if err := json.Unmarshal(params, &rm); err != nil || rm.WorkloadID == "" {
 			return false
 		}
+		// A removal retires the job too. The removal wire carries no
+		// serving node, so the store's record is the only place that knows
+		// where the job ran; without it the job is retired on every node.
+		servedOn := ""
+		if rec, ok := b.workloads.Get(rm.OriginatedFrom, rm.WorkloadID); ok {
+			servedOn = rec.ScheduledOn
+		}
 		b.workloads.Remove(rm.OriginatedFrom, rm.WorkloadID)
+		b.liveViews().retire(rm.WorkloadID, servedOn)
 		return true
 	default:
 		return false

@@ -128,7 +128,7 @@ func NewManager(codec *Codec, port int, selfUUID, clusterDir string) *Manager {
 		relaySource: relaySource,
 		activeLocal: make(map[workloadKey]workloadEvent),
 	}
-	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove)
+	m.server = NewServer(port, dedup, mesh, m.emitUpsert, m.emitRemove, m.emitProgress)
 	return m
 }
 
@@ -203,6 +203,14 @@ func (m *Manager) emitUpsert(w *Workload) error {
 
 func (m *Manager) emitRemove(workloadID, nodeID string) error {
 	return m.codec.Notify(MethodRemove, removeParams{WorkloadID: workloadID, OriginatedFrom: nodeID})
+}
+
+// emitProgress forwards a progress frame relayed from a peer to the broker.
+// The frame is passed through unchanged: it is a partial view of a running
+// request, and the broker merges it with whatever else it knows about the
+// job.
+func (m *Manager) emitProgress(params json.RawMessage) error {
+	return m.codec.Notify(MethodProgressRelay, params)
 }
 
 func (m *Manager) discoveryLoop(ctx context.Context) {
@@ -303,6 +311,9 @@ func (m *Manager) handleMessage(msg *Message) {
 	case isLifecycleMethod(msg.Method):
 		m.handleLocalLifecycle(msg)
 
+	case msg.Method == MethodProgress:
+		m.handleLocalProgress(msg)
+
 	case msg.Method == MethodRemove:
 		m.handleLocalRemove(msg)
 
@@ -348,6 +359,24 @@ func (m *Manager) handleLocalLifecycle(msg *Message) {
 	key := workloadKey{origin: wl.OriginatedFrom, engine: wl.Engine, runID: wl.RunID, id: wl.ID}
 	m.trackActive(key, msg.Method, msg.Params, wl.State)
 	slog.Debug("broadcasting local lifecycle", "method", msg.Method, "id", wl.ID, "state", wl.State, "peers", m.peers.count())
+	m.broadcastFrame(msg.Method, msg.Params)
+}
+
+// handleLocalProgress relays a live progress frame to the cluster.
+//
+// The frame is a PASS-THROUGH, not a lifecycle event. It is not a state
+// transition, so it is not deduped against the workload:started event that
+// shares its job id, it is not tracked in the re-sync set (the set holds
+// lifecycle events the heartbeat re-asserts), and it never enters the
+// catalog. Two frames for the same job id are both broadcast: each one
+// carries the newer numbers, and dropping the second would freeze a live
+// view at its first reading.
+func (m *Manager) handleLocalProgress(msg *Message) {
+	if _, err := parseProgress(msg.Params); err != nil {
+		slog.Warn("dropping malformed local progress frame", "err", err)
+		return
+	}
+	slog.Debug("broadcasting local progress frame", "peers", m.peers.count())
 	m.broadcastFrame(msg.Method, msg.Params)
 }
 

@@ -301,6 +301,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `metrics:node-metrics` | notification (we consume) | ✅ yes |
 | `proxy:ready` | notification (we consume) | ✅ yes |
 | `workers:update` | notification (we consume) | ✅ yes |
+| `workloads:progress` | notification (we consume) | ➖ ignored |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `broker:resync` | request (we call) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
@@ -337,6 +338,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `telemetry/stop` | request (we call) | ✅ yes |
 | `workers:get-status` | request (we call) | ✅ yes |
 | `workers:restart` | request (we call) | ✅ yes |
+| `workload:progress` | request (we call) | ➖ ignored |
 | `workloads:get-initial` | request (we call) | ✅ yes |
 | `workloads:remove` | request (we call) | ✅ yes |
 | `workloads:subscribe` | request (we call) | ✅ yes |
@@ -362,8 +364,10 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | Method | Direction | In bridge? |
 |---|---|---|
 | `ready` | notification (we consume) | ✅ yes |
+| `workloads:progress` | notification (we consume) | ➖ ignored |
 | `workloads:remove` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
+| `workload:progress` | request (we call) | ➖ ignored |
 
 ## ollama-proxy
 

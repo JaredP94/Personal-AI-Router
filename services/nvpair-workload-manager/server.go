@@ -53,6 +53,12 @@ type Server struct {
 	emitUpsert func(w *Workload) error
 	emitRemove func(workloadID, nodeID string) error
 
+	// emitProgress forwards a live progress frame relayed from a peer. The
+	// frame is NOT deduplicated: it is a snapshot of a running request, not
+	// a state transition, so two frames for the same job id are two
+	// readings, not one event seen twice.
+	emitProgress func(params json.RawMessage) error
+
 	// mesh is this node's live cluster state. The inter-node interface is cluster
 	// mTLS unconditionally (§7.2); the mesh decides per request WHICH callers are
 	// pinned members, and per handshake whether this node can serve at all — never
@@ -62,13 +68,14 @@ type Server struct {
 	srv *http.Server
 }
 
-func NewServer(port int, dedup *dedupIndex, mesh *clustertrust.Mesh, emitUpsert func(*Workload) error, emitRemove func(workloadID, nodeID string) error) *Server {
+func NewServer(port int, dedup *dedupIndex, mesh *clustertrust.Mesh, emitUpsert func(*Workload) error, emitRemove func(workloadID, nodeID string) error, emitProgress func(params json.RawMessage) error) *Server {
 	return &Server{
-		port:       port,
-		dedup:      dedup,
-		mesh:       mesh,
-		emitUpsert: emitUpsert,
-		emitRemove: emitRemove,
+		port:         port,
+		dedup:        dedup,
+		mesh:         mesh,
+		emitUpsert:   emitUpsert,
+		emitRemove:   emitRemove,
+		emitProgress: emitProgress,
 	}
 }
 
@@ -152,6 +159,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		s.handleLifecycle(w, &msg)
 	case msg.Method == MethodRemove:
 		s.handleRemove(w, &msg)
+	case msg.Method == MethodProgress:
+		s.handleProgress(w, &msg)
 	default:
 		s.badRequest(w, "unknown method: "+msg.Method)
 	}
@@ -195,6 +204,30 @@ func isResyncFrame(params json.RawMessage) bool {
 		Resync bool `json:"resync"`
 	}
 	return json.Unmarshal(params, &p) == nil && p.Resync
+}
+
+// handleProgress relays a live progress frame from a peer to the local
+// broker.
+//
+// The frame is deliberately NOT deduplicated. The dedup index exists to keep
+// a re-broadcast lifecycle event out of the catalog a second time; a
+// progress frame is not a lifecycle event but a reading of a running
+// request, and the reading that arrives later carries the newer numbers.
+// Deduping it against the frame before it — or against the workload:started
+// event that shares its job id — would freeze the live view at its first
+// reading.
+func (s *Server) handleProgress(w http.ResponseWriter, msg *Message) {
+	if _, err := parseProgress(msg.Params); err != nil {
+		s.badRequest(w, err.Error())
+		return
+	}
+	if err := s.emitProgress(msg.Params); err != nil {
+		slog.Error("failed to emit workloads:progress", "err", err)
+		http.Error(w, "broker unavailable", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("relayed remote progress frame", "method", msg.Method)
+	s.ok(w)
 }
 
 func (s *Server) handleRemove(w http.ResponseWriter, msg *Message) {

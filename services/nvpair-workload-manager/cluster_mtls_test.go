@@ -149,7 +149,8 @@ func TestWorkloadBroadcast_MTLSGate(t *testing.T) {
 	// A serves its events endpoint over mTLS with the pin gate.
 	srvA := NewServer(0, newDedupIndex(16), mtlsA,
 		func(*Workload) error { return nil },
-		func(string, string) error { return nil })
+		func(string, string) error { return nil },
+		func(json.RawMessage) error { return nil })
 	mux := http.NewServeMux()
 	mux.HandleFunc(eventsPath, srvA.handleEvents)
 	ts := httptest.NewUnstartedServer(mux)
@@ -216,7 +217,8 @@ func TestWorkloadEvents_UnauthenticatedIsAlwaysRefused(t *testing.T) {
 	emitted := 0
 	srv := NewServer(0, newDedupIndex(16), mesh,
 		func(*Workload) error { emitted++; return nil },
-		func(string, string) error { return nil })
+		func(string, string) error { return nil },
+		func(json.RawMessage) error { return nil })
 	mux := http.NewServeMux()
 	mux.HandleFunc(eventsPath, srv.handleEvents)
 	ts := httptest.NewServer(mux)
