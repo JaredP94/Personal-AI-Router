@@ -118,6 +118,8 @@ The `engine` object is absent when the engine reports no live progress. Every nu
       PrefillTokensPerSecond    float64 `json:"prefillTokensPerSecond,omitempty"`
       GenerationTokensPerSecond float64 `json:"generationTokensPerSecond,omitempty"`
   }
+  // Model names a model the engine lists as active. "Loaded" means the
+  // engine lists it as active — not that it is resident in memory.
   type Model struct {
       Model  string `json:"model"`
       Loaded bool   `json:"loaded"`
@@ -128,15 +130,19 @@ The `engine` object is absent when the engine reports no live progress. Every nu
       Rows      []ActivityRow `json:"rows,omitempty"`
       Error     string       `json:"error,omitempty"`
   }
+  // ActivityRow's numeric fields are pointers: present means the engine
+  // reported that reading (possibly zero), absent means it did not. A
+  // request that has just started generating reports generated_tokens: 0,
+  // which must not read as "not reported".
   type ActivityRow struct {
       RequestID       string   `json:"requestId"`
       Phase           string   `json:"phase"`
-      QueuePosition   int      `json:"queuePosition,omitempty"`
-      GeneratedTokens int      `json:"generatedTokens,omitempty"`
-      TokensPerSecond float64  `json:"tokensPerSecond,omitempty"`
-      PrefillProgress float64  `json:"prefillProgress,omitempty"`
-      ElapsedSeconds  float64  `json:"elapsedSeconds,omitempty"`
-      PromptTokens    int      `json:"promptTokens,omitempty"`
+      QueuePosition   *int     `json:"queuePosition,omitempty"`
+      GeneratedTokens *int     `json:"generatedTokens,omitempty"`
+      TokensPerSecond *float64 `json:"tokensPerSecond,omitempty"`
+      PrefillProgress *float64 `json:"prefillProgress,omitempty"`
+      ElapsedSeconds  *float64 `json:"elapsedSeconds,omitempty"`
+      PromptTokens    *int     `json:"promptTokens,omitempty"`
   }
   func ParseStats(raw []byte) (Stats, error)
   func ParseActivity(raw []byte) (Activity, error)
