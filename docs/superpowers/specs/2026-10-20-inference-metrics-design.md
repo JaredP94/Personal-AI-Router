@@ -420,14 +420,22 @@ returns the same snapshot for hydration on connect.
 
 **e. Rates and aggregates.**
 
-- Prefill tok/s = `sum(prefill tokens in window) / sum(prefill ms in window)`.
-- Decode tok/s = `sum(decode tokens in window) / sum(decode ms in window)`.
+- Prefill tok/s = `sum(prefill tokens in window) / (sum(prefill ms in window) / 1000)`.
+- Decode tok/s = `sum(decode tokens in window) / (sum(decode ms in window) / 1000)`.
 - TTFT = `sum(ttft ms) / count(requests that reported a TTFT)` — a **mean**,
   deliberately different from the token rates, because averaging durations
   across requests is the meaningful aggregate while averaging rates is not.
   The denominator is requests that reported a TTFT, not all requests.
 - A node with no traffic in the window appears with zeroed rates rather than
   being absent, so the UI can distinguish "idle" from "unknown".
+- **Presence counters.** A rate of `0` is ambiguous on its own: an engine that
+  reported no prefill duration looks identical to one that reported a
+  zero-length prefill. The totals therefore carry, alongside the sums, the
+  count of requests that reported each value — `tokenRequests`,
+  `prefillRequests`, `decodeRequests`, `ttftRequests` — and the UI renders a
+  phase as "not reported by this engine" when its counter is zero. This is
+  the per-node counterpart of the per-job contract, where a nil pointer
+  already means "not reported".
 
 ### 4.5 Desktop changes
 

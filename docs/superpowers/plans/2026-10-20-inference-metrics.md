@@ -63,7 +63,7 @@ SPDX-License-Identifier: Apache-2.0
 }
 ```
 
-- `totals` are cumulative since the broker started. `rates` are computed over a 60-second window: `prefillTokensPerSecond = sum(prefill tokens) / sum(prefill ms)`, `decodeTokensPerSecond = sum(decode tokens) / sum(decode ms)`, `meanTtftMs = sum(ttft ms) / count(requests that reported a TTFT)`. A rate whose denominator is zero is `0`, never `NaN`.
+- `totals` are cumulative since the broker started. `rates` are computed over a 60-second window: `prefillTokensPerSecond = sum(prefill tokens) / (sum(prefill ms) / 1000)`, `decodeTokensPerSecond = sum(decode tokens) / (sum(decode ms) / 1000)`, `meanTtftMs = sum(ttft ms) / count(requests that reported a TTFT)`. A rate whose denominator is zero is `0`, never `NaN`.
 - `metrics:subscribe` / `metrics:unsubscribe` answer `{"subscribed": true|false}`, matching the existing `workloads:subscribe` shape.
 - The push is coalesced to at most one snapshot per second and carries the full snapshot, never a delta (relay protocol v2: snapshot-per-push).
 
