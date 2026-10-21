@@ -28,7 +28,12 @@ import type {
 import type { GpuMemoryKind } from '@/shared/types/hardware'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
-import type { Workload, WorkloadState } from '@/shared/types/workloads'
+import type {
+    Workload,
+    WorkloadLiveEngine,
+    WorkloadLiveProgress,
+    WorkloadState
+} from '@/shared/types/workloads'
 import type { WorkerState, WorkerStatus } from '@/shared/types/workers'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
@@ -681,6 +686,53 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
     const scheduledOn = nullableStringValue(obj.scheduledOn)
     if (scheduledOn) workload.scheduledOn = scheduledOn
     return workload
+}
+
+/**
+ * Parse the engine's own live reading of a running request.
+ *
+ * Only the readings the engine reported are carried: a reading it did not
+ * report stays null, which is "not reported by this engine" and never a
+ * measured zero.
+ */
+function parseWorkloadLiveEngine(value: JsonValue | undefined): WorkloadLiveEngine | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    return {
+        requestId: stringValue(obj.requestId),
+        phase: stringValue(obj.phase),
+        generatedTokens: nullableNumberValue(obj.generatedTokens),
+        tokensPerSecond: nullableNumberValue(obj.tokensPerSecond),
+        prefillProgress: nullableNumberValue(obj.prefillProgress),
+        queuePosition: nullableNumberValue(obj.queuePosition)
+    }
+}
+
+/**
+ * Parse a broker `workloads:progress` notification into a typed live view.
+ *
+ * The frame is a partial view of a running request, so every measurement but
+ * the job id is optional: a field the frame does not carry reads as null
+ * ("not measured here"), which is never a measured zero. A frame that names
+ * no job is dropped — it would join no job's card.
+ */
+export function parseWorkloadLiveProgress(
+    value: JsonValue | undefined
+): WorkloadLiveProgress | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const jobId = stringValue(obj.jobId)
+    if (!jobId) return null
+    return {
+        jobId,
+        originatedFrom: nullableStringValue(obj.originatedFrom),
+        nodeId: nullableStringValue(obj.nodeId),
+        elapsedMs: nullableNumberValue(obj.elapsedMs),
+        chunks: nullableNumberValue(obj.chunks),
+        bytes: nullableNumberValue(obj.bytes),
+        ttfbMs: nullableNumberValue(obj.ttfbMs),
+        engine: parseWorkloadLiveEngine(obj.engine)
+    }
 }
 
 /**
@@ -1865,6 +1917,20 @@ class ModularBridgeState {
         this.workloadRecovery?.add(key)
         this.workloads.delete(key)
         emitBridgePush('workloads:remove', { workloadId, originatedFrom })
+    }
+
+    /**
+     * Relay a broker `workloads:progress` notification to the UI.
+     *
+     * The frame is a live view of a running request, not a catalog event: it
+     * never enters the workload catalog and never changes a job's state. It
+     * carries the job's origin, so the renderer joins it to the job by the
+     * same (`originatedFrom`, `id`) pair the catalog uses.
+     */
+    pushWorkloadProgress(params: JsonValue | undefined): void {
+        const view = parseWorkloadLiveProgress(params)
+        if (!view) return
+        emitBridgePush('workloads:progress', view)
     }
 
     /** Push a `workloads:remove` for an entry and drop it from the catalog. */

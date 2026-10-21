@@ -1662,6 +1662,13 @@ class ModularSupervisor {
             getModularBridgeState().removeWorkloadFromParams(notification.params)
             return
         }
+        // Live progress: the broker's merged view of a running job. It is a
+        // snapshot, not a catalog event, so it never enters the catalog — the
+        // renderer keeps it as the live line of the job it names.
+        if (notification.method === 'workloads:progress') {
+            getModularBridgeState().pushWorkloadProgress(notification.params)
+            return
+        }
 
         // Per-node inference metrics: the broker pushes the whole snapshot
         // whenever a measurement was recorded, coalesced to at most one push

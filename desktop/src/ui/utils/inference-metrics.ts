@@ -50,10 +50,20 @@ import type {
     NodeInferenceMetrics,
     NodeModelMetrics
 } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 
 /** The text used for a value the engine did not report. */
 const NOT_REPORTED = 'not reported'
+
+/**
+ * The text used when the engine published no live reading at all.
+ *
+ * An engine that reports no live progress (Ollama, LM Studio) leaves the
+ * desktop with only the facts PAIR measured of the client's stream. Saying so
+ * is better than a row of "not reported" for every engine field: it names the
+ * reason.
+ */
+const NO_ENGINE_LIVE_PROGRESS = 'not reported (this engine publishes no live progress)'
 
 /**
  * The window the broker's node rates cover, as it appears in a label.
@@ -379,7 +389,7 @@ function phaseMeasurement(
 }
 
 /** Whether a value was reported at all, as opposed to being absent. */
-function isReported(value: number | null | undefined): boolean {
+function isReported(value: number | null | undefined): value is number {
     return value !== null && value !== undefined
 }
 
@@ -585,6 +595,81 @@ export function buildEngineNativeModels(view: EngineNativeView): EngineNativeMod
     if (!view.supported) return []
     const models: EngineNativeModel[] = view.models ?? []
     return models.map(model => ({ model: model.model, active: model.loaded }))
+}
+
+/**
+ * The rows of a running job's live line.
+ *
+ * Every number here is the one the broker sent: the elapsed time, the chunks
+ * and bytes PAIR measured of the client's stream, and the engine's own live
+ * reading when the engine reported one. The desktop derives nothing — in
+ * particular it never turns a chunk count into a token count, because a chunk
+ * is not a token.
+ *
+ * A reading the engine did not report reads as "not reported", never as a
+ * zero. An engine that publishes no live progress at all (Ollama, LM Studio)
+ * says so in one row, because "this engine reports nothing live" is a fact
+ * about the engine rather than a gap in one measurement.
+ */
+export function buildWorkloadLiveRows(live: WorkloadLiveProgress): InferenceMetricsRow[] {
+    const rows: InferenceMetricsRow[] = [
+        {
+            label: 'Elapsed',
+            value: formatDurationMs(live.elapsedMs),
+            unavailable: !isReported(live.elapsedMs)
+        },
+        {
+            label: 'Received',
+            value: receivedText(live),
+            unavailable: !isReported(live.chunks) && !isReported(live.bytes)
+        }
+    ]
+
+    const engine = live.engine
+    if (!engine) {
+        rows.push({
+            label: 'Engine live progress',
+            value: NO_ENGINE_LIVE_PROGRESS,
+            unavailable: true
+        })
+        return rows
+    }
+
+    rows.push({
+        label: 'Tokens (engine)',
+        value: formatTokenCount(engine.generatedTokens),
+        unavailable: !isReported(engine.generatedTokens)
+    })
+    rows.push({
+        label: 'Rate (engine)',
+        value: formatTokensPerSecond(engine.tokensPerSecond),
+        unavailable: !isReported(engine.tokensPerSecond)
+    })
+    rows.push({
+        label: 'Prefill progress (engine)',
+        value: isReported(engine.prefillProgress)
+            ? formatPercent(engine.prefillProgress)
+            : NOT_REPORTED,
+        unavailable: !isReported(engine.prefillProgress)
+    })
+    rows.push({
+        label: 'Queue position (engine)',
+        value: isReported(engine.queuePosition) ? String(engine.queuePosition) : NOT_REPORTED,
+        unavailable: !isReported(engine.queuePosition)
+    })
+    return rows
+}
+
+/**
+ * What has arrived so far: the content chunks and the response bytes PAIR
+ * counted. Each part is shown only when it was measured — a stream that
+ * reported no byte count shows no byte count.
+ */
+function receivedText(live: WorkloadLiveProgress): string {
+    const parts: string[] = []
+    if (isReported(live.chunks)) parts.push(`${live.chunks} chunks`)
+    if (isReported(live.bytes)) parts.push(`${live.bytes.toLocaleString('en-US')} bytes`)
+    return parts.length > 0 ? parts.join(' · ') : NOT_REPORTED
 }
 
 /**

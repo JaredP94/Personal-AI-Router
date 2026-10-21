@@ -35,7 +35,7 @@ import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type {
     AvailableNode,
@@ -163,6 +163,17 @@ export interface WsPushChannelMap {
     // (originatedFrom, id) pair).
     'workloads:upsert': Workload
     'workloads:remove': { workloadId: string; originatedFrom: string | null }
+    /**
+     * The broker's live view of a running job: what PAIR measured of the
+     * client's stream (elapsed time, chunks, bytes, time to first byte) plus
+     * the engine's own live reading when the engine reported one.
+     *
+     * It is a snapshot of a running request, not a state transition, and it
+     * never enters the catalog. The frame carries the job's origin, so it
+     * joins the job by the same (`originatedFrom`, `id`) pair the catalog
+     * uses.
+     */
+    'workloads:progress': WorkloadLiveProgress
 
     // Errors
     'errors:update': ServiceError[]

@@ -301,7 +301,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `metrics:node-metrics` | notification (we consume) | ✅ yes |
 | `proxy:ready` | notification (we consume) | ✅ yes |
 | `workers:update` | notification (we consume) | ✅ yes |
-| `workloads:progress` | notification (we consume) | ➖ ignored |
+| `workloads:progress` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `broker:resync` | request (we call) | ✅ yes |
 | `connection/cluster-auto-sync` | request (we call) | ➖ ignored |
@@ -364,7 +364,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | Method | Direction | In bridge? |
 |---|---|---|
 | `ready` | notification (we consume) | ✅ yes |
-| `workloads:progress` | notification (we consume) | ➖ ignored |
+| `workloads:progress` | notification (we consume) | ✅ yes |
 | `workloads:remove` | notification (we consume) | ✅ yes |
 | `workloads:upsert` | notification (we consume) | ✅ yes |
 | `workload:progress` | request (we call) | ➖ ignored |

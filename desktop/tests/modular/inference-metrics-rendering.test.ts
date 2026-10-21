@@ -11,9 +11,11 @@ import type {
     NodeInferenceMetrics
 } from '@/shared/types/metrics'
 import type { NodeItem } from '@/shared/types/nodes'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
+import { mergeWorkloadLiveProgress, workloadKey } from '@/shared/utils/workloads'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
+import { useWorkloadsStore } from '@/ui/stores/workloads.store'
 import NodeCardDetails from '@/ui/components/NodeList/NodeCardDetails'
 import NodeInferenceMetricsSection from '@/ui/components/NodeList/NodeInferenceMetricsSection'
 import WorkloadItemCard from '@/ui/components/Workloads/WorkloadItemCard'
@@ -104,6 +106,7 @@ afterEach(async () => {
     container.remove()
     useMetricsStore.getState().clearAll()
     useNodesStore.setState({ nodes: new Map() })
+    useWorkloadsStore.setState({ liveProgress: new Map() })
     vi.unstubAllGlobals()
 })
 
@@ -324,6 +327,197 @@ describe('the job card measurement', () => {
         )
         expect(text()).not.toContain('Prefill')
         expect(text()).not.toContain('tok/s')
+    })
+})
+
+describe('the live line of a running job', () => {
+    const runningOmlxJob: Workload = {
+        id: 'w1',
+        model: 'llama-3.2-3b',
+        engine: 'omlx',
+        state: 'running',
+        originatedFrom: 'node-a',
+        createdAt: 1,
+        startedAt: 2,
+        completedAt: null,
+        error: null,
+        requesterId: null
+    }
+
+    const runningOllamaJob: Workload = {
+        ...runningOmlxJob,
+        id: 'w2',
+        engine: 'ollama'
+    }
+
+    /**
+     * The frame of a running oMLX request: what PAIR measured of the
+     * client's stream, plus the engine's own live reading.
+     */
+    const omlxLive: WorkloadLiveProgress = {
+        jobId: 'w1',
+        originatedFrom: 'node-a',
+        nodeId: 'node-b',
+        elapsedMs: 4200,
+        chunks: 12,
+        bytes: 2048,
+        ttfbMs: 300,
+        engine: {
+            requestId: 'eng-1',
+            phase: 'generating',
+            generatedTokens: 34,
+            tokensPerSecond: 62.1,
+            prefillProgress: 100,
+            queuePosition: 0
+        }
+    }
+
+    /**
+     * The frame of a request whose engine publishes no live progress
+     * (Ollama, LM Studio): PAIR's own facts, and nothing from an engine.
+     */
+    const ollamaLive: WorkloadLiveProgress = {
+        jobId: 'w2',
+        originatedFrom: 'node-a',
+        nodeId: 'node-a',
+        elapsedMs: 4200,
+        chunks: 12,
+        bytes: 2048,
+        ttfbMs: 300,
+        engine: null
+    }
+
+    /** The live view of one job, as the store holds it. */
+    function setLiveProgress(view: WorkloadLiveProgress) {
+        act(() => {
+            useWorkloadsStore.setState({
+                liveProgress: new Map([[workloadKey(view.originatedFrom, view.jobId), view]])
+            })
+        })
+    }
+
+    it("shows the engine's live token count and rate on a running oMLX job", async () => {
+        setLiveProgress(omlxLive)
+        await render(createElement(WorkloadItemCard, { workload: runningOmlxJob }))
+        const rendered = text()
+        expect(rendered).toContain('Tokens (engine) 34')
+        expect(rendered).toContain('Rate (engine) 62 tok/s')
+        // What PAIR measured of the client's stream is on the same line.
+        expect(rendered).toContain('Elapsed 4.2 s')
+        expect(rendered).toContain('Received 12 chunks · 2,048 bytes')
+    })
+
+    it('shows the elapsed time and the received bytes for an engine with no live progress', async () => {
+        setLiveProgress(ollamaLive)
+        await render(createElement(WorkloadItemCard, { workload: runningOllamaJob }))
+        const rendered = text()
+        expect(rendered).toContain('Elapsed 4.2 s')
+        expect(rendered).toContain('Received 12 chunks · 2,048 bytes')
+        // The engine published no live reading at all, and the card says so
+        // rather than showing a row of "not reported" for every engine field.
+        expect(rendered).toContain(
+            'Engine live progress not reported (this engine publishes no live progress)'
+        )
+    })
+
+    it('never renders a chunk count as a token count', async () => {
+        setLiveProgress(omlxLive)
+        await render(createElement(WorkloadItemCard, { workload: runningOmlxJob }))
+        let rendered = text()
+        // The only token count on the card is the engine's own 34. The 12
+        // chunks PAIR counted are chunks, not tokens.
+        expect(rendered).toContain('Tokens (engine) 34')
+        expect(rendered).not.toContain('Tokens (engine) 12')
+        expect(rendered).not.toContain('12 tok')
+        expect(rendered).not.toContain('12 tokens')
+
+        // An engine that publishes no live progress reported no token count
+        // either, so the card shows no token count at all.
+        setLiveProgress(ollamaLive)
+        await render(createElement(WorkloadItemCard, { workload: runningOllamaJob }))
+        rendered = text()
+        expect(rendered).not.toContain('Tokens')
+        expect(rendered).not.toContain('tok')
+    })
+
+    it('shows the final numbers of a finished job and no live line', async () => {
+        const finishedJob: Workload = {
+            id: 'w3',
+            model: 'llama-3.2-3b',
+            engine: 'omlx',
+            state: 'completed',
+            originatedFrom: 'node-a',
+            createdAt: 1,
+            startedAt: 2,
+            completedAt: 3,
+            error: null,
+            requesterId: null,
+            prefillTokens: 1200,
+            decodeTokens: 900,
+            cachedTokens: 90,
+            prefillMs: 340,
+            decodeMs: 2100,
+            ttftMs: 80,
+            totalMs: 2440
+        }
+        // The broker retires a finished job's live view, but a frame that is
+        // still in flight must not put a live line on a finished card: the
+        // final numbers are the ones that count.
+        setLiveProgress({ ...omlxLive, jobId: 'w3' })
+        await render(createElement(WorkloadItemCard, { workload: finishedJob }))
+        const rendered = text()
+        expect(rendered).toContain('Prefill (this request) 1,200 tok · 340 ms · 3529 tok/s')
+        expect(rendered).toContain('Decode (this request) 900 tok · 2.1 s · 429 tok/s')
+        expect(rendered).toContain('TTFT (this request) 80 ms')
+        expect(rendered).toContain('Total (this request) 2.4 s')
+        expect(rendered).toContain('Cached tokens (this request) 90')
+        // No live line at all.
+        expect(rendered).not.toContain('Elapsed')
+        expect(rendered).not.toContain('Received')
+        expect(rendered).not.toContain('Engine live progress')
+        expect(rendered).not.toContain('Tokens (engine)')
+        expect(rendered).not.toContain('Rate (engine)')
+        expect(rendered).not.toContain('Prefill progress (engine)')
+        expect(rendered).not.toContain('Queue position (engine)')
+    })
+
+    it('keeps what an earlier frame supplied when the next frame is partial', async () => {
+        // The origin proxy publishes what PAIR measured of the client's
+        // stream; the serving node publishes the engine's reading. Neither
+        // sees the other's facts, so a reader that merged them naively would
+        // blank the elapsed time the moment the engine's frame arrived.
+        const facts: WorkloadLiveProgress = {
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            nodeId: 'node-b',
+            elapsedMs: 4200,
+            chunks: 12,
+            bytes: 2048,
+            engine: null
+        }
+        const engineOnly: WorkloadLiveProgress = {
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            nodeId: 'node-b',
+            engine: omlxLive.engine
+        }
+
+        // The engine's frame arrives second and carries no PAIR facts.
+        setLiveProgress(mergeWorkloadLiveProgress(facts, engineOnly))
+        await render(createElement(WorkloadItemCard, { workload: runningOmlxJob }))
+        let rendered = text()
+        expect(rendered).toContain('Elapsed 4.2 s')
+        expect(rendered).toContain('Received 12 chunks · 2,048 bytes')
+        expect(rendered).toContain('Tokens (engine) 34')
+
+        // And the other way round: the PAIR facts arrive second and carry no
+        // engine reading, which the reader must not blank either.
+        setLiveProgress(mergeWorkloadLiveProgress(engineOnly, facts))
+        await render(createElement(WorkloadItemCard, { workload: runningOmlxJob }))
+        rendered = text()
+        expect(rendered).toContain('Elapsed 4.2 s')
+        expect(rendered).toContain('Received 12 chunks · 2,048 bytes')
+        expect(rendered).toContain('Tokens (engine) 34')
     })
 })
 

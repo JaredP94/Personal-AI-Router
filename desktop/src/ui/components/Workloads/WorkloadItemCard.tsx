@@ -6,8 +6,13 @@ import { Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
+import { useWorkloadLiveProgress } from '@/ui/stores/workloads.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
-import { buildWorkloadMetricsRows, hasWorkloadMeasurement } from '@/ui/utils/inference-metrics'
+import {
+    buildWorkloadLiveRows,
+    buildWorkloadMetricsRows,
+    hasWorkloadMeasurement
+} from '@/ui/utils/inference-metrics'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
 import EngineIcon from '@/ui/components/EngineIcon'
 
@@ -58,6 +63,10 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
     const ranOnLabel = workload.state === 'running' ? 'Running on' : 'Ran on'
     const barColor = useMemo(() => getWorkloadColorBar(workload.state), [workload.state])
 
+    // The live view of this job, if the broker reported one. It is a
+    // snapshot of a running request, so it exists only while the job runs.
+    const liveProgress = useWorkloadLiveProgress(workload)
+
     // The engine's own measurement of this job. It exists only once the job
     // is terminal — a running job has no numbers yet, so it shows no
     // measurement row at all rather than a row of zeros. A phase the engine
@@ -68,6 +77,16 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
         if (!hasWorkloadMeasurement(workload)) return []
         return buildWorkloadMetricsRows(workload)
     }, [workload])
+
+    // The live line of a running job: what PAIR measured of the client's
+    // stream (the elapsed time, the chunks and bytes that arrived) plus the
+    // engine's own live reading when the engine reported one. It goes away
+    // with the job's terminal state, leaving the final numbers above.
+    const liveRows = useMemo(() => {
+        if (workload.state === 'completed' || workload.state === 'failed') return []
+        if (!liveProgress) return []
+        return buildWorkloadLiveRows(liveProgress)
+    }, [workload.state, liveProgress])
 
     const subtext = useMemo(() => {
         const state = workload.state
@@ -168,6 +187,23 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                 <Flex align="center" gap="2">
                     {subtext}
                 </Flex>
+                {liveRows.length > 0 && (
+                    <Stack gap="0" className="mt-1 min-w-0" data-testid="workload-live-rows">
+                        {liveRows.map(row => (
+                            <Flex key={row.label} align="center" gap="2" className="min-w-0">
+                                <Text kind="body/regular/sm" className="text-subtle-color">
+                                    {row.label}
+                                </Text>
+                                <Text
+                                    kind="body/semibold/sm"
+                                    className={row.unavailable ? 'text-subtle-color' : undefined}
+                                >
+                                    {row.value}
+                                </Text>
+                            </Flex>
+                        ))}
+                    </Stack>
+                )}
                 {measurementRows.length > 0 && (
                     <Stack gap="0" className="mt-1 min-w-0">
                         {measurementRows.map(row => (

@@ -7,6 +7,7 @@ import {
     buildEngineNativeRows,
     buildInferenceMetricsRows,
     buildModelMetricsRows,
+    buildWorkloadLiveRows,
     buildWorkloadMetricsRows,
     engineNativeAgeMs,
     formatDurationMs,
@@ -21,7 +22,8 @@ import {
     phaseTokensPerSecond
 } from '@/ui/utils/inference-metrics'
 import type { InferenceMetricsTotals, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
+import { mergeWorkloadLiveProgress, workloadKey } from '@/shared/utils/workloads'
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
@@ -29,9 +31,11 @@ vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
 import {
     parseEngineNativeView,
     parseNodeMetricsSnapshot,
+    parseWorkloadLiveProgress,
     parseWorkloadsInitial
 } from '@/electron/service-bridge/modular-state'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
+import { useWorkloadsStore } from '@/ui/stores/workloads.store'
 
 /** A node whose engine reported every phase. */
 const reportedTotals: InferenceMetricsTotals = {
@@ -799,5 +803,382 @@ describe('the engine-native view on the wire', () => {
         expect(parseEngineNativeView({ supported: true, totals: { requests: 2 } })).toBeUndefined()
         expect(parseEngineNativeView(undefined)).toBeUndefined()
         expect(parseEngineNativeView('nope')).toBeUndefined()
+    })
+})
+
+describe('the live progress frame on the wire', () => {
+    it("carries the origin and the origin proxy's own facts", () => {
+        const parsed = parseWorkloadLiveProgress({
+            jobId: 'w1',
+            nodeId: 'node-b',
+            originatedFrom: 'node-a',
+            elapsedMs: 4200,
+            chunks: 12,
+            bytes: 2048,
+            ttfbMs: 300,
+            engine: {
+                requestId: 'eng-1',
+                phase: 'generating',
+                generatedTokens: 34,
+                tokensPerSecond: 62.1,
+                prefillProgress: 100,
+                queuePosition: 0
+            }
+        })
+        expect(parsed?.jobId).toBe('w1')
+        // The origin is the half of the identity a job is keyed by: PAIR's
+        // job id is a per-proxy counter, so two origins can both hold a
+        // job "1".
+        expect(parsed?.originatedFrom).toBe('node-a')
+        expect(parsed?.nodeId).toBe('node-b')
+        expect(parsed?.elapsedMs).toBe(4200)
+        expect(parsed?.chunks).toBe(12)
+        expect(parsed?.bytes).toBe(2048)
+        expect(parsed?.ttfbMs).toBe(300)
+        expect(parsed?.engine?.requestId).toBe('eng-1')
+        expect(parsed?.engine?.generatedTokens).toBe(34)
+        expect(parsed?.engine?.tokensPerSecond).toBe(62.1)
+    })
+
+    it('leaves a measurement nobody reported absent, never zero', () => {
+        const parsed = parseWorkloadLiveProgress({
+            jobId: 'w1',
+            originatedFrom: 'node-a'
+        })
+        expect(parsed?.elapsedMs).toBeNull()
+        expect(parsed?.chunks).toBeNull()
+        expect(parsed?.bytes).toBeNull()
+        expect(parsed?.ttfbMs).toBeNull()
+        // The engine published no live reading at all.
+        expect(parsed?.engine).toBeNull()
+    })
+
+    it('drops a frame that names no job', () => {
+        // A frame without a job id would join no job's card.
+        expect(parseWorkloadLiveProgress({ originatedFrom: 'node-a' })).toBeNull()
+        expect(parseWorkloadLiveProgress(undefined)).toBeNull()
+    })
+})
+
+describe('the live progress of a running job', () => {
+    /** The frame of a running oMLX request: PAIR's facts and the engine's reading. */
+    const omlxLive: WorkloadLiveProgress = {
+        jobId: 'w1',
+        originatedFrom: 'node-a',
+        nodeId: 'node-b',
+        elapsedMs: 4200,
+        chunks: 12,
+        bytes: 2048,
+        ttfbMs: 300,
+        engine: {
+            requestId: 'eng-1',
+            phase: 'generating',
+            generatedTokens: 34,
+            tokensPerSecond: 62.1,
+            prefillProgress: 100,
+            queuePosition: 0
+        }
+    }
+
+    it("shows the engine's own live token count and rate", () => {
+        const rows = buildWorkloadLiveRows(omlxLive)
+        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('34')
+        expect(rows.find(r => r.label === 'Rate (engine)')?.value).toBe('62 tok/s')
+        expect(rows.find(r => r.label === 'Elapsed')?.value).toBe('4.2 s')
+        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
+    })
+
+    it('never renders a chunk count as a token count', () => {
+        const rows = buildWorkloadLiveRows(omlxLive)
+        // The 12 chunks PAIR counted are chunks, not tokens: the only token
+        // count on the line is the engine's own 34.
+        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
+        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('34')
+        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).not.toContain('12')
+        // An engine that published no live reading reported no token count
+        // either, so there is no token row at all.
+        const silent = buildWorkloadLiveRows({ ...omlxLive, engine: null })
+        expect(silent.find(r => r.label === 'Tokens (engine)')).toBeUndefined()
+    })
+
+    it('says that an engine publishes no live progress instead of a row of gaps', () => {
+        const rows = buildWorkloadLiveRows({ ...omlxLive, engine: null })
+        expect(rows.find(r => r.label === 'Elapsed')?.value).toBe('4.2 s')
+        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
+        expect(rows.find(r => r.label === 'Engine live progress')?.value).toBe(
+            'not reported (this engine publishes no live progress)'
+        )
+        expect(rows.find(r => r.label === 'Engine live progress')?.unavailable).toBe(true)
+    })
+
+    it('shows only the part of the received traffic that was measured', () => {
+        const rows = buildWorkloadLiveRows({ ...omlxLive, bytes: null })
+        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks')
+    })
+
+    it('reports a reading the engine did not make as not reported, never as zero', () => {
+        const rows = buildWorkloadLiveRows({
+            ...omlxLive,
+            engine: {
+                requestId: 'eng-1',
+                phase: 'waiting',
+                generatedTokens: null,
+                tokensPerSecond: null,
+                prefillProgress: null,
+                queuePosition: null
+            }
+        })
+        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Rate (engine)')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Prefill progress (engine)')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Queue position (engine)')?.value).toBe('not reported')
+        expect(rows.find(r => r.label === 'Tokens (engine)')?.unavailable).toBe(true)
+    })
+})
+
+describe('merging a live progress frame', () => {
+    /** What PAIR measured of the client's stream. */
+    const facts: WorkloadLiveProgress = {
+        jobId: 'w1',
+        originatedFrom: 'node-a',
+        nodeId: 'node-b',
+        elapsedMs: 4200,
+        chunks: 12,
+        bytes: 2048,
+        ttfbMs: 300,
+        engine: null
+    }
+
+    /** What the serving node's engine reported of its own request. */
+    const engineOnly: WorkloadLiveProgress = {
+        jobId: 'w1',
+        originatedFrom: 'node-a',
+        nodeId: 'node-b',
+        engine: {
+            requestId: 'eng-1',
+            phase: 'generating',
+            generatedTokens: 34,
+            tokensPerSecond: 62.1,
+            prefillProgress: 100,
+            queuePosition: 0
+        }
+    }
+
+    it('keeps the engine reading when the next frame carries only the PAIR facts', () => {
+        const merged = mergeWorkloadLiveProgress(engineOnly, facts)
+        expect(merged.engine?.generatedTokens).toBe(34)
+        expect(merged.elapsedMs).toBe(4200)
+        expect(merged.chunks).toBe(12)
+        expect(merged.bytes).toBe(2048)
+    })
+
+    it('keeps the PAIR facts when the next frame carries only the engine reading', () => {
+        const merged = mergeWorkloadLiveProgress(facts, engineOnly)
+        expect(merged.elapsedMs).toBe(4200)
+        expect(merged.chunks).toBe(12)
+        expect(merged.bytes).toBe(2048)
+        expect(merged.engine?.generatedTokens).toBe(34)
+    })
+
+    it('overwrites the value a frame does carry', () => {
+        const merged = mergeWorkloadLiveProgress(facts, { ...facts, elapsedMs: 5000 })
+        expect(merged.elapsedMs).toBe(5000)
+    })
+
+    it('replaces the engine reading as a unit', () => {
+        // A later engine row supersedes the earlier one: it does not blend
+        // with it, and a field the engine has stopped reporting stops being
+        // shown rather than falling back to the earlier reading.
+        const later: WorkloadLiveProgress = {
+            ...engineOnly,
+            engine: {
+                requestId: 'eng-2',
+                phase: 'generating',
+                generatedTokens: 90,
+                tokensPerSecond: null,
+                prefillProgress: null,
+                queuePosition: null
+            }
+        }
+        const merged = mergeWorkloadLiveProgress(engineOnly, later)
+        expect(merged.engine?.requestId).toBe('eng-2')
+        expect(merged.engine?.generatedTokens).toBe(90)
+        expect(merged.engine?.tokensPerSecond).toBeNull()
+    })
+
+    it('never turns an absent measurement into a zero', () => {
+        const merged = mergeWorkloadLiveProgress(undefined, {
+            jobId: 'w1',
+            originatedFrom: 'node-a'
+        })
+        expect(merged.elapsedMs).toBeNull()
+        expect(merged.chunks).toBeNull()
+        expect(merged.bytes).toBeNull()
+        expect(merged.engine).toBeNull()
+    })
+})
+
+describe('the workloads store keeps the live view of a running job', () => {
+    let pushProgress: (frame: WorkloadLiveProgress) => void = () => {}
+    let pushUpsert: (workload: Workload) => void = () => {}
+    let scheduled: (() => void) | null = null
+
+    beforeEach(() => {
+        scheduled = null
+        // The store buffers pushes and flushes them on the next animation
+        // frame, so the test drives the frame itself.
+        vi.stubGlobal('requestAnimationFrame', (callback: () => void): number => {
+            scheduled = callback
+            return 1
+        })
+        vi.stubGlobal('cancelAnimationFrame', () => {})
+        vi.stubGlobal('window', {
+            pairApi: {
+                workloads: {
+                    getInitial: async () => ({}),
+                    onUpsert: (callback: (workload: Workload) => void) => {
+                        pushUpsert = callback
+                        return () => {
+                            pushUpsert = () => {}
+                        }
+                    },
+                    onRemove: () => () => {},
+                    onProgress: (callback: (frame: WorkloadLiveProgress) => void) => {
+                        pushProgress = callback
+                        return () => {
+                            pushProgress = () => {}
+                        }
+                    }
+                }
+            }
+        })
+    })
+
+    afterEach(() => {
+        useWorkloadsStore.getState().cleanup()
+        vi.unstubAllGlobals()
+    })
+
+    /** Run the store's pending flush, as the next animation frame would. */
+    function flush() {
+        if (!scheduled) throw new Error('the store scheduled no flush')
+        const pending = scheduled
+        scheduled = null
+        pending()
+    }
+
+    async function initialize() {
+        await useWorkloadsStore.getState().initialize()
+    }
+
+    const runningJob: Workload = {
+        id: 'w1',
+        model: 'llama-3.2-3b',
+        engine: 'omlx',
+        state: 'running',
+        originatedFrom: 'node-a',
+        createdAt: 1,
+        startedAt: 2,
+        completedAt: null,
+        error: null,
+        requesterId: null
+    }
+
+    it('keeps a live frame out of the catalog', async () => {
+        await initialize()
+        pushProgress({
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            elapsedMs: 4200,
+            chunks: 12,
+            bytes: 2048
+        })
+        flush()
+        const state = useWorkloadsStore.getState()
+        expect(state.liveProgress.get(workloadKey('node-a', 'w1'))?.elapsedMs).toBe(4200)
+        // A live frame is a snapshot of a running request, not a catalog
+        // event: it never enters the catalog.
+        expect(state.workloads.has(workloadKey('node-a', 'w1'))).toBe(false)
+    })
+
+    it('keys the live view by the origin and the job id', async () => {
+        await initialize()
+        // PAIR's job id is a per-proxy counter, so two origins can both hold
+        // a job "1" — and only the origin tells their jobs apart.
+        pushProgress({ jobId: '1', originatedFrom: 'origin-a', elapsedMs: 4200 })
+        pushProgress({ jobId: '1', originatedFrom: 'origin-c', elapsedMs: 4300 })
+        flush()
+        const live = useWorkloadsStore.getState().liveProgress
+        expect(live.get(workloadKey('origin-a', '1'))?.elapsedMs).toBe(4200)
+        expect(live.get(workloadKey('origin-c', '1'))?.elapsedMs).toBe(4300)
+    })
+
+    it('keeps what an earlier frame supplied when the next frame is partial', async () => {
+        await initialize()
+        pushProgress({
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            elapsedMs: 4200,
+            chunks: 12,
+            bytes: 2048
+        })
+        pushProgress({
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            engine: {
+                requestId: 'eng-1',
+                phase: 'generating',
+                generatedTokens: 34,
+                tokensPerSecond: 62.1
+            }
+        })
+        flush()
+        const view = useWorkloadsStore.getState().liveProgress.get(workloadKey('node-a', 'w1'))
+        expect(view?.elapsedMs).toBe(4200)
+        expect(view?.chunks).toBe(12)
+        expect(view?.bytes).toBe(2048)
+        expect(view?.engine?.generatedTokens).toBe(34)
+    })
+
+    it('keeps the engine reading when a later frame carries only the PAIR facts', async () => {
+        await initialize()
+        pushProgress({
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            engine: {
+                requestId: 'eng-1',
+                phase: 'generating',
+                generatedTokens: 34,
+                tokensPerSecond: 62.1
+            }
+        })
+        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', elapsedMs: 4200 })
+        flush()
+        const view = useWorkloadsStore.getState().liveProgress.get(workloadKey('node-a', 'w1'))
+        expect(view?.elapsedMs).toBe(4200)
+        expect(view?.engine?.generatedTokens).toBe(34)
+    })
+
+    it('retires the live view of a finished job and never resurrects it', async () => {
+        await initialize()
+        pushUpsert(runningJob)
+        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', elapsedMs: 4200 })
+        flush()
+        expect(useWorkloadsStore.getState().liveProgress.has(workloadKey('node-a', 'w1'))).toBe(
+            true
+        )
+
+        pushUpsert({ ...runningJob, state: 'completed', completedAt: 3 })
+        flush()
+        expect(useWorkloadsStore.getState().liveProgress.has(workloadKey('node-a', 'w1'))).toBe(
+            false
+        )
+
+        // A frame that was already on its way must not bring the job back.
+        pushProgress({ jobId: 'w1', originatedFrom: 'node-a', elapsedMs: 4400 })
+        flush()
+        expect(useWorkloadsStore.getState().liveProgress.has(workloadKey('node-a', 'w1'))).toBe(
+            false
+        )
     })
 })

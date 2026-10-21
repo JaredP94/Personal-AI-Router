@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 
 /**
  * Stable catalog key for a workload.
@@ -35,4 +35,36 @@ export function workloadKey(originatedFrom: string | null, id: string): string {
  */
 export function workloadExecutionNodeId(workload: Pick<Workload, 'scheduledOn'>): string | null {
     return workload.scheduledOn ?? null
+}
+
+/**
+ * Merge a live progress frame into the view a job already has.
+ *
+ * A frame is a PARTIAL view of a running request: the origin proxy publishes
+ * what PAIR measured of the client's stream and the serving node publishes
+ * what the engine reported of its own request, and neither sees the other's
+ * facts. So a field the incoming frame does not carry leaves the stored value
+ * alone — "not measured here" is never a zero — and a field it does carry
+ * overwrites it.
+ *
+ * The engine's object is the one exception: it is a single reading of a
+ * single engine row, so it is replaced as a unit rather than merged field by
+ * field. A later row supersedes the earlier one — it does not blend with it,
+ * and a field the engine has stopped reporting stops being shown.
+ */
+export function mergeWorkloadLiveProgress(
+    stored: WorkloadLiveProgress | undefined,
+    incoming: WorkloadLiveProgress
+): WorkloadLiveProgress {
+    const merged: WorkloadLiveProgress = {
+        jobId: incoming.jobId,
+        originatedFrom: incoming.originatedFrom ?? stored?.originatedFrom ?? null,
+        nodeId: incoming.nodeId ?? stored?.nodeId ?? null,
+        elapsedMs: incoming.elapsedMs ?? stored?.elapsedMs ?? null,
+        chunks: incoming.chunks ?? stored?.chunks ?? null,
+        bytes: incoming.bytes ?? stored?.bytes ?? null,
+        ttfbMs: incoming.ttfbMs ?? stored?.ttfbMs ?? null,
+        engine: incoming.engine ?? stored?.engine ?? null
+    }
+    return merged
 }
