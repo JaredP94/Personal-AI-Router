@@ -19,7 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 
 - Branch `feat/inference-metrics` off `main`; signed-off commits (`git commit -s`); two-line SPDX header on every new file (`node scripts/spdx-headers.mjs`).
 - No new npm or Go dependencies. No new worker, no new inter-node method beyond the broker's own client-facing method, no new trust boundary.
-- Go owns all counting, all filtering, all aggregation across records, and every windowed rate. The desktop never counts, filters, or aggregates; it may render a **per-record ratio of two values the service reported** (one record's tokens over that record's duration), exactly as it already renders memory usage as a percentage of the reported total. Every such ratio is **labelled with the window it covers** — a 60-second windowed rate and a lifetime ratio must never appear under the same label. No `as` casts, no `any`, no `unknown` in TypeScript signatures; `@/` imports across directories; static imports only; renderer never imports `src/electron/`.
+- Go owns all counting, all filtering, all aggregation across records, and every windowed rate. The desktop never counts, filters, or aggregates; it may render a **per-record ratio of two values the service reported** (one record's tokens over that record's duration), exactly as it already renders memory usage as a percentage of the reported total. Every such ratio is **labelled with the window it covers** — a 60-second windowed rate and a since-broker-start ratio must never appear under the same label. No `as` casts, no `any`, no `unknown` in TypeScript signatures; `@/` imports across directories; static imports only; renderer never imports `src/electron/`.
 - **Only engine-measured phase values are reported.** PAIR never estimates a phase it cannot observe: a missing phase stays missing and must never render as `0`. A value the engine reported as **zero** stays a zero — presence is the provenance, and oMLX reports `cached_tokens: 0` on every request that missed its prefix cache.
 - **`totalMs` is engine-reported only.** oMLX fills it from the engine's `usage.total_time`. Ollama and LM Studio report no total time, so the field stays absent for them: the proxy's own wall-clock duration includes queueing, transport and client write time and would not mean the same thing as the engine-reported total. That duration stays in `RequestEvent.duration_ms`.
 - The oMLX API key is never logged, never placed in a metric, never in an error message.
@@ -75,7 +75,7 @@ SPDX-License-Identifier: Apache-2.0
 2. **A re-asserted terminal event must not be counted twice.** The workload-manager re-asserts each terminal workload on a heartbeat and a joining peer receives a backfill snapshot; both arrive as `workloads:upsert`. The accumulator is fed only when the workload store *accepts* the merge, and never from an inferred event (the broker's node-loss sweep synthesizes failures). Task 6 and Task 7.
 3. **An engine that reports nothing must render as "not reported", not as `0 tok/s` or `0 ms`.** A measured zero (a completion with no output tokens) is different from an absent value. Tasks 2, 3, 8, 9.
 4. **A remote job's measurement must survive the cluster relay.** The workload-manager re-marshals a peer's event through its own typed `Workload` struct, so a field the struct does not declare is dropped on the peer → broker path — silently and asymmetrically (the originating node still shows it). Task 5.
-5. **A node whose recent window is empty must still appear, with zeroed rates and its lifetime totals intact** — "idle now" is different from "never served", and a node that never served anything must not appear as a zero row. Task 6.
+5. **A node whose recent window is empty must still appear, with zeroed rates and its totals since the broker started intact** — "idle now" is different from "never served", and a node that never served anything must not appear as a zero row. Task 6.
 
 ---
 
@@ -534,7 +534,7 @@ func NewStore(window time.Duration) *Store
 func (s *Store) Record(nodeID, model string, m inferencemetrics.Measurement, now time.Time)
 func (s *Store) Snapshot() []NodeSnapshot
 ```
-`Store` is safe for concurrent use. `Record` folds one completed inference into the node's lifetime totals, the model's totals, and the rolling window. `Snapshot` returns one entry per node that has ever recorded traffic, ordered by node id.
+`Store` is safe for concurrent use. `Record` folds one completed inference into the node's totals since the broker started, the model's totals, and the rolling window. `Snapshot` returns one entry per node that has ever recorded traffic, ordered by node id.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -583,7 +583,7 @@ func TestWindowExpiryZeroesRatesButKeepsTotals(t *testing.T) {
     inside := s.Snapshot()
     if inside[0].Rates.PrefillTokensPerSecond != 100 { t.Fatalf("rates: %+v", inside[0].Rates) }
     // Move the store's clock past the window: the sample leaves the window,
-    // the rates go to zero, and the lifetime totals stay.
+    // the rates go to zero, and the totals since the broker started stay.
     s.now = func() time.Time { return t0.Add(61 * time.Second) }
     after := s.Snapshot()
     if after[0].Rates.PrefillTokensPerSecond != 0 { t.Fatalf("expired rates: %+v", after[0].Rates) }
@@ -607,10 +607,10 @@ Expected: FAIL — package does not exist.
 
 Create `store.go`:
 - `NewStore(window)` returns a store with the window duration and `now: time.Now`.
-- Internally keep `map[string]*nodeState`, where `nodeState` holds the lifetime `Totals`, a `map[string]*Totals` for per-model totals, and a slice of window samples (`{at time.Time, tokens, ms, ttftMs int64, hasTtft bool}`).
-- `Record` adds the measurement's values to the lifetime totals and the model's totals, appends a window sample, and prunes samples older than the window.
+- Internally keep `map[string]*nodeState`, where `nodeState` holds the `Totals` accumulated since the broker started, a `map[string]*Totals` for per-model totals, and a slice of window samples (`{at time.Time, tokens, ms, ttftMs int64, hasTtft bool}`).
+- `Record` adds the measurement's values to the totals since the broker started and the model's totals, appends a window sample, and prunes samples older than the window.
 - `Snapshot` computes each node's rates from its window samples: `prefillTokensPerSecond = sum(prefill tokens) / (sum(prefill ms) / 1000)`, `decodeTokensPerSecond = sum(decode tokens) / (sum(decode ms) / 1000)`, `meanTtftMs = sum(ttft ms) / count(requests with a ttft)`. A zero denominator yields `0`, never `NaN` or `+Inf`. A measurement with no tokens at all still counts as one request.
-- `Snapshot` returns a node entry for every node that has recorded traffic, even if its window is empty (rates zero, lifetime totals intact), ordered by node id. Per-model entries are ordered by model id.
+- `Snapshot` returns a node entry for every node that has recorded traffic, even if its window is empty (rates zero, totals since the broker started intact), ordered by node id. Per-model entries are ordered by model id.
 
 - [ ] **Step 4: Run the test to verify it passes**
 

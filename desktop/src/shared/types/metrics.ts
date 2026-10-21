@@ -25,8 +25,8 @@ export interface NodeItemMetrics {
 }
 
 /**
- * Lifetime totals of the prefill/decode measurements the broker observed for
- * one node, or for one model on that node.
+ * Totals of the prefill/decode measurements the broker observed for one
+ * node, or for one model on that node, accumulated since the broker started.
  *
  * Every value is the broker's own — the desktop renders them and never
  * derives one. The presence counters say how many requests actually reported
@@ -64,7 +64,7 @@ export interface InferenceMetricsRates {
     meanTtftMs: number
 }
 
-/** One model's lifetime totals on one node. */
+/** One model's totals since the broker started on one node. */
 export interface NodeModelMetrics {
     model: string
     totals: InferenceMetricsTotals

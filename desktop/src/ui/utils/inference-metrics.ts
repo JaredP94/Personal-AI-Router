@@ -58,20 +58,20 @@ const NOT_REPORTED = 'not reported'
  *
  * The broker computes a node's rates over a 60-second rolling window (its
  * `nodeMetricsWindow` constant). The label says so, because the same
- * section also shows lifetime figures, and the two must not read as the
- * same measurement: a model that has gone idle keeps a high lifetime ratio
- * while the node's windowed rate falls to zero.
+ * section also shows the totals since the broker started, and the two must
+ * not read as the same measurement: a model that has gone idle keeps a high
+ * ratio over those totals while the node's windowed rate falls to zero.
  */
 const NODE_WINDOW_LABEL = 'last 60 s'
 
 /**
- * The scope the broker's lifetime totals cover, as it appears in a label.
+ * The scope the broker's totals cover, as it appears in a label.
  *
  * The broker keeps its totals in memory and starts counting when it starts,
  * so they cover the time since the broker started — not the life of the
  * engine, and not the life of the machine. The label says so, because a user
- * who reads "lifetime" as "since the beginning of time" will draw the wrong
- * conclusion from a total that restarts with every broker.
+ * who reads the total as covering the engine's whole life will draw the
+ * wrong conclusion from a total that restarts with every broker.
  */
 const TOTAL_LABEL = 'since broker start'
 

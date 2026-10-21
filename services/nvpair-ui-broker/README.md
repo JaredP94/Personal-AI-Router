@@ -58,9 +58,9 @@ These responsibilities live in the broker itself rather than in a worker:
   broker advances sample age locally, feeds compact maximum-GPU telemetry to the
   scheduler, and replays it after a scheduler restart.
 - **Per-node inference metrics.** The broker aggregates the engines' own
-  prefill/decode measurements into a per-node accumulator — lifetime totals, a
-  60-second rolling window of rates, presence counters and a per-model
-  breakdown — and serves it as `metrics:get-node-metrics` and the
+  prefill/decode measurements into a per-node accumulator — totals since the
+  broker started, a 60-second rolling window of rates, presence counters and a
+  per-model breakdown — and serves it as `metrics:get-node-metrics` and the
   `metrics:node-metrics` push.
 
 ### Supervision & recovery
@@ -331,7 +331,7 @@ A few semantics worth knowing:
 
 #### `metrics:node-metrics`
 
-**Opt-in.** Only delivered to a peer that has called `metrics:subscribe`; silent otherwise. The per-node inference-metrics snapshot: for every node that has served traffic, its lifetime totals, its current rates over the broker's 60-second rolling window, and the same totals broken down per model. The payload is the **full snapshot, never a delta** — a client that missed a push recovers by re-reading everything rather than by accumulating differences it never saw.
+**Opt-in.** Only delivered to a peer that has called `metrics:subscribe`; silent otherwise. The per-node inference-metrics snapshot: for every node that has served traffic, its totals since the broker started, its current rates over the broker's 60-second rolling window, and the same totals broken down per model. The payload is the **full snapshot, never a delta** — a client that missed a push recovers by re-reading everything rather than by accumulating differences it never saw.
 
 The broker coalesces the pushes: at most one snapshot per second, carrying the newest state, however many completions arrived in between. A push per completion would put the broker's write path under load for no benefit.
 

@@ -92,8 +92,10 @@ live `activity` row. **The admin API is not needed for v1.** It is v2 scope
 
 Ollama's final NDJSON chunk carries `prompt_eval_count`, `eval_count`, and
 `prompt_eval_duration` / `eval_duration` (nanoseconds). PAIR parses the counts
-and ignores the durations. No request injection is needed — Ollama always
-includes them. Ollama reports no cached-token count and no TTFT.
+and the phase durations, converting the durations to milliseconds, so an Ollama
+job reports its own prefill and decode durations. No request injection is
+needed — Ollama always includes them. Ollama reports no cached-token count and
+no TTFT.
 
 ### 2.3 LM Studio
 
