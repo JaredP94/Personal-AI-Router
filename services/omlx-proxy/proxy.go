@@ -242,6 +242,42 @@ func bufferBodyAndModel(r *http.Request) ([]byte, string) {
 	return body, probe.Model
 }
 
+// withUsageRequested returns the request body with oMLX's usage block
+// requested: {"stream_options":{"include_usage":true}}. oMLX emits the
+// streaming usage chunk — token counts plus the engine's own prefill and
+// decode measurements — only when the request asks for it, so the proxy asks
+// on the client's behalf.
+//
+// The body is returned unchanged unless it is a JSON object whose "stream"
+// field is true and which carries no "stream_options" of its own: a client's
+// explicit stream_options are never overridden, a non-streaming request gets
+// no usage block from oMLX anyway, and a body that is not a JSON object is
+// forwarded byte for byte. The caller's bytes are never modified: the flag
+// is added to a freshly marshalled copy, and a body that needs no change is
+// handed back as it is.
+func withUsageRequested(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body
+	}
+	if _, ok := fields["stream_options"]; ok {
+		return body
+	}
+	var streaming bool
+	if err := json.Unmarshal(fields["stream"], &streaming); err != nil || !streaming {
+		return body
+	}
+	fields["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 type statusCapture struct {
 	http.ResponseWriter
 	status int
@@ -1018,6 +1054,27 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, model := bufferBodyAndModel(r)
 	isInf := isInferenceRequest(r.Method, r.URL.Path)
 
+	// The body forwarded to the engine asks oMLX for its usage block, so the
+	// engine's prefill/decode numbers reach the telemetry reader (oMLX emits
+	// that block only when the request asks for it). The client's own body is
+	// never modified: the flag is added to the buffered copy that every
+	// failover attempt replays, so all attempts forward the same body.
+	forwardBody := bodyBytes
+	if isInf {
+		if injected := withUsageRequested(bodyBytes); !bytes.Equal(injected, bodyBytes) {
+			forwardBody = injected
+			// The forwarded body is longer than the client's, so a declared
+			// length would no longer match the bytes on the wire and the
+			// upstream request would be malformed. A client that declared a
+			// length gets an updated one; a client that did not (a length of
+			// -1, a chunked request) keeps an unknown length, so the upstream
+			// request stays framed exactly as the client framed it.
+			if r.ContentLength >= 0 {
+				r.ContentLength = int64(len(injected))
+			}
+		}
+	}
+
 	var ctx = r.Context()
 	var span trace.Span
 	var finalStatus int
@@ -1264,8 +1321,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	for i := range candidates {
 		cand := candidates[i]
 		last := i == len(candidates)-1
-		if bodyBytes != nil {
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if forwardBody != nil {
+			r.Body = io.NopCloser(bytes.NewReader(forwardBody))
 		}
 		retry := false
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK, idle: idleClientWriteTimeout}

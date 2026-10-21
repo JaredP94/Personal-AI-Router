@@ -103,6 +103,42 @@ func waitAffinityCompletion(t *testing.T, frames <-chan e2eFrame) RequestEvent {
 	}
 }
 
+// canonicalRequest re-marshals a JSON request body with its top-level keys
+// sorted and its whitespace dropped, so two bodies can be compared without
+// depending on the key order or the spacing either side used. The proxy
+// re-marshals the body it forwards, so the comparison has to be
+// order-insensitive.
+func canonicalRequest(t *testing.T, body string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
+		t.Fatalf("unmarshal request body %q: %v", body, err)
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal request body %q: %v", body, err)
+	}
+	return string(out)
+}
+
+// withoutUsageRequest removes the usage request the proxy adds to a
+// streaming body, so the remainder can be compared with the client's own
+// request. The proxy asks oMLX for the usage block, but it must not change
+// anything else about the request it forwards.
+func withoutUsageRequest(t *testing.T, body string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
+		t.Fatalf("unmarshal engine body %q: %v", body, err)
+	}
+	delete(fields, "stream_options")
+	out, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal engine body %q: %v", body, err)
+	}
+	return string(out)
+}
+
 // This exercises the compiled service's stdio and HTTP boundaries. Two fixture
 // engines prove routing decisions, not actual engine KV-cache residency.
 func TestE2ECacheAffinityConversationAndFailover(t *testing.T) {
@@ -177,8 +213,24 @@ func TestE2ECacheAffinityConversationAndFailover(t *testing.T) {
 		for _, want := range wantAttempts {
 			select {
 			case got := <-attempts:
-				if got.node != want || got.body != string(body) {
-					t.Fatalf("turn %d: expected node %s and byte-identical request, got node %s; body_equal=%v", turn+1, want, got.node, got.body == string(body))
+				if got.node != want {
+					t.Fatalf("turn %d: expected node %s, got node %s", turn+1, want, got.node)
+				}
+				// The forwarded body is the client's request plus the usage
+				// request the proxy adds; nothing else may differ.
+				if stripped, want := withoutUsageRequest(t, got.body), canonicalRequest(t, string(body)); stripped != want {
+					t.Fatalf("turn %d: expected the client's request, got %q", turn+1, stripped)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(got.body), &fields); err != nil {
+					t.Fatalf("unmarshal engine body %q: %v", got.body, err)
+				}
+				var options map[string]json.RawMessage
+				if err := json.Unmarshal(fields["stream_options"], &options); err != nil {
+					t.Fatalf("turn %d: engine body %q has no usage request: %v", turn+1, got.body, err)
+				}
+				if string(options["include_usage"]) != "true" {
+					t.Fatalf("turn %d: engine body %q does not request the usage block", turn+1, got.body)
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatalf("turn %d: missing attempt on %s", turn+1, want)
