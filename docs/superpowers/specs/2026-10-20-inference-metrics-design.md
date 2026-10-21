@@ -158,8 +158,11 @@ Two of the three engines report a full phase split. LM Studio reports none, and
 
 ### Anti-goals
 
-- **Do not** let the desktop count, filter, or derive. Every number the UI
-  shows is computed by a Go service and delivered as a value.
+- **Do not** let the desktop count, filter, or aggregate across records, and
+  do not let it own a windowed rate. Every count, filter, aggregate and
+  windowed rate is computed by a Go service and delivered as a value. A
+  per-record ratio of two reported values (§4.5) is display arithmetic, not
+  counting.
 - **Do not** merge engine-native totals and PAIR-derived totals into one field.
   Two sources of truth that disagree is worse than one.
 - **Do not** invent a phase number the engine did not measure. §4.1.
@@ -449,8 +452,16 @@ returns the same snapshot for hydration on connect.
   `metrics:get-node-metrics` from the bridge's cached snapshot.
 - **Store:** the bridge caches the pushed snapshot; the renderer reads it from
   `desktop/src/ui/stores/metrics.store.ts`, which already keys by node id and
-  keeps a rolling series for hardware metrics. The desktop **never counts or
-  derives** — it renders the numbers it is given.
+  keeps a rolling series for hardware metrics.
+- **What the desktop may compute.** The desktop never counts, never filters,
+  never aggregates across records, and never owns a windowed rate — those are
+  the service's, and the repo's own history (`routingmetrics`) is a warning
+  about what happens when two places own them. It may render a **per-record
+  ratio of two values the service reported** — one request's tokens over that
+  request's duration — which is the same kind of arithmetic it already does
+  when it shows memory usage as a percentage of the reported total. Every such
+  ratio is **labelled with the window it covers**, so a 60-second windowed
+  rate and a lifetime ratio are never shown under the same label.
 - **Node card** (`desktop/src/ui/components/NodeList/NodeCardDetails.tsx`):
   a prefill/decode section — prefill tok/s, decode tok/s, TTFT, tokens served.
   Absent phases are shown as "not reported by this engine" rather than as 0.
