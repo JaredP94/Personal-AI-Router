@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nvpair-shared/enginenative"
+	"nvpair-shared/inferencemetrics"
 )
 
 // The engine's own live rows are published on the engine-manager's em
@@ -79,6 +80,66 @@ type engineJob struct {
 	// publisher of the PAIR-derived facts, so the job leaves at most one
 	// frame per window whichever publisher has something to say.
 	limiter *progressLimiter
+	// nodeID is the node that serves the request: this node's own id for a
+	// request this proxy serves, and this node's id for a request a peer
+	// forwarded (the peer is the origin, this node does the work).
+	nodeID string
+	// start is when the request reached this proxy.
+	start time.Time
+
+	// mu guards the two readings the job's two publishers share.
+	mu sync.Mutex
+	// latest is the engine's most recent reading of this job, as the
+	// engine's publisher last saw it.
+	//
+	// The request's own publisher attaches it to its frames. The job's two
+	// publishers share one window, so the one that leaves the frame may be
+	// either of them — and a frame that carried only one half of the view
+	// would leave the other half to a publisher that may never win a
+	// window. The engine's publisher polls on a timer while the request's
+	// publisher is driven by the response's own chunks, so the request's
+	// publisher wins nearly every window: without this the engine's
+	// numbers would never reach a client.
+	latest *EngineProgress
+	// facts is what PAIR measured of the response so far, and hasFacts
+	// reports whether the response has produced anything yet.
+	//
+	// The engine's publisher attaches them to its frames, for the same
+	// reason: a frame that leaves in a window the request's publisher did
+	// not win must still carry what PAIR measured.
+	facts    LiveProgress
+	hasFacts bool
+}
+
+// recordLatest stores the engine's most recent reading of this job.
+func (j *engineJob) recordLatest(reading *EngineProgress) {
+	j.mu.Lock()
+	j.latest = reading
+	j.mu.Unlock()
+}
+
+// latestReading returns the engine's most recent reading of this job, or nil
+// when the engine has reported nothing for it yet.
+func (j *engineJob) latestReading() *EngineProgress {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.latest
+}
+
+// recordFacts stores what PAIR measured of the response so far.
+func (j *engineJob) recordFacts(prog LiveProgress) {
+	j.mu.Lock()
+	j.facts = prog
+	j.hasFacts = true
+	j.mu.Unlock()
+}
+
+// factsSnapshot returns what PAIR measured of the response so far, and
+// whether the response has produced anything yet.
+func (j *engineJob) factsSnapshot() (LiveProgress, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.facts, j.hasFacts
 }
 
 // engineActivity holds the pairing between the engine's request ids and
@@ -130,6 +191,11 @@ func (p *Proxy) bindEngineJob(job *engineJob) {
 		// frame on every poll, beside the frames the PAIR-derived
 		// publisher leaves.
 		job.limiter = newProgressLimiter()
+	}
+	if job.nodeID == "" {
+		// This node serves the request: a request a peer forwarded is
+		// served here, and the frame names the node that does the work.
+		job.nodeID = p.nodeID
 	}
 	p.engine.mu.Lock()
 	if p.engine.jobs == nil {
@@ -232,17 +298,35 @@ func (p *Proxy) refreshEngineActivity(ctx context.Context, tick time.Time) {
 		if !ok {
 			continue
 		}
+		// The reading is cached whatever the limiter says: the request's
+		// own publisher attaches it to its frames, so a window the engine's
+		// publisher does not win still carries the engine's numbers.
+		reading := engineProgressOf(row)
+		job.recordLatest(reading)
 		if !job.limiter.due(tick) {
 			continue
 		}
-		p.emitProgress(ProgressFrame{
+		frame := ProgressFrame{
 			JobID:          job.jobID,
-			NodeID:         p.nodeID,
+			NodeID:         job.nodeID,
 			OriginatedFrom: job.originNodeID,
 			Engine:         workloadEngine,
 			RunID:          job.runID,
-			EngineProgress: engineProgressOf(row),
-		})
+			EngineProgress: reading,
+		}
+		// The facts PAIR measured ride on this frame too. The job's two
+		// publishers share one window, so the frame that leaves must carry
+		// both halves of the view: this process measured both, and the
+		// broker merges the halves of a job's frames field by field.
+		if facts, ok := job.factsSnapshot(); ok {
+			frame.ElapsedMs = inferencemetrics.Int64Ptr(tick.Sub(job.start).Milliseconds())
+			frame.Chunks = inferencemetrics.Int64Ptr(facts.Chunks)
+			frame.Bytes = inferencemetrics.Int64Ptr(facts.Bytes)
+			if facts.HasByte {
+				frame.TTFBMs = inferencemetrics.Int64Ptr(facts.TTFBMs)
+			}
+		}
+		p.emitProgress(frame)
 	}
 }
 

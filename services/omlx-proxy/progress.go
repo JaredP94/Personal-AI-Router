@@ -111,18 +111,23 @@ type EngineProgress struct {
 //
 // It is SHARED by the two publishers of one job — the PAIR-derived facts and
 // the engine's own reading — so a job leaves at most one frame per window
-// whichever publisher has something to say. The broker merges the two partial
-// views field by field, so a frame the limiter held back loses nothing: the
-// other publisher's numbers are still in the merged view, and the next
-// window brings the newer ones.
+// whichever publisher has something to say. Both publishers put both halves
+// of the view on the frame they leave, so a frame the limiter held back
+// loses nothing: the other publisher's numbers are still in the merged view,
+// and the next window brings the newer ones.
 type progressLimiter struct {
 	mu   sync.Mutex
 	last time.Time
+	// interval is the job's own window. It is read from the package
+	// setting once, when the limiter is created, so the window a job
+	// leaves frames at does not change under it — and so the setting is
+	// read on the request's own goroutine, never from the poller's.
+	interval time.Duration
 }
 
 // newProgressLimiter returns the limiter of one job.
 func newProgressLimiter() *progressLimiter {
-	return &progressLimiter{}
+	return &progressLimiter{interval: progressInterval}
 }
 
 // due reports whether a frame may be emitted now, and records the emission.
@@ -132,7 +137,7 @@ func newProgressLimiter() *progressLimiter {
 func (l *progressLimiter) due(now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.last.IsZero() && now.Sub(l.last) < progressInterval {
+	if !l.last.IsZero() && now.Sub(l.last) < l.interval {
 		return false
 	}
 	l.last = now
@@ -158,23 +163,33 @@ func (p *Proxy) emitProgress(frame ProgressFrame) {
 // id.
 //
 // The limiter is the job's own, shared with the engine's own publisher, so
-// the two never both leave a frame in one window.
-func (p *Proxy) publishProgress(jobID, nodeID string, start time.Time, limiter *progressLimiter, prog LiveProgress) {
+// the two never both leave a frame in one window. The engine's own numbers
+// ride on this frame as well: the two publishers share one window, and the
+// request's own publisher — driven by the response's chunks — wins nearly
+// every one of them, so a frame that left only the PAIR-derived facts
+// would leave the engine's numbers to a publisher that never wins.
+//
+// The facts are recorded on the job as they are measured, so the engine's
+// publisher can carry them on the frames it leaves.
+func (p *Proxy) publishProgress(job *engineJob, prog LiveProgress) {
 	now := time.Now()
-	if !limiter.due(now) {
+	if !job.limiter.due(now) {
 		return
 	}
 	frame := ProgressFrame{
-		JobID:     jobID,
-		NodeID:    nodeID,
+		JobID:     job.jobID,
+		NodeID:    job.nodeID,
 		Engine:    workloadEngine,
-		RunID:     p.runID,
-		ElapsedMs: inferencemetrics.Int64Ptr(now.Sub(start).Milliseconds()),
+		RunID:     job.runID,
+		ElapsedMs: inferencemetrics.Int64Ptr(now.Sub(job.start).Milliseconds()),
 		Chunks:    inferencemetrics.Int64Ptr(prog.Chunks),
 		Bytes:     inferencemetrics.Int64Ptr(prog.Bytes),
 	}
 	if prog.HasByte {
 		frame.TTFBMs = inferencemetrics.Int64Ptr(prog.TTFBMs)
+	}
+	if reading := job.latestReading(); reading != nil {
+		frame.EngineProgress = reading
 	}
 	p.emitProgress(frame)
 }

@@ -16,6 +16,6 @@
     "nvpair-cluster-manager": "2.1.0",
     "nvpair-job-scheduler": "1.1.0",
     "nvpair-tui": "1.2.0",
-    "omlx-proxy": "1.4.0"
+    "omlx-proxy": "1.4.1"
   }
 }
