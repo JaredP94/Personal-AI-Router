@@ -65,18 +65,30 @@ Emitted when a manually added node has been probed and its initial status determ
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
     "telemetryValid":true,
     "msSince":120,
-    "hostUuid":"stable-node-uuid"
+    "hostUuid":"stable-node-uuid",
+    "engineNative":{
+      "engine":"omlx",
+      "supported":true,
+      "totals":{"requests":2,"promptTokens":123,"completionTokens":599},
+      "rates":{"prefillTokensPerSecond":161.1,"generationTokensPerSecond":69.1},
+      "models":[{"model":"a-model","loaded":true}],
+      "observedAt":1792663511584
+    }
   }
 }
 ```
 
 Each node is probed for inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`), and oMLX on its default `:1236` (OpenAI-compatible `/v1/models` or loopback-only 403 proxy identification). Nodes running `nvpair-engine-manager` on `:14322` are also probed for authoritative multi-engine inventory. `lmstudio_*` and `omlx_*` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` and `omlx-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run any engine combination.
 
+`engineNative` is the remote engine's own report of itself — the counters, the rates and the active models the node's engine-manager publishes at `GET /v1/engine-stats`. It is read over the same transport as the model list beside it, because it is the same kind of data: a peer's engine counters are cluster data, so a clustered peer is read over cluster mTLS pinned to the principal the node advertises, and there is no weaker fallback for a peer. The field is absent when the node publishes no view — an engine with no admin API, an engine that could not be reached, or a node this one cannot read. A node whose view could not be re-read keeps the view it had (the last-good rule the node-scanner follows for a discovered node). It is read on a slower cadence than the probe (once a minute), because the engine's counters move slowly and every reading is a fresh observation.
+
 ### `node/updated`
 
 Emitted when a periodic 10-second probe detects a topology change (service going up/down, models,
 or GPU inventory changed). Topology updates keep engine inventory and topology in sync; scheduling telemetry
-is delivered separately via `node/telemetry`.
+is delivered separately via `node/telemetry`. The engine's own view (`engineNative`) counts as a change
+when its numbers move or when the reading is newer, so a node's view is re-announced as often as a
+discovered node's is.
 
 ### `node/telemetry`
 

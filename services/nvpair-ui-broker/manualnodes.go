@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"nvpair-shared/enginenative"
 	"nvpair-shared/noderec"
 
 	"nvpair-ui-broker/relay"
@@ -51,6 +52,11 @@ type manualNodeStatus struct {
 	Models         []string            `json:"models,omitempty"`
 	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// EngineNative is the remote engine's own report of itself, as the
+	// manual-node prober read it over the peer's pinned mTLS path. It is
+	// the same field a discovered node's record carries, so a manual node
+	// and a discovered node present the engine's view identically.
+	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
 }
 
 type manualNodeStatusEntry struct {
@@ -141,6 +147,7 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		Models:         models,
 		ModelsByEngine: modelsByEngine,
 		LoadedByEngine: s.LoadedByEngine,
+		EngineNative:   s.EngineNative,
 		Clustered:      s.ClusterUUID != "",
 	}
 	if s.Address != "" {
@@ -271,6 +278,7 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		Models:         models,
 		ModelsByEngine: modelsByEngine,
 		LoadedByEngine: s.LoadedByEngine,
+		EngineNative:   s.EngineNative,
 		LastSeen:       time.Now().Unix(),
 	}
 }

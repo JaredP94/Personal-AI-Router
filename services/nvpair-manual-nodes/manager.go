@@ -26,6 +26,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/enginenative"
 	"nvpair-shared/errors"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/nodeid"
@@ -41,6 +42,20 @@ const (
 	probeInterval         = 10 * time.Second
 	probeTimeout          = 3 * time.Second
 	telemetryProbeTimeout = 1500 * time.Millisecond
+
+	// engineNativeRefreshInterval is the cadence of the engine's own view of
+	// a manual node. The engine's counters move slowly, and every reading is
+	// a fresh observation, so reading the view on every probe would
+	// re-announce the node on every probe. The cadence is the one the
+	// node-scanner uses for a discovered node's view, so both sources of a
+	// node record carry a view at the same rate.
+	engineNativeRefreshInterval = 60 * time.Second
+
+	// engineNativeResponseLimit caps how much of the engine-native answer is
+	// read. The answer is the engine's own counters, so it is small; the cap
+	// is a bound on what a remote can make this process read, not a
+	// statement about the expected size.
+	engineNativeResponseLimit = 1 << 20
 
 	// probeFailThreshold is the number of CONSECUTIVE probes (at
 	// probeInterval = 10s, so 30 s of unreachability) where neither
@@ -194,6 +209,19 @@ type ManualNodeStatus struct {
 	Models         []string            `json:"models,omitempty"`
 	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// EngineNative is the remote engine's own report of itself: the
+	// counters, the rates and the active models the node's engine-manager
+	// publishes at GET /v1/engine-stats. It is read over the same transport
+	// as the model list above, because it is the same kind of data: a peer's
+	// engine counters are cluster data, read over cluster mTLS pinned to the
+	// principal the node advertises.
+	//
+	// Absent when the node publishes no view: an engine with no admin API,
+	// an engine that could not be reached, or a node whose engine-manager
+	// does not serve the surface. A node with no view is a normal state, not
+	// a fault — and a node whose view could not be re-read keeps the view it
+	// had (the last-good rule the node-scanner follows too).
+	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
 }
 
 type ReadyParams struct {
@@ -212,6 +240,17 @@ type trackedNode struct {
 	// probeFailThreshold so a single transient failure doesn't
 	// generate UI noise.
 	consecutiveFails int
+
+	// lastEngineNativeAt is when this node's engine view was last read, so
+	// the view is read on its own slower cadence (engineNativeRefreshInterval)
+	// rather than on every probe.
+	lastEngineNativeAt time.Time
+
+	// engineNative is the last view of this node's engine that was read
+	// successfully. It lives here, not only on the status, so a probe that
+	// overlaps another one cannot drop a reading the other took: the last
+	// good view is the node's, whatever the probes interleave.
+	engineNative *enginenative.Stats
 
 	cancelTelemetry context.CancelFunc
 }
@@ -253,6 +292,11 @@ type Manager struct {
 	// currently-pinned server cert) since a clustered peer's node-info is
 	// pin-gated and serves no plaintext listener.
 	mesh *clustertrust.Mesh
+
+	// emPort is the port a remote node's engine-manager surface is probed on.
+	// It is engineManagerPort in production; a test points it at an ephemeral
+	// port so the probe can be exercised without binding the fixed one.
+	emPort int
 
 	clusterDir       string
 	lastMembersMtime time.Time
@@ -373,6 +417,7 @@ func NewManager(codec *Codec, tlsOpts tlsClientOptions, mesh *clustertrust.Mesh,
 		ctx:    ctx,
 		cancel: cancel,
 		mesh:   mesh,
+		emPort: engineManagerPort,
 		now:    time.Now,
 		client: &http.Client{
 			Timeout:   probeTimeout,
@@ -670,7 +715,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	}
 
 	useTLS := entry.TLSPort > 0 || (nodeInfoUp && scheme == "https")
-	emUp, emRes := m.probeEngineManager(addr, clusterUUID, useTLS)
+	emUp, emRes, engineNative := m.probeEngineManager(addr, clusterUUID, useTLS, m.engineNativeDue(id))
 
 	finalModels := emRes.Models
 	finalModelsByEngine := emRes.ModelsByEngine
@@ -802,6 +847,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		Models:         finalModels,
 		ModelsByEngine: finalModelsByEngine,
 		LoadedByEngine: finalLoadedByEngine,
+		EngineNative:   engineNative,
 	}
 
 	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.OMLXUp || newStatus.NodeInfoUp || emUp
@@ -828,6 +874,17 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	if newStatus.ClusterUUID == "" && m.mesh != nil && newStatus.HostUUID != "" && m.mesh.HasPin(newStatus.HostUUID) {
 		newStatus.ClusterUUID = newStatus.HostUUID
 	}
+	// A node with no view keeps the one it had: the last-good rule the
+	// node-scanner's engine-native sweep follows too. A node that never
+	// produced a view has none, and a node whose engine publishes no admin
+	// API gains no view. The view is kept on the tracked node rather than
+	// only on the status, so a probe that overlaps another one cannot drop a
+	// reading the other took.
+	if newStatus.EngineNative != nil {
+		tn.engineNative = newStatus.EngineNative
+	}
+	newStatus.EngineNative = tn.engineNative
+
 	tn.status = newStatus
 	if reachable {
 		tn.consecutiveFails = 0
@@ -855,7 +912,8 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
 		prev.TelemetryValid != newStatus.TelemetryValid ||
 		prev.MSSince != newStatus.MSSince ||
-		prev.SampleSeq != newStatus.SampleSeq
+		prev.SampleSeq != newStatus.SampleSeq ||
+		!enginenative.SameView(prev.EngineNative, newStatus.EngineNative)
 
 	if changed {
 		slog.Info("manual node state changed",
@@ -929,7 +987,13 @@ type engineManagerModels struct {
 // When reachable, it provides the authoritative model list, per-engine attribution, and
 // loaded-in-memory models across all supported engines (Ollama, LM Studio, oMLX) in a
 // single sweep. Tries cluster mTLS first if clustered, then configured TLS client, then HTTP.
-func (m *Manager) probeEngineManager(addr, clusterUUID string, useTLS bool) (bool, engineManagerModels) {
+//
+// When the caller asks for it, the engine's own view of itself is read as well,
+// over the same transport the model list was just read over: the engine's
+// counters are cluster data exactly like the model inventory, so a peer is read
+// over cluster mTLS pinned to the principal it advertises, and the view is
+// never read over a weaker transport than the list beside it.
+func (m *Manager) probeEngineManager(addr, clusterUUID string, useTLS bool, wantEngineNative bool) (bool, engineManagerModels, *enginenative.Stats) {
 	if m.mesh != nil && m.mesh.Clustered() {
 		m.mesh.Refresh()
 		var cfg *tls.Config
@@ -945,23 +1009,23 @@ func (m *Manager) probeEngineManager(addr, clusterUUID string, useTLS bool) (boo
 				Timeout:   probeTimeout,
 				Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true},
 			}
-			if success, res := m.fetchEngineManagerModels(tlsClient, "https", addr, engineManagerPort); success {
-				return true, res
+			if success, res := m.fetchEngineManagerModels(tlsClient, "https", addr, m.emPort); success {
+				return true, res, readEngineNative(tlsClient, "https", addr, m.emPort, wantEngineNative)
 			}
 		}
 	}
 
 	if useTLS && m.tlsClient != nil {
-		if success, res := m.fetchEngineManagerModels(m.tlsClient, "https", addr, engineManagerPort); success {
-			return true, res
+		if success, res := m.fetchEngineManagerModels(m.tlsClient, "https", addr, m.emPort); success {
+			return true, res, readEngineNative(m.tlsClient, "https", addr, m.emPort, wantEngineNative)
 		}
 	}
 
-	if success, res := m.fetchEngineManagerModels(m.client, "http", addr, engineManagerPort); success {
-		return true, res
+	if success, res := m.fetchEngineManagerModels(m.client, "http", addr, m.emPort); success {
+		return true, res, readEngineNative(m.client, "http", addr, m.emPort, wantEngineNative)
 	}
 
-	return false, engineManagerModels{}
+	return false, engineManagerModels{}, nil
 }
 
 func (m *Manager) fetchEngineManagerModels(client *http.Client, scheme, addr string, port int) (bool, engineManagerModels) {
@@ -999,6 +1063,92 @@ func (m *Manager) fetchEngineManagerModels(client *http.Client, scheme, addr str
 		"models", len(res.Models), "engines", len(res.ModelsByEngine),
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, res
+}
+
+// readEngineNative reads the engine's own view of a manual node: the counters,
+// the rates and the active models the node's engine-manager publishes at
+// GET /v1/engine-stats.
+//
+// The read rides the client the model list was just read over, so the view is
+// cluster data read exactly as the list beside it is: a peer is read over
+// cluster mTLS pinned to the principal it advertises, and there is no
+// plaintext fallback for a peer.
+//
+// The answer is PAIR's own type, so it is decoded as-is. A node whose engine
+// publishes no admin API answers "unsupported", and so does an engine that
+// could not be reached; neither is a view, so neither is carried. Every
+// failure — an unreachable node, a non-200, a malformed answer — leaves the
+// caller with no view: a node with no engine-native view is a normal state,
+// not a fault.
+//
+// want is false when the view is not due for a fresh reading (it is read on
+// its own slower cadence); the view is then simply not read.
+func readEngineNative(client *http.Client, scheme, addr string, port int, want bool) *enginenative.Stats {
+	if !want {
+		return nil
+	}
+	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/engine-stats"
+	start := time.Now()
+	resp, err := client.Get(url)
+	if err != nil {
+		slog.Debug("manual probe engine-stats failed",
+			"addr", addr, "port", port, "scheme", scheme, "err", err,
+			"duration_ms", time.Since(start).Milliseconds())
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual probe engine-stats non-OK",
+			"addr", addr, "port", port, "scheme", scheme, "status", resp.StatusCode,
+			"duration_ms", time.Since(start).Milliseconds())
+		return nil
+	}
+	var stats enginenative.Stats
+	if err := json.NewDecoder(io.LimitReader(resp.Body, engineNativeResponseLimit)).Decode(&stats); err != nil {
+		slog.Debug("manual probe engine-stats decode failed",
+			"addr", addr, "port", port, "scheme", scheme, "err", err,
+			"duration_ms", time.Since(start).Milliseconds())
+		return nil
+	}
+	// "unsupported" is the em surface's answer for an engine with no admin API
+	// and for an engine that could not be reached. Neither is a view of the
+	// engine, so neither is carried.
+	if !stats.Supported {
+		return nil
+	}
+	// The stamp says when the numbers were observed. The em surface stamps it
+	// with the reading it took; a peer that does not stamp it (an older one)
+	// gets the local observation time instead, so the field is never a lie
+	// about when it was read.
+	if stats.ObservedAt == 0 {
+		stats.ObservedAt = time.Now().UnixMilli()
+	}
+	slog.Debug("manual probe engine-stats ok",
+		"addr", addr, "port", port, "scheme", scheme,
+		"engine", stats.Engine, "requests", stats.Totals.Requests,
+		"duration_ms", time.Since(start).Milliseconds())
+	return &stats
+}
+
+// engineNativeDue reports whether this node's engine view is due for a fresh
+// reading, and claims the reading when it is.
+//
+// The claim is what keeps the view on its own cadence: a probe that does not
+// read the view leaves the node with the view it already had, so the node's
+// record changes only when the reading itself moves.
+func (m *Manager) engineNativeDue(id string) bool {
+	now := m.clockNow()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tn, ok := m.nodes[id]
+	if !ok {
+		return false
+	}
+	if now.Sub(tn.lastEngineNativeAt) < engineNativeRefreshInterval {
+		return false
+	}
+	tn.lastEngineNativeAt = now
+	return true
 }
 
 // probeLMStudio checks LM Studio's OpenAI-compatible server on addr:port. A
