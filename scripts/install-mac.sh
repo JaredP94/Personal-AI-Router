@@ -18,13 +18,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 #
 #   # Install a specific version:
-#   ./scripts/install-mac.sh --version 0.7.0-rc.5
+#   ./scripts/install-mac.sh --version 0.7.0
 #
 #   # Launch after install:
 #   ./scripts/install-mac.sh --launch
 #
 #   # Install from a local DMG file (offline / dev testing):
-#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.7.0-rc.5-arm64.dmg
+#   ./scripts/install-mac.sh --dmg /path/to/NVPAIR-Setup-0.7.0-arm64.dmg
 
 set -euo pipefail
 
@@ -42,7 +42,7 @@ Usage:
   $(basename "$0") [options]
 
 Options:
-  -v, --version <version>  Install a specific version (e.g. 0.7.0-rc.5 or v0.7.0-rc.5).
+  -v, --version <version>  Install a specific version (e.g. 0.7.0 or v0.7.0).
       --repo <owner/repo>  GitHub repository to download from (default: $PAIR_REPO).
       --dmg <path>         Install a local DMG; verify it independently first.
                           Cannot be combined with --version.
@@ -115,7 +115,7 @@ if ! [[ "$PAIR_REPO" =~ $REPO_PATTERN ]] || [ "${PAIR_REPO#*/}" = "." ] || [ "${
     fail "Invalid repository '$PAIR_REPO'; use GitHub owner/name (no URL or extra path)."
 fi
 if [ -n "$REQUESTED_VERSION" ] && ! valid_version "$REQUESTED_VERSION"; then
-    fail "Invalid version '$REQUESTED_VERSION'; use a filename-safe version such as 0.7.0-rc.5."
+    fail "Invalid version '$REQUESTED_VERSION'; use a filename-safe version such as 0.7.0."
 fi
 if [ -n "$LOCAL_DMG" ]; then
     [ -z "$REQUESTED_VERSION" ] || fail "--dmg and --version cannot be combined; choose one source."

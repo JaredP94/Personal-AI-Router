@@ -12,6 +12,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-22
+
+Unsigned, unnotarized **macOS arm64 release** for this fork, and the first
+non-prerelease build of the 0.7.0 line: it carries everything the
+`0.7.0-rc.N` candidates carried, and the earlier candidates remain available
+on the [releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
+Windows, Linux desktop and Intel Mac packages are not published.
+Privileged-helper registration and helper-based firewall setup remain
+unavailable in unsigned builds; Settings → Service shows manual firewall
+guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.7.0` ships service product `2.5.0`. Relay
+protocol stays v2. No JSON-RPC method was removed, so a mixed cluster keeps
+working — but a member on an older workload-manager does not carry the
+engine-native view from *remote* nodes, so that view is complete only once
+every member is upgraded.
+
+### Added
+- **The engine's own view on the node card**: a node card now carries a
+  separate "engine self-report" section with the engine's own counters — its
+  requests, its prompt, completion and cached tokens, its cache efficiency,
+  its average prefill and generation speeds, and the models it lists as
+  loaded. The view is fetched from every peer over the transport PAIR already
+  uses, so it reads the same cluster-wide. It is shown separately from PAIR's
+  own numbers and never merged with them: the engine's counters include the
+  traffic PAIR did not route, so adding the two together would count the
+  same work twice. The engine's API key cannot leak through it — PAIR defines
+  its own response type and reads the engine's payload field by field, so the
+  key is never carried into a reply.
+- **Live in-flight numbers on a running job**: a running job shows a live line
+  with what PAIR has measured of it so far — the elapsed time, the time to the
+  first byte, and how much has streamed (content chunks and response bytes) —
+  and, for oMLX, the engine's own live reading: its token count, its decode
+  rate, its prefill progress and its queue position. The frame is a snapshot,
+  not a state transition, so it never enters the workload catalog; when the job
+  ends the card switches to the final, exact numbers.
+- **The no-estimates rule**: nothing on these surfaces is estimated,
+  interpolated or derived from a different quantity. A chunk count is never
+  presented as a token count, and a value nobody reported reads "not reported"
+  rather than `0` — a measured zero stays a zero.
+
+### Fixed
+- **A manual peer's engine-native view was never fetched.** The engine-native
+  view was read only by the node-scanner, and only for the nodes in its own
+  mDNS directory. A peer registered as a **manual node** (reached over
+  Tailscale or a static address) is never in that directory, so its record
+  carried its model list but no engine counters, and the desktop could not
+  show them. `nvpair-manual-nodes` now reads the engine's counters over the
+  same pinned cluster-mTLS client it already used for the model list, and the
+  broker projects them onto the manual node's record.
+- **A job's live frame rarely carried the engine's numbers.** The job's two
+  live publishers shared one per-job frame limiter, and the chunk-driven one —
+  called on every read of the response — won nearly every window, so the
+  engine's half of the frame was almost never published. Both publishers now
+  put both halves on the frame they leave, so whichever one leaves a frame
+  carries the facts PAIR measured and the engine's own reading. The bound is
+  unchanged: a job still leaves at most one frame every two seconds.
+
 ## [0.7.0-rc.5] - 2026-10-22
 
 Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,

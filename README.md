@@ -75,10 +75,12 @@ This project exists as a forward-looking extension that introduces practical fea
    - The numbers are the engine's own. PAIR reads the prefill and decode durations that oMLX and Ollama report, and the time to first token and cached-token count that only oMLX reports, and shows "not reported" for anything an engine does not report — LM Studio reports no phase split and Ollama reports no time to first token, so those fields are always absent rather than zero. Per-node totals cover the period since the broker started.
    - New broker methods `metrics:get-node-metrics`, `metrics:subscribe` and `metrics:unsubscribe`, plus a coalesced `metrics:node-metrics` push. The relay protocol stays v2 and no method was removed.
 
-10. **Engine Self-Report and Live In-Flight Numbers (0.7.0-rc.4)**
-   - A node card now carries the engine's own account of itself: its requests, its prompt, completion and cached tokens, its cache efficiency, its average prefill and generation speeds, and the models it lists as loaded. It is fetched from every peer over the transport PAIR already uses, and shown as a clearly separate "engine self-report" — never merged with PAIR's own numbers, because the engine's counters include the traffic PAIR did not route.
+10. **Engine Self-Report and Live In-Flight Numbers (0.7.0)**
+   - A node card now carries the engine's own account of itself: its requests, its prompt, completion and cached tokens, its cache efficiency, its average prefill and generation speeds, and the models it lists as loaded. It is fetched from every peer over the transport PAIR already uses, and shown as a clearly separate "engine self-report" — never merged with PAIR's own numbers, because the engine's counters include the traffic PAIR did not route. The engine's API key cannot leak through it: PAIR defines its own response type and reads the engine's payload field by field.
    - A running job shows what has arrived so far: the elapsed time, the time to the first byte, and how much has streamed — plus, for oMLX, the engine's own token count, decode rate, prefill progress and queue position. When the job ends, the card switches to the final, exact numbers.
    - Nothing here is estimated. A chunk count is never presented as a token count, and a value nobody reported reads "not reported" rather than `0`. The new broker method `workloads:progress` and the new node-record field `engineNative` are additive, and the relay protocol stays v2.
+   - **Fixed: a manual peer's engine-native view was never fetched.** The engine-native view was read only by the node-scanner, and only for the nodes in its own mDNS directory, so a peer registered as a manual node — reached over Tailscale or a static address — carried its model list but no engine counters. `nvpair-manual-nodes` now reads the engine's counters over the same pinned cluster-mTLS client it already used for the model list.
+   - **Fixed: a job's live frame rarely carried the engine's numbers.** The job's two live publishers shared one per-job frame limiter, and the chunk-driven one won nearly every window, so the engine's half of the frame was almost never published. Both publishers now put both halves on the frame they leave, so whichever publisher leaves a frame carries the whole view; the one-frame-per-two-seconds bound is unchanged.
 
 ## What is supported
 
@@ -112,14 +114,17 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.7.0-rc.5` (2026-10-22), an unsigned,
-unnotarized macOS Apple Silicon candidate**, not an NVIDIA-signed release.
+The latest published build is **`0.7.0` (2026-10-22), an unsigned,
+unnotarized macOS Apple Silicon release**, not an NVIDIA-signed release.
+It is the first non-prerelease build of the 0.7.0 line: it carries
+everything the `0.7.0-rc.N` candidates carried, and those earlier candidates
+remain available on the releases page.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
 and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
-Automatic updater installation is not certified for this unsigned candidate;
+Automatic updater installation is not certified for this unsigned release;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.5).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0).
 It is marked as GitHub's Latest release for the Terminal installer and in-app
 update discovery.
 
@@ -128,8 +133,8 @@ Upstream official releases are separate and available at
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** Desktop `0.7.0-rc.5` ships service
-product `2.4.1`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+**Upgrade clients and services together:** Desktop `0.7.0` ships service
+product `2.5.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 
@@ -142,7 +147,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the candidate, pass `--version 0.7.0-rc.5` using `bash -s --` after the pipe.
+To pin the release, pass `--version 0.7.0` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.

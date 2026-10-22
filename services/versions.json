@@ -1,7 +1,7 @@
 {
   "$comment": "Single source of truth for all version numbers. See VERSIONING.md for bump rules.",
-  "product": "2.4.1",
-  "installer": "2.4.1",
+  "product": "2.5.0",
+  "installer": "2.5.0",
   "components": {
     "ollama-proxy": "1.4.0",
     "lmstudio-proxy": "1.4.0",

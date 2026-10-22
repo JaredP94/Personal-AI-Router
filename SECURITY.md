@@ -185,7 +185,7 @@ Tracing and payload capture are governed by per-node settings with strict privac
 
 ## macOS Distribution and Privileged Helper
 
-This fork's published `0.7.0-rc.5` candidate is unsigned and unnotarized, macOS
+This fork's published `0.7.0` release is unsigned and unnotarized, macOS
 arm64 only. The privileged-helper flow requires NVIDIA's Developer ID policy
 (Team ID `6KR3T733EC`); unsigned/ad-hoc fork builds do not satisfy it. Installing
 through `scripts/install-mac.sh`, checking `SHA256SUMS`, or avoiding browser

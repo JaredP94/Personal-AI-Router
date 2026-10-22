@@ -109,7 +109,7 @@ npm run build              # renderer, main, preload, and CLI bundles
 This produces the bundles the application runs from, for use on the machine that
 built them; it does not stage the full runtime by itself. Platform `build:*`
 scripts also stage services/tools and produce unsigned packages with
-electron-builder. The current fork candidate, 0.7.0-rc.5 for macOS arm64, is
+electron-builder. The current fork release, 0.7.0 for macOS arm64, is
 unsigned and unnotarized, not an NVIDIA-certified release. Inspect actual assets
 and signatures rather than assuming upstream release properties. Mac helper
 packaging additionally needs the macOS SDK and Swift tools; see
