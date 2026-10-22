@@ -105,6 +105,16 @@ export interface WorkloadLiveProgress {
      * different jobs, and only the engine tells them apart.
      */
     engine: EngineType | null
+    /**
+     * The proxy's per-process run nonce — the same value the workload
+     * carries as `runId`.
+     *
+     * It tells a recycled job id from the job it replaced: a proxy that
+     * restarts counts its jobs from 1 again. A frame that names another
+     * run is a different job, and the stored view of the old one is
+     * replaced rather than merged into it.
+     */
+    runId?: string | null
     /** The node that is serving the request. */
     nodeId?: string | null
     /** The time since the request reached the proxy. */

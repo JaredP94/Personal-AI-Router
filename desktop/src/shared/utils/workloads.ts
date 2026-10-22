@@ -87,21 +87,30 @@ export function workloadExecutionNodeId(workload: Pick<Workload, 'scheduledOn'>)
  * single engine row, so it is replaced as a unit rather than merged field by
  * field. A later row supersedes the earlier one — it does not blend with it,
  * and a field the engine has stopped reporting stops being shown.
+ *
+ * The run id is the other exception. A proxy that restarts counts its jobs
+ * from 1 again, so the same job id can name a DIFFERENT job: when the
+ * incoming frame names another run, the stored view belongs to the job it
+ * replaced and is replaced rather than merged. The broker merges the same
+ * way, so the desktop and the broker agree on which job a frame is about.
  */
 export function mergeWorkloadLiveProgress(
     stored: WorkloadLiveProgress | undefined,
     incoming: WorkloadLiveProgress
 ): WorkloadLiveProgress {
+    const sameRun = !incoming.runId || !stored?.runId || incoming.runId === stored.runId
+    const base = sameRun ? stored : undefined
     const merged: WorkloadLiveProgress = {
         jobId: incoming.jobId,
-        originatedFrom: incoming.originatedFrom ?? stored?.originatedFrom ?? null,
-        engine: incoming.engine ?? stored?.engine ?? null,
-        nodeId: incoming.nodeId ?? stored?.nodeId ?? null,
-        elapsedMs: incoming.elapsedMs ?? stored?.elapsedMs ?? null,
-        chunks: incoming.chunks ?? stored?.chunks ?? null,
-        bytes: incoming.bytes ?? stored?.bytes ?? null,
-        ttfbMs: incoming.ttfbMs ?? stored?.ttfbMs ?? null,
-        engineProgress: incoming.engineProgress ?? stored?.engineProgress ?? null
+        originatedFrom: incoming.originatedFrom ?? base?.originatedFrom ?? null,
+        engine: incoming.engine ?? base?.engine ?? null,
+        runId: incoming.runId ?? base?.runId ?? null,
+        nodeId: incoming.nodeId ?? base?.nodeId ?? null,
+        elapsedMs: incoming.elapsedMs ?? base?.elapsedMs ?? null,
+        chunks: incoming.chunks ?? base?.chunks ?? null,
+        bytes: incoming.bytes ?? base?.bytes ?? null,
+        ttfbMs: incoming.ttfbMs ?? base?.ttfbMs ?? null,
+        engineProgress: incoming.engineProgress ?? base?.engineProgress ?? null
     }
     return merged
 }

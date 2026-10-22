@@ -4,6 +4,7 @@
 package main
 
 import (
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -49,6 +50,16 @@ type ProgressFrame struct {
 	// proxy forwarded to a peer it is the peer's id, not this node's: the
 	// frame describes where the work runs.
 	NodeID string `json:"nodeId,omitempty"`
+	// OriginatedFrom is the node the request entered the cluster on. It is
+	// the origin of the job, and the half of the identity a job is keyed
+	// by: PAIR's job id is a per-proxy counter, so two origins can both
+	// hold a job "1".
+	//
+	// It is set only for a request this proxy serves on behalf of a peer:
+	// the origin's id travelled with the request. A request this proxy
+	// received directly leaves it empty, and the origin's own broker stamps
+	// this node's id onto the frame.
+	OriginatedFrom string `json:"originatedFrom,omitempty"`
 	// Engine is the engine that serves the job. It is part of the job's
 	// identity, not decoration: every proxy counts its own requests from
 	// 1, so an Ollama job "1" and an oMLX job "1" on the same node are two
@@ -75,6 +86,11 @@ type ProgressFrame struct {
 type progressLimiter struct {
 	mu   sync.Mutex
 	last time.Time
+}
+
+// newProgressLimiter returns the limiter of one job.
+func newProgressLimiter() *progressLimiter {
+	return &progressLimiter{}
 }
 
 // due reports whether a frame may be emitted now, and records the emission.
@@ -119,6 +135,118 @@ func (p *Proxy) publishProgress(jobID, nodeID string, start time.Time, limiter *
 	}
 	if prog.HasByte {
 		frame.TTFBMs = inferencemetrics.Int64Ptr(prog.TTFBMs)
+	}
+	p.emitProgress(frame)
+}
+
+// peerJob is the identity of a job another node forwarded, and the instant
+// the request reached the serving proxy.
+//
+// The identity travelled with the request: the origin proxy's job id, the
+// origin's node id and the origin's run nonce.
+type peerJob struct {
+	// jobID is the origin's id for the request.
+	jobID string
+	// originNodeID is the node the request entered the cluster on.
+	originNodeID string
+	// runID is the origin proxy's per-process run nonce.
+	runID string
+	// start is the instant the request reached this proxy, so the elapsed
+	// time and the time to the first byte are the request's own.
+	start time.Time
+}
+
+// peerProgress is what the serving side measured of a peer-served request's
+// response: the bytes the engine sent and the instant the first of them
+// arrived.
+//
+// It carries no chunk count: the serving side relays the engine's stream
+// without parsing it, so it has no content chunks to count. The origin's own
+// frame carries them, and the two partial views are merged field by field.
+type peerProgress struct {
+	// bytes is the number of response body bytes the engine sent.
+	bytes int64
+	// hasByte reports whether a response byte has arrived at all.
+	hasByte bool
+	// ttfbMs is the time to the first response byte, in milliseconds.
+	ttfbMs int64
+}
+
+// peerProgressReader counts the bytes the engine sent to a peer-served
+// request and notes the instant the first of them arrived.
+//
+// It runs on the goroutine that copies the response back to the peer, and it
+// reports on every read, so the frame leaves with the bytes that triggered
+// it.
+type peerProgressReader struct {
+	io.ReadCloser
+	// start is the instant the request reached the proxy, so the elapsed
+	// time and the time to the first byte are the request's own.
+	start      time.Time
+	onProgress func(peerProgress)
+
+	mu          sync.Mutex
+	bytes       int64
+	firstByteAt time.Time
+}
+
+// newPeerProgressReader wraps a response body with the reader that counts
+// the bytes the engine sent.
+func newPeerProgressReader(body io.ReadCloser, start time.Time) *peerProgressReader {
+	return &peerProgressReader{ReadCloser: body, start: start}
+}
+
+// Read reads the response body and counts what arrived.
+func (r *peerProgressReader) Read(b []byte) (int, error) {
+	n, err := r.ReadCloser.Read(b)
+	if n > 0 {
+		r.mu.Lock()
+		if r.firstByteAt.IsZero() {
+			r.firstByteAt = time.Now()
+		}
+		r.bytes += int64(n)
+		prog := peerProgress{
+			bytes:   r.bytes,
+			hasByte: true,
+			ttfbMs:  r.firstByteAt.Sub(r.start).Milliseconds(),
+		}
+		r.mu.Unlock()
+		if r.onProgress != nil {
+			r.onProgress(prog)
+		}
+	}
+	return n, err
+}
+
+// publishPeerProgress publishes the live facts the serving side measured for
+// a job another node forwarded.
+//
+// The frame is attributed to the job's ORIGIN: the job id, the origin's node
+// id and the origin's run nonce all travelled with the request, and a live
+// view is keyed by (origin, engine, job id). A frame the serving side
+// published without the origin would be stamped with the serving node's own
+// id by the serving node's broker, and the job's terminal event — which
+// names the origin — would never retire that view.
+//
+// The frame carries only what the serving side measured: the elapsed time,
+// the bytes the engine sent and the time to the first byte. It carries no
+// chunk count, because the serving side does not parse the engine's stream.
+func (p *Proxy) publishPeerProgress(job peerJob, limiter *progressLimiter, prog peerProgress) {
+	now := time.Now()
+	if !limiter.due(now) {
+		return
+	}
+	frame := ProgressFrame{
+		JobID:          job.jobID,
+		NodeID:         p.nodeID,
+		OriginatedFrom: job.originNodeID,
+		Engine:         workloadEngine,
+		RunID:          job.runID,
+		ElapsedMs:      inferencemetrics.Int64Ptr(now.Sub(job.start).Milliseconds()),
+		Bytes:          inferencemetrics.Int64Ptr(prog.bytes),
+	}
+	if prog.hasByte {
+		frame.TTFBMs = inferencemetrics.Int64Ptr(prog.ttfbMs)
 	}
 	p.emitProgress(frame)
 }

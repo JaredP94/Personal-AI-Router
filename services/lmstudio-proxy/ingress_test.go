@@ -100,7 +100,7 @@ func TestLocalReverseProxyUsesSharedPlainTransport(t *testing.T) {
 	p := testProxy(NewDiscovery(), 1235)
 	shared := p.plainHTTPTransport()
 	target := &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
-	rp := p.newLocalReverseProxy(target)
+	rp := p.newLocalReverseProxy(target, peerJob{})
 	tr, ok := rp.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("Transport type = %T, want *http.Transport", rp.Transport)

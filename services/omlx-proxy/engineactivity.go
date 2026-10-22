@@ -75,6 +75,10 @@ type engineJob struct {
 	// request a peer forwarded (it travelled with the request). It tells a
 	// recycled job id from the job it replaced.
 	runID string
+	// limiter is the job's own progress limiter. It is shared with the
+	// publisher of the PAIR-derived facts, so the job leaves at most one
+	// frame per window whichever publisher has something to say.
+	limiter *progressLimiter
 }
 
 // engineActivity holds the pairing between the engine's request ids and
@@ -120,6 +124,12 @@ func engineProgressOf(row enginenative.ActivityRow) *EngineProgress {
 func (p *Proxy) bindEngineJob(job *engineJob) {
 	if job == nil || job.engineReqID == "" || job.jobID == "" {
 		return
+	}
+	if job.limiter == nil {
+		// A job always has a limiter: without one it would publish a
+		// frame on every poll, beside the frames the PAIR-derived
+		// publisher leaves.
+		job.limiter = newProgressLimiter()
 	}
 	p.engine.mu.Lock()
 	if p.engine.jobs == nil {
@@ -177,8 +187,8 @@ func (p *Proxy) pollEngineActivity(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			p.refreshEngineActivity(ctx)
+		case tick := <-ticker.C:
+			p.refreshEngineActivity(ctx, tick)
 		}
 	}
 }
@@ -189,7 +199,15 @@ func (p *Proxy) pollEngineActivity(ctx context.Context) {
 // The rows are published on their own, keyed by PAIR's job id: they are the
 // engine's reading of a request, and the request's own frames carry the
 // facts PAIR measured. A consumer merges the two under the same job id.
-func (p *Proxy) refreshEngineActivity(ctx context.Context) {
+//
+// The frames leave through the job's own limiter, the one the PAIR-derived
+// publisher shares, so a job leaves at most one frame per window whichever
+// publisher has something to say.
+//
+// The tick's own time is the frame's effective time, so the window is
+// measured between two polls and a poll that runs a moment late does not
+// eat the next poll's window.
+func (p *Proxy) refreshEngineActivity(ctx context.Context, tick time.Time) {
 	activity, err := p.fetchEngineActivity(ctx)
 	if err != nil {
 		slog.Debug("engine activity unavailable", "err", err)
@@ -212,6 +230,9 @@ func (p *Proxy) refreshEngineActivity(ctx context.Context) {
 	for _, job := range jobs {
 		row, ok := rows[job.engineReqID]
 		if !ok {
+			continue
+		}
+		if !job.limiter.due(tick) {
 			continue
 		}
 		p.emitProgress(ProgressFrame{

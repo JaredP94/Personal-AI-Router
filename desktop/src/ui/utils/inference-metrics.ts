@@ -600,11 +600,11 @@ export function buildEngineNativeModels(view: EngineNativeView): EngineNativeMod
 /**
  * The rows of a running job's live line.
  *
- * Every number here is the one the broker sent: the elapsed time, the chunks
- * and bytes PAIR measured of the client's stream, and the engine's own live
- * reading when the engine reported one. The desktop derives nothing — in
- * particular it never turns a chunk count into a token count, because a chunk
- * is not a token.
+ * Every number here is the one the broker sent: the elapsed time, the time
+ * to the first response byte, the chunks and bytes PAIR measured of the
+ * client's stream, and the engine's own live reading when the engine reported
+ * one. The desktop derives nothing — in particular it never turns a chunk
+ * count into a token count, because a chunk is not a token.
  *
  * A reading the engine did not report reads as "not reported", never as a
  * zero. An engine that publishes no live progress at all (Ollama, LM Studio)
@@ -617,6 +617,11 @@ export function buildWorkloadLiveRows(live: WorkloadLiveProgress): InferenceMetr
             label: 'Elapsed',
             value: formatDurationMs(live.elapsedMs),
             unavailable: !isReported(live.elapsedMs)
+        },
+        {
+            label: 'First byte',
+            value: formatDurationMs(live.ttfbMs),
+            unavailable: !isReported(live.ttfbMs)
         },
         {
             label: 'Received',

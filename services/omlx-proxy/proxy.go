@@ -1413,7 +1413,10 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					telReader = reader
 					resp.Body = reader
 					if engineReqID != "" && bindsLocalEngineJob(cand) {
-						p.bindEngineJob(&engineJob{jobID: reqID, engineReqID: engineReqID, runID: p.runID})
+						// The engine's own publisher shares the request's
+						// limiter, so the job leaves at most one frame per
+						// window whichever publisher has something to say.
+						p.bindEngineJob(&engineJob{jobID: reqID, engineReqID: engineReqID, runID: p.runID, limiter: &progressLim})
 						boundEngineReqIDs = append(boundEngineReqIDs, engineReqID)
 					}
 				} else {

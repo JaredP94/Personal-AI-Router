@@ -982,11 +982,18 @@ finish.
   leaves at most once every two seconds per in-flight request, so a cluster
   with twenty running jobs carries at most ten frames per second whatever the
   engines' chunk rates are.
-- **Two publishers, one job id:** The origin proxy publishes the facts PAIR
-  measured of the client's stream. The serving node's poller publishes what
-  the engine reported of its own request (oMLX only) under the same job id. A
-  frame is a **partial** view: neither publisher can see the other's facts, so
-  a field a frame does not carry means "not measured here", never "zero".
+- **Publishers, one job id:** The origin proxy publishes the facts PAIR
+  measured of the client's stream. A node that serves the job for a peer
+  publishes what it measured of the engine's stream, and the oMLX proxy's
+  poller publishes what the engine reported of its own request, under the same
+  job id. A frame is a **partial** view: no publisher can see the others'
+  facts, so a field a frame does not carry means "not measured here", never
+  "zero".
+- **The origin travels with the request:** A request forwarded to a cluster
+  peer carries the origin's job id, the origin's node id and the origin's run
+  nonce. The serving node publishes its frame under that identity, so every
+  member of the cluster keys the job's live view the same way and the job's
+  terminal event — which names the origin — retires it.
 - **How it travels:** The workload-manager broadcasts the frame to every
   pinned peer. Each broker keeps a bounded live view of the running jobs and
   pushes the merged view to its clients as `workloads:progress`. A frame

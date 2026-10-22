@@ -113,9 +113,8 @@ is that presence means measured.
 engine measures exactly**, and nothing else.
 
 - PAIR-derived live facts (all three engines): elapsed time, time to first byte,
-  time to first content, and the count of content chunks and response bytes
-  received. All exact. **No token count, no rate** — PAIR cannot know either
-  without estimating.
+  and the count of content chunks and response bytes received. All exact.
+  **No token count, no rate** — PAIR cannot know either without estimating.
 - Engine-native live numbers (oMLX only): the engine's own `generated_tokens`,
   `tokens_per_second`, prefill progress and queue position. Exact, because the
   engine measured them.
@@ -195,11 +194,11 @@ totals, never summed with PAIR's numbers.
 **B1. PAIR-derived live facts, from the proxy.**
 
 The telemetry reader already sees each chunk as it arrives. It counts, exactly:
-content chunks received, response bytes received, the time to the first byte, the
-time to the first content chunk, and the elapsed time. These ride the existing
-`proxy/request-started` / `proxy/request` event pair — the proxy's own
-notification channel to its broker — as an additive `progress` payload on the
-started event and a periodic update.
+content chunks received, response bytes received, the time to the first byte,
+and the elapsed time. These ride the existing `proxy/request-started` /
+`proxy/request` event pair — the proxy's own notification channel to its
+broker — as an additive `progress` payload on the started event and a periodic
+update.
 
 **B2. Engine-native live activity, and the job-id join.**
 
@@ -209,8 +208,19 @@ keyed by PAIR's own request id. The join:
 - The origin proxy already reads the upstream response, so it sees
   `X-oMLX-Request-ID`.
 - For a job served on **another** node, the origin proxy forwards to that node's
-  cluster ingress. It adds one header — `X-NVPAIR-Request-Id: <PAIR job id>` —
-  to that forwarded request. The serving node's ingress handler reads it.
+  cluster ingress. It adds three headers to that forwarded request —
+  `X-NVPAIR-Request-Id: <PAIR job id>`, `X-NVPAIR-Origin-Node: <the origin's
+  node id>` and `X-NVPAIR-Run-Id: <the origin proxy's run nonce>` — and the
+  serving node's ingress handler reads them. None of them is a routing input:
+  the ingress stays strictly terminal and never re-routes a peer's request
+  onward.
+- All three proxies publish the frame for a peer-served job **under the
+  origin's identity**: the job id, the origin's node id and the origin's run
+  nonce all travelled with the request, and a live view is keyed by
+  `(originatedFrom, engine, jobId)`. A frame published without the origin
+  would be stamped with the serving node's own id by the serving node's
+  broker, and the job's terminal event — which names the origin — would never
+  retire that view.
 - The serving node's proxy already sees the response header from its local
   engine, so it holds `engine request id ↔ PAIR job id` locally, and polls the
   engine's `/admin/api/activity` (or reads it through the em surface) to get the
@@ -268,12 +278,21 @@ publishes):
 "engineNative": {
   "engine": "omlx",
   "supported": true,
-  "totals": { "...": 0 },
-  "rates": { "...": 0 },
+  "totals": { "requests": 3270, "promptTokens": 212978711 },
+  "rates": { "generationTokensPerSecond": 32.5 },
   "models": [{ "model": "...", "loaded": true }],
   "observedAt": 1716998400000
 }
 ```
+
+The counters are plain numbers with `omitempty`, so **a counter the engine
+reported as zero is absent from the JSON**: a reported zero and an unreported
+counter are the same thing to a reader of a cumulative counter, and the
+trade-off is that the two cannot be told apart. The `totals` and `rates`
+objects are always present (an empty object when the engine reported
+nothing), but a counter inside them that is zero is left out. The live rows
+of an activity row are pointer-typed instead, so there a reported zero stays
+a reported zero.
 
 A node that has **never produced** a view has none: its engine publishes no
 admin API, or it could not be reached. A node whose **fetch fails** keeps the

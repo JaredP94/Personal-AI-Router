@@ -232,15 +232,20 @@ tracing-enabled profiling scenarios are still open.
 - **Live in-flight numbers:** The proxies count the content chunks and the
   response bytes they received, and time the first response byte, exactly, and
   publish a frame at most once every two seconds per in-flight request. The
-  serving node's poller adds the engine's own live
-  numbers (oMLX only) under the same job id. The workload-manager broadcasts
-  the frame to every pinned peer; each broker keeps a bounded live view and
-  pushes the merged view to its clients as `workloads:progress`. The desktop
-  shows the live line on a running job and the final exact numbers on a
-  finished one. A live view is keyed by the origin, the engine and the job
-  id, so an oMLX job "1" and an Ollama job "1" on one node never share a
-  view; the run id says which run a job id belongs to, so a restarted proxy's
-  job "1" never inherits the old job's numbers.
+  two publishers of one job — the origin proxy's own facts and the engine's
+  own live numbers (oMLX only) — share that job's one limiter, so a job
+  leaves at most one frame per window whichever publisher has something to
+  say. A request forwarded to a cluster peer carries the origin's job id, the
+  origin's node id and the origin's run nonce, so the frame the serving node
+  publishes is attributed to the origin and every member of the cluster keys
+  the job's live view the same way. The workload-manager broadcasts the frame
+  to every pinned peer; each broker keeps a bounded live view and pushes the
+  merged view to its clients as `workloads:progress`. The desktop shows the
+  live line on a running job and the final exact numbers on a finished one. A
+  live view is keyed by the origin, the engine and the job id, so an oMLX job
+  "1" and an Ollama job "1" on one node never share a view; the run id says
+  which run a job id belongs to, so a restarted proxy's job "1" never
+  inherits the old job's numbers.
 - **No estimates:** Nothing on these surfaces is estimated, interpolated, or
   derived from a different quantity. A chunk count is never presented as a
   token count. A value nobody reported stays absent and reads as "not

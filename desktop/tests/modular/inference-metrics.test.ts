@@ -813,6 +813,7 @@ describe('the live progress frame on the wire', () => {
             nodeId: 'node-b',
             originatedFrom: 'node-a',
             engine: 'omlx',
+            runId: 'run-1',
             elapsedMs: 4200,
             chunks: 12,
             bytes: 2048,
@@ -840,6 +841,10 @@ describe('the live progress frame on the wire', () => {
         // own requests from 1, so an oMLX job "1" and an Ollama job "1" on
         // one node are two different jobs.
         expect(parsed?.engine).toBe('omlx')
+        // The run nonce says which run the job id belongs to: a proxy that
+        // restarts counts its jobs from 1 again, and the frame has to say
+        // which run it is about.
+        expect(parsed?.runId).toBe('run-1')
         expect(parsed?.engineProgress?.requestId).toBe('eng-1')
         expect(parsed?.engineProgress?.generatedTokens).toBe(34)
         expect(parsed?.engineProgress?.tokensPerSecond).toBe(62.1)
@@ -898,6 +903,9 @@ describe('the live progress of a running job', () => {
         expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('34')
         expect(rows.find(r => r.label === 'Rate (engine)')?.value).toBe('62 tok/s')
         expect(rows.find(r => r.label === 'Elapsed')?.value).toBe('4.2 s')
+        // The time to the first byte is measured by PAIR and carried end to
+        // end, so the live line shows it.
+        expect(rows.find(r => r.label === 'First byte')?.value).toBe('300 ms')
         expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
     })
 
@@ -927,6 +935,13 @@ describe('the live progress of a running job', () => {
     it('shows only the part of the received traffic that was measured', () => {
         const rows = buildWorkloadLiveRows({ ...omlxLive, bytes: null })
         expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks')
+    })
+
+    it('reports a time to the first byte nobody measured as not reported', () => {
+        const rows = buildWorkloadLiveRows({ ...omlxLive, ttfbMs: null })
+        const row = rows.find(r => r.label === 'First byte')
+        expect(row?.value).toBe('not reported')
+        expect(row?.unavailable).toBe(true)
     })
 
     it('reports a reading the engine did not make as not reported, never as zero', () => {
@@ -998,6 +1013,53 @@ describe('merging a live progress frame', () => {
     it('overwrites the value a frame does carry', () => {
         const merged = mergeWorkloadLiveProgress(facts, { ...facts, elapsedMs: 5000 })
         expect(merged.elapsedMs).toBe(5000)
+    })
+
+    it('replaces the view when the frame names another run of the proxy', () => {
+        // A proxy that restarts counts its jobs from 1 again, so the job id
+        // "w1" of the new run is a DIFFERENT job from the job "w1" of the old
+        // one. The stored view belongs to the job it replaced: it is
+        // replaced, not merged, or the old job's engine reading would be
+        // shown on the new job's card. The broker merges the same way.
+        const oldRun: WorkloadLiveProgress = {
+            ...facts,
+            runId: 'run-1',
+            engineProgress: {
+                requestId: 'eng-1',
+                phase: 'generating',
+                generatedTokens: 34,
+                tokensPerSecond: 62.1,
+                prefillProgress: 100,
+                queuePosition: 0
+            }
+        }
+        const newRun: WorkloadLiveProgress = {
+            jobId: 'w1',
+            originatedFrom: 'node-a',
+            engine: 'omlx',
+            runId: 'run-2',
+            elapsedMs: 1200
+        }
+        const merged = mergeWorkloadLiveProgress(oldRun, newRun)
+        expect(merged.runId).toBe('run-2')
+        expect(merged.elapsedMs).toBe(1200)
+        // The old run's engine reading is gone, not carried over.
+        expect(merged.engineProgress).toBeNull()
+        expect(merged.chunks).toBeNull()
+        expect(merged.bytes).toBeNull()
+        expect(merged.ttfbMs).toBeNull()
+    })
+
+    it('keeps the view when the frame names the same run of the proxy', () => {
+        const stored: WorkloadLiveProgress = { ...facts, runId: 'run-1' }
+        const merged = mergeWorkloadLiveProgress(stored, {
+            ...facts,
+            runId: 'run-1',
+            elapsedMs: 5000
+        })
+        expect(merged.runId).toBe('run-1')
+        expect(merged.elapsedMs).toBe(5000)
+        expect(merged.chunks).toBe(12)
     })
 
     it('replaces the engine reading as a unit', () => {

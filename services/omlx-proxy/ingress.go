@@ -228,6 +228,10 @@ func (p *Proxy) newLocalReverseProxyForJob(target *url.URL, jobID, originNodeID,
 					engineReqID:  engineReqID,
 					originNodeID: originNodeID,
 					runID:        runID,
+					// The job's own limiter: the engine's own publisher
+					// is the only one for a peer-served job on this node,
+					// and it leaves at most one frame per window.
+					limiter: newProgressLimiter(),
 				})
 				bound = append(bound, engineReqID)
 			}

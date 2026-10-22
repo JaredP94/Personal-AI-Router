@@ -169,9 +169,9 @@ export interface WsPushChannelMap {
      * the engine's own live reading when the engine reported one.
      *
      * It is a snapshot of a running request, not a state transition, and it
-     * never enters the catalog. The frame carries the job's origin, so it
-     * joins the job by the same (`originatedFrom`, `id`) pair the catalog
-     * uses.
+     * never enters the catalog. The frame carries the job's origin and
+     * engine, so it joins the job by the (`originatedFrom`, `engine`, `id`)
+     * triple the live view is keyed by.
      */
     'workloads:progress': WorkloadLiveProgress
 

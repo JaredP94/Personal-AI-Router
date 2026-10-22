@@ -548,3 +548,72 @@ func TestTheLocalPollerDoesNotBindAPeerServedJob(t *testing.T) {
 		t.Fatal("a job the local engine serves is not bound in the local activity poller")
 	}
 }
+
+// TestTheTwoPublishersShareOneLimiter: a job's live view is published by
+// two publishers — the PAIR-derived facts and the engine's own reading —
+// and they share the job's one limiter. So a job leaves at most one frame
+// per window, whichever publisher has something to say, and the documented
+// bound ("at most one progress frame per job every two seconds") holds.
+//
+// A frame the limiter holds back loses nothing: the broker merges the two
+// partial views field by field, so the numbers the other publisher measured
+// stay in the merged view.
+func TestTheTwoPublishersShareOneLimiter(t *testing.T) {
+	restoreInterval := progressInterval
+	progressInterval = time.Hour
+	defer func() { progressInterval = restoreInterval }()
+	restorePoll := engineActivityPollInterval
+	engineActivityPollInterval = 20 * time.Millisecond
+	defer func() { engineActivityPollInterval = restorePoll }()
+
+	em := fakeEngineActivity(t, []enginenative.ActivityRow{{
+		RequestID: "eng-123",
+		Phase:     enginenative.PhaseGenerating,
+	}})
+	restoreURL := engineManagerActivityURL
+	engineManagerActivityURL = em.URL + "/v1/engine-activity"
+	defer func() { engineManagerActivityURL = restoreURL }()
+
+	release := make(chan struct{})
+	var once sync.Once
+	releaseEngine := func() { once.Do(func() { close(release) }) }
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(engineRequestIDHeader, "eng-123")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	}))
+	defer engine.Close()
+	defer releaseEngine()
+
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", engine.URL, "llama"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+	p.nodeID = "node-self"
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleHTTP(httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	}()
+
+	waitFor(t, "the first live frame of the job", func() bool {
+		return len(progressFrames(t, rec)) > 0
+	})
+	// The engine's own publisher polls every 20 ms. None of its polls may
+	// leave a second frame while the window is open.
+	time.Sleep(200 * time.Millisecond)
+
+	frames := progressFrames(t, rec)
+	if len(frames) != 1 {
+		t.Fatalf("progress frames = %d, want 1: the two publishers share the job's one limiter", len(frames))
+	}
+
+	releaseEngine()
+	<-done
+}

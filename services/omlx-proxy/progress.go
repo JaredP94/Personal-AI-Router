@@ -105,15 +105,30 @@ type EngineProgress struct {
 	QueuePosition *int `json:"queuePosition,omitempty"`
 }
 
-// progressLimiter lets at most one frame per request leave every
-// progressInterval. It is per request, not per proxy: one busy job must not
+// progressLimiter lets at most one frame per job leave every
+// progressInterval. It is per job, not per proxy: one busy job must not
 // silence another job's frames.
+//
+// It is SHARED by the two publishers of one job — the PAIR-derived facts and
+// the engine's own reading — so a job leaves at most one frame per window
+// whichever publisher has something to say. The broker merges the two partial
+// views field by field, so a frame the limiter held back loses nothing: the
+// other publisher's numbers are still in the merged view, and the next
+// window brings the newer ones.
 type progressLimiter struct {
 	mu   sync.Mutex
 	last time.Time
 }
 
+// newProgressLimiter returns the limiter of one job.
+func newProgressLimiter() *progressLimiter {
+	return &progressLimiter{}
+}
+
 // due reports whether a frame may be emitted now, and records the emission.
+//
+// The time is the frame's effective time — the moment the frame was
+// produced, not the moment it was written to the wire.
 func (l *progressLimiter) due(now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -141,6 +156,9 @@ func (p *Proxy) emitProgress(frame ProgressFrame) {
 // ticker is involved. The frame carries only what PAIR measured: the
 // engine's own live numbers travel on their own frames, under the same job
 // id.
+//
+// The limiter is the job's own, shared with the engine's own publisher, so
+// the two never both leave a frame in one window.
 func (p *Proxy) publishProgress(jobID, nodeID string, start time.Time, limiter *progressLimiter, prog LiveProgress) {
 	now := time.Now()
 	if !limiter.due(now) {

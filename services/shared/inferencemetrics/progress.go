@@ -40,8 +40,9 @@ type ProgressFrame struct {
 	// It is needed because PAIR's job id is a per-proxy counter: two
 	// origins can both hold a job "1", and only the origin tells their
 	// jobs apart. It is the same value the workload catalog carries as
-	// `originatedFrom`, so a frame joins a job by the pair
-	// (`originatedFrom`, `id`) — the same pair the catalog uses.
+	// `originatedFrom`, so a frame joins a job by the
+	// (`originatedFrom`, `engine`, `id`) triple the live view is keyed by —
+	// the same triple the catalog uses, with the engine added.
 	//
 	// It is absent on a frame a proxy publishes, because the proxy does
 	// not know it is the origin of a job it forwarded onward; the origin's

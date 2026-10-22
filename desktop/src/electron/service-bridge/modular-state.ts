@@ -732,6 +732,7 @@ export function parseWorkloadLiveProgress(
         jobId,
         originatedFrom: nullableStringValue(obj.originatedFrom),
         engine,
+        runId: nullableStringValue(obj.runId),
         nodeId: nullableStringValue(obj.nodeId),
         elapsedMs: nullableNumberValue(obj.elapsedMs),
         chunks: nullableNumberValue(obj.chunks),
@@ -1930,8 +1931,9 @@ class ModularBridgeState {
      *
      * The frame is a live view of a running request, not a catalog event: it
      * never enters the workload catalog and never changes a job's state. It
-     * carries the job's origin, so the renderer joins it to the job by the
-     * same (`originatedFrom`, `id`) pair the catalog uses.
+     * carries the job's origin and engine, so the renderer joins it to the
+     * job by the (`originatedFrom`, `engine`, `id`) triple the live view is
+     * keyed by.
      */
     pushWorkloadProgress(params: JsonValue | undefined): void {
         const view = parseWorkloadLiveProgress(params)

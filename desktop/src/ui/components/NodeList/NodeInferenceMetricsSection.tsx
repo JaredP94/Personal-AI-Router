@@ -73,8 +73,11 @@ function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
 
     // A node that never served anything has no snapshot, and a node whose
     // engine publishes no native view has no engine section: an empty section
-    // would read as a node that served nothing at zero speed.
-    if (!metrics && engineRows.length === 0 && engineModels.length === 0) return null
+    // would read as a node that served nothing at zero speed. A node whose
+    // engine DID publish a view keeps its section even when every counter in
+    // it is zero — the section is where the freshness of the view shows, and
+    // a view of zeros is still a view.
+    if (!metrics && !engineNative?.supported) return null
 
     return (
         <Stack gap="1" className="mt-2 ml-1 min-w-0">
@@ -129,7 +132,7 @@ function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
                     )}
                 </>
             )}
-            {(engineRows.length > 0 || engineModels.length > 0) && (
+            {engineNative?.supported && (
                 <Stack gap="1" className="mt-2 min-w-0">
                     <Text kind="body/semibold/sm">
                         {`Engine's own counters (${engineDisplayName(engineNative)})`}

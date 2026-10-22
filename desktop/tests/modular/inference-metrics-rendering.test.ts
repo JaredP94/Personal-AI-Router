@@ -679,4 +679,24 @@ describe("the node card's engine-native section", () => {
         await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
         expect(text()).toBe('')
     })
+
+    it('keeps the engine section for a view whose counters are all zero', async () => {
+        // The engine published a view and every counter in it is zero. The
+        // counters are omitted from the wire (a reported zero and an
+        // unreported counter are the same thing to a reader of a cumulative
+        // counter), so the section has no rows — but the view exists, and the
+        // freshness of the view is the signal that the engine is still
+        // answering. The section must not disappear with the rows.
+        nodeWithEngineNative({
+            engine: 'omlx',
+            supported: true,
+            totals: {},
+            rates: {},
+            observedAt: Date.now()
+        })
+        await render(createElement(NodeInferenceMetricsSection, { nodeId: 'node-a' }))
+        const rendered = text()
+        expect(rendered).toContain("Engine's own counters (oMLX)")
+        expect(rendered).toContain('Observed just now.')
+    })
 })

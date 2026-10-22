@@ -434,6 +434,12 @@ type Proxy struct {
 
 	bufPool   *bufpool.Pool
 	telemetry *telemetry.Manager
+
+	// nodeID is this node's stable per-host id. A request forwarded to a
+	// cluster peer carries it, so the peer knows which node the job
+	// originated on and attributes the live frame it publishes to that
+	// origin rather than to itself.
+	nodeID string
 }
 
 func NewProxy(codec *Codec, discovery *Discovery, port int, tel ...*telemetry.Manager) *Proxy {
@@ -1478,12 +1484,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		proxy := &httputil.ReverseProxy{
-			Director: func(req *http.Request) {
-				req.URL.Scheme = cand.url.Scheme
-				req.URL.Host = cand.url.Host
-				req.Host = cand.url.Host
-				stripTraceContext(req.Header)
-			},
+			Director: p.forwardDirector(cand, reqID),
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
 			Transport:  p.candidateTransport(cand),
@@ -1752,6 +1753,37 @@ func serveReverseProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *h
 	}()
 	proxy.ServeHTTP(w, r)
 	return false
+}
+
+// forwardDirector rewrites a request for the candidate it is about to be
+// forwarded to.
+//
+// A request forwarded to a cluster peer carries PAIR's job id, so the
+// serving peer can publish the job's live frame under that id. It carries
+// the origin node's id too: the job id is a per-proxy counter, so two
+// origins can both hold a job "1", and only the origin tells their jobs
+// apart. It carries the run nonce as well: a proxy that restarts counts its
+// jobs from 1 again, and the run nonce says which run the job id belongs to.
+//
+// All three headers are random per-request identifiers that carry no
+// content, and they are not routing inputs: the ingress stays strictly
+// terminal and never re-routes a peer's request onward.
+func (p *Proxy) forwardDirector(cand candidate, jobID string) func(*http.Request) {
+	return func(req *http.Request) {
+		req.URL.Scheme = cand.url.Scheme
+		req.URL.Host = cand.url.Host
+		req.Host = cand.url.Host
+		if cand.peerUUID != "" && jobID != "" {
+			req.Header.Set(nvpairRequestIDHeader, jobID)
+			if p.nodeID != "" {
+				req.Header.Set(nvpairOriginNodeHeader, p.nodeID)
+			}
+			if p.runID != "" {
+				req.Header.Set(nvpairRunIDHeader, p.runID)
+			}
+		}
+		stripTraceContext(req.Header)
+	}
 }
 
 // resolveCandidates returns the ordered list of nodes to try for the current

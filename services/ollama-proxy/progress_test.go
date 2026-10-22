@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -152,5 +153,115 @@ func TestInFlightRequestEmitsOneProgressFrame(t *testing.T) {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("the progress frame carries an estimated number %q: %s", forbidden, raw)
 		}
+	}
+}
+
+// TestForwardedPeerRequestCarriesTheJobIdentity: a request forwarded to a
+// cluster peer carries the origin's job id, the origin's node id and the
+// origin's run nonce. The serving peer needs all three to publish the job's
+// live frame under the origin's identity. A request that is not forwarded to
+// a peer carries none of them — the peer is the only node that needs them.
+func TestForwardedPeerRequestCarriesTheJobIdentity(t *testing.T) {
+	p := testProxy(NewDiscovery(), 11435)
+	p.nodeID = "node-origin"
+
+	peer := candidate{
+		id:       "peer-a",
+		url:      &url.URL{Scheme: "https", Host: "192.0.2.10:1234"},
+		peerUUID: "principal-peer",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	p.forwardDirector(peer, "42")(req)
+	if got := req.Header.Get(nvpairRequestIDHeader); got != "42" {
+		t.Fatalf("%s = %q, want the job id 42", nvpairRequestIDHeader, got)
+	}
+	if got := req.Header.Get(nvpairOriginNodeHeader); got != "node-origin" {
+		t.Fatalf("%s = %q, want the origin's node id", nvpairOriginNodeHeader, got)
+	}
+	if got := req.Header.Get(nvpairRunIDHeader); got != p.runID {
+		t.Fatalf("%s = %q, want the proxy's run nonce %q", nvpairRunIDHeader, got, p.runID)
+	}
+
+	local := candidate{
+		id:  "local-node",
+		url: &url.URL{Scheme: "http", Host: "127.0.0.1:8000"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	p.forwardDirector(local, "42")(req)
+	if got := req.Header.Get(nvpairRequestIDHeader); got != "" {
+		t.Fatalf("%s = %q, want it absent on a request that is not forwarded to a peer", nvpairRequestIDHeader, got)
+	}
+	if got := req.Header.Get(nvpairOriginNodeHeader); got != "" {
+		t.Fatalf("%s = %q, want it absent on a request that is not forwarded to a peer", nvpairOriginNodeHeader, got)
+	}
+	if got := req.Header.Get(nvpairRunIDHeader); got != "" {
+		t.Fatalf("%s = %q, want it absent on a request that is not forwarded to a peer", nvpairRunIDHeader, got)
+	}
+}
+
+// TestTheServingSideAttributesTheFrameToTheOrigin: a request a peer
+// forwarded is measured on the serving side too, and the frame the serving
+// side publishes is attributed to the ORIGIN of the job. A frame published
+// without the origin would be stamped with the serving node's own id by the
+// serving node's broker, and the job's terminal event — which names the
+// origin — would never retire that view.
+func TestTheServingSideAttributesTheFrameToTheOrigin(t *testing.T) {
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"m","response":"a","done":false}`+"\n"+
+			`{"model":"m","response":"b","done":false}`+"\n"+
+			`{"model":"m","done":true}`+"\n")
+	}))
+	defer engine.Close()
+
+	rec := &recRW{}
+	p := NewProxy(NewCodec(rec), NewDiscovery(), 11435)
+	p.nodeID = "node-peer"
+
+	target, err := url.Parse(engine.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := p.newLocalReverseProxy(target, peerJob{
+		jobID:        "job-99",
+		originNodeID: "origin-a",
+		runID:        "run-1",
+		start:        time.Now(),
+	})
+	rp.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"model":"m"}`)))
+
+	frames := progressNotifications(t, rec)
+	if len(frames) == 0 {
+		t.Fatal("the serving side published no live frame for the peer-served job")
+	}
+	frame := frames[0]
+	if frame.JobID != "job-99" {
+		t.Fatalf("the frame's job id = %q, want the origin's job id 99", frame.JobID)
+	}
+	if frame.OriginatedFrom != "origin-a" {
+		t.Fatalf("the frame's origin = %q, want the origin that forwarded the request", frame.OriginatedFrom)
+	}
+	if frame.RunID != "run-1" {
+		t.Fatalf("the frame's run id = %q, want the origin's run nonce", frame.RunID)
+	}
+	if frame.NodeID != "node-peer" {
+		t.Fatalf("the frame names node %q, want the serving node", frame.NodeID)
+	}
+	if frame.Engine != workloadEngine {
+		t.Fatalf("the frame names engine %q, want %q", frame.Engine, workloadEngine)
+	}
+	if frame.Bytes == nil || *frame.Bytes <= 0 {
+		t.Fatalf("the frame reports bytes %v, want the bytes the engine sent", frame.Bytes)
+	}
+	if frame.ElapsedMs == nil {
+		t.Fatal("the frame reports no elapsed time")
+	}
+	// The serving side relays the engine's stream without parsing it, so it
+	// counts no content chunks: a frame must never claim a chunk count it
+	// did not measure.
+	if frame.Chunks != nil {
+		t.Fatalf("the frame reports chunks %v, want none — the serving side does not parse the engine's stream", *frame.Chunks)
 	}
 }
