@@ -164,6 +164,71 @@ func TestParseStatsReadsTheObjectKeyedModelList(t *testing.T) {
 	}
 }
 
+// TestParseActivityReadsTheLiveEnginePayload: the live engine reports its
+// active models as an object whose "models" key holds the array, with the
+// engine's own memory counters beside it. The rows are read from that array,
+// not from the object's keys, which are not model names.
+func TestParseActivityReadsTheLiveEnginePayload(t *testing.T) {
+	raw := []byte(`{"active_models": {"models": [{"id": "Jundot--Qwen3.8-Flash-Next-oQ4e-mtp",` +
+		`"active_requests": 1, "waiting_requests": 0,` +
+		`"waiting": [], "prefilling": [],` +
+		`"generating": [{"request_id": "10e53ac1-670b-4996-b99d-05b150e2e1a6",` +
+		`"elapsed_seconds": 5.742, "generated_tokens": 343, "tokens_per_second": 59.73,` +
+		`"last_activity_age_seconds": 0.011, "prompt_tokens": 64, "max_tokens": 600}],` +
+		`"activities": []}],` +
+		`"model_memory_used": 79509226072, "model_memory_max": 111650248431}}`)
+	a, err := ParseActivity(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Rows) != 1 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	row := a.Rows[0]
+	if row.RequestID != "10e53ac1-670b-4996-b99d-05b150e2e1a6" {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if row.Phase != PhaseGenerating {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if row.GeneratedTokens == nil || *row.GeneratedTokens != 343 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if row.TokensPerSecond == nil || *row.TokensPerSecond != 59.73 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if row.ElapsedSeconds == nil || *row.ElapsedSeconds != 5.742 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+	if row.PromptTokens == nil || *row.PromptTokens != 64 {
+		t.Fatalf("rows: %+v", a.Rows)
+	}
+}
+
+// TestParseStatsReadsTheLiveEnginePayload: the stats payload's model list is
+// read by the same decoder, so the wrapper shape the live engine reports is
+// read there too, and the counters beside it are not mistaken for models.
+func TestParseStatsReadsTheLiveEnginePayload(t *testing.T) {
+	raw := []byte(`{"active_models": {"models": [{"id": "Jundot--Qwen3.8-Flash-Next-oQ4e-mtp",` +
+		`"active_requests": 1, "waiting_requests": 0,` +
+		`"waiting": [], "prefilling": [], "generating": [], "activities": []}],` +
+		`"model_memory_used": 79509226072, "model_memory_max": 111650248431},` +
+		`"total_prompt_tokens": 64, "total_completion_tokens": 343}`)
+	s, err := ParseStats(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Models) != 1 {
+		t.Fatalf("models: %+v", s.Models)
+	}
+	if s.Models[0].Model != "Jundot--Qwen3.8-Flash-Next-oQ4e-mtp" || !s.Models[0].Loaded {
+		t.Fatalf("models: %+v", s.Models)
+	}
+	if s.Totals.PromptTokens != 64 || s.Totals.CompletionTokens != 343 {
+		t.Fatalf("totals: %+v", s.Totals)
+	}
+}
+
 // TestParseActivityReadsTheObjectKeyedModelList: the activity rows are read
 // from the same shapes the model list is read from, so an object keyed by
 // model name yields the same rows.

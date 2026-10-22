@@ -53,6 +53,34 @@ on the streaming path, so a client can find its own request among the live rows.
 oMLX also threads a client-supplied `X-Request-ID` into its preflight and log
 correlation.
 
+**What the live engine reports.** Live testing against **oMLX 0.7.2** found
+three things the table above does not say:
+
+- The **activity** payload's `active_models` is an object whose `models` key
+  holds the array of models, with the engine's own `model_memory_used` and
+  `model_memory_max` counters beside it. A live row carries `request_id`,
+  `elapsed_seconds`, `generated_tokens`, `tokens_per_second`,
+  `last_activity_age_seconds`, `prompt_tokens` and `max_tokens`; a queued
+  request carries `queue_position` and `elapsed_seconds`.
+- The **stats** payload matches what PAIR parses: `total_prompt_tokens`,
+  `total_completion_tokens`, `total_cached_tokens`, `total_requests`,
+  `avg_prefill_tps`, `avg_generation_tps` and `cache_efficiency` are all
+  there, and the `api_key` field PAIR drops is present in the engine's
+  payload, as expected.
+- The **streaming** `usage` chunk carries only `prompt_tokens`,
+  `completion_tokens`, `total_tokens`, `input_tokens`, `output_tokens`,
+  `prompt_tokens_details.cached_tokens` and
+  `completion_tokens_details.reasoning_tokens`. It carries **no**
+  `prompt_eval_duration`, `generation_duration`, `time_to_first_token` or
+  `total_time`; the engine's non-streaming response does carry those timings.
+  A newer oMLX includes them in the streaming chunk; 0.7.2 does not.
+
+So a streaming request against oMLX 0.7.2 gives the per-job measurement its
+token counts and **not** its phase durations. That is the designed behaviour
+rather than a gap to work around: an absent value stays absent, and the UI
+says "not reported". The phase durations appear only on a newer oMLX, or on a
+non-streaming request.
+
 **PAIR's surfaces that already exist:**
 
 - The **engine-manager's em surface** (`services/nvpair-engine-manager/httpserver.go`)
@@ -334,6 +362,7 @@ progress. Every number in it is measured by the engine.
 | 5 | A peer's engine is older and has no engine-native view | The record is absent; the UI says "not reported" |
 | 6 | The `X-NVPAIR-Request-Id` header is visible to the engine | It is a random per-request id, carries no content, and the engine already accepts an `X-Request-ID` for its own correlation |
 | 7 | The proxy's chunk counter drifts from the engine's token count | They are different things and are labelled differently; neither is presented as the other |
+| 8 | oMLX 0.7.2's streaming `usage` chunk reports no phase durations | The per-job measurement carries the token counts the engine does report and leaves the durations absent, so they read as "not reported" until a newer oMLX (or a non-streaming request) supplies them. Nothing is estimated in their place |
 
 ## 8. Out of scope
 

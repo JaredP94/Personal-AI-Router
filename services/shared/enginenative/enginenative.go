@@ -372,8 +372,9 @@ func optionalNumber(fields map[string]json.RawMessage, key string) *float64 {
 // It reads the same shapes the activity rows are read from, because the
 // engine's exact payload shape is inferred rather than documented: the list
 // holds either model names or objects carrying a name and a loaded flag, and
-// it is accepted as an object keyed by model name too. An entry that carries
-// no readable name is skipped.
+// it is accepted as an object keyed by model name too — or wrapped in an
+// object whose "models" key holds the array, which is the shape the live
+// engine reports. An entry that carries no readable name is skipped.
 func parseModels(raw json.RawMessage) []Model {
 	var models []Model
 	for _, entry := range decodeModelEntries(raw) {
@@ -426,25 +427,23 @@ type modelEntry struct {
 // array of model objects or of model names; an object keyed by model name is
 // accepted too, since the engine's payload shape is inferred rather than
 // documented. An entry that cannot be read at all is skipped.
+//
+// The live engine's shape is a third one: an object whose "models" key holds
+// the array, with the engine's own memory counters beside it. That wrapper is
+// read as the array it holds, so the counters beside it are not mistaken for
+// model names.
 func decodeModelEntries(raw json.RawMessage) []modelEntry {
 	if entries, ok := decodeArray(raw); ok {
-		models := make([]modelEntry, 0, len(entries))
-		for _, entry := range entries {
-			if name, ok := decodeModelName(entry); ok {
-				models = append(models, modelEntry{name: name})
-				continue
-			}
-			fields, err := decodeFields(entry)
-			if err != nil {
-				continue
-			}
-			models = append(models, modelEntry{name: modelNameOf(fields), fields: fields})
-		}
-		return models
+		return modelEntriesOf(entries)
 	}
 	var byName map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &byName); err != nil {
 		return nil
+	}
+	if wrapped, ok := byName["models"]; ok {
+		if entries, ok := decodeArray(wrapped); ok {
+			return modelEntriesOf(entries)
+		}
 	}
 	names := make([]string, 0, len(byName))
 	for name := range byName {
@@ -458,6 +457,25 @@ func decodeModelEntries(raw json.RawMessage) []modelEntry {
 			continue
 		}
 		models = append(models, modelEntry{name: name, fields: fields})
+	}
+	return models
+}
+
+// modelEntriesOf reads the entries of the engine's model list. An entry is
+// either a bare model name or an object carrying the model's fields. An entry
+// that is neither is skipped.
+func modelEntriesOf(entries []json.RawMessage) []modelEntry {
+	models := make([]modelEntry, 0, len(entries))
+	for _, entry := range entries {
+		if name, ok := decodeModelName(entry); ok {
+			models = append(models, modelEntry{name: name})
+			continue
+		}
+		fields, err := decodeFields(entry)
+		if err != nil {
+			continue
+		}
+		models = append(models, modelEntry{name: modelNameOf(fields), fields: fields})
 	}
 	return models
 }
