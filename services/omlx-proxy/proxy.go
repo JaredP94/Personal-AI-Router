@@ -1328,7 +1328,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// progressLim rate-limits this request's live frames to one every
 	// progressInterval. It is per request: one busy job must not silence
 	// another job's frames.
-	var progressLim progressLimiter
+	progressLim := newProgressLimiter()
 
 	// boundEngineReqIDs holds the engine request ids this request was
 	// paired with. The pairing dies with the request.
@@ -1407,8 +1407,23 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				engineReqID := resp.Header.Get(engineRequestIDHeader)
 				if isInf && dispatchSpan != nil {
 					reader := newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, start, session)
+					// The job holds the readings its two publishers share:
+					// the engine's own numbers, and what PAIR measured of
+					// the response. Each publisher carries both halves of
+					// the view on the frame it leaves, because the two
+					// share one window and only one of them leaves a
+					// frame in it.
+					job := &engineJob{
+						jobID:       reqID,
+						engineReqID: engineReqID,
+						runID:       p.runID,
+						limiter:     progressLim,
+						nodeID:      cand.id,
+						start:       start,
+					}
 					reader.onProgress = func(prog LiveProgress) {
-						p.publishProgress(reqID, cand.id, start, &progressLim, prog)
+						job.recordFacts(prog)
+						p.publishProgress(job, prog)
 					}
 					telReader = reader
 					resp.Body = reader
@@ -1416,7 +1431,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 						// The engine's own publisher shares the request's
 						// limiter, so the job leaves at most one frame per
 						// window whichever publisher has something to say.
-						p.bindEngineJob(&engineJob{jobID: reqID, engineReqID: engineReqID, runID: p.runID, limiter: &progressLim})
+						p.bindEngineJob(job)
 						boundEngineReqIDs = append(boundEngineReqIDs, engineReqID)
 					}
 				} else {

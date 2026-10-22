@@ -990,8 +990,11 @@ finish.
   measured of the client's stream. A node that serves the job for a peer
   publishes what it measured of the engine's stream, and the oMLX proxy's
   poller publishes what the engine reported of its own request, under the same
-  job id. A frame is a **partial** view: no publisher can see the others'
-  facts, so a field a frame does not carry means "not measured here", never
+  job id. The oMLX proxy's two publishers — the one driven by the response's
+  chunks and the one driven by the engine's rows — share the job's one window,
+  so the frame that leaves carries **both** halves of the view: the facts PAIR
+  measured and the engine's own reading. A frame is a **partial** view across
+  nodes: a field a frame does not carry means "not measured here", never
   "zero".
 - **The origin travels with the request:** A request forwarded to a cluster
   peer carries the origin's job id, the origin's node id and the origin's run

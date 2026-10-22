@@ -617,3 +617,110 @@ func TestTheTwoPublishersShareOneLimiter(t *testing.T) {
 	releaseEngine()
 	<-done
 }
+
+// TestTheFramesCarryTheEnginesLiveNumbers: a job's live frames carry the
+// engine's own live numbers.
+//
+// A job's live view has two halves — the facts PAIR measured and the
+// engine's own reading — and two publishers, one for each half. They share
+// the job's one window, so exactly one of them leaves a frame in it, and the
+// publisher that is driven by the response's chunks (the PAIR-derived one)
+// wins nearly every window. A frame that carried only its own half would
+// therefore leave the other half to a publisher that never wins: the
+// engine's numbers would never reach a client.
+//
+// The test reproduces that: the engine's publisher polls slower than the
+// window, so it never wins one, and every frame is the request's own. Those
+// frames must still carry the engine's reading.
+func TestTheFramesCarryTheEnginesLiveNumbers(t *testing.T) {
+	restoreInterval := progressInterval
+	progressInterval = 50 * time.Millisecond
+	defer func() { progressInterval = restoreInterval }()
+	restorePoll := engineActivityPollInterval
+	// The engine's publisher polls slower than the job's window, so it
+	// never wins one: every frame is the request's own publisher's.
+	engineActivityPollInterval = 400 * time.Millisecond
+	defer func() { engineActivityPollInterval = restorePoll }()
+
+	em := fakeEngineActivity(t, []enginenative.ActivityRow{{
+		RequestID:       "eng-123",
+		Phase:           enginenative.PhaseGenerating,
+		GeneratedTokens: intPtr(42),
+	}})
+	restoreURL := engineManagerActivityURL
+	engineManagerActivityURL = em.URL + "/v1/engine-activity"
+	defer func() { engineManagerActivityURL = restoreURL }()
+
+	release := make(chan struct{})
+	var once sync.Once
+	releaseEngine := func() { once.Do(func() { close(release) }) }
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(engineRequestIDHeader, "eng-123")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		// The engine keeps sending, so the request's own publisher is
+		// driven throughout the job's life.
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-release:
+				return
+			case <-ticker.C:
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}))
+	defer engine.Close()
+	defer releaseEngine()
+
+	rec := &prRec{}
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "serving-node", engine.URL, "llama"))
+	p := NewProxy(NewCodec(rec), disc, 1235)
+	p.nodeID = "node-self"
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleHTTP(httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llama"}`)))
+	}()
+
+	var frame ProgressFrame
+	waitFor(t, "a frame carrying the engine's live numbers", func() bool {
+		for _, candidate := range progressFrames(t, rec) {
+			if candidate.EngineProgress == nil {
+				continue
+			}
+			if candidate.EngineProgress.RequestID != "eng-123" {
+				continue
+			}
+			frame = candidate
+			return true
+		}
+		return false
+	})
+
+	if frame.EngineProgress.Phase != enginenative.PhaseGenerating {
+		t.Fatalf("phase = %q, want %q", frame.EngineProgress.Phase, enginenative.PhaseGenerating)
+	}
+	if frame.EngineProgress.GeneratedTokens == nil || *frame.EngineProgress.GeneratedTokens != 42 {
+		t.Fatalf("generated tokens = %v, want the engine's reported 42", frame.EngineProgress.GeneratedTokens)
+	}
+	// The frame that carries the engine's numbers carries PAIR's own facts
+	// as well: both halves of the view travel together, so a frame never
+	// leaves one of them behind.
+	if frame.Bytes == nil || *frame.Bytes == 0 {
+		t.Fatalf("bytes = %v, want the bytes PAIR measured", frame.Bytes)
+	}
+	if frame.ElapsedMs == nil {
+		t.Fatal("elapsed time is absent, want the elapsed time PAIR measured")
+	}
+
+	releaseEngine()
+	<-done
+}
