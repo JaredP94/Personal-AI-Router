@@ -184,7 +184,7 @@ Documentation corrections are not runtime fixes or artifact certification.
   `THIRD_PARTY_NOTICES.md`; do not create competing generated notice files.
 - Inspect the actual fork release assets, architecture, signatures, and
   notarization rather than inheriting upstream release claims. The current fork
-  candidate is **0.7.0-rc.4, macOS arm64, unsigned and unnotarized**; it is not an
+  candidate is **0.7.0-rc.5, macOS arm64, unsigned and unnotarized**; it is not an
   NVIDIA-certified distribution. Public packaging does not grant NVIDIA signing
   credentials, notarization, or privileged-helper approval. Downloading with
   `curl` grants none of these either.

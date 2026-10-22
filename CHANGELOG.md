@@ -12,6 +12,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.5] - 2026-10-22
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
+Linux desktop and Intel Mac packages are not published. Privileged-helper
+registration and helper-based firewall setup remain unavailable in unsigned builds;
+Settings → Service shows manual firewall guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.5)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.7.0-rc.5` ships service product `2.4.1`. Relay
+protocol stays v2. The new broker method (`workloads:progress`) and the new
+node-record field (`engineNative`) are additive, so a mixed cluster keeps
+working — but a member on an older workload-manager does not carry the
+engine-native view from *remote* nodes, so that picture is complete only once
+every member is upgraded.
+
+### Fixed
+- **A manual peer's engine-native view was never fetched.** The engine-native
+  view was fetched only by the node-scanner, for the nodes in its own mDNS
+  directory. A peer registered as a **manual node** (reached over Tailscale or
+  a static address) is never in that directory, so its record carried models
+  but no engine counters, and the desktop could not show them.
+  `nvpair-manual-nodes` now reads the engine's own counters over the same
+  pinned cluster-mTLS client it already used for the model list, and the broker
+  projects them onto the manual node's record.
+
 ## [0.7.0-rc.4] - 2026-10-22
 
 Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,

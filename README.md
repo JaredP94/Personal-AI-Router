@@ -112,14 +112,14 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.7.0-rc.4` (2026-10-22), an unsigned,
+The latest published build is **`0.7.0-rc.5` (2026-10-22), an unsigned,
 unnotarized macOS Apple Silicon candidate**, not an NVIDIA-signed release.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
 and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
 Automatic updater installation is not certified for this unsigned candidate;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.4).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.5).
 It is marked as GitHub's Latest release for the Terminal installer and in-app
 update discovery.
 
@@ -128,8 +128,8 @@ Upstream official releases are separate and available at
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** Desktop `0.7.0-rc.4` ships service
-product `2.4.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+**Upgrade clients and services together:** Desktop `0.7.0-rc.5` ships service
+product `2.4.1`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 
@@ -142,7 +142,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the candidate, pass `--version 0.7.0-rc.4` using `bash -s --` after the pipe.
+To pin the candidate, pass `--version 0.7.0-rc.5` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.
