@@ -12,6 +12,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.4] - 2026-10-22
+
+Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,
+Linux desktop and Intel Mac packages are not published. Privileged-helper
+registration and helper-based firewall setup remain unavailable in unsigned builds;
+Settings → Service shows manual firewall guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.4)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.7.0-rc.4` ships service product `2.4.0`. Relay
+protocol stays v2. The new broker method (`workloads:progress`) and the new
+node-record field (`engineNative`) are additive, so a mixed cluster keeps
+working — but a node running an older workload-manager drops the live frames
+from *remote* jobs, and an older engine-manager or node-scanner drops the
+engine-native view from *remote* nodes, so both pictures are complete only
+once every member is upgraded.
+
+### Added
+- **The engine's own view on the node card**: a node card now carries a
+  separate "engine self-report" section with the engine's own counters — its
+  requests, its prompt, completion and cached tokens, its cache efficiency, its
+  average prefill and generation speeds, and the models it lists as loaded. The
+  view is fetched from every peer over the transport PAIR already uses, so it
+  reads the same cluster-wide. It is shown separately from PAIR's own numbers
+  and never merged with them: the engine's counters include the traffic PAIR
+  did not route, so adding the two together would count the same work twice.
+- **Live in-flight numbers on a running job**: a running job shows a live line
+  with what PAIR has measured of it so far — the elapsed time, the time to the
+  first byte, and how much has streamed (content chunks and response bytes) —
+  and, for oMLX, the engine's own live reading: its token count, its decode
+  rate, its prefill progress and its queue position. The frame is a snapshot,
+  not a state transition, so it never enters the workload catalog; when the job
+  ends the card switches to the final, exact numbers.
+- **The no-estimates rule**: nothing on these surfaces is estimated,
+  interpolated or derived from a different quantity. A chunk count is never
+  presented as a token count, and a value nobody reported reads "not reported"
+  rather than `0` — a measured zero stays a zero.
+
 ## [0.7.0-rc.3] - 2026-10-21
 
 Unsigned, unnotarized **macOS arm64 release candidate** for this fork. Windows,

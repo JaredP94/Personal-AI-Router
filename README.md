@@ -75,6 +75,11 @@ This project exists as a forward-looking extension that introduces practical fea
    - The numbers are the engine's own. PAIR reads the prefill and decode durations that oMLX and Ollama report, and the time to first token and cached-token count that only oMLX reports, and shows "not reported" for anything an engine does not report — LM Studio reports no phase split and Ollama reports no time to first token, so those fields are always absent rather than zero. Per-node totals cover the period since the broker started.
    - New broker methods `metrics:get-node-metrics`, `metrics:subscribe` and `metrics:unsubscribe`, plus a coalesced `metrics:node-metrics` push. The relay protocol stays v2 and no method was removed.
 
+10. **Engine Self-Report and Live In-Flight Numbers (0.7.0-rc.4)**
+   - A node card now carries the engine's own account of itself: its requests, its prompt, completion and cached tokens, its cache efficiency, its average prefill and generation speeds, and the models it lists as loaded. It is fetched from every peer over the transport PAIR already uses, and shown as a clearly separate "engine self-report" — never merged with PAIR's own numbers, because the engine's counters include the traffic PAIR did not route.
+   - A running job shows what has arrived so far: the elapsed time, the time to the first byte, and how much has streamed — plus, for oMLX, the engine's own token count, decode rate, prefill progress and queue position. When the job ends, the card switches to the final, exact numbers.
+   - Nothing here is estimated. A chunk count is never presented as a token count, and a value nobody reported reads "not reported" rather than `0`. The new broker method `workloads:progress` and the new node-record field `engineNative` are additive, and the relay protocol stays v2.
+
 ## What is supported
 
 | | |
@@ -107,14 +112,14 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.7.0-rc.3` (2026-10-21), an unsigned,
+The latest published build is **`0.7.0-rc.4` (2026-10-22), an unsigned,
 unnotarized macOS Apple Silicon candidate**, not an NVIDIA-signed release.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
 and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
 Automatic updater installation is not certified for this unsigned candidate;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.3).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0-rc.4).
 It is marked as GitHub's Latest release for the Terminal installer and in-app
 update discovery.
 
@@ -123,8 +128,8 @@ Upstream official releases are separate and available at
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** Desktop `0.7.0-rc.3` ships service
-product `2.3.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+**Upgrade clients and services together:** Desktop `0.7.0-rc.4` ships service
+product `2.4.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 
@@ -137,7 +142,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the candidate, pass `--version 0.7.0-rc.3` using `bash -s --` after the pipe.
+To pin the candidate, pass `--version 0.7.0-rc.4` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.

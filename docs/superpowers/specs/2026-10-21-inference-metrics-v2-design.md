@@ -246,7 +246,12 @@ it is not a state transition, so it must not be deduped as a duplicate of the
 The proxy emits at most **one progress frame per job every two seconds**, and
 only for jobs still running. A cluster with twenty running jobs therefore
 carries ten frames per second — bounded, and far below the lifecycle traffic a
-busy cluster already produces.
+busy cluster already produces. That bound is **per proxy**: the limiter lives
+in the proxy that publishes the frame, and a job served on a peer is measured
+on two nodes — the origin's proxy publishes what PAIR measured of the client's
+stream and the serving node's proxy publishes what it measured of the engine's
+— so such a job can carry **two frames per two-second window**, and twenty
+such jobs can carry twenty frames per second.
 
 **B5. The job card.**
 

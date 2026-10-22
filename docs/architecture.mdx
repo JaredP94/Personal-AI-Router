@@ -979,9 +979,13 @@ finish.
 
 - **What PAIR measures, exactly:** The proxies count the content chunks and
   the response bytes they received, and time the first response byte. A frame
-  leaves at most once every two seconds per in-flight request, so a cluster
-  with twenty running jobs carries at most ten frames per second whatever the
-  engines' chunk rates are.
+  leaves at most once every two seconds per in-flight request **per proxy**,
+  so a cluster with twenty running jobs carries at most ten frames per second
+  on any one proxy, whatever the engines' chunk rates are. The bound is per
+  proxy, not per cluster: a job served on a peer is measured on two nodes —
+  the origin's proxy publishes what PAIR measured of the client's stream, and
+  the serving node's proxy publishes what it measured of the engine's — so
+  such a job can carry two frames per two-second window.
 - **Publishers, one job id:** The origin proxy publishes the facts PAIR
   measured of the client's stream. A node that serves the job for a peer
   publishes what it measured of the engine's stream, and the oMLX proxy's
@@ -1104,7 +1108,7 @@ The Go binaries can be cross-compiled. Desktop also builds operator tools outsid
 `cli-bin/`: `collectlogs` and `inference-dispatcher`; these are not supervised
 service workers. Public electron-builder packaging/installer targets exist but
 produce unsigned, noncertified candidates, not NVIDIA's signed releases. The
-fork's current 0.7.0-rc.3 candidate is macOS arm64, unsigned and unnotarized;
+fork's current 0.7.0-rc.4 candidate is macOS arm64, unsigned and unnotarized;
 inspect real release assets rather than assuming upstream signing or coverage.
 Mac helper packaging requires the macOS SDK and Swift tools. NVIDIA signing,
 notarization, and helper approval are separate from compilation or downloading
