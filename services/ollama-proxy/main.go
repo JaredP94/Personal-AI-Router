@@ -12,12 +12,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/nodeid"
 	"nvpair-shared/telemetry"
 )
 
@@ -108,6 +110,21 @@ func main() {
 	// presence: a left/removed node keeps its keypair by design, and would
 	// otherwise keep logging cluster_ingress with no cluster peers to serve.
 	proxy.mesh = clustertrust.Open(*clusterDir)
+
+	// Resolve this node's stable per-host id from the same on-disk identity
+	// the broker and the scanner use. A request forwarded to a cluster peer
+	// carries it, so the peer knows which node the job originated on and
+	// attributes the live frame it publishes to that origin rather than to
+	// itself. The base is the parent of the cluster dir (which is
+	// <base>/cluster), exactly as the broker resolves it.
+	base := ""
+	if *clusterDir != "" {
+		base = filepath.Dir(*clusterDir)
+	}
+	proxy.nodeID = nodeid.Resolve(base)
+	if proxy.nodeID == "" {
+		slog.Warn("could not resolve this node's id; a forwarded request will not name its origin")
+	}
 
 	go proxy.mesh.Watch(ctx, func(clustered bool) {
 		slog.Info("cluster inference ingress switched personality", "cluster_ingress", clustered)

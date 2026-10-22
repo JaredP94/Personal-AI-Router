@@ -13,7 +13,7 @@ import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type { NodeItemMetrics, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
-import type { Workload } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type {
@@ -105,6 +105,12 @@ export interface IWorkloadsApi {
     onRemove(
         callback: (removal: { workloadId: string; originatedFrom: string | null }) => void
     ): () => void
+    /**
+     * The broker's live view of a running job: what PAIR measured of the
+     * client's stream, plus the engine's own live reading when the engine
+     * reported one.
+     */
+    onProgress(callback: (progress: WorkloadLiveProgress) => void): () => void
 }
 
 export interface IErrorsApi {
@@ -211,7 +217,8 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
         workloads: {
             getInitial: () => transport.invoke('workloads:get-initial'),
             onUpsert: cb => transport.subscribePush('workloads:upsert', cb),
-            onRemove: cb => transport.subscribePush('workloads:remove', cb)
+            onRemove: cb => transport.subscribePush('workloads:remove', cb),
+            onProgress: cb => transport.subscribePush('workloads:progress', cb)
         },
         errors: {
             getInitial: () => transport.invoke('errors:get-initial'),

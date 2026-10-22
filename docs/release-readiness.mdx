@@ -184,8 +184,18 @@ tracing-enabled profiling scenarios are still open.
 - The workload lifecycle carries the measurement cluster-wide, and each broker
   aggregates it per node and per model. Per-node totals cover the period since
   the broker started; the rates cover a rolling minute.
-- **Not yet validated against live engines:** that a live oMLX emits the usage
-  chunk once the proxy asks for it and that the values match
+- **Live-tested against oMLX 0.7.2:** the engine's streaming `usage` chunk
+  carries only `prompt_tokens`, `completion_tokens`, `total_tokens`,
+  `input_tokens`, `output_tokens`, `prompt_tokens_details.cached_tokens` and
+  `completion_tokens_details.reasoning_tokens` — **no** `prompt_eval_duration`,
+  `generation_duration`, `time_to_first_token` or `total_time`. Its
+  non-streaming response does carry those timings, and a newer oMLX includes
+  them in the streaming chunk too; 0.7.2 does not. So on a streaming request
+  against oMLX 0.7.2 the per-job measurement carries the token counts and
+  **not** the phase durations: the durations read as "not reported" until the
+  engine is upgraded or the request is made non-streaming. That is the
+  designed behaviour — an absent value is absent — and no code works around it.
+- **Still open:** that a live oMLX's usage values match
   `/admin/api/stats` deltas; that Ollama's nanosecond durations convert
   correctly; and whether LM Studio's streaming responses carry a usage block at
   all. A mixed-version cluster strips the measurement from remote jobs on a
@@ -194,6 +204,79 @@ tracing-enabled profiling scenarios are still open.
   for this feature. Source checks do not certify published assets. See the
   [design](superpowers/specs/2026-10-20-inference-metrics-design.md) §7 for
   the live checklist.
+
+### Engine-Native View and Live In-Flight Numbers
+
+**Implemented in source, pending live-engine and release testing.**
+
+- **The engine's own view of itself:** The engine-manager serves
+  `GET /v1/engine-stats` and `GET /v1/engine-activity` on its `em` surface,
+  behind the same two gates as the model list (plaintext for loopback only,
+  cluster mTLS for pinned peers). The answers are PAIR's own sanitized type,
+  mapped field by field from the engine's admin payload — which also carries
+  the engine's API key. PAIR's type has no field for the key, so it cannot
+  leak; the mapping is structural, not a filter.
+- **Carried on the node record:** The node-scanner fetches the stats from
+  every peer over the mTLS pool it already uses, on its own slower cadence,
+  and folds them onto the node record as `engineNative`; the broker copies
+  the field onto its own node record. The desktop shows it on the node card
+  as a clearly separate "engine self-report" section, never merged with
+  PAIR's own numbers: the engine's counters include the traffic PAIR did not
+  route, so adding the two together would count overlapping work twice.
+- **Counters and speeds, no durations:** The view carries the engine's
+  cumulative counters and its average prefill and generation throughput. It
+  carries no phase durations: the engine's stats endpoint reports none, and
+  the durations on the engine's usage endpoint are scoped to a date range
+  rather than to the engine's life, so a day-scoped number would not belong
+  beside the lifetime counters.
+- **Live in-flight numbers:** The proxies count the content chunks and the
+  response bytes they received, and time the first response byte, exactly, and
+  publish a frame at most once every two seconds per in-flight request. The
+  two publishers of one job — the origin proxy's own facts and the engine's
+  own live numbers (oMLX only) — share that job's one limiter, so a job
+  leaves at most one frame per window whichever publisher has something to
+  say. A request forwarded to a cluster peer carries the origin's job id, the
+  origin's node id and the origin's run nonce, so the frame the serving node
+  publishes is attributed to the origin and every member of the cluster keys
+  the job's live view the same way. The workload-manager broadcasts the frame
+  to every pinned peer; each broker keeps a bounded live view and pushes the
+  merged view to its clients as `workloads:progress`. The desktop shows the
+  live line on a running job and the final exact numbers on a finished one. A
+  live view is keyed by the origin, the engine and the job id, so an oMLX job
+  "1" and an Ollama job "1" on one node never share a view; the run id says
+  which run a job id belongs to, so a restarted proxy's job "1" never
+  inherits the old job's numbers.
+- **No estimates:** Nothing on these surfaces is estimated, interpolated, or
+  derived from a different quantity. A chunk count is never presented as a
+  token count. A value nobody reported stays absent and reads as "not
+  reported" rather than as a zero; a measured zero stays a zero.
+- **Live-tested against oMLX 0.7.2:** its `/admin/api/stats` payload carries the
+  counters PAIR maps — `total_prompt_tokens`, `total_completion_tokens`,
+  `total_cached_tokens`, `total_requests`, `avg_prefill_tps`,
+  `avg_generation_tps` and `cache_efficiency` — and the `api_key` field PAIR
+  drops is present in the engine's payload, so the mapping is against a
+  payload that was actually observed. Its activity payload reports
+  `active_models` as an object whose `models` key holds the array, beside the
+  engine's own `model_memory_used` and `model_memory_max` counters; the parser
+  reads that array, so the live rows reach the job card instead of being
+  silently skipped.
+- **Not yet validated against live engines:** The three checks above remain
+  open for the v1 measurement — that a live oMLX emits the `usage` block once
+  the proxy asks for it and that the values match `/admin/api/stats` deltas;
+  that Ollama's nanosecond durations convert correctly; and whether LM
+  Studio's streaming responses carry a `usage` block at all. The engine-native
+  view and the live progress frames need a live oMLX of their own to confirm
+  that its activity rows pair with PAIR's jobs, that the counters the node
+  card shows match the engine's own, and that a live frame reaches a remote
+  member's clients under the right job id. On oMLX 0.7.2 the per-job phase
+  durations are absent on a streaming request, because the engine's streaming
+  `usage` chunk reports no timings (see
+  [Inference Prefill / Decode Metrics](#inference-prefill--decode-metrics)); a
+  newer oMLX or a non-streaming request is needed for them to appear. No
+  release-candidate profile exists for this feature. Source checks do not
+  certify published assets. See the
+  [design](superpowers/specs/2026-10-21-inference-metrics-v2-design.md)
+  §7 for the risks and unknowns.
 
 ### GPU Memory Semantics
 

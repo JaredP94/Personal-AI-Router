@@ -34,6 +34,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"nvpair-shared/enginenative"
 )
 
 const (
@@ -599,7 +601,26 @@ type DirectoryNode struct {
 	// empty list means "running, nothing loaded"; a missing key means the peer
 	// didn't report loaded state for it. Omitted when the peer reports none.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
-	LastSeen       int64               `json:"lastSeen"` // Unix seconds
+	// EngineNative is the engine's own report of itself: the counters, the
+	// rates and the models it lists as active, as the engine published them.
+	// Enriched from engine-manager's em /v1/engine-stats, over the same
+	// transport the model list uses.
+	//
+	// It is a pointer, and absent means "not known": a node whose engine
+	// publishes no admin API, a peer this node holds no pin for, and a node
+	// whose engine could not be reached all leave it absent. An absent view is
+	// a normal state, never a zero, so a consumer can tell "the engine
+	// reported nothing" from "the engine reported nothing happened".
+	//
+	// A node that has never produced a view has none. A node whose fetch
+	// failed keeps the view it had: the last-good rule the model list
+	// follows too, so a transient miss does not blank the card.
+	//
+	// It is the engine's own account of its work, which includes traffic PAIR
+	// did not route, so a consumer must present it beside PAIR's own numbers
+	// and never merged into them.
+	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
+	LastSeen     int64               `json:"lastSeen"` // Unix seconds
 }
 
 // Clustered reports whether the node advertises a cluster identity.

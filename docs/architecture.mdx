@@ -935,6 +935,105 @@ rendered by the desktop.
   labelled with the window it covers, and the node's totals say that they
   cover the time since the broker started rather than reading as a lifetime.
 
+### The Engine-Native View
+
+An engine can report on itself. PAIR carries that report **beside** its own
+numbers, never inside them.
+
+- **Where it comes from:** The engine-manager serves `GET /v1/engine-stats`
+  and `GET /v1/engine-activity` on its `em` surface — the same listener as
+  `GET /v1/models`, behind the same two gates: plaintext for loopback only,
+  cluster mTLS for pinned peers. The node-scanner fetches the stats from
+  every peer over the mTLS pool it already uses for the model list, on its own
+  slower cadence (a minute), and folds them onto the node record as
+  `engineNative`. The broker copies the field onto its own node record, and
+  the desktop shows it on the node card as a clearly separate "engine
+  self-report" section.
+- **PAIR's own type, not the engine's payload:** oMLX's admin stats payload
+  carries the engine's own `api_key`, along with its host, port and CLI
+  prefix. PAIR maps the fields it needs onto its own type field by field, and
+  that type has no field for the key, so it cannot leak. oMLX is the only
+  engine that publishes an admin API; for every other engine the view is
+  absent, and an absent view is a normal state, never a zero.
+- **Counters, speeds and models — no durations:** The view carries the
+  engine's cumulative counters (requests, prompt, completion and cached
+  tokens, cache efficiency), its **speeds** (average prefill and generation
+  throughput) and the models it lists as active. It carries **no phase
+  durations**: the engine's stats endpoint reports none, and the durations on
+  the engine's usage endpoint are scoped to a date range rather than to the
+  engine's life, so a day-scoped number would not belong beside the lifetime
+  counters.
+- **It is the engine's own account of its work,** so it includes traffic PAIR
+  did not route. A client therefore shows it beside PAIR's numbers and never
+  merges the two: adding them together would count overlapping work twice.
+- **Freshness:** Every fetch is a new observation, so the view's `observedAt`
+  stamp advances even when the counters do not move. A client computes
+  staleness as `now - observedAt`, which is what tells a live but idle engine
+  apart from one that stopped answering. A node whose fetch fails keeps the
+  view it had — the last-good rule the model list follows too.
+
+### Live In-Flight Progress
+
+A running job can show what has arrived so far, without waiting for it to
+finish.
+
+- **What PAIR measures, exactly:** The proxies count the content chunks and
+  the response bytes they received, and time the first response byte. A frame
+  leaves at most once every two seconds per in-flight request, so a cluster
+  with twenty running jobs carries at most ten frames per second whatever the
+  engines' chunk rates are.
+- **Publishers, one job id:** The origin proxy publishes the facts PAIR
+  measured of the client's stream. A node that serves the job for a peer
+  publishes what it measured of the engine's stream, and the oMLX proxy's
+  poller publishes what the engine reported of its own request, under the same
+  job id. A frame is a **partial** view: no publisher can see the others'
+  facts, so a field a frame does not carry means "not measured here", never
+  "zero".
+- **The origin travels with the request:** A request forwarded to a cluster
+  peer carries the origin's job id, the origin's node id and the origin's run
+  nonce. The serving node publishes its frame under that identity, so every
+  member of the cluster keys the job's live view the same way and the job's
+  terminal event — which names the origin — retires it.
+- **How it travels:** The workload-manager broadcasts the frame to every
+  pinned peer. Each broker keeps a bounded live view of the running jobs and
+  pushes the merged view to its clients as `workloads:progress`. A frame
+  never enters the workload catalog and never changes a job's state; a
+  terminal event retires the job's live view, so a frame that arrives late
+  cannot bring a finished job back to life.
+- **The job's identity:** A live view is keyed by the origin node, the
+  engine and PAIR's job id, the same identity the workload catalog uses
+  (which adds the run id). PAIR's job id is a per-proxy counter, so two
+  origins can both hold a job "1" — and every engine's proxy counts from 1
+  as well, so an oMLX job "1" and an Ollama job "1" on one node are two
+  different jobs. Only the origin and the engine together tell two jobs
+  apart. The run id says which run a job id belongs to, so a proxy that
+  restarted and counts from 1 again never inherits the old job's numbers.
+- **What the desktop shows:** A running job shows the live line — the elapsed
+  time and the chunks and bytes that arrived — plus the engine's own live
+  reading when the engine reported one. A finished job shows the final exact
+  numbers the engine reported, and the live line goes away with it.
+
+### No Estimates
+
+Nothing on these surfaces is estimated, interpolated, or derived from a
+different quantity.
+
+- A **chunk count is never presented as a token count.** PAIR does not know
+  the engine's token count until the response ends, and a chunk is not a
+  token. The live line shows the chunks and the bytes as what they are.
+- The **engine's numbers are never replaced by PAIR's own.** `totalMs` is the
+  engine's `usage.total_time` and nothing else: a proxy-measured wall-clock
+  duration covers queueing, transport and client write time and would not
+  mean the same thing.
+- A **value nobody reported stays absent.** A phase the engine did not
+  measure, a reading a frame did not carry, a node with no engine-native
+  view — all are absent, and the desktop shows "not reported" or omits the
+  row entirely. A **measured zero stays a zero**: oMLX reports a cached-token
+  count of zero on every request that missed its prefix cache, and that zero
+  is shown as a zero.
+- The **engine-native counters and PAIR's own numbers are never added
+  together.** They count overlapping work.
+
 ## Trust Boundaries
 
 ```mermaid

@@ -130,8 +130,7 @@ func (b *Broker) forwardLMStudioProxyNotificationForGeneration(generation uint64
 			}
 		}
 	}
-	if proxyWorkloadMethods[method] {
-		b.routeProxyWorkload(method, params)
+	if b.routeProxyWorkloadMethod(method, params) {
 		return
 	}
 	if method == noderec.NotifyNodeActivity {

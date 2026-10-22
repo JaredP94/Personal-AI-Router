@@ -12,11 +12,34 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"nvpair-shared/cors"
 )
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
+
+// nvpairRequestIDHeader carries PAIR's job id from the origin proxy to the
+// peer that serves the request. It is the origin's own id for the request,
+// and it is not a routing input: the ingress stays strictly terminal, so a
+// peer's request is never re-routed onward.
+const nvpairRequestIDHeader = "X-NVPAIR-Request-Id"
+
+// nvpairOriginNodeHeader carries the ORIGIN node's id from the origin proxy
+// to the peer that serves the request.
+//
+// It rides alongside the job id because PAIR's job id is a per-proxy counter:
+// two origins can both hold a job "1", so the job id alone does not say
+// which job a frame is about. The origin does.
+const nvpairOriginNodeHeader = "X-NVPAIR-Origin-Node"
+
+// nvpairRunIDHeader carries the ORIGIN proxy's run nonce from the origin
+// proxy to the peer that serves the request.
+//
+// It rides alongside the job id because a proxy that restarts counts its jobs
+// from 1 again: the run nonce says which run the job id belongs to, so a
+// recycled job id is never taken for the job it replaced.
+const nvpairRunIDHeader = "X-NVPAIR-Run-Id"
 
 var plaintextRejectWarned sync.Map
 
@@ -125,19 +148,45 @@ func (p *Proxy) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 			"no local inference backend is available on this node")
 		return
 	}
+	// The job's identity, when the request came from a peer: the origin
+	// proxy's job id, the origin's node id and the origin's run nonce all
+	// travelled with the request. The frame the serving side publishes is
+	// attributed to that origin, not to this node.
+	job := peerJob{
+		jobID:        r.Header.Get(nvpairRequestIDHeader),
+		originNodeID: r.Header.Get(nvpairOriginNodeHeader),
+		runID:        r.Header.Get(nvpairRunIDHeader),
+		start:        time.Now(),
+	}
 	slog.Debug("cluster ingress forwarding to local backend",
-		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host)
-	p.reverseProxyToLocal(w, r, target)
+		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host,
+		"job_id", job.jobID, "origin_node_id", job.originNodeID, "run_id", job.runID)
+	p.reverseProxyToLocal(w, r, target, job)
 }
 
 // reverseProxyToLocal streams the request to the local engine, preserving
 // cancellation (the request context is the proxy's root context, so a client
 // disconnect or shutdown tears down the upstream call and stops generation).
-func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL) {
-	p.newLocalReverseProxy(target).ServeHTTP(w, r)
+//
+// A request a peer forwarded carries the origin's job identity, and the
+// serving side publishes the live frame under it: the frame is attributed to
+// the origin, so every member of the cluster keys the job's live view the
+// same way and the job's terminal event retires it.
+func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL, job peerJob) {
+	p.newLocalReverseProxy(target, job).ServeHTTP(w, r)
 }
 
-func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
+// newLocalReverseProxy builds the ingress's reverse proxy to the local
+// engine.
+//
+// A peer-served request is measured on the way back: the reader counts the
+// bytes the engine sent, and the frame leaves attributed to the origin. A
+// request this node received directly is served by its own router, which
+// publishes the frame itself.
+func (p *Proxy) newLocalReverseProxy(target *url.URL, job peerJob) *httputil.ReverseProxy {
+	// The peer-served job's own limiter: the frame the serving side
+	// leaves for it leaves at most once per window.
+	limiter := newProgressLimiter()
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
@@ -147,6 +196,17 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		},
 		Transport:  p.plainHTTPTransport(),
 		BufferPool: p.bufPool,
+		ModifyResponse: func(resp *http.Response) error {
+			if job.jobID == "" {
+				return nil
+			}
+			reader := newPeerProgressReader(resp.Body, job.start)
+			reader.onProgress = func(prog peerProgress) {
+				p.publishPeerProgress(job, limiter, prog)
+			}
+			resp.Body = reader
+			return nil
+		},
 		ErrorHandler: func(ew http.ResponseWriter, _ *http.Request, err error) {
 			slog.Warn("cluster ingress upstream error", "target", target.Host, "err", err)
 			writeIngressError(ew, http.StatusBadGateway, "backend-error", "local inference backend error")

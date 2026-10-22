@@ -12,11 +12,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/nodeid"
 	"nvpair-shared/telemetry"
 )
 
@@ -92,6 +94,19 @@ func main() {
 		slog.Info("cluster inference ingress switched personality", "cluster_ingress", clustered)
 		proxy.dropUnpinnedPeerTransports()
 	})
+	// Resolve this node's stable per-host id from the same on-disk identity
+	// the broker and the scanner use, so a live frame this proxy publishes
+	// names the node that is serving the request with the id the rest of
+	// the cluster knows it by. The base is the parent of the cluster dir
+	// (which is <base>/cluster), exactly as the broker resolves it.
+	base := ""
+	if *clusterDir != "" {
+		base = filepath.Dir(*clusterDir)
+	}
+	proxy.nodeID = nodeid.Resolve(base)
+	if proxy.nodeID == "" {
+		slog.Warn("could not resolve this node's id; a live frame will not name the serving node")
+	}
 
 	if err := proxy.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("proxy error: %v", err)

@@ -467,6 +467,16 @@ type Proxy struct {
 
 	bufPool   *bufpool.Pool
 	telemetry *telemetry.Manager
+
+	// nodeID is this node's stable per-host id. A live frame carries the id
+	// of the node that is serving the request, so the node that publishes
+	// the engine's own numbers for a request served on behalf of a peer can
+	// name itself.
+	nodeID string
+
+	// engine holds the pairing between the engine's request ids and PAIR's
+	// job ids, and the engine's last known live rows. See engineactivity.go.
+	engine engineActivity
 }
 
 func NewProxy(codec *Codec, discovery *Discovery, port int, tel ...*telemetry.Manager) *Proxy {
@@ -1315,6 +1325,20 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var committedSC *statusCapture
 	var upstreamBody *affinityBodyReader
 
+	// progressLim rate-limits this request's live frames to one every
+	// progressInterval. It is per request: one busy job must not silence
+	// another job's frames.
+	var progressLim progressLimiter
+
+	// boundEngineReqIDs holds the engine request ids this request was
+	// paired with. The pairing dies with the request.
+	var boundEngineReqIDs []string
+	defer func() {
+		for _, engineReqID := range boundEngineReqIDs {
+			p.releaseEngineJob(engineReqID)
+		}
+	}()
+
 	// Failover loop: try candidates in order until one returns a
 	// usable response or the list is exhausted. We can only retry before the
 	// first byte reaches the client; once a response starts streaming we're
@@ -1357,17 +1381,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		proxy := &httputil.ReverseProxy{
-			Director: func(req *http.Request) {
-				req.URL.Scheme = cand.url.Scheme
-				req.URL.Host = cand.url.Host
-				req.Host = cand.url.Host
-				if cand.isSelf {
-					if key := readOMLXAPIKey(); key != "" {
-						req.Header.Set("Authorization", "Bearer "+key)
-					}
-				}
-				stripTraceContext(req.Header)
-			},
+			Director: p.forwardDirector(cand, reqID),
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
 			Transport:  p.candidateTransport(cand),
@@ -1387,9 +1401,24 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// that publish no policy retain the proxy's permissive 204 fallback.
 				cors.CompletePreflightFallback(resp)
 				upstreamBody = newAffinityBodyReader(resp.Body, resp.Header.Get("Content-Type"))
+				// The engine answers with its own request id. Pairing it
+				// with PAIR's job id is what lets the engine's live rows be
+				// published already keyed by that job id.
+				engineReqID := resp.Header.Get(engineRequestIDHeader)
 				if isInf && dispatchSpan != nil {
-					telReader = newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, session)
-					resp.Body = telReader
+					reader := newTelemetryBodyReader(upstreamBody, dispatchSpan, dispatchStart, start, session)
+					reader.onProgress = func(prog LiveProgress) {
+						p.publishProgress(reqID, cand.id, start, &progressLim, prog)
+					}
+					telReader = reader
+					resp.Body = reader
+					if engineReqID != "" && bindsLocalEngineJob(cand) {
+						// The engine's own publisher shares the request's
+						// limiter, so the job leaves at most one frame per
+						// window whichever publisher has something to say.
+						p.bindEngineJob(&engineJob{jobID: reqID, engineReqID: engineReqID, runID: p.runID, limiter: &progressLim})
+						boundEngineReqIDs = append(boundEngineReqIDs, engineReqID)
+					}
 				} else {
 					resp.Body = upstreamBody
 				}
@@ -1616,6 +1645,54 @@ func serveReverseProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *h
 	}()
 	proxy.ServeHTTP(w, r)
 	return false
+}
+
+// bindsLocalEngineJob reports whether this proxy's own activity poller should
+// pair the engine's request id of a job served by the given candidate.
+//
+// Only a job this node's own engine serves is bound locally. A peer
+// candidate is served by the PEER's engine: the peer pairs the engine's
+// request id with the job id itself and publishes the engine's rows, so
+// binding it here would only make the local poller hunt a peer engine's
+// request id in the local engine's rows.
+func bindsLocalEngineJob(cand candidate) bool {
+	return cand.peerUUID == ""
+}
+
+// forwardDirector rewrites a request for the candidate it is about to be
+// forwarded to.
+//
+// A request forwarded to a cluster peer carries PAIR's job id, so the
+// serving peer can pair the engine's request id with it and publish the
+// engine's live rows already keyed by that job id. It carries the origin
+// node's id too: the job id is a per-proxy counter, so two origins can both
+// hold a job "1", and only the origin tells their jobs apart. It carries the
+// run nonce as well: a proxy that restarts counts its jobs from 1 again, and
+// the run nonce says which run the job id belongs to. All three headers are
+// random per-request identifiers that carry no content, and they are not
+// routing inputs: the ingress stays strictly terminal and never re-routes a
+// peer's request onward.
+func (p *Proxy) forwardDirector(cand candidate, jobID string) func(*http.Request) {
+	return func(req *http.Request) {
+		req.URL.Scheme = cand.url.Scheme
+		req.URL.Host = cand.url.Host
+		req.Host = cand.url.Host
+		if cand.isSelf {
+			if key := readOMLXAPIKey(); key != "" {
+				req.Header.Set("Authorization", "Bearer "+key)
+			}
+		}
+		if cand.peerUUID != "" && jobID != "" {
+			req.Header.Set(nvpairRequestIDHeader, jobID)
+			if p.nodeID != "" {
+				req.Header.Set(nvpairOriginNodeHeader, p.nodeID)
+			}
+			if p.runID != "" {
+				req.Header.Set(nvpairRunIDHeader, p.runID)
+			}
+		}
+		stripTraceContext(req.Header)
+	}
 }
 
 // resolveCandidates returns the ordered list of nodes to try for the current

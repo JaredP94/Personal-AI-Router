@@ -93,6 +93,10 @@ type Executor struct {
 	// actionTimeout bounds a single engine:action call (HTTP or CLI) so a
 	// hung engine can't park the goroutine or starve the caller forever.
 	actionTimeout time.Duration
+	// engineNativeTimeout bounds one fetch of the engine's own admin API
+	// (enginenative.go), so a slow engine can't hold the em surface open.
+	// Overridable.
+	engineNativeTimeout time.Duration
 	// loadedPollInterval is the cadence of the loaded-model watcher
 	// (loadedwatch.go), which polls each running engine's resident set and emits
 	// engine:models-changed on change. 0 disables it. Overridable via
@@ -112,19 +116,20 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
-		reg:                reg,
-		reporter:           reporter,
-		emit:               emit,
-		client:             newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:   newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
-		progress:           newProgressHub(),
-		baseDir:            baseDir,
-		desired:            newDesiredStateStore(baseDir),
-		detectTimeout:      30 * time.Second,
-		actionTimeout:      30 * time.Minute,
-		loadedPollInterval: defaultLoadedPollSeconds * time.Second,
-		loadedPoke:         make(chan struct{}, 1),
-		engines:            make(map[string]*engineState),
+		reg:                 reg,
+		reporter:            reporter,
+		emit:                emit,
+		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
+		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		progress:            newProgressHub(),
+		baseDir:             baseDir,
+		desired:             newDesiredStateStore(baseDir),
+		detectTimeout:       30 * time.Second,
+		actionTimeout:       30 * time.Minute,
+		engineNativeTimeout: defaultEngineNativeTimeout,
+		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
+		loadedPoke:          make(chan struct{}, 1),
+		engines:             make(map[string]*engineState),
 	}
 }
 

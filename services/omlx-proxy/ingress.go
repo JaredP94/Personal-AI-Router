@@ -18,6 +18,33 @@ import (
 
 const engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
 
+// nvpairRequestIDHeader carries PAIR's job id from the origin proxy to the
+// peer that serves the request. It is a random per-request identifier that
+// carries no content, and it is not a routing input: the ingress stays
+// strictly terminal, so a peer's request is never re-routed onward.
+const nvpairRequestIDHeader = "X-NVPAIR-Request-Id"
+
+// nvpairOriginNodeHeader carries the ORIGIN node's id from the origin proxy
+// to the peer that serves the request.
+//
+// It rides alongside the job id because PAIR's job id is a per-proxy counter:
+// two origins can both hold a job "1", so the job id alone does not say
+// which job a frame is about. The origin does — it is the same half of the
+// identity the workload catalog keys a job by (`originatedFrom` + `id`).
+const nvpairOriginNodeHeader = "X-NVPAIR-Origin-Node"
+
+// nvpairRunIDHeader carries the ORIGIN proxy's run nonce from the origin
+// proxy to the peer that serves the request.
+//
+// It rides alongside the job id because a proxy that restarts counts its jobs
+// from 1 again: the run nonce says which run the job id belongs to, so a
+// recycled job id is never taken for the job it replaced.
+const nvpairRunIDHeader = "X-NVPAIR-Run-Id"
+
+// engineRequestIDHeader is the header the engine answers with, carrying the
+// engine's own request id — the id the engine's live rows are keyed by.
+const engineRequestIDHeader = "X-oMLX-Request-ID"
+
 var plaintextRejectWarned sync.Map
 
 func logPlaintextReject(r *http.Request) {
@@ -125,20 +152,59 @@ func (p *Proxy) handleClusterIngress(w http.ResponseWriter, r *http.Request) {
 			"no local inference backend is available on this node")
 		return
 	}
+	// The origin proxy's job id, when the request came from a peer. It lets
+	// the engine's live rows be published already keyed by that job id.
+	jobID := r.Header.Get(nvpairRequestIDHeader)
+	// The origin node's id, when the request came from a peer. It is the
+	// other half of the job's identity: the engine's live rows are
+	// published under the origin's job id, so without the origin two
+	// origins' job "1" would be one job.
+	originNodeID := r.Header.Get(nvpairOriginNodeHeader)
+	// The origin proxy's run nonce, when the request came from a peer. It
+	// says which run the job id belongs to.
+	runID := r.Header.Get(nvpairRunIDHeader)
 	slog.Debug("cluster ingress forwarding to local backend",
-		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host)
-	p.reverseProxyToLocal(w, r, target)
+		"peer", peer, "method", r.Method, "path", r.URL.Path, "target", target.Host,
+		"job_id", jobID, "origin_node_id", originNodeID, "run_id", runID)
+	p.reverseProxyToLocal(w, r, target, jobID, originNodeID, runID)
 }
 
 // reverseProxyToLocal streams the request to the local engine, preserving
 // cancellation (the request context is the proxy's root context, so a client
 // disconnect or shutdown tears down the upstream call and stops generation).
-func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL) {
-	p.newLocalReverseProxy(target).ServeHTTP(w, r)
+func (p *Proxy) reverseProxyToLocal(w http.ResponseWriter, r *http.Request, target *url.URL, jobID, originNodeID, runID string) {
+	p.serveLocalEngine(w, r, target, jobID, originNodeID, runID)
 }
 
+// serveLocalEngine streams a request to the local engine and holds, for as
+// long as the request runs, the pairing between the engine's request id and
+// PAIR's job id.
+//
+// The pairing is what lets the engine's live rows be published already keyed
+// by PAIR's job id: the engine keys its rows by its own request id, and a
+// client never joins anything. It is in memory and dies with the request.
+func (p *Proxy) serveLocalEngine(w http.ResponseWriter, r *http.Request, target *url.URL, jobID, originNodeID, runID string) {
+	rp, release := p.newLocalReverseProxyForJob(target, jobID, originNodeID, runID)
+	defer release()
+	rp.ServeHTTP(w, r)
+}
+
+// newLocalReverseProxy builds the ingress's reverse proxy to the local
+// engine, for a request that carries no PAIR job id.
 func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
+	rp, _ := p.newLocalReverseProxyForJob(target, "", "", "")
+	return rp
+}
+
+// newLocalReverseProxyForJob builds the ingress's reverse proxy to the local
+// engine and pairs the engine's request id with PAIR's job id for as long as
+// the request runs.
+//
+// The returned function releases the pairing; the caller runs it when the
+// request is done.
+func (p *Proxy) newLocalReverseProxyForJob(target *url.URL, jobID, originNodeID, runID string) (*httputil.ReverseProxy, func()) {
+	var bound []string
+	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
@@ -150,11 +216,38 @@ func (p *Proxy) newLocalReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		},
 		Transport:  p.plainHTTPTransport(),
 		BufferPool: p.bufPool,
+		// The engine answers with its own request id. Pairing it with
+		// PAIR's job id — the origin's, when the request came from a peer —
+		// is what lets the engine's live rows be published already keyed by
+		// that job id, with no join left for a client to do.
+		ModifyResponse: func(resp *http.Response) error {
+			engineReqID := resp.Header.Get(engineRequestIDHeader)
+			if jobID != "" && engineReqID != "" {
+				p.bindEngineJob(&engineJob{
+					jobID:        jobID,
+					engineReqID:  engineReqID,
+					originNodeID: originNodeID,
+					runID:        runID,
+					// The job's own limiter: the engine's own publisher
+					// is the only one for a peer-served job on this node,
+					// and it leaves at most one frame per window.
+					limiter: newProgressLimiter(),
+				})
+				bound = append(bound, engineReqID)
+			}
+			return nil
+		},
 		ErrorHandler: func(ew http.ResponseWriter, _ *http.Request, err error) {
 			slog.Warn("cluster ingress upstream error", "target", target.Host, "err", err)
 			writeIngressError(ew, http.StatusBadGateway, "backend-error", "local inference backend error")
 		},
 	}
+	release := func() {
+		for _, engineReqID := range bound {
+			p.releaseEngineJob(engineReqID)
+		}
+	}
+	return rp, release
 }
 
 // isLoopbackRemote reports whether an http.Request RemoteAddr (host:port) is a

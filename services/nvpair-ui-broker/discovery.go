@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"nvpair-shared/applog"
+	"nvpair-shared/enginenative"
 	"nvpair-shared/netpick"
 	"nvpair-shared/noderec"
 
@@ -72,6 +73,17 @@ type EnrichedNode struct {
 	// peer's engine-manager /v1/models loadedByEngine field. Carried through to
 	// AvailableNode so a remote node's cards can reflect loaded state.
 	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	// EngineNative is the engine's own report of itself: the counters, the
+	// rates and the models it lists as active, as the engine published them.
+	// Enriched by the daemon from the node's engine-manager
+	// /v1/engine-stats. Carried through to AvailableNode so a consumer can
+	// show the engine's own account of its work.
+	//
+	// It is the engine's own numbers, which include traffic PAIR did not
+	// route, so a consumer must present it beside PAIR's own numbers and
+	// never merged into them. Absent means the engine reported no view: it
+	// publishes no admin API, or it could not be reached.
+	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
 }
 
 // directoryToEnriched projects the promoted daemon's DirectoryNode onto the
@@ -110,6 +122,7 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		Models:         n.Models,
 		ModelsByEngine: n.ModelsByEngine,
 		LoadedByEngine: n.LoadedByEngine,
+		EngineNative:   n.EngineNative,
 	}
 }
 
@@ -341,6 +354,13 @@ func enrichedNodeEqual(a, b EnrichedNode) bool {
 			return false
 		}
 	}
+	// The engine's own view is compared as a reading: the same engine
+	// numbers observed at the same moment. A fresher reading is not the
+	// same as the one it replaces, because the stamp is what tells a
+	// consumer how old the reading is.
+	if !enginenative.SameView(a.EngineNative, b.EngineNative) {
+		return false
+	}
 	return true
 }
 
@@ -394,6 +414,7 @@ func (sn storedNode) toAvailable() AvailableNode {
 		Models:         n.Models,
 		ModelsByEngine: n.ModelsByEngine,
 		LoadedByEngine: n.LoadedByEngine,
+		EngineNative:   n.EngineNative,
 	}
 }
 

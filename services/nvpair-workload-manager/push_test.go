@@ -27,7 +27,8 @@ func TestResyncBypassesReceiverDedup(t *testing.T) {
 	self, peer := newPinnedPeerMeshes(t)
 	srv := NewServer(0, newDedupIndex(64), self,
 		func(*Workload) error { mu.Lock(); emits++; mu.Unlock(); return nil },
-		func(string, string) error { return nil })
+		func(string, string) error { return nil },
+		func(json.RawMessage) error { return nil })
 	post := serveEventsOverMTLS(t, srv, self, peer)
 	emitCount := func() int { mu.Lock(); defer mu.Unlock(); return emits }
 

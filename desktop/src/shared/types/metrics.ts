@@ -86,3 +86,83 @@ export interface NodeInferenceMetrics {
 export interface NodeInferenceMetricsSnapshot {
     nodes: NodeInferenceMetrics[]
 }
+
+/**
+ * The engine's own counters, as the engine published them.
+ *
+ * Every field is optional: the engine reports a counter with `omitempty`, so
+ * an absent key means the engine did not report that value — never a
+ * measured zero. The object itself is always present on the wire, but it can
+ * be empty, so an empty object means "the engine reported no numbers", not
+ * "the engine reported zeros".
+ */
+export interface EngineNativeTotals {
+    /** Requests the engine has served since it started. */
+    requests?: number
+    /** Prompt tokens the engine has processed. */
+    promptTokens?: number
+    /** Completion tokens the engine has produced. */
+    completionTokens?: number
+    /** Prompt tokens the engine served from its prefix cache. */
+    cachedTokens?: number
+    /** The share of prompt tokens served from the cache, in percent. */
+    cacheEfficiency?: number
+}
+
+/**
+ * The engine's own throughput numbers: the averages it computes over its own
+ * counters.
+ *
+ * Every field is optional, for the same reason as in
+ * {@link EngineNativeTotals}: an absent key means the engine did not report
+ * that value.
+ */
+export interface EngineNativeRates {
+    /** The engine's average prefill throughput, in tokens per second. */
+    prefillTokensPerSecond?: number
+    /** The engine's average generation throughput, in tokens per second. */
+    generationTokensPerSecond?: number
+}
+
+/**
+ * One model the engine lists as active.
+ *
+ * `loaded` is the engine's own claim about the model: it means the engine
+ * lists this model as active, not that the model is resident in memory. The
+ * engine-manager's per-engine loaded set is a different thing — the models
+ * resident in memory — and the two must not be shown under the same word.
+ */
+export interface EngineNativeModel {
+    model: string
+    loaded: boolean
+}
+
+/**
+ * The engine's own view of itself: the counters, the rates and the models it
+ * lists as active, as the engine published them.
+ *
+ * These are the engine's numbers, not PAIR's. They include the traffic PAIR
+ * did not route, so a consumer presents them beside PAIR's own counters and
+ * never merges, sums or averages the two.
+ *
+ * `supported` says whether this engine has a native view at all. An engine
+ * without an admin API publishes none, and a consumer renders nothing for it
+ * — no section and no "not reported" noise.
+ */
+export interface EngineNativeView {
+    /** The engine that published the view, e.g. "omlx". */
+    engine: string
+    /** Whether this engine has a native view of itself. */
+    supported: boolean
+    totals?: EngineNativeTotals
+    rates?: EngineNativeRates
+    models?: EngineNativeModel[]
+    /**
+     * When the view was observed, in milliseconds since the epoch.
+     *
+     * The stamp advances on every sweep, so it is the freshness signal: a
+     * node whose engine stopped answering keeps its last good view with a
+     * frozen stamp, and the age of that stamp is how a dead engine shows.
+     */
+    observedAt?: number
+}

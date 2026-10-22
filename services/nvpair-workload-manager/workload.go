@@ -39,6 +39,20 @@ const (
 	// MethodUpsert is emitted to the broker on stdout after a validated
 	// remote lifecycle event. It is never accepted on the wire.
 	MethodUpsert = "workloads:upsert"
+
+	// MethodProgress is the live progress frame's method. The frame is a
+	// snapshot of a running request, not a state transition: it travels
+	// like a lifecycle frame (the broker hands it to this service, this
+	// service broadcasts it to the pinned peers) but it is never deduped,
+	// never tracked as an active workload and never entered in the
+	// catalog.
+	MethodProgress = "workload:progress"
+
+	// MethodProgressRelay is the name this service gives the broker for a
+	// progress frame that arrived from a peer. It mirrors the
+	// workloads:upsert translation of a peer-origin lifecycle event: the
+	// broker consumes a workloads:* name, never the producer's own.
+	MethodProgressRelay = "workloads:progress"
 )
 
 // lifecycleMethods is the set of inbound lifecycle method names. The mapped
@@ -132,6 +146,21 @@ func parseLifecycle(params json.RawMessage) (*Workload, error) {
 		return nil, fmt.Errorf("workloadInfo.originatedFrom is required")
 	}
 	return w, nil
+}
+
+// parseProgress extracts and validates a live progress frame. Only the job
+// id is required: every other field is optional, because a frame reports what
+// its publisher measured and stays silent about the rest. A frame that names
+// no job is not a frame — it would land in no job's view.
+func parseProgress(params json.RawMessage) (*inferencemetrics.ProgressFrame, error) {
+	var f inferencemetrics.ProgressFrame
+	if err := json.Unmarshal(params, &f); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if f.JobID == "" {
+		return nil, fmt.Errorf("missing params.jobId")
+	}
+	return &f, nil
 }
 
 // parseRemove extracts and validates a workloadId (and the optional

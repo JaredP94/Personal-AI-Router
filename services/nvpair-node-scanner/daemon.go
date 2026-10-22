@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/enginenative"
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
@@ -218,6 +219,32 @@ const telemetryRetryMax = 30 * time.Second
 // normal operation — the per-node goroutines still run concurrently so one slow
 // peer never consumes another's timeout budget.
 const modelsRefreshConcurrency = 16
+
+// engineNativeRefreshInterval is the cadence of the engine-native sweep
+// (refreshEngineNativeLoop). It is deliberately slower than the models sweep
+// (peerRefreshInterval): the model list moves when a model is pulled or
+// deleted, while the engine's own counters move when the engine does work, and
+// they are read as a running total rather than a live value. A minute is
+// often enough to show the counters moving and slow enough that the sweep is
+// not a second copy of the models traffic.
+const engineNativeRefreshInterval = 60 * time.Second
+
+// engineNativeFetchTimeout bounds one /v1/engine-stats GET.
+//
+// It matches the models client's own bound, because the fetch rides that same
+// pooled client (see fetchEngineStats): the em surface's own read of the
+// engine is capped at five seconds, so six leaves room for the round trip
+// without letting a wedged peer hold the sweep open.
+const engineNativeFetchTimeout = modelsFetchTimeout
+
+// engineNativeRefreshConcurrency caps how many engine-native fetches one
+// sweep runs at once, for the same reason as modelsRefreshConcurrency.
+const engineNativeRefreshConcurrency = 16
+
+// engineNativeResponseLimit caps how much of the engine-native answer the
+// scanner reads. The em surface already bounds what it forwards; this bounds
+// what the scanner is willing to parse.
+const engineNativeResponseLimit = 1 << 20
 
 // telemetryRefreshConcurrency limits simultaneous node-info GETs across every
 // telemetry tick.
@@ -428,6 +455,7 @@ func (d *daemon) run(ctx context.Context) {
 	// so a pull/delete, a late engine start, or a missed announcement would
 	// otherwise leave a directory entry permanently stale. Stops with ctx.
 	go d.refreshPeersLoop(ctx)
+	go d.refreshEngineNativeLoop(ctx)
 	go d.refreshTelemetryLoop(ctx)
 	for {
 		select {
@@ -483,7 +511,22 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		d.supersedingUpsert(node)
 		method = noderec.NotifyNodeDiscovered
 	}
-	d.emit(method, node)
+	d.emit(method, d.storedOr(node))
+}
+
+// storedOr returns the record the directory holds for a node, falling back to
+// the record the caller holds when the directory holds none.
+//
+// The browse path rebuilds a node from the mDNS record, which carries no
+// engine-native view, while the directory keeps the view the sweep stored. The
+// record that is announced is therefore the one the directory holds: announcing
+// the rebuilt one would show the client the view disappearing on every
+// advertisement, and reappearing at the next sweep.
+func (d *daemon) storedOr(node noderec.DirectoryNode) noderec.DirectoryNode {
+	if stored, ok := d.dir.get(node.HostUUID); ok {
+		return stored
+	}
+	return node
 }
 
 // supersedingUpsert folds a browsed peer into the directory, evicting any record
@@ -903,7 +946,7 @@ func (d *daemon) publishSelfLocked() {
 	if isNew := d.dir.upsert(node); isNew {
 		method = noderec.NotifyNodeDiscovered
 	}
-	d.emit(method, node)
+	d.emit(method, d.storedOr(node))
 }
 
 // watchAddress re-derives the advertised ip= whenever the host's network changes
@@ -1472,6 +1515,81 @@ func (d *daemon) modelsClient(ip, clusterUUID string) (*http.Client, string, boo
 	return client, "https", true
 }
 
+// fetchEngineStats does one GET of a node's /v1/engine-stats and returns the
+// engine's own view of itself.
+//
+// The transport is the one the model list uses (modelsClient), deliberately: this
+// node's own engine-manager is read over loopback in plaintext — which keeps
+// working in every membership state, so a standalone machine still sees its own
+// engine's counters — and a peer is read over cluster mTLS pinned to the
+// principal it advertises. The engine's counters are cluster data, so a peer
+// this node holds no pin for is not fetched at all: there is nothing to read,
+// and that is not an error.
+//
+// The answer is PAIR's own type (the em surface maps the engine's payload field
+// by field), so it is decoded as-is. A node whose engine publishes no admin API
+// answers "unsupported", and so does an engine that could not be reached;
+// neither is a view, so neither is carried. Every failure — no pin, an
+// unreachable engine, a malformed answer — leaves the caller with no view: a
+// node with no engine-native view is a normal state, not a fault.
+//
+// The caller decides what a failure means for the node it was reading: the
+// sweep keeps the last view it had (the last-good rule the model list follows
+// too), so a node that has never produced a view has none and a node whose
+// fetch fails keeps the view it had.
+//
+// ctx is the daemon's own context, so a shutdown cancels an in-flight read
+// rather than leaving it to run out its deadline; the read is bounded by
+// engineNativeFetchTimeout on top of that.
+func (d *daemon) fetchEngineStats(ctx context.Context, ip string, port int, clusterUUID string) (*enginenative.Stats, bool) {
+	client, scheme, ok := d.modelsClient(ip, clusterUUID)
+	if !ok {
+		slog.Debug("engine-native view skipped: peer is not a pinned cluster member",
+			"ip", ip, "clusterUuid", clusterUUID)
+		return nil, false
+	}
+	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/engine-stats"
+	ctx, cancel := context.WithTimeout(ctx, engineNativeFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		slog.Debug("engine-native request build failed", "ip", ip, "url", url, "err", err)
+		return nil, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Debug("engine-native fetch failed", "ip", ip, "url", url, "err", err)
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// Drain the answer before letting it go: an unread body keeps the
+		// pooled connection from being reused, so every non-200 would cost
+		// the next fetch a fresh handshake.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, engineNativeResponseLimit))
+		return nil, false
+	}
+	var stats enginenative.Stats
+	if err := json.NewDecoder(io.LimitReader(resp.Body, engineNativeResponseLimit)).Decode(&stats); err != nil {
+		slog.Debug("engine-native answer unreadable", "ip", ip, "url", url, "err", err)
+		return nil, false
+	}
+	// "unsupported" is the em surface's answer for an engine with no admin API
+	// and for an engine that could not be reached. Neither is a view of the
+	// engine, so neither is carried: the node simply has no engine-native view.
+	if !stats.Supported {
+		return nil, false
+	}
+	// The stamp says when the numbers were observed. The em surface stamps it
+	// with the reading it took; a peer that does not stamp it (an older one)
+	// gets the local observation time instead, so the field is never a lie
+	// about when it was read.
+	if stats.ObservedAt == 0 {
+		stats.ObservedAt = time.Now().UnixMilli()
+	}
+	return &stats, true
+}
+
 // isLoopbackHost reports whether a dial host addresses this machine.
 func isLoopbackHost(host string) bool {
 	ip := net.ParseIP(host)
@@ -1883,6 +2001,114 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 	d.infoMu.Unlock()
 
 	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine)
+	if !valid {
+		return false
+	}
+	if changed {
+		d.emit(noderec.NotifyNodeUpdated, node)
+	}
+	return changed
+}
+
+// refreshEngineNativeLoop refreshes the engine's own view of every node on its
+// own, slower cadence than the models sweep.
+//
+// It is a separate loop rather than another step of the models sweep because the
+// two answer different questions on different timescales: the model list is a
+// set that changes when a model is pulled or deleted, while the engine's own
+// counters are a running total read for display. One loop each keeps the
+// models traffic as frequent as it needs to be and the engine traffic as slow
+// as it needs to be. The fetch rides the same per-peer client pool the models
+// fetch uses, so the extra cadence costs no extra connections to a peer.
+//
+// Every sweep is a new observation, so the view's stamp advances each time and
+// the update is announced: the stamp is what tells a reader how old the
+// reading is, and a reader that never saw it advance could not tell a live
+// but idle engine apart from one that stopped answering.
+//
+// Stops when ctx is cancelled (the daemon's existing shutdown path).
+func (d *daemon) refreshEngineNativeLoop(ctx context.Context) {
+	ticker := time.NewTicker(engineNativeRefreshInterval)
+	defer ticker.Stop()
+	// One pass straight away, so the view is on the cards without waiting a
+	// whole interval. The engine-manager service may not be registered yet at
+	// this point, in which case there is nothing to ask and the first tick
+	// picks it up.
+	d.refreshEngineNativeOnce(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.refreshEngineNativeOnce(ctx)
+		}
+	}
+}
+
+// refreshEngineNativeOnce snapshots every directory node advertising
+// engine-manager (em) and refreshes each one's engine-native view, bounded by
+// engineNativeRefreshConcurrency so an unexpectedly large network can't spawn
+// an unbounded burst of fetches. It mirrors refreshModelsOnce: the sweep runs
+// to completion before the next tick, and each per-node fetch is bounded by
+// the client's own timeout, so one slow peer never consumes another's budget.
+//
+// ctx is the daemon's context: it cancels the reads a shutdown leaves in
+// flight, on top of each read's own deadline.
+func (d *daemon) refreshEngineNativeOnce(ctx context.Context) {
+	sem := make(chan struct{}, engineNativeRefreshConcurrency)
+	var wg sync.WaitGroup
+	for _, n := range d.dir.snapshot(noderec.ServiceEngineManager) {
+		em, ok := n.Services[noderec.ServiceEngineManager]
+		if !ok || n.IP == "" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		hosts := append([]string(nil), n.CandidateIPs()...)
+		go func(hostUUID, guardIP string, hosts []string, port int, clusterUUID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			d.refreshNodeEngineNative(ctx, hostUUID, guardIP, hosts, port, clusterUUID)
+		}(n.HostUUID, n.IP, hosts, em.Port, n.ClusterUUID)
+	}
+	wg.Wait()
+}
+
+// refreshNodeEngineNative fetches one node's /v1/engine-stats and, on success,
+// applies it to the directory under the removed/re-addressed guard
+// (directory.applyEngineNative). A failed fetch leaves the node's view as it
+// was — the last-good rule the model list follows too: a node that has never
+// produced a view has none, and a node whose fetch fails keeps the view it
+// had. On a change it emits exactly one discovery:node-updated carrying the
+// full node. Returns whether it emitted an update (used by tests).
+//
+// A change is either the engine's numbers moving or the observation being
+// newer: every sweep is a new observation, so the stamp advances even when the
+// counters do not, and a client can tell a fresh reading from a stale one.
+//
+// The fetch dials our OWN engine-manager over loopback, for the same reason the
+// models refresh does: this loop is what converges a view that does not move
+// the registry, and a LAN dial to ourselves is exactly the path a first-run
+// firewall can block. The stored ip is still passed to applyEngineNative as the
+// stale-address guard, so an in-flight result cannot overwrite a re-addressed
+// node. Peers are dialed at their published addresses, over the pinned mTLS
+// client (see fetchEngineStats).
+func (d *daemon) refreshNodeEngineNative(ctx context.Context, hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
+	if d.reg != nil && hostUUID == d.reg.record().HostUUID {
+		hosts = []string{loopbackHost}
+	}
+	ask := func(host string) (*enginenative.Stats, bool) {
+		return d.fetchEngineStats(ctx, host, emPort, clusterUUID)
+	}
+	// The address memory is shared with the models fetch (same node, same
+	// service), so both converge on the one address that answered instead of
+	// each rediscovering it.
+	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager}
+	_, stats, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
+	if !fetched {
+		return false
+	}
+	node, changed, valid := d.dir.applyEngineNative(hostUUID, guardIP, emPort, stats)
 	if !valid {
 		return false
 	}

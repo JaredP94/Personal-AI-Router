@@ -20,6 +20,7 @@ import (
 	"sort"
 	"sync"
 
+	"nvpair-shared/enginenative"
 	"nvpair-shared/noderec"
 )
 
@@ -182,6 +183,13 @@ func directoryNodeEqual(a, b noderec.DirectoryNode) bool {
 		return false
 	}
 	if (a.Memory == nil) != (b.Memory == nil) || (a.Memory != nil && *a.Memory != *b.Memory) {
+		return false
+	}
+	// The engine's own view is compared as a reading: the same engine
+	// numbers observed at the same moment. A fresher reading is not the
+	// same as the one it replaces, because the stamp is what tells a
+	// consumer how old the reading is.
+	if !enginenative.SameView(a.EngineNative, b.EngineNative) {
 		return false
 	}
 	return true

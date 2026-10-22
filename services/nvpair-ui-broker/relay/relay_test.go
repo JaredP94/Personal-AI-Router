@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"nvpair-shared/enginenative"
 	"nvpair-shared/noderec"
 )
 
@@ -251,5 +252,71 @@ func TestDirectoryScannerPrecedenceOverManual(t *testing.T) {
 	d.ApplySource(SourceScanner, noderec.NotifyNodeUpdated, scannerNode)
 	if len(sub.snaps) != 2 {
 		t.Errorf("expected no extra delivery on repeated scanner refresh, got %d", len(sub.snaps))
+	}
+}
+
+// engineNativeNode is a directory node carrying the engine's own view.
+func engineNativeNode(view *enginenative.Stats) noderec.DirectoryNode {
+	return noderec.DirectoryNode{
+		HostUUID:     "uuid-a",
+		Name:         "host-a",
+		IP:           "192.0.2.10",
+		Services:     map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14320}},
+		EngineNative: view,
+	}
+}
+
+// TestDirectoryEngineNativeChangeDetection pins the relay's change detection
+// for the engine's own view: the engine's numbers moved, or the observation
+// is newer. Both are worth delivering — the numbers are the engine's account
+// of its work, and the stamp is what tells a consumer how old that account is.
+// A reading that is identical in both respects is not a change.
+func TestDirectoryEngineNativeChangeDetection(t *testing.T) {
+	d := NewDirectory()
+	sub := &recordingSub{}
+	d.Subscribe(&Subscriber{Filter: noderec.SubscribeParams{}, Send: sub.send})
+
+	view := &enginenative.Stats{
+		Engine:     enginenative.EngineOmlx,
+		Supported:  true,
+		Totals:     enginenative.Totals{Requests: 2},
+		Models:     []enginenative.Model{{Model: "a", Loaded: true}, {Model: "b", Loaded: true}},
+		ObservedAt: 1000,
+	}
+	d.ApplySource(SourceScanner, noderec.NotifyNodeDiscovered, engineNativeNode(view))
+	if len(sub.snaps) != 1 {
+		t.Fatalf("expected 1 delivery on the first sighting, got %d", len(sub.snaps))
+	}
+
+	// The very same reading is not a change.
+	d.ApplySource(SourceScanner, noderec.NotifyNodeUpdated, engineNativeNode(view))
+	if len(sub.snaps) != 1 {
+		t.Fatalf("expected no delivery for the same reading, got %d", len(sub.snaps)-1)
+	}
+
+	// The same numbers read again, at a later stamp: a newer observation is a
+	// change, because the stamp is the freshness signal.
+	newer := *view
+	newer.ObservedAt = 2000
+	d.ApplySource(SourceScanner, noderec.NotifyNodeUpdated, engineNativeNode(&newer))
+	if len(sub.snaps) != 2 {
+		t.Fatalf("expected a delivery for the newer observation, got %d", len(sub.snaps)-1)
+	}
+
+	// The model list in a different order is the same reading: the engine
+	// lists its models in no particular order.
+	reordered := newer
+	reordered.Models = []enginenative.Model{{Model: "b", Loaded: true}, {Model: "a", Loaded: true}}
+	d.ApplySource(SourceScanner, noderec.NotifyNodeUpdated, engineNativeNode(&reordered))
+	if len(sub.snaps) != 2 {
+		t.Fatalf("expected no delivery for a reordered model list, got %d", len(sub.snaps)-1)
+	}
+
+	// The engine's own counters moved: that is a change.
+	moved := reordered
+	moved.Totals.Requests = 3
+	d.ApplySource(SourceScanner, noderec.NotifyNodeUpdated, engineNativeNode(&moved))
+	if len(sub.snaps) != 3 {
+		t.Fatalf("expected a delivery for the moved counters, got %d", len(sub.snaps)-2)
 	}
 }

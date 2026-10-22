@@ -12,6 +12,7 @@ Concretely, the daemon:
 - **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
 - **Browses** `_nvpair-node._tcp` for every node on the LAN (including itself) and maintains a queryable directory keyed by host UUID.
 - **Enriches** each discovered node: GPU/CPU/memory inventory from its `ni` (node-info) port over plain HTTP, and the model list from its `em` (engine-manager) port (`GET /v1/models`) over cluster mTLS — a peer's model inventory is cluster data, so it is fetched only when this node holds a pin for the principal that peer advertises, while this node's own list is read over loopback in plaintext — the flat union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of models loaded in memory (`loadedByEngine`), all carried onto the node's directory entry so remote cards can show loaded state. Each enrichment has a last-good cache so a transient fetch miss doesn't blank the node's card. Node-info enrichment can optionally be moved onto HTTPS (see the TLS flags below) — off by default and gated only on operator flags, never inferred per-node.
+- **Carries the engine's own view** of every node: the engine-native counters and rates the node's `em` (engine-manager) port publishes at `GET /v1/engine-stats`, read over the same transport as the model list (cluster mTLS for a pinned peer, loopback in plaintext for this node's own engine-manager) and folded onto the node's directory entry as `engineNative`. It runs on its own, slower cadence (a minute) than the model sweep, because the engine's counters move slowly, and it reuses the same per-peer client pool, so it costs no extra connections to a peer. Every sweep is a new observation, so the view's `observedAt` stamp advances even when the engine's counters do not move, and a client can compute staleness as `now - observedAt`. A node with no engine-native view is a normal state, not a failure: a peer this node holds no pin for, an engine with no admin API, and an unreachable engine all leave the field absent. A node that has never produced a view has none; a node whose fetch fails keeps the view it had (the last-good rule the model list follows too), and a view that is already stored survives the mDNS browse path replacing the record.
 - **Samples scheduling telemetry** from healthy nodes every two seconds with
   stable per-node jitter. Consecutive remote failures back off to 4, 8, 16, then
   30 seconds and reset on success; local loopback sampling stays at the healthy
@@ -96,6 +97,40 @@ Emitted as the directory changes. Each carries the affected `DirectoryNode` (ide
   sample age for broker-internal scheduling
 
 A one-shot `ready` notification is sent on startup carrying the daemon version. The broker replays its service registrations on every scanner spawn, so a restarted daemon is repopulated without needing to compare an epoch.
+
+### The engine-native field
+
+The directory entry carries the engine's own report of itself as
+`engineNative`, enriched from the node's `em` port
+(`GET /v1/engine-stats`):
+
+| Field | Notes |
+| --- | --- |
+| `engine` | the engine that published the view (`omlx`) |
+| `supported` | whether the engine publishes an admin API at all |
+| `totals` | the engine's cumulative counters: `requests`, `promptTokens`, `completionTokens`, `cachedTokens`, `cacheEfficiency` |
+| `rates` | the engine's own average throughput: `prefillTokensPerSecond`, `generationTokensPerSecond` |
+| `models` | the models the engine lists as active, each with `loaded` |
+| `error` | a short sanitised reason, when a known engine could not be reached |
+| `observedAt` | when the reading was taken, in milliseconds since the epoch |
+
+The view is omitted entirely when the node never produced one: its engine
+publishes no admin API, or it could not be reached. Every numeric field
+inside it is `omitempty` — a value the engine did not report stays absent
+rather than becoming a zero, and for a counter a reported zero and an absent
+value mean the same thing to a reader.
+
+`observedAt` advances on every sweep even when the counters do not move, so a
+consumer computes staleness as `now - observedAt`: that is what tells a live
+but idle engine apart from one that stopped answering. A node whose fetch
+fails keeps the view it had (the last-good rule the model list follows too).
+
+The counters are the engine's account of **all** the work it did, including
+the traffic PAIR did not route, so a consumer presents them beside PAIR's own
+numbers and never adds the two together. The view carries no phase
+durations: the engine's stats endpoint reports none, and the durations on the
+engine's usage endpoint are scoped to a date range rather than to the
+engine's life.
 
 ## Shutdown
 
