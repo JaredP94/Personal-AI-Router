@@ -17,11 +17,12 @@
  * - a token total adds the prefill and decode token counts of the same
  *   record.
  *
- * Every such ratio is labelled with the window it covers. The node's rates
+ * Every such ratio is grouped under the window it covers. The node's rates
  * are the broker's rolling-window rates, a model's ratios are its totals
  * since the broker started, and a job's ratios are that one request — so a
  * windowed rate and a since-broker-start ratio never appear under the same
- * label.
+ * heading. The window is named once per group rather than in every label, so
+ * the labels stay short enough to line up.
  *
  * Every formatter tells an absent measurement from a measured zero. An engine
  * that reports no phase split (LM Studio) leaves the measurement out
@@ -56,57 +57,63 @@ import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 const NOT_REPORTED = 'not reported'
 
 /**
- * The text used when the engine published no live reading at all.
+ * The note shown when the engine published no live reading at all.
  *
  * An engine that reports no live progress (Ollama, LM Studio) leaves the
  * desktop with only the facts PAIR measured of the client's stream. Saying so
  * is better than a row of "not reported" for every engine field: it names the
  * reason.
  */
-const NO_ENGINE_LIVE_PROGRESS = 'not reported (this engine publishes no live progress)'
+const NO_ENGINE_LIVE_PROGRESS = 'This engine publishes no live progress'
 
 /**
- * The window the broker's node rates cover, as it appears in a label.
+ * The window the broker's node rates cover, as it heads their group.
  *
  * The broker computes a node's rates over a 60-second rolling window (its
- * `nodeMetricsWindow` constant). The label says so, because the same
+ * `nodeMetricsWindow` constant). The heading says so, because the same
  * section also shows the totals since the broker started, and the two must
  * not read as the same measurement: a model that has gone idle keeps a high
  * ratio over those totals while the node's windowed rate falls to zero.
  */
-const NODE_WINDOW_LABEL = 'last 60 s'
+const NODE_WINDOW_SCOPE = 'Last 60 s'
 
 /**
- * The scope the broker's totals cover, as it appears in a label.
+ * The scope the broker's totals cover, as it heads their group.
  *
  * The broker keeps its totals in memory and starts counting when it starts,
  * so they cover the time since the broker started — not the life of the
- * engine, and not the life of the machine. The label says so, because a user
+ * engine, and not the life of the machine. The heading says so, because a user
  * who reads the total as covering the engine's whole life will draw the
  * wrong conclusion from a total that restarts with every broker.
  */
-const TOTAL_LABEL = 'since broker start'
+export const TOTAL_SCOPE = 'Since broker start'
 
-/** The window a single request's ratio covers, as it appears in a label. */
-const REQUEST_LABEL = 'this request'
+/** The window a single request's ratio covers, as it heads its group. */
+const REQUEST_SCOPE = 'This request'
+
+/** What PAIR itself measured of a running request's stream. */
+const LIVE_STREAM_SCOPE = 'Live'
+
+/** The engine's own live reading of a running request. */
+const LIVE_ENGINE_SCOPE = 'Engine (live)'
 
 /**
- * The scope the engine's own counters cover, as it appears in a label.
+ * The scope the engine's own counters cover, as it heads their group.
  *
  * The engine keeps its counters for as long as it runs, so they cover the
  * engine's own life — not the broker's window and not PAIR's routing. The
- * label says so, because the numbers sit right next to PAIR's own rows and
+ * heading says so, because the numbers sit right next to PAIR's own rows and
  * the two must never read as the same measurement.
  */
-const ENGINE_TOTAL_LABEL = 'engine total'
+const ENGINE_TOTAL_SCOPE = 'Engine total'
 
 /**
- * The scope the engine's own rates cover, as it appears in a label.
+ * The scope the engine's own rates cover, as it heads their group.
  *
  * The engine publishes averages over its own counters, so they cover the
- * engine's life rather than a rolling window. The label says so.
+ * engine's life rather than a rolling window. The heading says so.
  */
-const ENGINE_AVERAGE_LABEL = 'engine average'
+const ENGINE_AVERAGE_SCOPE = 'Engine average'
 
 /**
  * How old the engine's own view may get before it reads as stale.
@@ -245,6 +252,20 @@ export interface InferenceMetricsRow {
 }
 
 /**
+ * Rows that share one scope, named once as the group's heading.
+ *
+ * The scope is what keeps two figures from reading as the same measurement:
+ * a windowed rate and a since-broker-start ratio sit under different
+ * headings, never under the same one.
+ */
+export interface MetricsGroup<Row> {
+    scope: string
+    rows: Row[]
+    /** Shown in place of the rows when the group has nothing to measure. */
+    note?: string
+}
+
+/**
  * The tokens a node or a model handled: the prefill and decode token counts
  * the broker reported for that one record, added. The two counters describe
  * the same traffic, so the sum is that traffic's token volume — it is not a
@@ -275,11 +296,14 @@ function reportedTokens(totals: InferenceMetricsTotals): number {
  * time-to-first-token is always positive — so a zero windowed mean means
  * "nothing was measured in this window".
  *
- * The rates are labelled with the broker's window, and the token count names
- * the two phases it adds and the scope the totals cover, so a windowed rate
- * and a since-broker-start count never read as the same figure.
+ * The rates are grouped under the broker's window and the token count under
+ * the scope the totals cover, so a windowed rate and a since-broker-start
+ * count never read as the same figure. The token count is the prefill and
+ * decode tokens added; cached tokens are not part of it.
  */
-export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): InferenceMetricsRow[] {
+export function buildNodeMetricsGroups(
+    metrics: NodeInferenceMetrics
+): MetricsGroup<InferenceMetricsRow>[] {
     const { totals, rates } = metrics
 
     const prefill = hasPrefillMetrics(totals)
@@ -287,29 +311,42 @@ export function buildInferenceMetricsRows(metrics: NodeInferenceMetrics): Infere
     const ttft = rates.meanTtftMs > 0
     const tokens = totals.tokenRequests > 0
 
-    const rows: InferenceMetricsRow[] = [
+    return [
         {
-            label: `Prefill (${NODE_WINDOW_LABEL})`,
-            value: prefill ? formatTokensPerSecond(rates.prefillTokensPerSecond) : NOT_REPORTED,
-            unavailable: !prefill
+            scope: NODE_WINDOW_SCOPE,
+            rows: [
+                {
+                    label: 'Prefill',
+                    value: prefill
+                        ? formatTokensPerSecond(rates.prefillTokensPerSecond)
+                        : NOT_REPORTED,
+                    unavailable: !prefill
+                },
+                {
+                    label: 'Decode',
+                    value: decode
+                        ? formatTokensPerSecond(rates.decodeTokensPerSecond)
+                        : NOT_REPORTED,
+                    unavailable: !decode
+                },
+                {
+                    label: 'TTFT',
+                    value: ttft ? formatDurationMs(rates.meanTtftMs) : NOT_REPORTED,
+                    unavailable: !ttft
+                }
+            ]
         },
         {
-            label: `Decode (${NODE_WINDOW_LABEL})`,
-            value: decode ? formatTokensPerSecond(rates.decodeTokensPerSecond) : NOT_REPORTED,
-            unavailable: !decode
-        },
-        {
-            label: `TTFT (${NODE_WINDOW_LABEL})`,
-            value: ttft ? formatDurationMs(rates.meanTtftMs) : NOT_REPORTED,
-            unavailable: !ttft
-        },
-        {
-            label: `Prefill + decode tokens (${TOTAL_LABEL})`,
-            value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
-            unavailable: !tokens
+            scope: TOTAL_SCOPE,
+            rows: [
+                {
+                    label: 'Tokens',
+                    value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
+                    unavailable: !tokens
+                }
+            ]
         }
     ]
-    return rows
 }
 
 /** One model's rows in the per-model breakdown of a node. */
@@ -327,10 +364,12 @@ export interface ModelMetricsRows {
  * of the tokens and the duration the broker reported for that model — one
  * record, no sum across requests and no average across models.
  *
- * The rows are labelled with the scope they cover, because the node's own
- * rows above them are labelled with the broker's window: a model that has
- * gone idle keeps a high ratio while the node's windowed rate falls to zero,
- * and the two must not read as the same measurement.
+ * Every row covers `TOTAL_SCOPE`, which the breakdown is headed with, because
+ * the node's own rows above it are headed with the broker's window: a model
+ * that has gone idle keeps a high ratio while the node's windowed rate falls
+ * to zero, and the two must not read as the same measurement. Every model
+ * carries the same labels in the same order, so the breakdown renders as a
+ * table whose columns are those labels.
  */
 export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsRows[] {
     return models.map(entry => {
@@ -346,17 +385,17 @@ export function buildModelMetricsRows(models: NodeModelMetrics[]): ModelMetricsR
             model: entry.model,
             rows: [
                 {
-                    label: `Prefill (${TOTAL_LABEL})`,
+                    label: 'Prefill',
                     value: prefill ? formatTokensPerSecond(prefillRate) : NOT_REPORTED,
                     unavailable: !prefill
                 },
                 {
-                    label: `Decode (${TOTAL_LABEL})`,
+                    label: 'Decode',
                     value: decode ? formatTokensPerSecond(decodeRate) : NOT_REPORTED,
                     unavailable: !decode
                 },
                 {
-                    label: `Prefill + decode tokens (${TOTAL_LABEL})`,
+                    label: 'Tokens',
                     value: tokens ? formatTokenCount(reportedTokens(totals)) : NOT_REPORTED,
                     unavailable: !tokens
                 }
@@ -418,7 +457,7 @@ export function hasWorkloadMeasurement(workload: Workload): boolean {
  *
  * Every number is the one the engine reported for this job. The rate is the
  * ratio of that job's tokens and duration, the same formula the broker uses
- * for its own rate, applied to one job — so the rows are labelled with the
+ * for its own rate, applied to one job — so the rows are grouped under the
  * request they cover.
  *
  * The phase rows are always there, because "this engine does not report
@@ -426,20 +465,22 @@ export function hasWorkloadMeasurement(workload: Workload): boolean {
  * extras: their rows are added only when the engine reported the value, so
  * an absent value is left out rather than shown as a zero.
  */
-export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRow[] {
+export function buildWorkloadMetricsGroups(
+    workload: Workload
+): MetricsGroup<InferenceMetricsRow>[] {
     const rows: InferenceMetricsRow[] = [
         {
-            label: `Prefill (${REQUEST_LABEL})`,
+            label: 'Prefill',
             value: phaseMeasurement(workload.prefillTokens, workload.prefillMs),
             unavailable: !isReported(workload.prefillTokens) && !isReported(workload.prefillMs)
         },
         {
-            label: `Decode (${REQUEST_LABEL})`,
+            label: 'Decode',
             value: phaseMeasurement(workload.decodeTokens, workload.decodeMs),
             unavailable: !isReported(workload.decodeTokens) && !isReported(workload.decodeMs)
         },
         {
-            label: `TTFT (${REQUEST_LABEL})`,
+            label: 'TTFT',
             value: formatDurationMs(workload.ttftMs),
             unavailable: !isReported(workload.ttftMs)
         }
@@ -449,7 +490,7 @@ export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRo
     // reads as a measured zero.
     if (isReported(workload.cachedTokens)) {
         rows.push({
-            label: `Cached tokens (${REQUEST_LABEL})`,
+            label: 'Cached tokens',
             value: formatTokenCount(workload.cachedTokens),
             unavailable: false
         })
@@ -460,12 +501,12 @@ export function buildWorkloadMetricsRows(workload: Workload): InferenceMetricsRo
     // saying, while a missing total is simply not shown.
     if (isReported(workload.totalMs)) {
         rows.push({
-            label: `Total (${REQUEST_LABEL})`,
+            label: 'Total',
             value: formatDurationMs(workload.totalMs),
             unavailable: false
         })
     }
-    return rows
+    return [{ scope: REQUEST_SCOPE, rows }]
 }
 
 /**
@@ -509,79 +550,84 @@ function formatPercent(value: number): string {
 }
 
 /**
- * The rows of the engine's own view of itself.
+ * The groups of the engine's own view of itself.
  *
  * These are the engine's counters, not PAIR's: they count every request the
  * engine served, including the traffic PAIR did not route. They are therefore
- * labelled with the engine's own scope ("engine total", "engine average"),
- * which no PAIR row uses, and every row is tagged `source: 'engine'` so the
- * two sets can never be merged.
+ * grouped under the engine's own scopes ("Engine total", "Engine average"),
+ * which no PAIR group uses, and every row is tagged `source: 'engine'` so the
+ * two sets can never be merged. A scope with no rows is left out.
  *
  * A value the engine did not report produces no row at all. The engine
  * publishes its counters with `omitempty`, so an absent key means "not
  * reported" — and a row that said "0" would read as a measurement the engine
  * never made.
  *
- * An engine with no native view produces no rows either: it publishes no
+ * An engine with no native view produces no groups either: it publishes no
  * admin API, so there is nothing to show and no "not reported" noise to
  * show instead.
  */
-export function buildEngineNativeRows(view: EngineNativeView): EngineNativeRow[] {
+export function buildEngineNativeGroups(view: EngineNativeView): MetricsGroup<EngineNativeRow>[] {
     if (!view.supported) return []
 
-    const rows: EngineNativeRow[] = []
+    const totalRows: EngineNativeRow[] = []
+    const averageRows: EngineNativeRow[] = []
     const totals = view.totals
     if (totals?.requests !== undefined) {
-        rows.push({
-            label: `Requests (${ENGINE_TOTAL_LABEL})`,
+        totalRows.push({
+            label: 'Requests',
             value: formatTokenCount(totals.requests),
             source: 'engine'
         })
     }
     if (totals?.promptTokens !== undefined) {
-        rows.push({
-            label: `Prompt tokens (${ENGINE_TOTAL_LABEL})`,
+        totalRows.push({
+            label: 'Prompt tokens',
             value: formatTokenCount(totals.promptTokens),
             source: 'engine'
         })
     }
     if (totals?.completionTokens !== undefined) {
-        rows.push({
-            label: `Completion tokens (${ENGINE_TOTAL_LABEL})`,
+        totalRows.push({
+            label: 'Completion tokens',
             value: formatTokenCount(totals.completionTokens),
             source: 'engine'
         })
     }
     if (totals?.cachedTokens !== undefined) {
-        rows.push({
-            label: `Cached tokens (${ENGINE_TOTAL_LABEL})`,
+        totalRows.push({
+            label: 'Cached tokens',
             value: formatTokenCount(totals.cachedTokens),
             source: 'engine'
         })
     }
     if (totals?.cacheEfficiency !== undefined) {
-        rows.push({
-            label: `Cache efficiency (${ENGINE_AVERAGE_LABEL})`,
+        averageRows.push({
+            label: 'Cache efficiency',
             value: formatPercent(totals.cacheEfficiency),
             source: 'engine'
         })
     }
     const rates = view.rates
     if (rates?.prefillTokensPerSecond !== undefined) {
-        rows.push({
-            label: `Prefill (${ENGINE_AVERAGE_LABEL})`,
+        averageRows.push({
+            label: 'Prefill',
             value: formatTokensPerSecond(rates.prefillTokensPerSecond),
             source: 'engine'
         })
     }
     if (rates?.generationTokensPerSecond !== undefined) {
-        rows.push({
-            label: `Generation (${ENGINE_AVERAGE_LABEL})`,
+        averageRows.push({
+            label: 'Generation',
             value: formatTokensPerSecond(rates.generationTokensPerSecond),
             source: 'engine'
         })
     }
-    return rows
+    const groups: MetricsGroup<EngineNativeRow>[] = [
+        { scope: ENGINE_TOTAL_SCOPE, rows: totalRows },
+        { scope: ENGINE_AVERAGE_SCOPE, rows: averageRows }
+    ]
+    return groups.filter(group => group.rows.length > 0)
 }
 
 /**
@@ -598,7 +644,8 @@ export function buildEngineNativeModels(view: EngineNativeView): EngineNativeMod
 }
 
 /**
- * The rows of a running job's live line.
+ * The groups of a running job's live line: what PAIR measured, and the
+ * engine's own reading beside it.
  *
  * Every number here is the one the broker sent: the elapsed time, the time
  * to the first response byte, the chunks and bytes PAIR measured of the
@@ -608,11 +655,13 @@ export function buildEngineNativeModels(view: EngineNativeView): EngineNativeMod
  *
  * A reading the engine did not report reads as "not reported", never as a
  * zero. An engine that publishes no live progress at all (Ollama, LM Studio)
- * says so in one row, because "this engine reports nothing live" is a fact
+ * says so in one note, because "this engine reports nothing live" is a fact
  * about the engine rather than a gap in one measurement.
  */
-export function buildWorkloadLiveRows(live: WorkloadLiveProgress): InferenceMetricsRow[] {
-    const rows: InferenceMetricsRow[] = [
+export function buildWorkloadLiveGroups(
+    live: WorkloadLiveProgress
+): MetricsGroup<InferenceMetricsRow>[] {
+    const streamRows: InferenceMetricsRow[] = [
         {
             label: 'Elapsed',
             value: formatDurationMs(live.elapsedMs),
@@ -630,39 +679,38 @@ export function buildWorkloadLiveRows(live: WorkloadLiveProgress): InferenceMetr
         }
     ]
 
+    const stream: MetricsGroup<InferenceMetricsRow> = { scope: LIVE_STREAM_SCOPE, rows: streamRows }
+
     const engine = live.engineProgress
     if (!engine) {
-        rows.push({
-            label: 'Engine live progress',
-            value: NO_ENGINE_LIVE_PROGRESS,
-            unavailable: true
-        })
-        return rows
+        return [stream, { scope: LIVE_ENGINE_SCOPE, rows: [], note: NO_ENGINE_LIVE_PROGRESS }]
     }
 
-    rows.push({
-        label: 'Tokens (engine)',
-        value: formatTokenCount(engine.generatedTokens),
-        unavailable: !isReported(engine.generatedTokens)
-    })
-    rows.push({
-        label: 'Rate (engine)',
-        value: formatTokensPerSecond(engine.tokensPerSecond),
-        unavailable: !isReported(engine.tokensPerSecond)
-    })
-    rows.push({
-        label: 'Prefill progress (engine)',
-        value: isReported(engine.prefillProgress)
-            ? formatPercent(engine.prefillProgress)
-            : NOT_REPORTED,
-        unavailable: !isReported(engine.prefillProgress)
-    })
-    rows.push({
-        label: 'Queue position (engine)',
-        value: isReported(engine.queuePosition) ? String(engine.queuePosition) : NOT_REPORTED,
-        unavailable: !isReported(engine.queuePosition)
-    })
-    return rows
+    const engineRows: InferenceMetricsRow[] = [
+        {
+            label: 'Tokens',
+            value: formatTokenCount(engine.generatedTokens),
+            unavailable: !isReported(engine.generatedTokens)
+        },
+        {
+            label: 'Rate',
+            value: formatTokensPerSecond(engine.tokensPerSecond),
+            unavailable: !isReported(engine.tokensPerSecond)
+        },
+        {
+            label: 'Prefill progress',
+            value: isReported(engine.prefillProgress)
+                ? formatPercent(engine.prefillProgress)
+                : NOT_REPORTED,
+            unavailable: !isReported(engine.prefillProgress)
+        },
+        {
+            label: 'Queue position',
+            value: isReported(engine.queuePosition) ? String(engine.queuePosition) : NOT_REPORTED,
+            unavailable: !isReported(engine.queuePosition)
+        }
+    ]
+    return [stream, { scope: LIVE_ENGINE_SCOPE, rows: engineRows }]
 }
 
 /**

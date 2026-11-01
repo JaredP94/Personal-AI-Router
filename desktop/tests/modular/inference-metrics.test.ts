@@ -4,11 +4,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     buildEngineNativeModels,
-    buildEngineNativeRows,
-    buildInferenceMetricsRows,
+    buildEngineNativeGroups,
+    buildNodeMetricsGroups,
     buildModelMetricsRows,
-    buildWorkloadLiveRows,
-    buildWorkloadMetricsRows,
+    buildWorkloadLiveGroups,
+    buildWorkloadMetricsGroups,
     engineNativeAgeMs,
     formatDurationMs,
     formatTokenCount,
@@ -19,7 +19,8 @@ import {
     hasTtftMetrics,
     hasWorkloadMeasurement,
     isEngineNativeViewStale,
-    phaseTokensPerSecond
+    phaseTokensPerSecond,
+    type MetricsGroup
 } from '@/ui/utils/inference-metrics'
 import type { InferenceMetricsTotals, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
@@ -36,6 +37,20 @@ import {
 } from '@/electron/service-bridge/modular-state'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useWorkloadsStore } from '@/ui/stores/workloads.store'
+
+/** Every row of every group, for assertions that do not depend on the scope. */
+function allRows<Row>(groups: MetricsGroup<Row>[]): Row[] {
+    return groups.flatMap(group => group.rows)
+}
+
+/** The row with this label under this scope, if there is one. */
+function rowIn<Row extends { label: string }>(
+    groups: MetricsGroup<Row>[],
+    scope: string,
+    label: string
+): Row | undefined {
+    return groups.find(group => group.scope === scope)?.rows.find(row => row.label === label)
+}
 
 /** A node whose engine reported every phase. */
 const reportedTotals: InferenceMetricsTotals = {
@@ -329,7 +344,7 @@ describe('the presence counters', () => {
 
 describe('the node inference metrics rows', () => {
     it('marks an engine that reports no phase split as unavailable', () => {
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: {
                 requests: 3,
@@ -347,13 +362,13 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.unavailable).toBe(true)
-        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'Decode (last 60 s)')?.unavailable).toBe(true)
+        expect(rowIn(rows, 'Last 60 s', 'Prefill')?.unavailable).toBe(true)
+        expect(rowIn(rows, 'Last 60 s', 'Prefill')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Last 60 s', 'Decode')?.unavailable).toBe(true)
     })
 
     it('shows a measured phase', () => {
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: {
                 requests: 3,
@@ -371,10 +386,10 @@ describe('the node inference metrics rows', () => {
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.unavailable).toBe(false)
-        expect(rows.find(r => r.label === 'Prefill (last 60 s)')?.value).toBe('100 tok/s')
-        expect(rows.find(r => r.label === 'Decode (last 60 s)')?.value).toBe('10 tok/s')
-        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('100 ms')
+        expect(rowIn(rows, 'Last 60 s', 'Prefill')?.unavailable).toBe(false)
+        expect(rowIn(rows, 'Last 60 s', 'Prefill')?.value).toBe('100 tok/s')
+        expect(rowIn(rows, 'Last 60 s', 'Decode')?.value).toBe('10 tok/s')
+        expect(rowIn(rows, 'Last 60 s', 'TTFT')?.value).toBe('100 ms')
     })
 
     it("reports a TTFT the broker's current window does not hold as not reported", () => {
@@ -383,57 +398,49 @@ describe('the node inference metrics rows', () => {
         // the windowed mean is zero. A zero mean must not read as a measured
         // "0 ms": a time-to-first-token is always positive, so a zero mean
         // means nothing was measured in this window.
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: { ...reportedTotals, ttftRequests: 3 },
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.unavailable).toBe(true)
-        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Last 60 s', 'TTFT')?.unavailable).toBe(true)
+        expect(rowIn(rows, 'Last 60 s', 'TTFT')?.value).toBe('not reported')
     })
 
     it('keeps the TTFT row for a node that measured no TTFT at all', () => {
         // The row is always there, like the prefill and decode rows: what
         // the engine did not report is worth saying.
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: silentTotals,
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.find(r => r.label === 'TTFT (last 60 s)')).toBeDefined()
-        expect(rows.find(r => r.label === 'TTFT (last 60 s)')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Last 60 s', 'TTFT')).toBeDefined()
+        expect(rowIn(rows, 'Last 60 s', 'TTFT')?.value).toBe('not reported')
     })
 
     it('reports the tokens a node served', () => {
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: reportedTotals,
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(
-            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.value
-        ).toBe('120')
-        expect(
-            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.unavailable
-        ).toBe(false)
+        expect(rowIn(rows, 'Since broker start', 'Tokens')?.value).toBe('120')
+        expect(rowIn(rows, 'Since broker start', 'Tokens')?.unavailable).toBe(false)
     })
 
     it('reports no tokens for an engine that reported no token count', () => {
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: silentTotals,
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(
-            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.unavailable
-        ).toBe(true)
-        expect(
-            rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')?.value
-        ).toBe('not reported')
+        expect(rowIn(rows, 'Since broker start', 'Tokens')?.unavailable).toBe(true)
+        expect(rowIn(rows, 'Since broker start', 'Tokens')?.value).toBe('not reported')
     })
 
     it('shows no cached-token row for a node', () => {
@@ -442,26 +449,26 @@ describe('the node inference metrics rows', () => {
         // would therefore read as a measured zero on a node whose engine
         // never measured a cached count, so the row is left out entirely.
         // The per-job row carries the count where the engine did report it.
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: { ...reportedTotals, cachedTokens: 900 },
             rates: { prefillTokensPerSecond: 100, decodeTokensPerSecond: 10, meanTtftMs: 100 },
             models: []
         })
-        expect(rows.find(r => r.label === 'Cached tokens (since broker start)')).toBeUndefined()
-        expect(rows.some(r => r.label.startsWith('Cached tokens'))).toBe(false)
+        expect(rowIn(rows, 'Since broker start', 'Cached tokens')).toBeUndefined()
+        expect(allRows(rows).some(r => r.label.startsWith('Cached tokens'))).toBe(false)
     })
 
     it('shows no cached-token row for a node that served no measured request', () => {
         // A node whose engine reported no token count has no cached total to
         // show either, so the row is left out rather than reading as a zero.
-        const rows = buildInferenceMetricsRows({
+        const rows = buildNodeMetricsGroups({
             nodeId: 'n1',
             totals: silentTotals,
             rates: { prefillTokensPerSecond: 0, decodeTokensPerSecond: 0, meanTtftMs: 0 },
             models: []
         })
-        expect(rows.some(r => r.label.startsWith('Cached tokens'))).toBe(false)
+        expect(allRows(rows).some(r => r.label.startsWith('Cached tokens'))).toBe(false)
     })
 })
 
@@ -470,16 +477,9 @@ describe('the per-model breakdown of a node', () => {
         const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: reportedTotals }])
         expect(models).toHaveLength(1)
         expect(models[0].model).toBe('llama-3.2-3b')
-        expect(models[0].rows.find(r => r.label === 'Prefill (since broker start)')?.value).toBe(
-            '100 tok/s'
-        )
-        expect(models[0].rows.find(r => r.label === 'Decode (since broker start)')?.value).toBe(
-            '10 tok/s'
-        )
-        expect(
-            models[0].rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')
-                ?.value
-        ).toBe('120')
+        expect(models[0].rows.find(r => r.label === 'Prefill')?.value).toBe('100 tok/s')
+        expect(models[0].rows.find(r => r.label === 'Decode')?.value).toBe('10 tok/s')
+        expect(models[0].rows.find(r => r.label === 'Tokens')?.value).toBe('120')
         // The per-model breakdown carries no cached row either: the same
         // absence the node's rows have.
         expect(models[0].rows.some(r => r.label.startsWith('Cached tokens'))).toBe(false)
@@ -487,16 +487,9 @@ describe('the per-model breakdown of a node', () => {
 
     it('marks a model whose engine reported no phase as unavailable', () => {
         const models = buildModelMetricsRows([{ model: 'llama-3.2-3b', totals: silentTotals }])
-        expect(
-            models[0].rows.find(r => r.label === 'Prefill (since broker start)')?.unavailable
-        ).toBe(true)
-        expect(models[0].rows.find(r => r.label === 'Prefill (since broker start)')?.value).toBe(
-            'not reported'
-        )
-        expect(
-            models[0].rows.find(r => r.label === 'Prefill + decode tokens (since broker start)')
-                ?.unavailable
-        ).toBe(true)
+        expect(models[0].rows.find(r => r.label === 'Prefill')?.unavailable).toBe(true)
+        expect(models[0].rows.find(r => r.label === 'Prefill')?.value).toBe('not reported')
+        expect(models[0].rows.find(r => r.label === 'Tokens')?.unavailable).toBe(true)
     })
 })
 
@@ -539,48 +532,40 @@ describe('the per-job measurement rows', () => {
     }
 
     it('shows the tokens, the phase durations and the rates', () => {
-        const rows = buildWorkloadMetricsRows(measuredJob)
-        expect(rows.find(r => r.label === 'Prefill (this request)')?.value).toBe(
+        const rows = buildWorkloadMetricsGroups(measuredJob)
+        expect(rowIn(rows, 'This request', 'Prefill')?.value).toBe(
             '1,200 tok · 340 ms · 3529 tok/s'
         )
-        expect(rows.find(r => r.label === 'Decode (this request)')?.value).toBe(
-            '900 tok · 2.1 s · 429 tok/s'
-        )
-        expect(rows.find(r => r.label === 'TTFT (this request)')?.value).toBe('80 ms')
-        expect(rows.find(r => r.label === 'Total (this request)')?.value).toBe('2.4 s')
-        expect(rows.every(r => !r.unavailable)).toBe(true)
+        expect(rowIn(rows, 'This request', 'Decode')?.value).toBe('900 tok · 2.1 s · 429 tok/s')
+        expect(rowIn(rows, 'This request', 'TTFT')?.value).toBe('80 ms')
+        expect(rowIn(rows, 'This request', 'Total')?.value).toBe('2.4 s')
+        expect(allRows(rows).every(r => !r.unavailable)).toBe(true)
     })
 
     it('reports the timing an engine did not report as not reported', () => {
         // An engine that reports token counts but no phase split (LM Studio)
         // leaves the duration out. It must not read as a zero duration, and it
         // must not carry a rate that no duration supports.
-        const rows = buildWorkloadMetricsRows({
+        const rows = buildWorkloadMetricsGroups({
             ...measuredJob,
             prefillMs: null,
             decodeMs: null,
             ttftMs: null
         })
-        expect(rows.find(r => r.label === 'Prefill (this request)')?.value).toBe(
-            '1,200 tok · not reported'
-        )
-        expect(rows.find(r => r.label === 'Decode (this request)')?.value).toBe(
-            '900 tok · not reported'
-        )
-        expect(rows.find(r => r.label === 'TTFT (this request)')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'TTFT (this request)')?.unavailable).toBe(true)
+        expect(rowIn(rows, 'This request', 'Prefill')?.value).toBe('1,200 tok · not reported')
+        expect(rowIn(rows, 'This request', 'Decode')?.value).toBe('900 tok · not reported')
+        expect(rowIn(rows, 'This request', 'TTFT')?.value).toBe('not reported')
+        expect(rowIn(rows, 'This request', 'TTFT')?.unavailable).toBe(true)
     })
 
     it('reports a measured zero as a zero', () => {
-        const rows = buildWorkloadMetricsRows({
+        const rows = buildWorkloadMetricsGroups({
             ...measuredJob,
             decodeTokens: 0,
             decodeMs: 0
         })
-        expect(rows.find(r => r.label === 'Decode (this request)')?.value).toBe(
-            '0 tok · 0 ms · 0 tok/s'
-        )
-        expect(rows.find(r => r.label === 'Decode (this request)')?.unavailable).toBe(false)
+        expect(rowIn(rows, 'This request', 'Decode')?.value).toBe('0 tok · 0 ms · 0 tok/s')
+        expect(rowIn(rows, 'This request', 'Decode')?.unavailable).toBe(false)
     })
 
     it('omits the total for an engine that reports no total time', () => {
@@ -588,34 +573,34 @@ describe('the per-job measurement rows', () => {
         // engine-reported values only, so there is no total to show and the
         // row is left out rather than filled with a duration the proxy
         // measured.
-        const rows = buildWorkloadMetricsRows({ ...measuredJob, totalMs: null })
-        expect(rows.find(r => r.label === 'Total (this request)')).toBeUndefined()
+        const rows = buildWorkloadMetricsGroups({ ...measuredJob, totalMs: null })
+        expect(rowIn(rows, 'This request', 'Total')).toBeUndefined()
         // The phase rows stay: "this engine does not report phases" is worth
         // saying, while a missing total is simply not shown.
-        expect(rows.find(r => r.label === 'Prefill (this request)')?.value).toBe(
+        expect(rowIn(rows, 'This request', 'Prefill')?.value).toBe(
             '1,200 tok · 340 ms · 3529 tok/s'
         )
-        expect(rows.find(r => r.label === 'TTFT (this request)')?.value).toBe('80 ms')
+        expect(rowIn(rows, 'This request', 'TTFT')?.value).toBe('80 ms')
     })
 
     it('shows the cached tokens the engine reported', () => {
-        const rows = buildWorkloadMetricsRows({ ...measuredJob, cachedTokens: 90 })
-        expect(rows.find(r => r.label === 'Cached tokens (this request)')?.value).toBe('90')
-        expect(rows.find(r => r.label === 'Cached tokens (this request)')?.unavailable).toBe(false)
+        const rows = buildWorkloadMetricsGroups({ ...measuredJob, cachedTokens: 90 })
+        expect(rowIn(rows, 'This request', 'Cached tokens')?.value).toBe('90')
+        expect(rowIn(rows, 'This request', 'Cached tokens')?.unavailable).toBe(false)
     })
 
     it('omits the cached tokens for an engine that reports none', () => {
         // Only oMLX reports a cached-token count, so for the other engines the
         // row is absent rather than a zero.
-        const rows = buildWorkloadMetricsRows({ ...measuredJob, cachedTokens: null })
-        expect(rows.find(r => r.label === 'Cached tokens (this request)')).toBeUndefined()
+        const rows = buildWorkloadMetricsGroups({ ...measuredJob, cachedTokens: null })
+        expect(rowIn(rows, 'This request', 'Cached tokens')).toBeUndefined()
     })
 
     it('keeps a reported zero of cached tokens a zero', () => {
         // oMLX reports zero cached tokens on every request that missed the
         // prefix cache. That is a measurement the engine made.
-        const rows = buildWorkloadMetricsRows(measuredJob)
-        expect(rows.find(r => r.label === 'Cached tokens (this request)')?.value).toBe('0')
+        const rows = buildWorkloadMetricsGroups(measuredJob)
+        expect(rowIn(rows, 'This request', 'Cached tokens')?.value).toBe('0')
     })
 
     it('has no measurement for a job that reported nothing', () => {
@@ -665,60 +650,64 @@ describe("the engine's own view of itself", () => {
     }
 
     it("labels the engine self-report separately from the router's own numbers", () => {
-        const rows = buildEngineNativeRows(engineView)
-        expect(rows.length).toBeGreaterThan(0)
-        expect(rows.every(r => r.source === 'engine')).toBe(true)
+        const rows = buildEngineNativeGroups(engineView)
+        expect(allRows(rows).length).toBeGreaterThan(0)
+        expect(allRows(rows).every(r => r.source === 'engine')).toBe(true)
     })
 
     it('reports an engine with no native view as unsupported', () => {
-        const rows = buildEngineNativeRows({ engine: 'ollama', supported: false })
+        const rows = buildEngineNativeGroups({ engine: 'ollama', supported: false })
         expect(rows).toEqual([])
     })
 
     it("labels the engine rows with the engine's own scope, never PAIR's", () => {
-        // PAIR's own rows say "last 60 s" or "since broker start". The
-        // engine's rows cover the engine's own life, so they must not answer
-        // to either of those windows.
-        const rows = buildEngineNativeRows(engineView)
-        expect(rows.find(r => r.label === 'Requests (engine total)')?.value).toBe('2')
-        expect(rows.find(r => r.label === 'Prompt tokens (engine total)')?.value).toBe('120')
-        expect(rows.find(r => r.label === 'Completion tokens (engine total)')?.value).toBe('34')
-        expect(rows.find(r => r.label === 'Cached tokens (engine total)')?.value).toBe('90')
-        expect(rows.find(r => r.label === 'Cache efficiency (engine average)')?.value).toBe('75%')
-        expect(rows.find(r => r.label === 'Prefill (engine average)')?.value).toBe('100 tok/s')
-        expect(rows.find(r => r.label === 'Generation (engine average)')?.value).toBe('50 tok/s')
-        expect(rows.some(r => r.label.includes('last 60 s'))).toBe(false)
-        expect(rows.some(r => r.label.includes('since broker start'))).toBe(false)
+        // PAIR's own groups are headed "Last 60 s" or "Since broker start".
+        // The engine's rows cover the engine's own life, so they must not sit
+        // under either of those windows.
+        const rows = buildEngineNativeGroups(engineView)
+        expect(rowIn(rows, 'Engine total', 'Requests')?.value).toBe('2')
+        expect(rowIn(rows, 'Engine total', 'Prompt tokens')?.value).toBe('120')
+        expect(rowIn(rows, 'Engine total', 'Completion tokens')?.value).toBe('34')
+        expect(rowIn(rows, 'Engine total', 'Cached tokens')?.value).toBe('90')
+        expect(rowIn(rows, 'Engine average', 'Cache efficiency')?.value).toBe('75%')
+        expect(rowIn(rows, 'Engine average', 'Prefill')?.value).toBe('100 tok/s')
+        expect(rowIn(rows, 'Engine average', 'Generation')?.value).toBe('50 tok/s')
+        expect(rows.map(group => group.scope)).toEqual(['Engine total', 'Engine average'])
     })
 
     it('leaves a value the engine never reported out of the rows', () => {
         // The engine publishes its counters with omitempty, so an absent key
         // means "not reported". A row that said "0" would read as a
         // measurement the engine never made.
-        const rows = buildEngineNativeRows({
+        const rows = buildEngineNativeGroups({
             engine: 'omlx',
             supported: true,
             totals: { requests: 2 },
             rates: {}
         })
-        expect(rows.map(r => r.label)).toEqual(['Requests (engine total)'])
+        expect(rows).toEqual([
+            {
+                scope: 'Engine total',
+                rows: [{ label: 'Requests', value: '2', source: 'engine' }]
+            }
+        ])
     })
 
     it('keeps a reported zero a zero', () => {
-        const rows = buildEngineNativeRows({
+        const rows = buildEngineNativeGroups({
             engine: 'omlx',
             supported: true,
             totals: { cachedTokens: 0 },
             rates: { generationTokensPerSecond: 0 }
         })
-        expect(rows.find(r => r.label === 'Cached tokens (engine total)')?.value).toBe('0')
-        expect(rows.find(r => r.label === 'Generation (engine average)')?.value).toBe('0 tok/s')
+        expect(rowIn(rows, 'Engine total', 'Cached tokens')?.value).toBe('0')
+        expect(rowIn(rows, 'Engine average', 'Generation')?.value).toBe('0 tok/s')
     })
 
     it('shows no rows for a view that reports no numbers at all', () => {
         // An empty totals object is not "the engine reported zeros".
-        expect(buildEngineNativeRows({ engine: 'omlx', supported: true })).toEqual([])
-        expect(buildEngineNativeRows({ engine: 'omlx', supported: true, totals: {} })).toEqual([])
+        expect(buildEngineNativeGroups({ engine: 'omlx', supported: true })).toEqual([])
+        expect(buildEngineNativeGroups({ engine: 'omlx', supported: true, totals: {} })).toEqual([])
     })
 
     it("keeps the engine's own models apart from the models loaded in memory", () => {
@@ -899,53 +888,52 @@ describe('the live progress of a running job', () => {
     }
 
     it("shows the engine's own live token count and rate", () => {
-        const rows = buildWorkloadLiveRows(omlxLive)
-        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('34')
-        expect(rows.find(r => r.label === 'Rate (engine)')?.value).toBe('62 tok/s')
-        expect(rows.find(r => r.label === 'Elapsed')?.value).toBe('4.2 s')
+        const rows = buildWorkloadLiveGroups(omlxLive)
+        expect(rowIn(rows, 'Engine (live)', 'Tokens')?.value).toBe('34')
+        expect(rowIn(rows, 'Engine (live)', 'Rate')?.value).toBe('62 tok/s')
+        expect(rowIn(rows, 'Live', 'Elapsed')?.value).toBe('4.2 s')
         // The time to the first byte is measured by PAIR and carried end to
         // end, so the live line shows it.
-        expect(rows.find(r => r.label === 'First byte')?.value).toBe('300 ms')
-        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
+        expect(rowIn(rows, 'Live', 'First byte')?.value).toBe('300 ms')
+        expect(rowIn(rows, 'Live', 'Received')?.value).toBe('12 chunks · 2,048 bytes')
     })
 
     it('never renders a chunk count as a token count', () => {
-        const rows = buildWorkloadLiveRows(omlxLive)
+        const rows = buildWorkloadLiveGroups(omlxLive)
         // The 12 chunks PAIR counted are chunks, not tokens: the only token
         // count on the line is the engine's own 34.
-        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
-        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('34')
-        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).not.toContain('12')
+        expect(rowIn(rows, 'Live', 'Received')?.value).toBe('12 chunks · 2,048 bytes')
+        expect(rowIn(rows, 'Engine (live)', 'Tokens')?.value).toBe('34')
+        expect(rowIn(rows, 'Engine (live)', 'Tokens')?.value).not.toContain('12')
         // An engine that published no live reading reported no token count
         // either, so there is no token row at all.
-        const silent = buildWorkloadLiveRows({ ...omlxLive, engineProgress: null })
-        expect(silent.find(r => r.label === 'Tokens (engine)')).toBeUndefined()
+        const silent = buildWorkloadLiveGroups({ ...omlxLive, engineProgress: null })
+        expect(rowIn(silent, 'Engine (live)', 'Tokens')).toBeUndefined()
     })
 
     it('says that an engine publishes no live progress instead of a row of gaps', () => {
-        const rows = buildWorkloadLiveRows({ ...omlxLive, engineProgress: null })
-        expect(rows.find(r => r.label === 'Elapsed')?.value).toBe('4.2 s')
-        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks · 2,048 bytes')
-        expect(rows.find(r => r.label === 'Engine live progress')?.value).toBe(
-            'not reported (this engine publishes no live progress)'
-        )
-        expect(rows.find(r => r.label === 'Engine live progress')?.unavailable).toBe(true)
+        const rows = buildWorkloadLiveGroups({ ...omlxLive, engineProgress: null })
+        expect(rowIn(rows, 'Live', 'Elapsed')?.value).toBe('4.2 s')
+        expect(rowIn(rows, 'Live', 'Received')?.value).toBe('12 chunks · 2,048 bytes')
+        const engine = rows.find(group => group.scope === 'Engine (live)')
+        expect(engine?.rows).toEqual([])
+        expect(engine?.note).toBe('This engine publishes no live progress')
     })
 
     it('shows only the part of the received traffic that was measured', () => {
-        const rows = buildWorkloadLiveRows({ ...omlxLive, bytes: null })
-        expect(rows.find(r => r.label === 'Received')?.value).toBe('12 chunks')
+        const rows = buildWorkloadLiveGroups({ ...omlxLive, bytes: null })
+        expect(rowIn(rows, 'Live', 'Received')?.value).toBe('12 chunks')
     })
 
     it('reports a time to the first byte nobody measured as not reported', () => {
-        const rows = buildWorkloadLiveRows({ ...omlxLive, ttfbMs: null })
-        const row = rows.find(r => r.label === 'First byte')
+        const rows = buildWorkloadLiveGroups({ ...omlxLive, ttfbMs: null })
+        const row = rowIn(rows, 'Live', 'First byte')
         expect(row?.value).toBe('not reported')
         expect(row?.unavailable).toBe(true)
     })
 
     it('reports a reading the engine did not make as not reported, never as zero', () => {
-        const rows = buildWorkloadLiveRows({
+        const rows = buildWorkloadLiveGroups({
             ...omlxLive,
             engineProgress: {
                 requestId: 'eng-1',
@@ -956,11 +944,11 @@ describe('the live progress of a running job', () => {
                 queuePosition: null
             }
         })
-        expect(rows.find(r => r.label === 'Tokens (engine)')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'Rate (engine)')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'Prefill progress (engine)')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'Queue position (engine)')?.value).toBe('not reported')
-        expect(rows.find(r => r.label === 'Tokens (engine)')?.unavailable).toBe(true)
+        expect(rowIn(rows, 'Engine (live)', 'Tokens')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Engine (live)', 'Rate')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Engine (live)', 'Prefill progress')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Engine (live)', 'Queue position')?.value).toBe('not reported')
+        expect(rowIn(rows, 'Engine (live)', 'Tokens')?.unavailable).toBe(true)
     })
 })
 

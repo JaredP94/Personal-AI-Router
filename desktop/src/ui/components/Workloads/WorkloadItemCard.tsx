@@ -9,12 +9,13 @@ import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useWorkloadLiveProgress } from '@/ui/stores/workloads.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import {
-    buildWorkloadLiveRows,
-    buildWorkloadMetricsRows,
+    buildWorkloadLiveGroups,
+    buildWorkloadMetricsGroups,
     hasWorkloadMeasurement
 } from '@/ui/utils/inference-metrics'
 import { getWorkloadColorBar } from '@/ui/utils/colors'
 import EngineIcon from '@/ui/components/EngineIcon'
+import MetricGroups from '@/ui/components/MetricGroups'
 
 const formatDate = (timestamp: number) => {
     const date = new Date(timestamp)
@@ -70,22 +71,22 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
     // The engine's own measurement of this job. It exists only once the job
     // is terminal — a running job has no numbers yet, so it shows no
     // measurement row at all rather than a row of zeros. A phase the engine
-    // never reported reads as "not reported" inside the row, and every row
-    // is labelled with the request it covers.
-    const measurementRows = useMemo(() => {
+    // never reported reads as "not reported" inside the row, and the rows
+    // are headed by the request they cover.
+    const measurementGroups = useMemo(() => {
         if (workload.state !== 'completed' && workload.state !== 'failed') return []
         if (!hasWorkloadMeasurement(workload)) return []
-        return buildWorkloadMetricsRows(workload)
+        return buildWorkloadMetricsGroups(workload)
     }, [workload])
 
     // The live line of a running job: what PAIR measured of the client's
     // stream (the elapsed time, the chunks and bytes that arrived) plus the
     // engine's own live reading when the engine reported one. It goes away
     // with the job's terminal state, leaving the final numbers above.
-    const liveRows = useMemo(() => {
+    const liveGroups = useMemo(() => {
         if (workload.state === 'completed' || workload.state === 'failed') return []
         if (!liveProgress) return []
-        return buildWorkloadLiveRows(liveProgress)
+        return buildWorkloadLiveGroups(liveProgress)
     }, [workload.state, liveProgress])
 
     const subtext = useMemo(() => {
@@ -187,39 +188,15 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
                 <Flex align="center" gap="2">
                     {subtext}
                 </Flex>
-                {liveRows.length > 0 && (
-                    <Stack gap="0" className="mt-1 min-w-0" data-testid="workload-live-rows">
-                        {liveRows.map(row => (
-                            <Flex key={row.label} align="center" gap="2" className="min-w-0">
-                                <Text kind="body/regular/sm" className="text-subtle-color">
-                                    {row.label}
-                                </Text>
-                                <Text
-                                    kind="body/semibold/sm"
-                                    className={row.unavailable ? 'text-subtle-color' : undefined}
-                                >
-                                    {row.value}
-                                </Text>
-                            </Flex>
-                        ))}
-                    </Stack>
+                {liveGroups.length > 0 && (
+                    <div className="mt-1.5 min-w-0" data-testid="workload-live-rows">
+                        <MetricGroups groups={liveGroups} layout="list" />
+                    </div>
                 )}
-                {measurementRows.length > 0 && (
-                    <Stack gap="0" className="mt-1 min-w-0">
-                        {measurementRows.map(row => (
-                            <Flex key={row.label} align="center" gap="2" className="min-w-0">
-                                <Text kind="body/regular/sm" className="text-subtle-color">
-                                    {row.label}
-                                </Text>
-                                <Text
-                                    kind="body/semibold/sm"
-                                    className={row.unavailable ? 'text-subtle-color' : undefined}
-                                >
-                                    {row.value}
-                                </Text>
-                            </Flex>
-                        ))}
-                    </Stack>
+                {measurementGroups.length > 0 && (
+                    <div className="mt-1.5 min-w-0">
+                        <MetricGroups groups={measurementGroups} layout="list" />
+                    </div>
                 )}
                 {workload.error && workload.state === 'failed' && (
                     <Text
