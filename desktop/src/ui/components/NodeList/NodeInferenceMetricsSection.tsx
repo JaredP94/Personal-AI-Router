@@ -6,19 +6,23 @@ import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import { EngineDisplayNames } from '@/shared/constants/engines'
 import type { EngineNativeView } from '@/shared/types/metrics'
 import { isEngineType } from '@/shared/utils/engines'
+import { KeyboardArrowRight } from '@/ui/components/icons'
+import MetricGroups, { MetricValue, ScopeHeading } from '@/ui/components/MetricGroups'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import { formatRelativeTime } from '@/ui/utils/formatters'
 import {
+    buildEngineNativeGroups,
     buildEngineNativeModels,
-    buildEngineNativeRows,
-    buildInferenceMetricsRows,
     buildModelMetricsRows,
+    buildNodeMetricsGroups,
     isEngineNativeViewStale,
+    TOTAL_SCOPE,
     type EngineNativeModelEntry,
     type EngineNativeRow,
     type InferenceMetricsRow,
+    type MetricsGroup,
     type ModelMetricsRows
 } from '@/ui/utils/inference-metrics'
 
@@ -30,14 +34,14 @@ import {
  * rate of zero — the presence counters in the snapshot's totals say which
  * measurements the engine made at all.
  *
- * The window is part of every label here: the node's rates are the broker's
- * 60-second window, while the totals below them and the per-model breakdown
- * are the totals the broker has kept since it started. A model that has gone
- * idle keeps a high ratio over the totals since the broker started while the
- * node's windowed rate falls to zero, and the two must not read as the same
- * measurement.
+ * The window heads every group here: the node's rates are the broker's
+ * 60-second window, while the token count beside them and the per-model
+ * breakdown are the totals the broker has kept since it started. A model that
+ * has gone idle keeps a high ratio over the totals since the broker started
+ * while the node's windowed rate falls to zero, and the two must not read as
+ * the same measurement.
  *
- * The per-model breakdown sits behind a disclosure that is collapsed by
+ * The per-model breakdown is a table behind a disclosure that is collapsed by
  * default: the numbers are free to compute, but "this node is slow" is
  * usually "this node is slow for this model", and a node that served several
  * models should not bury its headline numbers under a table.
@@ -45,8 +49,8 @@ import {
  * Below that, the engine's own view of itself is shown as a separate section:
  * the counters the engine published about its own work. They are the
  * engine's numbers, not PAIR's — they include the traffic PAIR did not route
- * — so they are headed as such, labelled with the engine's own scope, and
- * never merged with the rows above.
+ * — so they are headed as such, grouped under the engine's own scopes, and
+ * never merged with the groups above.
  */
 function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
     // A narrow selector: this component re-renders when its own node's
@@ -57,13 +61,17 @@ function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
     const engineNative = useNodesStore(state => state.nodes.get(nodeId)?.engineNative)
     const [showModels, setShowModels] = useState(false)
 
-    const rows = useMemo(() => (metrics ? buildInferenceMetricsRows(metrics) : []), [metrics])
+    const groups = useMemo(
+        (): MetricsGroup<InferenceMetricsRow>[] => (metrics ? buildNodeMetricsGroups(metrics) : []),
+        [metrics]
+    )
     const modelRows = useMemo(
         (): ModelMetricsRows[] => (metrics ? buildModelMetricsRows(metrics.models) : []),
         [metrics]
     )
-    const engineRows = useMemo(
-        (): EngineNativeRow[] => (engineNative ? buildEngineNativeRows(engineNative) : []),
+    const engineGroups = useMemo(
+        (): MetricsGroup<EngineNativeRow>[] =>
+            engineNative ? buildEngineNativeGroups(engineNative) : [],
         [engineNative]
     )
     const engineModels = useMemo(
@@ -80,80 +88,53 @@ function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
     if (!metrics && !engineNative?.supported) return null
 
     return (
-        <Stack gap="1" className="mt-2 ml-1 min-w-0">
+        <Stack gap="3" className="mt-1 ml-1 min-w-0">
             {metrics && (
-                <>
-                    <Flex align="center" wrap="wrap" gap="3" className="min-w-0">
-                        {rows.map(row => (
-                            <MetricValue key={row.label} row={row} />
-                        ))}
-                    </Flex>
+                <Stack gap="1" className="min-w-0">
+                    <MetricGroups groups={groups} layout="tiles" />
                     {modelRows.length > 0 && (
-                        <Stack gap="1" className="min-w-0">
+                        <>
                             <Button
                                 kind="tertiary"
                                 color="neutral"
                                 size="tiny"
-                                className="self-start px-2"
+                                className="self-start px-1 -ml-1"
                                 onClick={() => setShowModels(open => !open)}
                                 aria-expanded={showModels}
                                 aria-label={
                                     showModels ? 'Hide per-model metrics' : 'Show per-model metrics'
                                 }
                             >
-                                {showModels ? 'Hide per-model metrics' : 'Show per-model metrics'}
+                                <KeyboardArrowRight
+                                    aria-hidden
+                                    style={{ fontSize: 14 }}
+                                    className={`transition-transform ${showModels ? 'rotate-90' : ''}`}
+                                />
+                                Per model
                             </Button>
-                            {showModels && (
-                                <Stack gap="2" className="mt-1 min-w-0">
-                                    {modelRows.map(entry => (
-                                        <Stack key={entry.model} gap="0" className="min-w-0">
-                                            <Text
-                                                kind="body/semibold/sm"
-                                                className="truncate"
-                                                title={entry.model}
-                                            >
-                                                {formatModelDisplayName(entry.model)}
-                                            </Text>
-                                            <Flex
-                                                align="center"
-                                                wrap="wrap"
-                                                gap="3"
-                                                className="min-w-0"
-                                            >
-                                                {entry.rows.map(row => (
-                                                    <MetricValue key={row.label} row={row} />
-                                                ))}
-                                            </Flex>
-                                        </Stack>
-                                    ))}
-                                </Stack>
-                            )}
-                        </Stack>
+                            {showModels && <ModelMetricsTable models={modelRows} />}
+                        </>
                     )}
-                </>
+                </Stack>
             )}
             {engineNative?.supported && (
-                <Stack gap="1" className="mt-2 min-w-0">
-                    <Text kind="body/semibold/sm">
-                        {`Engine's own counters (${engineDisplayName(engineNative)})`}
-                    </Text>
-                    <Text kind="body/regular/sm" className="text-subtle-color">
-                        {engineNativeSummary(engineNative)}
-                    </Text>
-                    {engineRows.length > 0 && (
-                        <Flex align="center" wrap="wrap" gap="3" className="min-w-0">
-                            {engineRows.map(row => (
-                                <EngineNativeValue key={row.label} row={row} />
-                            ))}
-                        </Flex>
-                    )}
-                    {engineModels.length > 0 && (
-                        <Text kind="body/regular/sm" className="text-subtle-color">
-                            {`Models the engine lists: ${engineModels
-                                .map(model => engineModelLabel(model))
-                                .join(', ')}`}
+                <Stack
+                    gap="2"
+                    className={`min-w-0 ${metrics ? 'pt-2 border-t border-[var(--border-color-base)]' : ''}`}
+                >
+                    <Flex align="baseline" wrap="wrap" gap="2" className="min-w-0">
+                        <Text kind="body/semibold/sm">
+                            {`Engine's own counters (${engineDisplayName(engineNative)})`}
                         </Text>
+                        <Text kind="body/regular/xs" className="text-subtle-color">
+                            Includes traffic PAIR did not route
+                        </Text>
+                        <EngineFreshness view={engineNative} />
+                    </Flex>
+                    {engineGroups.length > 0 && (
+                        <MetricGroups groups={engineGroups} layout="tiles" />
                     )}
+                    {engineModels.length > 0 && <EngineModelList models={engineModels} />}
                 </Stack>
             )}
         </Stack>
@@ -161,41 +142,138 @@ function NodeInferenceMetricsSection({ nodeId }: { nodeId: string }) {
 }
 
 /**
- * One measurement: its label and its value.
+ * The per-model breakdown: one row per model, one column per measurement,
+ * every figure covering the totals since the broker started.
  *
- * An unavailable value is rendered in the subtle colour: the engine never
- * reported it, and it should not read as a measurement the engine made.
+ * Every model carries the same labels in the same order, so the first
+ * model's labels are the column headers.
  */
-function MetricValue({ row }: { row: InferenceMetricsRow }) {
+function ModelMetricsTable({ models }: { models: ModelMetricsRows[] }) {
+    const columns = models[0]?.rows.map(row => row.label) ?? []
     return (
-        <Flex align="center" gap="1" className="min-w-0">
-            <Text kind="body/regular/sm" className="text-subtle-color">
-                {row.label}
-            </Text>
-            <Text
-                kind="body/semibold/sm"
-                className={row.unavailable ? 'text-subtle-color' : undefined}
-            >
-                {row.value}
-            </Text>
-        </Flex>
+        <div className="min-w-0 overflow-x-auto">
+            <ScopeHeading scope={TOTAL_SCOPE} />
+            <table className="mt-0.5 border-collapse text-left leading-none">
+                <thead>
+                    <tr>
+                        <th scope="col" className="pr-4 pb-0.5 text-left font-normal">
+                            <Text kind="body/regular/xs" className="text-subtle-color">
+                                Model
+                            </Text>
+                        </th>
+                        {columns.map(column => (
+                            <th
+                                key={column}
+                                scope="col"
+                                className="pl-4 pb-0.5 text-right font-normal whitespace-nowrap"
+                            >
+                                <Text kind="body/regular/xs" className="text-subtle-color">
+                                    {column}
+                                </Text>
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody>
+                    {models.map(entry => (
+                        <tr
+                            key={entry.model}
+                            className="border-t border-[var(--border-color-base)]"
+                        >
+                            <th scope="row" className="py-0.5 pr-4 text-left font-normal">
+                                <Text
+                                    kind="body/regular/sm"
+                                    className="block max-w-56 truncate"
+                                    title={entry.model}
+                                >
+                                    {formatModelDisplayName(entry.model)}
+                                </Text>
+                            </th>
+                            {entry.rows.map(row => (
+                                <td
+                                    key={row.label}
+                                    className="py-0.5 pl-4 text-right whitespace-nowrap"
+                                >
+                                    <MetricValue row={row} />
+                                </td>
+                            ))}
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
     )
 }
 
 /**
- * One of the engine's own counters.
- *
- * Every row here was reported by the engine, so there is no unavailable state:
- * a value the engine did not report has no row at all.
+ * The models the engine lists, each marked with the engine's own claim:
+ * a filled dot for a model it lists as active, a hollow one for the rest.
  */
-function EngineNativeValue({ row }: { row: EngineNativeRow }) {
+function EngineModelList({ models }: { models: EngineNativeModelEntry[] }) {
     return (
-        <Flex align="center" gap="1" className="min-w-0">
-            <Text kind="body/regular/sm" className="text-subtle-color">
-                {row.label}
+        <div className="min-w-0">
+            <ScopeHeading scope="Models the engine lists" />
+            <Flex align="center" wrap="wrap" gap="3" className="mt-0.5 min-w-0">
+                {models.map(model => {
+                    const name = formatModelDisplayName(model.model)
+                    const claim = engineModelClaim(model)
+                    return (
+                        <span
+                            key={model.model}
+                            className="inline-flex min-w-0 items-center gap-1.5"
+                            title={`${model.model} — ${claim}`}
+                        >
+                            <span
+                                aria-hidden
+                                className="size-2 shrink-0 rounded-full border"
+                                style={{
+                                    borderColor: model.active
+                                        ? 'var(--text-color-feedback-success)'
+                                        : 'var(--border-color-interaction-strong)',
+                                    backgroundColor: model.active
+                                        ? 'var(--text-color-feedback-success)'
+                                        : 'transparent'
+                                }}
+                            />
+                            <Text
+                                kind="body/regular/sm"
+                                className={`truncate ${model.active ? '' : 'text-subtle-color'}`}
+                            >
+                                {name}
+                            </Text>
+                            <span className="sr-only">{`(${claim})`}</span>
+                        </span>
+                    )
+                })}
+            </Flex>
+        </div>
+    )
+}
+
+/**
+ * How fresh the engine's own view is.
+ *
+ * The freshness matters: the stamp advances on every sweep, so a node whose
+ * engine stopped answering keeps its last good view with a frozen stamp, and
+ * this is where that shows. A stale view is said in the warning colour.
+ *
+ * A view with no stamp carries no age: the engine published none, so there is
+ * nothing to measure.
+ */
+function EngineFreshness({ view }: { view: EngineNativeView }) {
+    if (view.observedAt === undefined) return null
+    const observed = formatRelativeTime(view.observedAt)
+    if (isEngineNativeViewStale(view, Date.now())) {
+        return (
+            <Text kind="body/semibold/xs" style={{ color: 'var(--text-color-feedback-warning)' }}>
+                {`Stale — last observed ${observed}`}
             </Text>
-            <Text kind="body/semibold/sm">{row.value}</Text>
-        </Flex>
+        )
+    }
+    return (
+        <Text kind="body/regular/xs" className="text-subtle-color">
+            {`· Observed ${observed}`}
+        </Text>
     )
 }
 
@@ -211,45 +289,14 @@ function engineDisplayName(view: EngineNativeView | undefined): string {
 }
 
 /**
- * The line that says what the engine's own counters are, and how fresh they
- * are.
- *
- * The freshness matters: the stamp advances on every sweep, so a node whose
- * engine stopped answering keeps its last good view with a frozen stamp, and
- * this line is where that shows.
- */
-function engineNativeSummary(view: EngineNativeView | undefined): string {
-    const parts = ["These are the engine's own counters — they include traffic PAIR did not route."]
-    const age = engineFreshness(view)
-    if (age) parts.push(age)
-    return parts.join(' ')
-}
-
-/**
- * How fresh the engine's own view is, as the card shows it.
- *
- * A view with no stamp carries no age: the engine published none, so there is
- * nothing to measure.
- */
-function engineFreshness(view: EngineNativeView | undefined): string {
-    if (!view || view.observedAt === undefined) return ''
-    const observed = formatRelativeTime(view.observedAt)
-    if (isEngineNativeViewStale(view, Date.now())) {
-        return `Stale — last observed ${observed}.`
-    }
-    return `Observed ${observed}.`
-}
-
-/**
- * One model the engine lists, with the engine's own claim about it.
+ * The engine's own claim about one model it lists.
  *
  * The wording is the engine's: it lists the model as active or not. It is not
  * the engine-manager's loaded set, which says the model is resident in
  * memory — a different thing, kept under a different word.
  */
-function engineModelLabel(model: EngineNativeModelEntry): string {
-    const name = formatModelDisplayName(model.model)
-    return model.active ? `${name} (active)` : `${name} (not active)`
+function engineModelClaim(model: EngineNativeModelEntry): string {
+    return model.active ? 'active' : 'not active'
 }
 
 export default NodeInferenceMetricsSection

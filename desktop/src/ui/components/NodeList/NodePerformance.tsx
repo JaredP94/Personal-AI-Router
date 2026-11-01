@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useCallback, useMemo, useState } from 'react'
-import { Flex, Stack, Text } from '@nvidia/foundations-react-core'
+import { Fragment, useCallback, useMemo, useState } from 'react'
+import { Flex, Text } from '@nvidia/foundations-react-core'
 import SvgLineChart, { type MetricDataset } from '@/ui/components/SvgLineChart'
 import type { NodeItem } from '@/shared/types/nodes'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
@@ -26,6 +26,10 @@ export default function NodePerformance({
         // Otherwise, show only the clicked metric (solo it)
         setSelectedMetric(prev => (prev === metricKey ? undefined : metricKey))
     }, [])
+
+    // A series is shown when nothing is soloed or it is the soloed one.
+    const isShown = (metricKey: string) =>
+        selectedMetric === undefined || selectedMetric === metricKey
 
     // The detailed performance view intentionally charts EVERY detected GPU,
     // including any the radial omits (the radial filters to inference-ready GPUs
@@ -145,195 +149,146 @@ export default function NodePerformance({
                 )}
             </div>
 
-            {/* Custom Legend / Hardware Info Section */}
-            <Stack gap="4" className="shrink-0 w-50 ml-2 self-center">
-                {/* GPU Metrics */}
-                {hardwareInfo.gpus.map(gpu => {
-                    // Check if this GPU's metrics are selected
-                    const isGpuSelected =
-                        selectedMetric === undefined ||
-                        selectedMetric === `gpu-${gpu.id}` ||
-                        selectedMetric === `vram-${gpu.id}`
-
+            {/* Legend: one aligned grid of dot, label and value. A row solos its series. */}
+            <div className="shrink-0 w-64 ml-2 self-center grid grid-cols-[auto_max-content_minmax(0,1fr)] items-baseline gap-x-2">
+                {hardwareInfo.gpus.map((gpu, index) => {
+                    const usageKey = `gpu-${gpu.id}`
+                    const vramKey = `vram-${gpu.id}`
                     return (
-                        <Stack gap="0" key={gpu.id}>
-                            <Text
-                                kind="body/semibold/sm"
-                                className="transition-opacity text-nowrap text-ellipsis overflow-hidden"
-                                style={{ opacity: isGpuSelected ? 1 : 0.5 }}
+                        <Fragment key={gpu.id}>
+                            <LegendHeading
                                 title={gpu.name}
-                            >
-                                {gpu.name}
-                            </Text>
-
-                            <Stack gap="1">
-                                {/* GPU Utilization */}
-                                <Flex
-                                    align="center"
-                                    gap="2"
-                                    className="cursor-pointer"
-                                    onClick={() => handleLegendClick(`gpu-${gpu.id}`)}
+                                first={index === 0}
+                                dimmed={!isShown(usageKey) && !isShown(vramKey)}
+                            />
+                            <LegendRow
+                                color={gpu.color}
+                                label="Usage"
+                                value={
+                                    gpu.utilization === null
+                                        ? '—'
+                                        : `${Math.floor(gpu.utilization)}%`
+                                }
+                                shown={isShown(usageKey)}
+                                onClick={() => handleLegendClick(usageKey)}
+                            />
+                            <LegendRow
+                                color={gpu.vramColor}
+                                label={gpu.memory.label}
+                                value={gpu.memory.detail ?? ''}
+                                shown={isShown(vramKey)}
+                                onClick={() => handleLegendClick(vramKey)}
+                            />
+                            {gpu.memory.sharedDetail && (
+                                <Text
+                                    kind="body/regular/sm"
+                                    className="col-start-2 col-span-2 text-subtle-color"
                                 >
-                                    <div
-                                        className="w-3 h-3 min-w-3 min-h-3 max-w-3 max-h-3 rounded-full transition-opacity"
-                                        style={{
-                                            backgroundColor: `${gpu.color}BF`,
-                                            border: `2px solid ${gpu.color}`,
-                                            marginTop: '1px',
-                                            opacity:
-                                                selectedMetric === undefined ||
-                                                selectedMetric === `gpu-${gpu.id}`
-                                                    ? 1
-                                                    : 0.3
-                                        }}
-                                    />
-
-                                    <Flex
-                                        align="center"
-                                        gap="2"
-                                        className="transition-opacity"
-                                        style={{
-                                            opacity:
-                                                selectedMetric === undefined ||
-                                                selectedMetric === `gpu-${gpu.id}`
-                                                    ? 1
-                                                    : 0.5
-                                        }}
-                                    >
-                                        <Text kind="body/regular/sm">Usage</Text>
-                                        <Text kind="body/regular/sm">
-                                            {gpu.utilization === null
-                                                ? '—'
-                                                : `${Math.floor(gpu.utilization)}%`}
-                                        </Text>
-                                    </Flex>
-                                </Flex>
-
-                                {/* GPU VRAM */}
-                                <Flex
-                                    align="center"
-                                    gap="2"
-                                    className="cursor-pointer"
-                                    onClick={() => handleLegendClick(`vram-${gpu.id}`)}
-                                >
-                                    <div
-                                        className="w-3 h-3 min-w-3 min-h-3 max-w-3 max-h-3 rounded-full transition-opacity"
-                                        style={{
-                                            backgroundColor: `${gpu.vramColor}BF`,
-                                            border: `2px solid ${gpu.vramColor}`,
-                                            marginTop: '1px',
-                                            opacity:
-                                                selectedMetric === undefined ||
-                                                selectedMetric === `vram-${gpu.id}`
-                                                    ? 1
-                                                    : 0.3
-                                        }}
-                                    />
-                                    <Flex
-                                        align="center"
-                                        gap="2"
-                                        className="transition-opacity"
-                                        style={{
-                                            opacity:
-                                                selectedMetric === undefined ||
-                                                selectedMetric === `vram-${gpu.id}`
-                                                    ? 1
-                                                    : 0.5
-                                        }}
-                                    >
-                                        <Text kind="body/regular/sm">{gpu.memory.label}</Text>
-                                        {gpu.memory.detail && (
-                                            <Text kind="body/regular/sm">{gpu.memory.detail}</Text>
-                                        )}
-                                    </Flex>
-                                </Flex>
-                                {gpu.memory.sharedDetail && (
-                                    <Text kind="body/regular/sm">{gpu.memory.sharedDetail}</Text>
-                                )}
-                            </Stack>
-                        </Stack>
+                                    {gpu.memory.sharedDetail}
+                                </Text>
+                            )}
+                        </Fragment>
                     )
                 })}
 
-                {/* CPU */}
-                <Flex
-                    align="start"
-                    gap="2"
-                    className="cursor-pointer"
+                <LegendHeading
+                    title={hardwareInfo.cpuModel}
+                    first={hardwareInfo.gpus.length === 0}
+                    dimmed={!isShown('cpu')}
+                />
+                <LegendRow
+                    color={CHART_COLORS.CPU}
+                    label="Usage"
+                    value={`${Math.floor(hardwareInfo.cpuUtilization)}%`}
+                    shown={isShown('cpu')}
                     onClick={() => handleLegendClick('cpu')}
-                >
-                    <div
-                        className="w-3 h-3 min-w-3 min-h-3 max-w-3 max-h-3 rounded-full transition-opacity"
-                        style={{
-                            backgroundColor: `${CHART_COLORS.CPU}BF`,
-                            border: `2px solid ${CHART_COLORS.CPU}`,
-                            marginTop: '4px',
-                            opacity:
-                                selectedMetric === undefined || selectedMetric === 'cpu' ? 1 : 0.3
-                        }}
-                    />
-                    <Stack
-                        className="transition-opacity overflow-hidden"
-                        style={{
-                            opacity:
-                                selectedMetric === undefined || selectedMetric === 'cpu' ? 1 : 0.5
-                        }}
-                    >
-                        <Text
-                            kind="body/semibold/sm"
-                            className="text-nowrap text-ellipsis overflow-hidden"
-                            title={hardwareInfo.cpuModel}
-                        >
-                            {hardwareInfo.cpuModel}
+                />
+                {hardwareInfo.cpuCores ? (
+                    <>
+                        <Text kind="body/regular/sm" className="col-start-2 text-subtle-color">
+                            Cores
                         </Text>
-                        <Text kind="body/regular/sm">
-                            {Math.floor(hardwareInfo.cpuUtilization)}%{' '}
-                            {hardwareInfo.cpuCores ? `(${hardwareInfo.cpuCores} cores)` : ''}
+                        <Text kind="body/regular/sm" className="text-right tabular-nums">
+                            {hardwareInfo.cpuCores}
                         </Text>
-                    </Stack>
-                </Flex>
+                    </>
+                ) : null}
 
-                {/* Memory */}
-                <Flex
-                    align="start"
-                    gap="2"
-                    className="cursor-pointer"
+                <LegendHeading title="Memory" first={false} dimmed={!isShown('memory')} />
+                <LegendRow
+                    color={CHART_COLORS.MEMORY}
+                    label="RAM"
+                    value={`${formatBytes(
+                        Math.floor((hardwareInfo.memoryTotal * hardwareInfo.memoryUsage) / 100),
+                        1
+                    )} / ${hardwareInfo.memory}`}
+                    shown={isShown('memory')}
                     onClick={() => handleLegendClick('memory')}
-                >
-                    <div
-                        className="w-3 h-3 min-w-3 min-h-3 max-w-3 max-h-3 rounded-full transition-opacity"
-                        style={{
-                            backgroundColor: `${CHART_COLORS.MEMORY}BF`,
-                            border: `2px solid ${CHART_COLORS.MEMORY}`,
-                            marginTop: '4px',
-                            opacity:
-                                selectedMetric === undefined || selectedMetric === 'memory'
-                                    ? 1
-                                    : 0.3
-                        }}
-                    />
-                    <Stack
-                        className="transition-opacity"
-                        style={{
-                            opacity:
-                                selectedMetric === undefined || selectedMetric === 'memory'
-                                    ? 1
-                                    : 0.5
-                        }}
-                    >
-                        <Text kind="body/semibold/sm">Memory</Text>
-                        <Text kind="body/regular/sm">
-                            {formatBytes(
-                                Math.floor(
-                                    (hardwareInfo.memoryTotal * hardwareInfo.memoryUsage) / 100
-                                ),
-                                1
-                            )}{' '}
-                            / {hardwareInfo.memory}
-                        </Text>
-                    </Stack>
-                </Flex>
-            </Stack>
+                />
+            </div>
         </Flex>
+    )
+}
+
+/** The hardware a block of legend rows belongs to: a GPU, the CPU, or memory. */
+function LegendHeading({
+    title,
+    first,
+    dimmed
+}: {
+    title: string
+    first: boolean
+    dimmed: boolean
+}) {
+    return (
+        <Text
+            kind="body/semibold/sm"
+            className={`col-span-3 truncate transition-opacity ${first ? '' : 'mt-2'}`}
+            style={{ opacity: dimmed ? 0.5 : 1 }}
+            title={title}
+        >
+            {title}
+        </Text>
+    )
+}
+
+/**
+ * One charted series: its colour, label and latest value. The row spans the
+ * legend's three columns through a subgrid, so dots, labels and values line
+ * up across every block. Clicking it solos the series; clicking again shows
+ * them all.
+ */
+function LegendRow({
+    color,
+    label,
+    value,
+    shown,
+    onClick
+}: {
+    color: string
+    label: string
+    value: string
+    shown: boolean
+    onClick: () => void
+}) {
+    return (
+        <button
+            type="button"
+            className="col-span-3 grid grid-cols-subgrid items-baseline text-left text-inherit cursor-pointer bg-transparent border-0 p-0 transition-opacity"
+            style={{ opacity: shown ? 1 : 0.5 }}
+            onClick={onClick}
+        >
+            <span
+                aria-hidden
+                className="size-2.5 self-center rounded-full"
+                style={{ backgroundColor: `${color}BF`, border: `2px solid ${color}` }}
+            />
+            <Text kind="body/regular/sm" className="text-subtle-color">
+                {label}
+            </Text>
+            <Text kind="body/regular/sm" className="text-right tabular-nums">
+                {value}
+            </Text>
+        </button>
     )
 }

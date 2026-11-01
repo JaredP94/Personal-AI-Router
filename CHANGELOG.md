@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Aligned Metrics Layout (`desktop`)**: Node cards, job cards and the performance legend show their metrics as aligned key/value groups. Each group names its window once ("Last 60 s", "Since broker start", "This request", "Engine total", "Engine average") instead of repeating it in every label, the per-model breakdown is a table, values use tabular figures, and an unreported value reads as a muted dash. Legend rows are buttons, so soloing a series works from the keyboard. No wire contract or service binary changes.
+
 ## [0.7.0] - 2026-10-22
 
 Unsigned, unnotarized **macOS arm64 release** for this fork, and the first
