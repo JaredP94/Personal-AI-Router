@@ -13,11 +13,6 @@
     "mode": "user"
   },
   "models_dir": "~/.omlx/models",
-  "uninstall": {
-    "cli_roots": ["~/.omlx/bin"],
-    "run": ["sh", "-c", "pkill -x omlx 2>/dev/null; sleep 2; exit 0"],
-    "remove": ["~/.omlx/bin"]
-  },
   "runtime": {
     "mode": "command",
     "port": 1235,

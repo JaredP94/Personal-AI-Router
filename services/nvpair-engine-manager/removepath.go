@@ -62,21 +62,23 @@ func removeTreePreserving(target, preserve string) error {
 	if strings.TrimSpace(preserve) == "" {
 		return os.RemoveAll(absTarget)
 	}
-	// Unlink rather than descend. On the descend path below, ReadDir would
-	// follow a link to the real directory and delete its contents.
-	if !info.IsDir() {
-		return os.Remove(absTarget)
-	}
 	absPreserve, err := filepath.Abs(filepath.Clean(expandPath(preserve)))
 	if err != nil {
 		return fmt.Errorf("remove: preserve: %w", err)
 	}
+	// Checked before anything is unlinked: a file reached through a link to a
+	// directory inside the store is a model, however its path is spelled.
 	store := locateStore(absPreserve)
 	if store.is(info) {
 		return fmt.Errorf("remove: %q is the preserved model store", absTarget)
 	}
 	if store.contains(absTarget) {
 		return fmt.Errorf("remove: %q is inside the preserved model store %q", absTarget, absPreserve)
+	}
+	// Unlink rather than descend. On the descend path below, ReadDir would
+	// follow a link to the real directory and delete its contents.
+	if !info.IsDir() {
+		return os.Remove(absTarget)
 	}
 	if !store.under(info) {
 		return os.RemoveAll(absTarget)

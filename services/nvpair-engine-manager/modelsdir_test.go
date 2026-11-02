@@ -409,3 +409,28 @@ func TestRemoveTreePreservingMissingTargetIsNoOp(t *testing.T) {
 		t.Errorf("removing an absent path should be a no-op, got %v", err)
 	}
 }
+
+// A file reached through a link into the store is a model, not the target's
+// own file, and must survive however its path is spelled.
+func TestRemoveTreePreservingRefusesAFileReachedThroughALinkIntoTheStore(t *testing.T) {
+	root := t.TempDir()
+	store := filepath.Join(root, "models")
+	model := filepath.Join(store, "model.gguf")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(model, []byte("weights"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(store, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := removeTreePreserving(filepath.Join(alias, "model.gguf"), store); err == nil {
+		t.Error("removal through a link into the store was allowed")
+	}
+	if _, err := os.Stat(model); err != nil {
+		t.Fatalf("the model was deleted: %v", err)
+	}
+}
+

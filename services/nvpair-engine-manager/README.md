@@ -127,14 +127,20 @@ from `{install_dir}`. Engine removal is declarative: `uninstall.run` is for work
 only a command can do (stopping a daemon), and `uninstall.remove` lists the trees
 the engine manager deletes itself. Removal unlinks a symlink rather than
 following it, refuses a target that is or sits inside the model store, and when a
-target contains the store, removes everything except the store. Validation
+target contains the store, removes everything except the store. The store
+checks run before anything is unlinked, so a file reached through a link into
+the store is refused too. Validation
 rejects a manifest whose `remove` reaches the store, or that declares `remove`
 without `models_dir`.
 
 The bundled uninstalls remove only what an install put down: Ollama's app or
-install directory; LM Studio's `~/.lmstudio/bin` and `llmster` runtime; oMLX's
-`~/.omlx/bin` CLI. LM Studio's conversations, credentials and settings, and
-oMLX's settings, model settings and API key, are left where they are.
+install directory, and LM Studio's `~/.lmstudio/bin` and `llmster` runtime. LM
+Studio's conversations, credentials and settings are left where they are.
+
+oMLX declares no uninstall. Its runtime is the oMLX app in `/Applications`, which
+PAIR does not install, and the CLI in `~/.omlx/bin` is a shim the app rewrites
+whenever its server starts, so removing the shim would report an uninstall that
+did not happen. Remove oMLX through the app.
 
 ### Command-mode engines: only what PAIR installed
 
@@ -149,8 +155,7 @@ successful uninstall, and when the engine is found already gone.
 
 The command must also be covered: `uninstall.cli_roots` declares the directory
 roots whose CLI files the uninstall removes, for example
-`"cli_roots": ["~/.omlx/bin"]`. Homebrew and `/usr/local` oMLX installations are
-not covered and report `uninstall: false`. Roots expand `~`, OS environment
+`"cli_roots": ["~/.lmstudio/bin"]`. Roots expand `~`, OS environment
 variables and `{install_dir}`, must be absolute after expansion, and match whole
 path components (not sibling prefixes). Missing or unresolvable roots cover
 nothing; an absent CLI reports `uninstall: false`. Coverage is lexical: deleting
