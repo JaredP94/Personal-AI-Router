@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -914,6 +915,12 @@ func (d *daemon) publishSelf() {
 // publishSelfLocked is publishSelf's body; the caller must hold selfMu (so a
 // registration burst and a concurrent reloadIdentity can't tear the self entry).
 func (d *daemon) publishSelfLocked() {
+	d.publishSelfLockedIf(nil)
+}
+
+// publishSelfLockedIf is publishSelfLocked that, when shouldEmit is set, emits
+// only if shouldEmit accepts the stored entry. The caller holds selfMu.
+func (d *daemon) publishSelfLockedIf(shouldEmit func(noderec.DirectoryNode) bool) {
 	rec := d.reg.record()
 	if rec.HostUUID == "" {
 		return // no identity resolved yet — nothing to anchor self on
@@ -955,7 +962,45 @@ func (d *daemon) publishSelfLocked() {
 	if isNew := d.dir.upsert(node); isNew {
 		method = noderec.NotifyNodeDiscovered
 	}
-	d.emit(method, d.storedOr(node))
+	stored := d.storedOr(node)
+	if shouldEmit != nil && method == noderec.NotifyNodeUpdated && !shouldEmit(stored) {
+		return
+	}
+	d.emit(method, stored)
+}
+
+// refreshSelfOnce re-enriches this node's own entry on the peer-refresh tick.
+//
+// Browse events re-enrich every peer, but deliberately never self, and
+// publishSelf ran only at startup, on a service (un)registration and after an
+// identity or address change. The local node's GPU memory, CPU and memory
+// figures in the discovery snapshot — the one the scheduler reads — therefore
+// stayed at their startup values while every peer's converged. The live
+// telemetry loop refreshes only utilization.
+//
+// It emits only when the entry changed beyond its LastSeen stamp, so an idle
+// node adds no notification per tick.
+func (d *daemon) refreshSelfOnce() {
+	d.selfMu.Lock()
+	defer d.selfMu.Unlock()
+	hostUUID := d.reg.record().HostUUID
+	if hostUUID == "" {
+		return
+	}
+	before, existed := d.dir.get(hostUUID)
+	if !existed {
+		d.publishSelfLocked()
+		return
+	}
+	d.publishSelfLockedIf(func(after noderec.DirectoryNode) bool {
+		return !sameIgnoringLastSeen(before, after)
+	})
+}
+
+// sameIgnoringLastSeen reports whether two entries differ only in LastSeen.
+func sameIgnoringLastSeen(a, b noderec.DirectoryNode) bool {
+	a.LastSeen, b.LastSeen = 0, 0
+	return reflect.DeepEqual(a, b)
 }
 
 // watchAddress re-derives the advertised ip= whenever the host's network changes
@@ -1631,6 +1676,7 @@ func (d *daemon) refreshPeersLoop(ctx context.Context) {
 			}
 			d.refreshClusterIdentityOnce()
 			d.refreshModelsOnce()
+			d.refreshSelfOnce()
 		}
 	}
 }
