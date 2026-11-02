@@ -78,6 +78,7 @@ type NodeInfoResponse struct {
 	GPUs           []GPUInfo   `json:"GPUs"`
 	CPU            *CPUInfo    `json:"cpu,omitempty"`
 	Memory         *MemoryInfo `json:"memory,omitempty"`
+	Sensors        *SensorInfo `json:"sensors,omitempty"`
 	TelemetryValid bool        `json:"telemetryValid"`
 	MSSince        int64       `json:"msSince"`
 	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
@@ -226,6 +227,7 @@ func buildResponseAt(gpus []GPUInfo, cpuStatic *CPUInfo, memTotal uint64, snap s
 		HostUUID:       hostUUID,
 		ClusterUUID:    clusterUUID,
 	}
+	resp.Sensors = snap.Sensors.wire(now)
 	if cpuStatic != nil {
 		cpu := *cpuStatic
 		cpu.UtilizationPercent = snap.CPUUtilPct

@@ -42,6 +42,7 @@ type statsSnapshot struct {
 	CPUUtilPct   uint32
 	MemUsedBytes uint64
 	MemUsedValid bool
+	Sensors      *sensorState
 }
 
 // applyGPUStats publishes a usable GPU sample or preserves the last usable
