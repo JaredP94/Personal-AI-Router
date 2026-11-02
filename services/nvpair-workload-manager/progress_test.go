@@ -80,7 +80,12 @@ func newProgressPeer(t *testing.T) *progressPeer {
 		broadcaster: NewBroadcaster(peers, self),
 		activeLocal: make(map[workloadKey]workloadEvent),
 		ctx:         context.Background(),
+		broadcastCh: make(chan []byte, broadcastQueueDepth),
 	}
+	// Frames go out through the ordered broadcast worker, as in Run.
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.broadcastLoop(ctx)
+	t.Cleanup(cancel)
 	t.Cleanup(m.broadcaster.CloseIdle)
 	p.manager = m
 	return p
