@@ -27,7 +27,10 @@ export const EngineDisplayNames: Record<EngineType, string> = {
 export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUrl: string }> = {
     ollama: { docsUrl: 'https://docs.ollama.com/', installUrl: 'https://ollama.com/download' },
     'lm-studio': { docsUrl: 'https://lmstudio.ai/docs', installUrl: 'https://lmstudio.ai/' },
-    omlx: { docsUrl: 'https://github.com/jared/omlx', installUrl: 'https://omlx.ai' }
+    omlx: {
+        docsUrl: 'https://github.com/jundot/omlx',
+        installUrl: 'https://github.com/jundot/omlx/releases/latest'
+    }
 } as const
 
 export const ModelItemStatuses = ['idle', 'loading', 'loaded', 'ejecting', 'pulling'] as const

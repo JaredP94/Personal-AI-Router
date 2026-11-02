@@ -64,6 +64,14 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
+	// Whether this install puts its Creates path in place, or finds the
+	// user's own copy already there. Decided before anything runs.
+	claims := true
+	if inst.Creates != "" {
+		if _, err := os.Lstat(expandPath(inst.Creates)); err == nil {
+			claims = false
+		}
+	}
 
 	vars := map[string]string{"install_dir": st.installDir}
 
@@ -86,9 +94,15 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			return werr
 		}
 	} else {
-		if inst.Fetch != nil {
+		if len(inst.FetchVariants) > 0 || inst.Fetch != nil {
+			fetch := inst.fetchFor(hostOSMajorVersion())
+			if fetch == nil {
+				err := fmt.Errorf("%s has no build for this version of the operating system", st.manifest.DisplayName)
+				e.reportInstallFailed(engine, err)
+				return err
+			}
 			e.emitInstallProgress(engine, "downloading", 0)
-			dp, err := e.download(ctx, engine, inst.Fetch)
+			dp, err := e.download(ctx, engine, fetch)
 			if err != nil {
 				e.reportInstallFailed(engine, err)
 				return err
@@ -122,7 +136,10 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	}
 	// Claim the install now that it is real and detected. A failure to record it
 	// only costs the ability to uninstall later, so it must not fail the install.
-	if err := writeInstallMarker(st.installDir, engine); err != nil {
+	// An install that found the user's own copy in place claims nothing.
+	if !claims {
+		slog.Info("engine was already in place; not recording it as installed by PAIR", "engine", engine, "path", inst.Creates)
+	} else if err := writeInstallMarker(st.installDir, engine); err != nil {
 		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
 	}
 	e.reporter.clear(installFailedID(engine))

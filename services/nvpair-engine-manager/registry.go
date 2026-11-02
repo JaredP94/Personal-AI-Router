@@ -78,8 +78,18 @@ type Platform struct {
 // download (fetch.sha256 set) is checksum-verified before its `run`
 // command executes; an unpinned fetch is HTTPS-only (see download).
 type Install struct {
-	Fetch *Fetch   `json:"fetch,omitempty"`
-	Run   []string `json:"run,omitempty"`
+	Fetch *Fetch `json:"fetch,omitempty"`
+	// FetchVariants replaces Fetch for a vendor that publishes one build per
+	// OS release. The runner uses the first variant whose min_os_version the
+	// host meets (macOS major version; 0 matches any), so list the newest
+	// first.
+	FetchVariants []Fetch  `json:"fetch_variants,omitempty"`
+	Run           []string `json:"run,omitempty"`
+	// Creates names what the install puts in place, when that is somewhere a
+	// user's own copy could already be (an app in /Applications). PAIR records
+	// the install as its own only if Creates did not exist before it ran, so
+	// uninstall never removes a copy the user installed.
+	Creates string `json:"creates,omitempty"`
 	// Script is an escape hatch for vendors that only ship a script
 	// installer. It runs without checksum verification — strictly opt-in
 	// and logged as unpinned. Prefer fetch+run whenever the vendor publishes
@@ -112,6 +122,23 @@ type Uninstall struct {
 type Fetch struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
+	// MinOSVersion is the lowest host OS major version this download supports;
+	// it applies to fetch_variants only.
+	MinOSVersion int `json:"min_os_version,omitempty"`
+}
+
+// fetchFor returns the download for a host OS major version: the single
+// fetch, or the first variant the host meets. Nil when no variant fits.
+func (i *Install) fetchFor(osMajor int) *Fetch {
+	if i.Fetch != nil {
+		return i.Fetch
+	}
+	for idx := range i.FetchVariants {
+		if i.FetchVariants[idx].MinOSVersion <= osMajor {
+			return &i.FetchVariants[idx]
+		}
+	}
+	return nil
 }
 
 // Runtime is how to launch + probe the engine. By default the launched
@@ -606,14 +633,29 @@ func (p *Platform) validate(key string) error {
 		return fmt.Errorf("platform %q: runtime.mode %q invalid (want \"process\" or \"command\")", key, p.Runtime.Mode)
 	}
 	if p.Install != nil {
-		if len(p.Install.Script) > 0 && (p.Install.Fetch != nil || len(p.Install.Run) > 0) {
+		hasFetch := p.Install.Fetch != nil || len(p.Install.FetchVariants) > 0
+		if len(p.Install.Script) > 0 && (hasFetch || len(p.Install.Run) > 0) {
 			return fmt.Errorf("platform %q: install.script is mutually exclusive with fetch/run (a script install cannot also be checksum-pinned)", key)
 		}
-		if len(p.Install.Run) > 0 && p.Install.Fetch == nil {
+		if p.Install.Fetch != nil && len(p.Install.FetchVariants) > 0 {
+			return fmt.Errorf("platform %q: install.fetch and install.fetch_variants are mutually exclusive", key)
+		}
+		if len(p.Install.Run) > 0 && !hasFetch {
 			return fmt.Errorf("platform %q: install.run requires a fetch (the artifact the run command unpacks)", key)
 		}
 		if p.Install.Fetch != nil && strings.TrimSpace(p.Install.Fetch.URL) == "" {
 			return fmt.Errorf("platform %q: install.fetch.url is required when fetch is present", key)
+		}
+		for _, v := range p.Install.FetchVariants {
+			if strings.TrimSpace(v.URL) == "" {
+				return fmt.Errorf("platform %q: every install.fetch_variants entry needs a url", key)
+			}
+			if v.MinOSVersion < 0 {
+				return fmt.Errorf("platform %q: install.fetch_variants min_os_version must be >= 0", key)
+			}
+		}
+		if strings.Contains(p.Install.Creates, "{") {
+			return fmt.Errorf("platform %q: install.creates %q must be a literal path", key, p.Install.Creates)
 		}
 		switch p.Install.Mode {
 		case "", "user", "admin":

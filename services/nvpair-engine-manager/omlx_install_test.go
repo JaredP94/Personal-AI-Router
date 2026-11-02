@@ -1,0 +1,100 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+)
+
+func TestFetchForPicksTheNewestVariantTheHostMeets(t *testing.T) {
+	inst := &Install{FetchVariants: []Fetch{
+		{URL: "tahoe", MinOSVersion: 26},
+		{URL: "sequoia", MinOSVersion: 15},
+	}}
+	for osMajor, want := range map[int]string{27: "tahoe", 26: "tahoe", 15: "sequoia", 14: "", 0: ""} {
+		got := ""
+		if f := inst.fetchFor(osMajor); f != nil {
+			got = f.URL
+		}
+		if got != want {
+			t.Errorf("fetchFor(%d) = %q, want %q", osMajor, got, want)
+		}
+	}
+	single := &Install{Fetch: &Fetch{URL: "only"}}
+	if f := single.fetchFor(0); f == nil || f.URL != "only" {
+		t.Errorf("a single fetch should apply on any host, got %+v", f)
+	}
+}
+
+// oMLX installs the way oMLX recommends: its release disk image, pinned by
+// checksum, copied to /Applications. Uninstall removes the app and the shims
+// it writes, never the user's models, settings or other files in ~/.omlx.
+func TestBundledOMLXInstallsFromItsReleaseDiskImage(t *testing.T) {
+	m, ok := bundledManifestSet(t)["omlx"]
+	if !ok {
+		t.Fatal("no bundled omlx manifest")
+	}
+	p, ok := m.Platforms["darwin/arm64"]
+	if !ok || p.Install == nil || p.Uninstall == nil {
+		t.Fatalf("omlx darwin/arm64 install/uninstall missing: %+v", p)
+	}
+	if len(p.Install.FetchVariants) != 2 {
+		t.Fatalf("fetch variants = %+v, want the macOS 26 and macOS 15 builds", p.Install.FetchVariants)
+	}
+	for _, v := range p.Install.FetchVariants {
+		if len(v.SHA256) != 64 || filepath.Ext(v.URL) != ".dmg" {
+			t.Errorf("variant %+v is not a checksum-pinned disk image", v)
+		}
+	}
+	if p.Install.Creates != "/Applications/oMLX.app" {
+		t.Errorf("creates = %q", p.Install.Creates)
+	}
+	for _, target := range p.Uninstall.Remove {
+		clean := filepath.Clean(expandPath(target))
+		if clean == filepath.Clean(expandPath("~/.omlx/bin")) || clean == filepath.Clean(expandPath("~/.omlx")) {
+			t.Errorf("uninstall removes %s, which holds files the app did not write", target)
+		}
+	}
+}
+
+// PAIR claims an install only if it put the engine in place. Finding the
+// user's own copy already there claims nothing, so uninstall declines it.
+func TestInstallClaimsOnlyWhatItCreates(t *testing.T) {
+	for _, preexisting := range []bool{false, true} {
+		dir := t.TempDir()
+		app := filepath.Join(dir, "Engine.app")
+		cli := filepath.Join(dir, "bin", "engine")
+		if preexisting {
+			if err := os.MkdirAll(app, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		script := []string{"sh", "-c", "mkdir -p " + filepath.Dir(cli) + " " + app + " && touch " + cli}
+		if runtime.GOOS == "windows" {
+			t.Skip("sh")
+		}
+		m := &Manifest{
+			Engine: "vendor", DisplayName: "Vendor", ManifestVersion: 1,
+			Platforms: map[string]Platform{runtime.GOOS + "/" + runtime.GOARCH: {
+				Detect:  []string{cli},
+				Install: &Install{Script: script, Creates: app},
+				Runtime: Runtime{Mode: "command", Start: [][]string{{"true"}}},
+			}},
+		}
+		ex := newTestExecutor(t, m)
+		ex.detectTimeout = time.Second
+		if err := ex.Install(context.Background(), "vendor"); err != nil {
+			t.Fatalf("install (preexisting=%v): %v", preexisting, err)
+		}
+		st, _ := ex.state("vendor")
+		if got := installedByPAIR(st.installDir); got == preexisting {
+			t.Errorf("preexisting=%v: installedByPAIR = %v", preexisting, got)
+		}
+	}
+}

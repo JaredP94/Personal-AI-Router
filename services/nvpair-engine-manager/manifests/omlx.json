@@ -8,11 +8,44 @@
     "/usr/local/bin/omlx"
   ],
   "install": {
-    "fetch": { "url": "https://omlx.ai/install.sh" },
-    "run": ["bash", "{download}"],
+    "fetch_variants": [
+      {
+        "url": "https://github.com/jundot/omlx/releases/download/v0.7.3/oMLX-0.7.3-macos26-27.dmg",
+        "sha256": "2acfde41aeac0b022dbca803ca109437f3ccaf0c33f3415881526b985bee86f2",
+        "min_os_version": 26
+      },
+      {
+        "url": "https://github.com/jundot/omlx/releases/download/v0.7.3/oMLX-0.7.3-macos15-sequoia.dmg",
+        "sha256": "cd5e3b454798a002f32ef2f3bf06ae033ea2f4e5b02aa039a2c68445498605f1",
+        "min_os_version": 15
+      }
+    ],
+    "run": [
+      "/bin/sh",
+      "-c",
+      "set -eu; dmg=\"$1\"; app=/Applications/oMLX.app; if [ ! -e \"$app\" ]; then mnt=$(mktemp -d -t omlx-dmg); hdiutil attach -nobrowse -readonly -noautoopen -mountpoint \"$mnt\" \"$dmg\" >/dev/null; trap 'hdiutil detach -quiet \"$mnt\" || hdiutil detach -quiet -force \"$mnt\"; rmdir \"$mnt\"' EXIT; [ -d \"$mnt/oMLX.app\" ] || { echo \"the oMLX disk image has no oMLX.app\" >&2; exit 1; }; ditto \"$mnt/oMLX.app\" \"$app\"; fi; open -g \"$app\"",
+      "sh",
+      "{download}"
+    ],
+    "creates": "/Applications/oMLX.app",
     "mode": "user"
   },
   "models_dir": "~/.omlx/models",
+  "uninstall": {
+    "cli_roots": [
+      "~/.omlx/bin"
+    ],
+    "run": [
+      "/bin/sh",
+      "-c",
+      "pkill -x oMLX 2>/dev/null; sleep 2; exit 0"
+    ],
+    "remove": [
+      "/Applications/oMLX.app",
+      "~/.omlx/bin/omlx",
+      "~/.omlx/bin/omlx-cluster-python"
+    ]
+  },
   "runtime": {
     "mode": "command",
     "port": 1235,

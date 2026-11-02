@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bounded reads and fail-closed peers**: Node-info, model inventories, error-store ingest and remote progress frames are size-limited; a proxy whose peer pin has gone refuses the dial instead of falling back to an unpinned transport.
 
 ### Fixed
-- **Uninstalling an engine keeps your models and settings (`nvpair-engine-manager`)**: LM Studio uninstall ran `rm -rf ~/.lmstudio` and oMLX `rm -rf ~/.omlx`. Each manifest now declares its model store, removal is confined and preserves it, and only the runtime is removed. PAIR uninstalls a vendor-installed engine only if it recorded installing it (engines installed before this release: use the vendor's uninstaller). oMLX no longer offers uninstall: its runtime is the oMLX app, which PAIR does not install.
+- **Uninstalling an engine keeps your models and settings (`nvpair-engine-manager`)**: LM Studio uninstall ran `rm -rf ~/.lmstudio` and oMLX `rm -rf ~/.omlx`. Each manifest now declares its model store, removal is confined and preserves it, and only the runtime is removed. PAIR uninstalls a vendor-installed engine only if it recorded installing it (engines installed before this release: use the vendor's uninstaller).
 - **Stopping a leftover engine works on macOS (`nvpair-engine-manager`)**: The process-image lookup read `/proc`, so stopping an engine PAIR lost the handle to was always refused.
 - **Manual nodes survive worker restarts (`nvpair-ui-broker`, `desktop`)**: The broker owns `configs/manual-nodes.json` and replays it into every new manual-nodes worker, so Tailscale and VPN peers are no longer lost when the worker restarts or the terminal interface drives the broker.
 - **Jobs that share a number stay apart (`desktop`, `nvpair-tui`)**: Jobs are keyed by origin, engine, run and id, so an Ollama job and an oMLX job with the same number no longer share a card or a row.
@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Also: IPv6 link-local pairing keeps a locally valid zone; LM Studio and oMLX chat actions and every engine's model load (locally and from a peer) wait up to 10 minutes for headers; engine health probes reuse connections; every GPU shows on a node card; the renderer CSP is tighter; a closed stdout no longer crashes the app; model search finds Ollama models newer than the bundled catalog.
 
 ### Added
+- **oMLX installs from its release disk image (`nvpair-engine-manager`, `desktop`)**: Installing oMLX from PAIR now follows oMLX's recommended path: the checksum-pinned `.dmg` from its GitHub releases (the macOS 26–27 or macOS 15 build, whichever fits), copied to `/Applications` and opened so the app writes its `~/.omlx/bin/omlx` CLI shim; the app updates itself from then on. The previous `install.sh` source no longer exists. An `oMLX.app` already in `/Applications` is opened, not replaced, and is never offered for uninstall; uninstalling one PAIR installed removes the app and its two shims and keeps the rest of `~/.omlx`. The desktop's oMLX links now point at the oMLX repository and releases.
 - **Configurable proxy header timeout**: `--response-header-timeout` or `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` (default unchanged at 120 s) for requests that queue or wait on slow model loads.
 
 ## [0.8.0] - 2026-11-02

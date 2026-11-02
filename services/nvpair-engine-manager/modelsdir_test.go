@@ -433,4 +433,3 @@ func TestRemoveTreePreservingRefusesAFileReachedThroughALinkIntoTheStore(t *test
 		t.Fatalf("the model was deleted: %v", err)
 	}
 }
-
