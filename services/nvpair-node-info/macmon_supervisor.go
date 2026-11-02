@@ -30,11 +30,13 @@ type macmonConfig struct {
 type macmonSupervisor struct {
 	cfg macmonConfig
 
-	mu       sync.Mutex
-	status   MacmonStatus
-	sample   *macmonSample
-	interval time.Duration
-	started  bool
+	mu             sync.Mutex
+	status         MacmonStatus
+	sample         *macmonSample
+	interval       time.Duration
+	sampleInterval time.Duration
+	started        bool
+	lastUsable     time.Time // receipt time for this child's watchdog
 }
 
 func newMacmonSupervisor(cfg macmonConfig) *macmonSupervisor {
@@ -45,6 +47,9 @@ func newMacmonSupervisor(cfg macmonConfig) *macmonSupervisor {
 func (s *macmonSupervisor) Latest() (MacmonStatus, *macmonSample, time.Duration) {
 	s.mu.Lock()
 	status, sample, interval, started := s.status, s.sample, s.interval, s.started
+	if sample != nil {
+		interval = s.sampleInterval
+	}
 	s.mu.Unlock()
 	if !started {
 		interval = s.cfg.Interval()
@@ -125,6 +130,7 @@ func (s *macmonSupervisor) runChild(ctx context.Context, path string, interval t
 	}
 	s.mu.Lock()
 	s.interval, s.started = interval, true
+	s.lastUsable = time.Now()
 	if s.status == MacmonMissing {
 		s.status = MacmonFailed
 	}
@@ -158,6 +164,15 @@ func (s *macmonSupervisor) runChild(ctx context.Context, path string, interval t
 		case <-ctx.Done():
 			return false, stop()
 		case <-tick.C:
+			s.mu.Lock()
+			stalled := time.Since(s.lastUsable) > 3*interval
+			if stalled {
+				s.status = MacmonFailed
+			}
+			s.mu.Unlock()
+			if stalled {
+				return false, stop()
+			}
 			if s.cfg.Interval() != interval {
 				return true, stop()
 			}
@@ -181,7 +196,10 @@ func (s *macmonSupervisor) readSamples(reader io.Reader) bool {
 		sample, ok := parseMacmonLine(scanner.Bytes())
 		s.mu.Lock()
 		if ok {
+			sample.SampledAt = time.Now()
+			s.lastUsable = sample.SampledAt
 			s.status, s.sample = MacmonAvailable, &sample
+			s.sampleInterval = s.interval
 			good = true
 		} else {
 			s.status = MacmonFailed

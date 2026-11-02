@@ -131,8 +131,8 @@ func TestParseMacmonLineDropsInvalidFans(t *testing.T) {
 
 func TestParseMacmonLineAllFansInvalid(t *testing.T) {
 	s, ok := parseMacmonLine([]byte(`{"timestamp":"2026-11-02T06:29:04Z","fans":[{"name":"fan0","max_rpm":5349}]}`))
-	if !ok || s.Fans == nil || *s.Fans == nil || len(*s.Fans) != 0 {
-		t.Fatalf("invalid-only fan array must remain a usable empty list: sample=%+v, ok=%v", s, ok)
+	if ok || s.Fans != nil {
+		t.Fatalf("invalid-only fan array must be unknown and unusable: sample=%+v, ok=%v", s, ok)
 	}
 }
 

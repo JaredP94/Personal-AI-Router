@@ -141,8 +141,17 @@ func TestMacmonSupervisorRestartsOnIntervalChange(t *testing.T) {
 	// Only the original child publishes: the replacement must retain available
 	// and the original sample even while it has not produced any stdout.
 	path := fakeMacmon(t, `printf '%s\n' "$$" >> "$DIR/pids"
-if [ "$3" = 250 ]; then printf '%s\n' "$LINE"; fi
-exec sleep 30`)
+if [ "$3" = 250 ]; then printf '%s\n' "$LINE"; exec sleep 30; fi
+exec /bin/cat "$DIR/lines"`)
+	fifo := filepath.Join(filepath.Dir(path), "lines")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := os.OpenFile(fifo, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lines.Close() })
 	var fast atomic.Bool
 	cfg := macmonTestConfig(path)
 	cfg.Interval = func() time.Duration {
@@ -180,7 +189,17 @@ exec sleep 30`)
 			t.Fatal("interval restart changed the sample before new stdout")
 		}
 		args := macmonArgs(path)
-		return len(args) == 2 && args[1] == "pipe -i 100" && interval == 100*time.Millisecond
+		if len(args) != 2 || args[1] != "pipe -i 100" {
+			return false
+		}
+		if interval != 250*time.Millisecond {
+			t.Fatalf("retained sample interval = %v, want 250ms", interval)
+		}
+		state := sensorState{Macmon: status, Sample: sample, Interval: interval}
+		if state.wire(sample.SampledAt.Add(400*time.Millisecond)).CPUTempC == nil {
+			t.Fatal("fresh-enough idle reading blanked on interactive restart")
+		}
+		return true
 	})
 	if elapsed := time.Since(changedAt); elapsed > 500*time.Millisecond {
 		t.Fatalf("interval restart took %v, want <= 500ms", elapsed)
@@ -188,6 +207,13 @@ exec sleep 30`)
 	if err := syscall.Kill(oldPID, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("original child %d survived interval restart: %v", oldPID, err)
 	}
+	if _, err := lines.WriteString(macmonTestLine + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		_, sample, interval := s.Latest()
+		return sample != originalSample && interval == 100*time.Millisecond
+	})
 }
 
 func TestMacmonSupervisorLatestIntervalBeforeAndAfterStart(t *testing.T) {
@@ -296,6 +322,57 @@ func TestMacmonSupervisorBadLinesKeepSampleAndRecover(t *testing.T) {
 	waitFor(t, func() bool { status, _, _ := s.Latest(); return status == MacmonAvailable })
 	if args := macmonArgs(path); len(args) != 1 {
 		t.Fatalf("bad lines restarted the child: %v", args)
+	}
+}
+
+func TestMacmonSupervisorAgesSamplesFromReceipt(t *testing.T) {
+	for _, timestamp := range []string{"2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z"} {
+		t.Run(timestamp, func(t *testing.T) {
+			line := `{"timestamp":"` + timestamp + `","temp":{"cpu_temp_avg":40.5}}`
+			path := fakeMacmon(t, "printf '%s\\n' '"+line+"'; exec sleep 30")
+			s := newMacmonSupervisor(macmonTestConfig(path))
+			before := time.Now()
+			runMacmonSupervisor(t, s)
+			waitFor(t, func() bool { _, sample, _ := s.Latest(); return sample != nil })
+			now := time.Now()
+			status, sample, interval := s.Latest()
+			if sample.SampledAt.Before(before) || sample.SampledAt.After(now) {
+				t.Fatalf("sample timestamp = %v, want receipt between %v and %v", sample.SampledAt, before, now)
+			}
+			state := sensorState{Macmon: status, Sample: sample, Interval: interval}
+			if got := state.wire(now); got.Macmon != MacmonAvailable || got.MSSince == nil || *got.MSSince < 0 {
+				t.Fatalf("received sample not fresh: %+v", got)
+			}
+			if got := state.wire(sample.SampledAt.Add(3*interval + time.Millisecond)); got.CPUTempC != nil || got.Macmon != MacmonFailed {
+				t.Fatalf("received sample did not expire: %+v", got)
+			}
+		})
+	}
+}
+
+func TestMacmonSupervisorNoOutputWatchdog(t *testing.T) {
+	for _, script := range []string{
+		`exec sleep 30`,
+		`printf '%s\n' "$LINE"; exec sleep 30`,
+	} {
+		t.Run(script, func(t *testing.T) {
+			path := fakeMacmon(t, script)
+			cfg := macmonTestConfig(path)
+			cfg.Interval = func() time.Duration { return 40 * time.Millisecond }
+			cfg.CheckEvery = 5 * time.Millisecond
+			cfg.BackoffMin, cfg.BackoffMax = 100*time.Millisecond, 100*time.Millisecond
+			s := newMacmonSupervisor(cfg)
+			runMacmonSupervisor(t, s)
+			waitFor(t, func() bool { return len(macmonArgs(path)) == 1 })
+			if strings.Contains(script, "printf") {
+				waitFor(t, func() bool { status, _, _ := s.Latest(); return status == MacmonAvailable })
+			}
+			waitFor(t, func() bool {
+				status, _, _ := s.Latest()
+				return status == MacmonFailed && len(macmonArgs(path)) == 1
+			})
+			waitFor(t, func() bool { return len(macmonArgs(path)) >= 2 })
+		})
 	}
 }
 

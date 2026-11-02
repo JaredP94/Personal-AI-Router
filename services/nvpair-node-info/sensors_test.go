@@ -97,6 +97,9 @@ func TestSensorWireDropsStaleMacmonReadings(t *testing.T) {
 				Macmon: MacmonAvailable, ThermalPressure: "heavy", MemoryPressure: "warning",
 				SwapTotalBytes: &total, SwapUsedBytes: &used,
 			}
+			if tc.stale {
+				want.Macmon = MacmonFailed
+			}
 			if !tc.stale {
 				age := tc.age.Milliseconds()
 				want.CPUTempC, want.GPUTempC = &cpu, &gpu
@@ -109,6 +112,25 @@ func TestSensorWireDropsStaleMacmonReadings(t *testing.T) {
 				t.Fatal("wire mutated the retained sample")
 			}
 		})
+	}
+}
+
+func TestSensorWireAvailableWithoutSampleIsFailed(t *testing.T) {
+	state := &sensorState{Macmon: MacmonAvailable, Direct: directSensors{MemoryPressure: "normal"}}
+	got := state.wire(time.Now())
+	if got.Macmon != MacmonFailed || got.MemoryPressure != "normal" || got.MSSince != nil {
+		t.Fatalf("missing sample wire = %+v, want failed with direct readings", got)
+	}
+}
+
+func TestSensorWireClampsNegativeAge(t *testing.T) {
+	now := time.Now()
+	cpu := 36.0
+	state := &sensorState{Macmon: MacmonAvailable, Interval: 2 * time.Second,
+		Sample: &macmonSample{CPUTempC: &cpu, SampledAt: now.Add(time.Hour)}}
+	got := state.wire(now)
+	if got.MSSince == nil || *got.MSSince != 0 || got.CPUTempC == nil || got.Macmon != MacmonAvailable {
+		t.Fatalf("future sample wire = %+v, want available with zero age", got)
 	}
 }
 

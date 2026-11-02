@@ -51,7 +51,9 @@ func parseMacmonLine(line []byte) (macmonSample, bool) {
 				MaxRPM: uint32(math.Round(*fan.MaxRPM)),
 			})
 		}
-		sample.Fans = &fans
+		if len(*payload.Fans) == 0 || len(fans) > 0 {
+			sample.Fans = &fans
+		}
 	}
 	if payload.SystemW != nil || payload.CPUW != nil || payload.GPUW != nil || payload.ANEW != nil {
 		sample.Power = &SensorPower{

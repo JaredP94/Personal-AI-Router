@@ -97,6 +97,7 @@ func TestSensorCollectorStatePreservesFreshMacmonSample(t *testing.T) {
 	supervisor.status = MacmonAvailable
 	supervisor.sample = sample
 	supervisor.interval = 2 * time.Second
+	supervisor.sampleInterval = 2 * time.Second
 	supervisor.started = true
 	c := &sensorCollector{supervisor: supervisor}
 	c.latest.Store(&directSensors{MemoryPressure: "warning"})

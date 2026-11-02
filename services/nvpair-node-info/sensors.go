@@ -61,11 +61,11 @@ type sensorState struct {
 	Macmon   MacmonStatus
 	Direct   directSensors
 	Sample   *macmonSample // latest usable sample, nil when none
-	Interval time.Duration // current macmon sampling interval
+	Interval time.Duration // interval at which Sample was collected, or current interval if nil
 }
 
 // wire retains measured zeros and drops only stale macmon readings, leaving
-// direct readings and macmon status intact. A nil state omits sensors entirely.
+// direct readings intact. Available requires a fresh sample. A nil state omits sensors entirely.
 func (s *sensorState) wire(now time.Time) *SensorInfo {
 	if s == nil {
 		return nil
@@ -77,13 +77,13 @@ func (s *sensorState) wire(now time.Time) *SensorInfo {
 		SwapTotalBytes:  s.Direct.SwapTotalBytes,
 		SwapUsedBytes:   s.Direct.SwapUsedBytes,
 	}
-	if s.Sample == nil {
+	if s.Sample == nil || now.Sub(s.Sample.SampledAt) > 3*s.Interval {
+		if info.Macmon == MacmonAvailable {
+			info.Macmon = MacmonFailed
+		}
 		return info
 	}
-	age := now.Sub(s.Sample.SampledAt)
-	if age > 3*s.Interval {
-		return info
-	}
+	age := max(now.Sub(s.Sample.SampledAt), 0)
 	info.CPUTempC = s.Sample.CPUTempC
 	info.GPUTempC = s.Sample.GPUTempC
 	info.Fans = s.Sample.Fans
