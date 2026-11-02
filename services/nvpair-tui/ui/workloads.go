@@ -18,6 +18,7 @@ type workload struct {
 	Engine         string `json:"engine"`
 	State          string `json:"state"`
 	OriginatedFrom string `json:"originatedFrom"`
+	RunID          string `json:"runId"`
 	ScheduledOn    string `json:"scheduledOn"`
 	CreatedAt      int64  `json:"createdAt"` // Unix millis
 }
@@ -140,7 +141,7 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 				OriginatedFrom string `json:"originatedFrom"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
-			v.remove(workloadKey(p.OriginatedFrom, p.WorkloadID))
+			v.remove(p.OriginatedFrom, p.WorkloadID)
 		}
 		return nil
 
@@ -153,7 +154,7 @@ func (v *workloadsView) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *workloadsView) upsert(w workload) {
-	key := workloadKey(w.OriginatedFrom, w.ID)
+	key := workloadKey(w)
 	if _, ok := v.byKey[key]; !ok {
 		v.order = append(v.order, key)
 	}
@@ -161,18 +162,24 @@ func (v *workloadsView) upsert(w workload) {
 	v.refreshRows()
 }
 
-func (v *workloadsView) remove(key string) {
-	if _, ok := v.byKey[key]; !ok {
-		return
-	}
-	delete(v.byKey, key)
-	for i, k := range v.order {
-		if k == key {
-			v.order = append(v.order[:i], v.order[i+1:]...)
-			break
+// remove drops every row a workloads:remove names. The removal carries only
+// (originatedFrom, id), so, like the broker's own store, it drops the job on
+// every engine and run of that origin.
+func (v *workloadsView) remove(origin, id string) {
+	kept := v.order[:0]
+	removed := false
+	for _, k := range v.order {
+		if w := v.byKey[k]; w.OriginatedFrom == origin && w.ID == id {
+			delete(v.byKey, k)
+			removed = true
+			continue
 		}
+		kept = append(kept, k)
 	}
-	v.refreshRows()
+	v.order = kept
+	if removed {
+		v.refreshRows()
+	}
 }
 
 func (v *workloadsView) refreshRows() {
@@ -210,4 +217,9 @@ func (v *workloadsView) View() string {
 
 func (v *workloadsView) Help() []key.Binding { return nil }
 
-func workloadKey(origin, id string) string { return origin + "/" + id }
+// workloadKey is the backend's own job identity. Every proxy numbers its jobs
+// from 1, and again from 1 when it restarts, so the origin, engine and run are
+// all needed to keep jobs that share a number apart.
+func workloadKey(w workload) string {
+	return w.OriginatedFrom + "/" + w.Engine + "/" + w.RunID + "/" + w.ID
+}

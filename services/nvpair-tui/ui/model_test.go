@@ -386,7 +386,7 @@ func TestRecoveryPreservesConcurrentSnapshotPushesAndWorkloadTombstones(t *testi
 	l.until(t, func() bool { return l.m.hydratedEpoch == "A" })
 	n := l.m.views[2].(*nodesView)
 	w := l.m.views[4].(*workloadsView)
-	if len(n.nodes) != 1 || n.nodes[0].HostUUID != "live" || len(w.byKey) != 1 || w.byKey[workloadKey("x", "live")].ID != "live" {
+	if len(n.nodes) != 1 || n.nodes[0].HostUUID != "live" || len(w.byKey) != 1 || w.byKey[workloadKey(workload{ID: "live", OriginatedFrom: "x"})].ID != "live" {
 		t.Fatalf("newer pushes overwritten: %v %v", n.nodes, w.byKey)
 	}
 }

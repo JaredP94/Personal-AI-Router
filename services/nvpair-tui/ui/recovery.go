@@ -192,17 +192,25 @@ func recoveryPushKey(msg NotificationMsg) string {
 			WorkloadInfo workload `json:"workloadInfo"`
 		}
 		_ = decodeParams(msg.Msg.Params, &p)
-		return "workload:" + workloadKey(p.WorkloadInfo.OriginatedFrom, p.WorkloadInfo.ID)
+		return workloadJournalKey(p.WorkloadInfo.OriginatedFrom, p.WorkloadInfo.ID)
 	case "workloads:remove":
 		var p struct {
 			WorkloadID     string `json:"workloadId"`
 			OriginatedFrom string `json:"originatedFrom"`
 		}
 		_ = decodeParams(msg.Msg.Params, &p)
-		return "workload:" + workloadKey(p.OriginatedFrom, p.WorkloadID)
+		return workloadJournalKey(p.OriginatedFrom, p.WorkloadID)
 	}
 	if proxyPush(method) {
 		return method
 	}
 	return ""
+}
+
+// workloadJournalKey keys a workload event in the recovery journal by
+// (originatedFrom, id), the granularity a removal names. An upsert and a later
+// removal of the same job therefore share one entry, and the journal, a map
+// replayed in no particular order, keeps only the latest of the two.
+func workloadJournalKey(origin, id string) string {
+	return "workload:" + origin + "/" + id
 }
