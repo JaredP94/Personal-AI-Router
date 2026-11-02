@@ -55,6 +55,14 @@ func TestBundledOMLXInstallsFromItsReleaseDiskImage(t *testing.T) {
 	if p.Install.Creates != "/Applications/oMLX.app" {
 		t.Errorf("creates = %q", p.Install.Creates)
 	}
+	if di := p.Install.DiskImage; di == nil || di.App != "oMLX.app" || di.Into != "/Applications" || !di.Open {
+		t.Errorf("disk_image = %+v, want oMLX.app copied to /Applications and opened", di)
+	}
+	// No shell program: argv runs through placeholder and environment
+	// expansion, which would rewrite a script's own $variables.
+	if len(p.Install.Run) != 0 {
+		t.Errorf("install.run = %q, want the disk_image step alone", p.Install.Run)
+	}
 	for _, target := range p.Uninstall.Remove {
 		clean := filepath.Clean(expandPath(target))
 		if clean == filepath.Clean(expandPath("~/.omlx/bin")) || clean == filepath.Clean(expandPath("~/.omlx")) {
@@ -96,5 +104,65 @@ func TestInstallClaimsOnlyWhatItCreates(t *testing.T) {
 		if got := installedByPAIR(st.installDir); got == preexisting {
 			t.Errorf("preexisting=%v: installedByPAIR = %v", preexisting, got)
 		}
+	}
+}
+
+// A claim that names what the install created covers that exact file only.
+// A copy put there later is a different file, so the claim lapses.
+func TestInstallClaimFollowsTheCreatedFile(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "Engine.app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(dir, "install")
+	if err := writeInstallMarker(installDir, "vendor", app); err != nil {
+		t.Fatal(err)
+	}
+	if !installedByPAIR(installDir) {
+		t.Fatal("the claim did not cover the app it was written for")
+	}
+	if err := os.RemoveAll(app); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if installedByPAIR(installDir) {
+		t.Fatal("the claim covered an app put in place after the install")
+	}
+}
+
+// An install that finds the user's copy in place drops any claim left from an
+// earlier install, so it cannot cover that copy.
+func TestInstallThatFindsACopyDropsAStaleClaim(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	dir := t.TempDir()
+	app := filepath.Join(dir, "Engine.app")
+	cli := filepath.Join(dir, "bin", "engine")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{
+		Engine: "vendor", DisplayName: "Vendor", ManifestVersion: 1,
+		Platforms: map[string]Platform{runtime.GOOS + "/" + runtime.GOARCH: {
+			Detect:  []string{cli},
+			Install: &Install{Script: []string{"sh", "-c", "mkdir -p " + filepath.Dir(cli) + " && touch " + cli}, Creates: app},
+			Runtime: Runtime{Mode: "command", Start: [][]string{{"true"}}},
+		}},
+	}
+	ex := newTestExecutor(t, m)
+	ex.detectTimeout = time.Second
+	st, _ := ex.state("vendor")
+	if err := writeInstallMarker(st.installDir, "vendor", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.Install(context.Background(), "vendor"); err != nil {
+		t.Fatal(err)
+	}
+	if installedByPAIR(st.installDir) {
+		t.Fatal("a stale claim survived an install that found the user's copy")
 	}
 }

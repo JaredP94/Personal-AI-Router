@@ -111,6 +111,14 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			vars["download"] = dp
 			e.emitInstallProgress(engine, "verified", 50)
 		}
+		if inst.DiskImage != nil {
+			e.emitInstallProgress(engine, "installing", 75)
+			if err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage); err != nil {
+				werr := fmt.Errorf("install from disk image failed: %w", err)
+				e.reportInstallFailed(engine, werr)
+				return werr
+			}
+		}
 		if len(inst.Run) > 0 {
 			e.emitInstallProgress(engine, "installing", 75)
 			args, err := resolveArgs(inst.Run, vars)
@@ -138,8 +146,11 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	// only costs the ability to uninstall later, so it must not fail the install.
 	// An install that found the user's own copy in place claims nothing.
 	if !claims {
+		// Whatever an earlier claim covered is gone: the copy in place now is
+		// not one this install created.
+		clearInstallMarker(st.installDir)
 		slog.Info("engine was already in place; not recording it as installed by PAIR", "engine", engine, "path", inst.Creates)
-	} else if err := writeInstallMarker(st.installDir, engine); err != nil {
+	} else if err := writeInstallMarker(st.installDir, engine, inst.Creates); err != nil {
 		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
 	}
 	e.reporter.clear(installFailedID(engine))

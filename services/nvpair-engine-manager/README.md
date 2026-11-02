@@ -143,16 +143,22 @@ oMLX installs the way oMLX recommends: the `.dmg` from its GitHub releases,
 copied to `/Applications`. The manifest pins one build per macOS release
 (`fetch_variants`, newest first, each with its SHA-256): the runner downloads the
 first whose `min_os_version` the host meets, so macOS 26–27 and macOS 15 each get
-their own build, and an older macOS reports that no build fits. The install
-command mounts the image read-only, copies `oMLX.app` to `/Applications` unless an
-app is already there, detaches the image and opens the app. Opening it is what
+their own build, and an older macOS reports that no build fits. The manifest's
+`disk_image` step, which the engine manager runs itself rather than through a
+shell, mounts the image read-only, copies `oMLX.app` into a hidden staging bundle
+beside `/Applications/oMLX.app` and renames it into place once complete (unless an
+app is already there), detaches the image on every path — failure and
+cancellation included — and opens the app. Opening it is what
 writes `~/.omlx/bin/omlx`, the CLI shim PAIR detects and drives, so the first-run
 setup window appears then. The app updates itself afterwards, so the pinned
 version only decides what a fresh install starts from.
 
 `install.creates` names `/Applications/oMLX.app`: an install that finds an app
-already there opens it but does not record it as PAIR's, so it is never offered
-for uninstall. Uninstalling an oMLX PAIR installed quits the app and removes
+already there opens it but does not record it as PAIR's (and drops any earlier
+claim), so it is never offered for uninstall. A claim records the created app's
+file identity and covers that exact bundle only. A copy put there later is a
+different file, and so is a bundle oMLX's own updater swaps in: after an in-app
+update PAIR no longer offers uninstall, and the app is removed from the Finder. Uninstalling an oMLX PAIR installed quits the app and removes
 `/Applications/oMLX.app` and the two shims it writes (`omlx`,
 `omlx-cluster-python`). The rest of `~/.omlx` — models, settings, model
 settings, the API key, and anything else in `~/.omlx/bin` — stays.

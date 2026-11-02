@@ -4,6 +4,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -29,6 +31,12 @@ const installMarkerName = "installed-by-pair.json"
 type installMarker struct {
 	Engine      string `json:"engine"`
 	InstalledAt string `json:"installed_at"`
+	// Creates and Identity bind the claim to the exact thing the install put
+	// in place (install.creates) by its file identity. A copy put there later
+	// — by the user, or by a vendor updater that replaces the bundle — is a
+	// different file, and the claim no longer covers it.
+	Creates  string `json:"creates,omitempty"`
+	Identity string `json:"identity,omitempty"`
 }
 
 func installMarkerPath(installDir string) string {
@@ -41,7 +49,7 @@ func installMarkerPath(installDir string) string {
 // writeInstallMarker claims an install. Called only after an install this
 // service actually performed and detected — never on the adoption paths, which
 // return before any install work happens.
-func writeInstallMarker(installDir, engine string) error {
+func writeInstallMarker(installDir, engine, creates string) error {
 	path := installMarkerPath(installDir)
 	if path == "" {
 		return nil
@@ -49,10 +57,18 @@ func writeInstallMarker(installDir, engine string) error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return err
 	}
-	return writeJSONAtomic(path, installMarker{
+	marker := installMarker{
 		Engine:      engine,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if creates != "" {
+		marker.Creates = creates
+		marker.Identity = fileIdentity(expandPath(creates))
+		if marker.Identity == "" {
+			return fmt.Errorf("cannot identify %s", creates)
+		}
+	}
+	return writeJSONAtomic(path, marker)
 }
 
 // clearInstallMarker drops the claim after an uninstall. An engine whose
@@ -65,11 +81,24 @@ func clearInstallMarker(installDir string) {
 	}
 }
 
+// installedByPAIR reports whether a claim stands: the marker exists and, when
+// it names what the install created, that is still the same file.
 func installedByPAIR(installDir string) bool {
 	path := installMarkerPath(installDir)
 	if path == "" {
 		return false
 	}
-	_, err := os.Stat(path)
-	return err == nil
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var marker installMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return false
+	}
+	if marker.Creates == "" {
+		return true
+	}
+	id := fileIdentity(expandPath(marker.Creates))
+	return id != "" && id == marker.Identity
 }

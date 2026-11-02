@@ -55,7 +55,7 @@ func TestCommandUninstallCoverage(t *testing.T) {
 			ex.detectTimeout = 0 // never wait for a destructive-command regression
 			if tc.installedByPAIR {
 				st, _ := ex.state(tc.engine)
-				if err := writeInstallMarker(st.installDir, tc.engine); err != nil {
+				if err := writeInstallMarker(st.installDir, tc.engine, ""); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -129,7 +129,7 @@ func TestCommandUninstallManifestPolicy(t *testing.T) {
 			p.Uninstall.Run = rmCmd(cli)
 			ex := NewExecutor(reg, NewReporter(nil), nil, base)
 			ex.detectTimeout = 0
-			if err := writeInstallMarker(filepath.Join(base, "policy"), "policy"); err != nil {
+			if err := writeInstallMarker(filepath.Join(base, "policy"), "policy", ""); err != nil {
 				t.Fatal(err)
 			}
 			status, err := ex.Status("policy")

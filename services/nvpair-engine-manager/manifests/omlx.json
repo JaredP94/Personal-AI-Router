@@ -20,13 +20,11 @@
         "min_os_version": 15
       }
     ],
-    "run": [
-      "/bin/sh",
-      "-c",
-      "set -eu; dmg=\"$1\"; app=/Applications/oMLX.app; if [ ! -e \"$app\" ]; then mnt=$(mktemp -d -t omlx-dmg); hdiutil attach -nobrowse -readonly -noautoopen -mountpoint \"$mnt\" \"$dmg\" >/dev/null; trap 'hdiutil detach -quiet \"$mnt\" || hdiutil detach -quiet -force \"$mnt\"; rmdir \"$mnt\"' EXIT; [ -d \"$mnt/oMLX.app\" ] || { echo \"the oMLX disk image has no oMLX.app\" >&2; exit 1; }; ditto \"$mnt/oMLX.app\" \"$app\"; fi; open -g \"$app\"",
-      "sh",
-      "{download}"
-    ],
+    "disk_image": {
+      "app": "oMLX.app",
+      "into": "/Applications",
+      "open": true
+    },
     "creates": "/Applications/oMLX.app",
     "mode": "user"
   },
@@ -38,7 +36,7 @@
     "run": [
       "/bin/sh",
       "-c",
-      "pkill -x oMLX 2>/dev/null; sleep 2; exit 0"
+      "pkill -f '^/Applications/oMLX.app/Contents/MacOS/oMLX' 2>/dev/null; sleep 2; exit 0"
     ],
     "remove": [
       "/Applications/oMLX.app",

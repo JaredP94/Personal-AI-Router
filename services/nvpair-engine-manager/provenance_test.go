@@ -17,7 +17,7 @@ func TestInstallMarkerRoundTrip(t *testing.T) {
 	if installedByPAIR(installDir) {
 		t.Fatal("an install directory that does not exist cannot be ours")
 	}
-	if err := writeInstallMarker(installDir, "lmstudio"); err != nil {
+	if err := writeInstallMarker(installDir, "lmstudio", ""); err != nil {
 		t.Fatalf("writeInstallMarker: %v", err)
 	}
 	if !installedByPAIR(installDir) {
@@ -116,7 +116,7 @@ func TestUninstallRemovesAMarkedEngineAndKeepsItsData(t *testing.T) {
 	binary, weights, settings := vendorEngineOnDisk(t, vendorRoot)
 	ex := vendorExecutor(t, vendorEngineManifest(vendorRoot, []string{filepath.Join(vendorRoot, "bin")}))
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
+	if err := writeInstallMarker(installDir, "vendor", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,7 +148,7 @@ func TestUninstallClearsTheMarkerWhenAlreadyGone(t *testing.T) {
 	vendorRoot := t.TempDir() // nothing laid down, so detection fails
 	ex := vendorExecutor(t, vendorEngineManifest(vendorRoot, []string{filepath.Join(vendorRoot, "bin")}))
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
+	if err := writeInstallMarker(installDir, "vendor", ""); err != nil {
 		t.Fatal(err)
 	}
 

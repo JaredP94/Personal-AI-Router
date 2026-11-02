@@ -85,6 +85,11 @@ type Install struct {
 	// first.
 	FetchVariants []Fetch  `json:"fetch_variants,omitempty"`
 	Run           []string `json:"run,omitempty"`
+	// DiskImage installs an app from the downloaded macOS disk image: the
+	// runner mounts it read-only, copies App into Into unless an app is
+	// already there, detaches it and, with Open, opens the app. The runner
+	// owns the mount, so it is detached on every path, cancellation included.
+	DiskImage *DiskImage `json:"disk_image,omitempty"`
 	// Creates names what the install puts in place, when that is somewhere a
 	// user's own copy could already be (an app in /Applications). PAIR records
 	// the install as its own only if Creates did not exist before it ran, so
@@ -125,6 +130,13 @@ type Fetch struct {
 	// MinOSVersion is the lowest host OS major version this download supports;
 	// it applies to fetch_variants only.
 	MinOSVersion int `json:"min_os_version,omitempty"`
+}
+
+// DiskImage is an app bundle to copy out of a downloaded disk image.
+type DiskImage struct {
+	App  string `json:"app"`
+	Into string `json:"into"`
+	Open bool   `json:"open,omitempty"`
 }
 
 // fetchFor returns the download for a host OS major version: the single
@@ -652,6 +664,20 @@ func (p *Platform) validate(key string) error {
 			}
 			if v.MinOSVersion < 0 {
 				return fmt.Errorf("platform %q: install.fetch_variants min_os_version must be >= 0", key)
+			}
+		}
+		if di := p.Install.DiskImage; di != nil {
+			if !hasFetch {
+				return fmt.Errorf("platform %q: install.disk_image requires a fetch (the image it copies from)", key)
+			}
+			if di.App != filepath.Base(di.App) || !strings.HasSuffix(di.App, ".app") || strings.ContainsAny(di.App, `/\`) {
+				return fmt.Errorf("platform %q: install.disk_image.app %q must be a bundle name such as Name.app", key, di.App)
+			}
+			if strings.Contains(di.Into, "{") || !filepath.IsAbs(expandPath(di.Into)) {
+				return fmt.Errorf("platform %q: install.disk_image.into %q must be a literal absolute path", key, di.Into)
+			}
+			if p.Install.Creates != "" && filepath.Clean(expandPath(p.Install.Creates)) != filepath.Join(expandPath(di.Into), di.App) {
+				return fmt.Errorf("platform %q: install.creates must name the app disk_image copies", key)
 			}
 		}
 		if strings.Contains(p.Install.Creates, "{") {

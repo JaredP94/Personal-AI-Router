@@ -76,14 +76,14 @@ Create `manifests/omlx.json` in `services/nvpair-engine-manager`:
       { "url": ".../oMLX-<version>-macos26-27.dmg", "sha256": "…", "min_os_version": 26 },
       { "url": ".../oMLX-<version>-macos15-sequoia.dmg", "sha256": "…", "min_os_version": 15 }
     ],
-    "run": ["/bin/sh", "-c", "<mount the image, copy oMLX.app to /Applications unless present, open it>", "sh", "{download}"],
+    "disk_image": { "app": "oMLX.app", "into": "/Applications", "open": true },
     "creates": "/Applications/oMLX.app",
     "mode": "user"
   },
   "models_dir": "~/.omlx/models",
   "uninstall": {
     "cli_roots": ["~/.omlx/bin"],
-    "run": ["/bin/sh", "-c", "pkill -x oMLX 2>/dev/null; sleep 2; exit 0"],
+    "run": ["/bin/sh", "-c", "pkill -f '^/Applications/oMLX.app/Contents/MacOS/oMLX' 2>/dev/null; sleep 2; exit 0"],
     "remove": ["/Applications/oMLX.app", "~/.omlx/bin/omlx", "~/.omlx/bin/omlx-cluster-python"]
   },
   "runtime": {
