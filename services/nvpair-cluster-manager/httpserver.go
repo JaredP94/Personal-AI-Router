@@ -209,7 +209,7 @@ func (m *Manager) handlePairingInitial(w http.ResponseWriter, env *pairingEnvelo
 			return out, err
 		}
 		if out.State == eapnoob.StateWaiting && !sess.invitedEmitted {
-			completed = m.prepareJoinerInitialComplete(env.InviteID, sess)
+			completed = m.prepareJoinerInitialComplete(env.InviteID, sess, inviterIP)
 		}
 		return out, nil
 	}()
@@ -500,7 +500,7 @@ func (m *Manager) handlePairingTerminalSignal(env *pairingEnvelope, state Invite
 // prepareJoinerInitialComplete captures the inviter's authenticated PairingInfo
 // while the caller holds sess.mu. The returned invite is published after that
 // lock is released so same-sender supersession can safely lock older sessions.
-func (m *Manager) prepareJoinerInitialComplete(inviteID string, sess *pairingSession) *Invite {
+func (m *Manager) prepareJoinerInitialComplete(inviteID string, sess *pairingSession, inviterIP string) *Invite {
 	pi, cert, err := parsePairingInfo(sess.peer.ServerInfo())
 	if err != nil {
 		log.Printf("pairing %s: cannot read inviter PairingInfo: %v", inviteID, err)
@@ -508,7 +508,7 @@ func (m *Manager) prepareJoinerInitialComplete(inviteID string, sess *pairingSes
 	}
 	sess.peerPairing = pi
 	sess.peerCert = cert
-	sess.addr = pi.Addr
+	sess.addr = localScope(pi.Addr, inviterIP)
 	sess.invitedEmitted = true
 
 	now := time.Now().UnixMilli()

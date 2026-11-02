@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"eapnoob"
@@ -377,7 +378,7 @@ func postPairingSignalScheme(client *http.Client, scheme, target, inviteID, phas
 	if err != nil {
 		return err
 	}
-	resp, err := client.Post(scheme+"://"+target+pairingPath, "application/json", bytes.NewReader(body))
+	resp, err := client.Post(peerURL(scheme, target, pairingPath), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -524,6 +525,28 @@ func scopedHost(ua *net.UDPAddr) string {
 		return ua.IP.String() + "%" + ua.Zone
 	}
 	return ua.IP.String()
+}
+
+// localScope gives an advertised link-local address the scope zone it needs on
+// this machine. A zone names an interface of the machine that wrote it, so the
+// one a peer advertises (its own %en0) is meaningless here; the right one is
+// that of the connection the peer reached us on, as seen locally (via). Any
+// other address is returned unchanged.
+func localScope(advertised, via string) string {
+	host, port, err := net.SplitHostPort(advertised)
+	if err != nil {
+		return advertised
+	}
+	bare, _, _ := strings.Cut(host, "%")
+	ip := net.ParseIP(bare)
+	if ip == nil || !ip.IsLinkLocalUnicast() || ip.To4() != nil {
+		return advertised
+	}
+	_, zone, _ := strings.Cut(via, "%")
+	if zone == "" {
+		return net.JoinHostPort(bare, port)
+	}
+	return net.JoinHostPort(bare+"%"+zone, port)
 }
 
 // peerURL renders scheme://hostport + path for a peer address. The host may

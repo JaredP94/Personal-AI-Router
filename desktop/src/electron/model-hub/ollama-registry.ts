@@ -5,6 +5,7 @@ import axios, { isAxiosError } from 'axios'
 import { createStructuredLogger } from '@/shared/utils/log'
 import getErrorString from '@/shared/utils/get-error-string'
 import type { OllamaTagsModel } from '@/electron/model-hub/ollama-library'
+import type { JsonValue } from '@/shared/types/json'
 
 const log = createStructuredLogger('ollama-registry')
 
@@ -88,11 +89,13 @@ function parseReference(name: string): { path: string; tag: string } | null {
     return { path: repository, tag }
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-    return v !== null && typeof v === 'object'
+type JsonObject = { [key: string]: JsonValue }
+
+function isRecord(v: JsonValue | undefined): v is JsonObject {
+    return v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v)
 }
 
-function manifestLayers(raw: unknown): Record<string, unknown>[] {
+function manifestLayers(raw: JsonValue): JsonObject[] {
     if (!isRecord(raw) || !Array.isArray(raw.layers)) return []
     return raw.layers.filter(isRecord)
 }
@@ -102,7 +105,7 @@ function manifestLayers(raw: unknown): Record<string, unknown>[] {
  * others (template, params, license) are a few kilobytes each, but the sum is
  * what lands on disk.
  */
-function totalLayerBytes(raw: unknown): number {
+function totalLayerBytes(raw: JsonValue): number {
     let total = 0
     for (const layer of manifestLayers(raw)) {
         if (typeof layer.size === 'number' && layer.size > 0) total += layer.size
@@ -120,16 +123,18 @@ function totalLayerBytes(raw: unknown): number {
  * thinking and embedding exist only on ollama.com's rendered page, so a model
  * with those and no projector gets no chip instead of a wrong one.
  */
-function capabilityFromLayers(raw: unknown): string {
+function capabilityFromLayers(raw: JsonValue): string {
     const vision = manifestLayers(raw).some(
         layer => layer.mediaType === 'application/vnd.ollama.image.projector'
     )
     return vision ? 'vision' : ''
 }
 
-function configDigest(raw: unknown): string {
-    if (!isRecord(raw) || !isRecord(raw.config)) return ''
-    return typeof raw.config.digest === 'string' ? raw.config.digest : ''
+function configDigest(raw: JsonValue): string {
+    if (!isRecord(raw)) return ''
+    const config = raw.config
+    if (!isRecord(config)) return ''
+    return typeof config.digest === 'string' ? config.digest : ''
 }
 
 /** The 12-character form Ollama shows in its own model lists. */
@@ -153,7 +158,7 @@ interface OllamaModelConfig {
 async function fetchConfig(path: string, digest: string): Promise<OllamaModelConfig | null> {
     if (!digest) return null
     try {
-        const { data } = await axios.get<unknown>(`${REGISTRY_BASE}/${path}/blobs/${digest}`, {
+        const { data } = await axios.get<JsonValue>(`${REGISTRY_BASE}/${path}/blobs/${digest}`, {
             headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
             signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
         })
@@ -188,7 +193,7 @@ export async function lookupOllamaModel(name: string): Promise<OllamaTagsModel |
     if (!reference) return remember(name, null)
 
     try {
-        const { data } = await axios.get<unknown>(
+        const { data } = await axios.get<JsonValue>(
             `${REGISTRY_BASE}/${reference.path}/manifests/${reference.tag}`,
             {
                 headers: {
@@ -228,12 +233,14 @@ export async function lookupOllamaModel(name: string): Promise<OllamaTagsModel |
     } catch (err) {
         const status = isAxiosError(err) ? err.response?.status : undefined
         // 404 is the ordinary answer for a name that does not exist.
-        if (status !== 404) {
-            log.warn({
-                sublevel: 'http',
-                message: `lookup for ${name} failed: ${status ?? ''} ${getErrorString(err)}`.trim()
-            })
-        }
-        return remember(name, null)
+        // 404 is the ordinary answer for a name that does not exist, and is
+        // remembered. Anything else (a timeout, an offline machine, a 5xx) may
+        // pass, so it is not cached and the next search asks again.
+        if (status === 404) return remember(name, null)
+        log.warn({
+            sublevel: 'http',
+            message: `lookup for ${name} failed: ${status ?? ''} ${getErrorString(err)}`.trim()
+        })
+        return null
     }
 }

@@ -182,6 +182,16 @@ describe('lookupOllamaModel', () => {
         await expect(lookupOllamaModel('offline-test:1b')).resolves.toBeNull()
     })
 
+    it('asks again after the registry could not be reached', async () => {
+        vi.spyOn(axios, 'get').mockRejectedValue(new Error('getaddrinfo ENOTFOUND'))
+        await expect(lookupOllamaModel('retry-after-offline:1b')).resolves.toBeNull()
+
+        // A transient failure is not an answer, so it is not remembered.
+        vi.restoreAllMocks()
+        serve(manifest(1_000_000))
+        await expect(lookupOllamaModel('retry-after-offline:1b')).resolves.not.toBeNull()
+    })
+
     it('declines a reference belonging to another registry', async () => {
         const get = vi.spyOn(axios, 'get')
 

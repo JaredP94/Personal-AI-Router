@@ -4,8 +4,11 @@
 package main
 
 import (
+	"io"
 	"net"
+	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +60,45 @@ func TestPeerURLPlainHostportUnchanged(t *testing.T) {
 	want := "https://192.168.86.10:14321/v1/cluster/members/remove"
 	if got != want {
 		t.Fatalf("peerURL = %q, want %q", got, want)
+	}
+}
+
+// A zone names an interface of the machine that wrote it. The inviter's
+// advertised %en0 means nothing to a joiner whose interface is eth0; the
+// joiner dials with the zone of the connection the inviter reached it on.
+func TestLocalScopeUsesTheReceivingInterface(t *testing.T) {
+	for _, tc := range []struct{ advertised, via, want string }{
+		{"[fe80::1%en0]:14321", "fe80::1%eth0", "[fe80::1%eth0]:14321"},
+		{"[fe80::1]:14321", "fe80::1%eth0", "[fe80::1%eth0]:14321"},
+		{"[fe80::1%en0]:14321", "192.168.1.5", "[fe80::1]:14321"},
+		{"192.168.1.5:14321", "fe80::1%eth0", "192.168.1.5:14321"},
+		{"[2001:db8::1]:14321", "fe80::1%eth0", "[2001:db8::1]:14321"},
+	} {
+		if got := localScope(tc.advertised, tc.via); got != tc.want {
+			t.Errorf("localScope(%q, %q) = %q, want %q", tc.advertised, tc.via, got, tc.want)
+		}
+	}
+}
+
+type recordingTransport struct{ urls []string }
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.urls = append(r.urls, req.URL.String())
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+}
+
+// Decline, fail and expire signals go to the same scoped addresses as the
+// pairing exchange, so they need the same URL encoding.
+func TestPairingSignalReachesAScopedTarget(t *testing.T) {
+	rt := &recordingTransport{}
+	client := &http.Client{Transport: rt}
+	for _, scheme := range []string{"http", "https"} {
+		if err := postPairingSignalScheme(client, scheme, "[fe80::1%en0]:14321", "inv-1", "decline", ""); err != nil {
+			t.Fatalf("%s: %v", scheme, err)
+		}
+	}
+	want := []string{"http://[fe80::1%25en0]:14321/v1/cluster/pairing", "https://[fe80::1%25en0]:14321/v1/cluster/pairing"}
+	if len(rt.urls) != 2 || rt.urls[0] != want[0] || rt.urls[1] != want[1] {
+		t.Fatalf("urls = %v, want %v", rt.urls, want)
 	}
 }
