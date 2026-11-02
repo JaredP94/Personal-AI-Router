@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Button, ModalContent, ModalDialog, ModalRoot, Stack } from '@nvidia/foundations-react-core'
 import { DialogHeader } from './DialogHeader'
 import { errorDismissalKey } from '@/ui/utils/error-modal-dismissal'
+import { pullErrorGuidance } from '@/ui/utils/pull-error-guidance'
 import { InlineErrorBanner } from './InlineErrorBanner'
 import { useErrorsStore } from '@/ui/stores/errors.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
@@ -141,13 +142,16 @@ function formatErrorMessage(
     nodeLabel: string | null,
     showNodePrefix: boolean
 ): ReactNode {
-    if (!showNodePrefix) return error.message
+    const guidance = pullErrorGuidance(error)
     return (
         <>
-            <span style={{ color: 'var(--color-white)', fontWeight: 700 }}>
-                {nodeErrorPrefix(error.severity, nodeLabel)}
-            </span>
+            {showNodePrefix && (
+                <span style={{ color: 'var(--color-white)', fontWeight: 700 }}>
+                    {nodeErrorPrefix(error.severity, nodeLabel)}
+                </span>
+            )}
             {error.message}
+            {guidance && <span className="block mt-2">{guidance}</span>}
         </>
     )
 }

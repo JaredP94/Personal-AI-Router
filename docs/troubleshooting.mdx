@@ -87,6 +87,19 @@ should serve requests.
 For a fuller walkthrough of install, start, stop, update, uninstall, and what
 PAIR restores after relaunch, refer to [Managing Engines](engine-lifecycle.mdx).
 
+## A Model Download Fails
+
+The error dialog retains the engine's original pull error. For recognisable disk-full,
+DNS, network-timeout, TLS, explicit IPv6-reachability, missing-model, or authentication
+errors, it also shows a short next step. Unrecognised errors show only the original
+message; PAIR does not infer a cause from a generic failure or exit code.
+
+Apply network and disk checks on the **node running the engine**, which may be a peer.
+Check the model name and tag at its source. If access is restricted, authenticate
+through the engine or provider; never paste tokens or credentials into a support
+request. For TLS failures, check the clock and certificate trust rather than
+disabling verification. Retry after addressing the reported cause.
+
 ## An Application Cannot Reach PAIR
 
 **First, is the application on the same machine as PAIR?** If it is somewhere else
