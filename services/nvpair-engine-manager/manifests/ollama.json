@@ -99,6 +99,7 @@
       "http": { "method": "POST", "path": "/api/pull", "body_schema": { "name": "string" } }
     },
     "run_model": {
+      "timeout_s": 600,
       "description": "Run a one-shot generation (params: {\"model\": \"<model>\", \"prompt\": \"<text>\", \"stream\": false}).",
       "http": { "method": "POST", "path": "/api/generate", "body_schema": { "model": "string", "prompt": "string", "stream": "bool" } }
     },

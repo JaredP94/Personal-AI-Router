@@ -187,6 +187,11 @@ type Action struct {
 	//   - "lms-disk-path" on RemovePath actions: map logical ids to on-disk
 	//     files via `lms ls --json`.
 	ModelResolution string `json:"model_resolution,omitempty"`
+	// TimeoutS, when > 0 on an HTTP action, bounds how long the runner waits
+	// for that action's response headers, in seconds; 0 means the 30 s
+	// default. An engine sends nothing until a cold model load or a long
+	// prefill finishes, so such an action declares a longer wait.
+	TimeoutS int `json:"timeout_s,omitempty"`
 	// Result, when set, declares how to extract a normalized string list from
 	// this action's JSON response — the top-level array field to iterate and the
 	// string field to pull from each element. engine:models uses it to turn
@@ -689,6 +694,12 @@ func (a *Action) validate(name string) error {
 	}
 	if hasHTTP && (strings.TrimSpace(a.HTTP.Method) == "" || strings.TrimSpace(a.HTTP.Path) == "") {
 		return fmt.Errorf("action %q: http.method and http.path are required", name)
+	}
+	if a.TimeoutS < 0 {
+		return fmt.Errorf("action %q: timeout_s must be >= 0", name)
+	}
+	if a.TimeoutS > 0 && !hasHTTP {
+		return fmt.Errorf("action %q: timeout_s requires an http action (it bounds the response-header wait)", name)
 	}
 	if a.Result != nil && (strings.TrimSpace(a.Result.Array) == "" || strings.TrimSpace(a.Result.Field) == "") {
 		return fmt.Errorf("action %q: result.array and result.field are required when result is set", name)

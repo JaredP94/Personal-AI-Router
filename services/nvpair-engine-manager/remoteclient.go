@@ -42,27 +42,26 @@ func (e *remoteFrameError) Error() string { return e.Msg }
 type remoteClient struct {
 	http *http.Client
 	// readyHTTP serves endpoints whose peer may withhold response headers during
-	// engine readiness or Ollama model loading. See waitsForEngineReadiness.
+	// engine readiness or model loading. See waitsForEngineReadiness.
 	readyHTTP *http.Client
 	base      string // https://<ip>:<port>
 	forget    func()
 }
 
 // waitsForEngineReadiness reports whether a peer may only answer after an
-// engine is healthy or an Ollama model is loaded, which the ordinary 30s
-// response-header budget cannot cover.
+// engine is healthy or a model is loaded, which the ordinary 30s
+// response-header budget cannot cover. Every engine's load can wait on a cold
+// model: the bundled load actions declare a 600 s header wait (timeout_s), and
+// the peer's own action timeout still bounds the call.
 //
 // Cutting such a call off is worse than slow. The initiator's cancellation
 // propagates into the peer's in-flight handler, so bringUpCommand tears the
 // engine back down — for a delete that means the files are gone, the engine is
 // left stopped, and the caller is told the delete failed.
-func waitsForEngineReadiness(path, engine string) bool {
+func waitsForEngineReadiness(path string) bool {
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
-	if path == controlLoadPath {
-		return engine == "ollama"
-	}
-	return path == controlStartPath || path == controlDeletePath
+	return path == controlLoadPath || path == controlStartPath || path == controlDeletePath
 }
 
 func newRemoteHTTPClient(base *http.Transport, responseHeaderTimeout time.Duration) *http.Client {
@@ -146,7 +145,7 @@ func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := c.http
-	if waitsForEngineReadiness(path, engine) && c.readyHTTP != nil {
+	if waitsForEngineReadiness(path) && c.readyHTTP != nil {
 		client = c.readyHTTP
 	}
 	resp, err := client.Do(req)

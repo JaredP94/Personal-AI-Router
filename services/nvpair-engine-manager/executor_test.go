@@ -73,12 +73,21 @@ func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
 	if got := responseHeaderTimeout(t, ex.client); got != engineResponseHeaderTimeout {
 		t.Fatalf("ordinary response-header timeout = %s, want %s", got, engineResponseHeaderTimeout)
 	}
-	if got := responseHeaderTimeout(t, ex.ollamaLoadClient); got != ollamaLoadResponseHeaderTimeout {
-		t.Fatalf("Ollama load response-header timeout = %s, want %s", got, ollamaLoadResponseHeaderTimeout)
+	if got := responseHeaderTimeout(t, ex.actionClient(600)); got != 10*time.Minute {
+		t.Fatalf("declared response-header timeout = %s, want 10m", got)
+	}
+	if ex.actionClient(600) != ex.actionClient(600) {
+		t.Fatal("a declared timeout should reuse one cached client")
+	}
+	if ex.actionClient(0) != ex.client {
+		t.Fatal("an action that declares no timeout should use the shared client")
 	}
 }
 
-func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
+// The response-header budget is a property of the action in the manifest,
+// not of the engine's name: any engine's action can declare a slow wait, and
+// an action that declares none keeps the short default.
+func TestActionDeclaredTimeoutBoundsResponseHeaders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -89,48 +98,58 @@ func TestOnlyOllamaRunModelUsesSlowResponseHeaderBudget(t *testing.T) {
 	port, _ := strconv.Atoi(u.Port())
 
 	m := testEngineManifest(fakeEngineBin)
-	m.Engine = "ollama"
+	m.Engine = "other"
 	platform := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	platform.Runtime.Port = port
 	m.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = platform
 	m.Actions = map[string]Action{
-		"run_model":    {HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}},
+		"chat":         {HTTP: &ActionHTTP{Method: "POST", Path: "/v1/chat/completions"}, TimeoutS: 1},
 		"delete_model": {HTTP: &ActionHTTP{Method: "DELETE", Path: "/api/delete"}},
 	}
 	ex := newTestExecutor(t, m)
 	ex.client = newEngineHTTPClient(20 * time.Millisecond)
-	ex.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
-	st, err := ex.state("ollama")
+	st, err := ex.state("other")
 	if err != nil {
 		t.Fatal(err)
 	}
 	st.running = true
 
-	if _, err := ex.Action(context.Background(), "ollama", "run_model", json.RawMessage(`{"model":"tiny"}`)); err != nil {
-		t.Fatalf("Ollama load was cut off by the ordinary response-header budget: %v", err)
+	if _, err := ex.Action(context.Background(), "other", "chat", json.RawMessage(`{"model":"tiny"}`)); err != nil {
+		t.Fatalf("an action declaring timeout_s was cut off by the default budget: %v", err)
 	}
-	if _, err := ex.Action(context.Background(), "ollama", "delete_model", json.RawMessage(`{"name":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
+	if _, err := ex.Action(context.Background(), "other", "delete_model", json.RawMessage(`{"name":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
 		t.Fatalf("ordinary action error = %v, want bounded response-header timeout", err)
 	}
+}
 
-	other := testEngineManifest(fakeEngineBin)
-	other.Engine = "other"
-	otherPlatform := other.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
-	otherPlatform.Runtime.Port = port
-	other.Platforms[runtime.GOOS+"/"+runtime.GOARCH] = otherPlatform
-	other.Actions = map[string]Action{
-		"run_model": {HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}},
-	}
-	otherEx := newTestExecutor(t, other)
-	otherEx.client = newEngineHTTPClient(20 * time.Millisecond)
-	otherEx.ollamaLoadClient = newEngineHTTPClient(500 * time.Millisecond)
-	otherState, err := otherEx.state("other")
-	if err != nil {
+// The bundled slow actions keep the long wait the old engine-name rule gave
+// them, and the chat actions gain it.
+func TestBundledSlowActionsDeclareALongWait(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
 		t.Fatal(err)
 	}
-	otherState.running = true
-	if _, err := otherEx.Action(context.Background(), "other", "run_model", json.RawMessage(`{"model":"tiny"}`)); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("non-Ollama run_model error = %v, want ordinary response-header timeout", err)
+	for _, c := range []struct{ engine, action string }{
+		{"ollama", "run_model"}, {"omlx", "load_model"}, {"omlx", "chat"}, {"lmstudio", "chat"},
+	} {
+		m, ok := reg.Get(c.engine)
+		if !ok {
+			t.Fatalf("no bundled %s manifest", c.engine)
+		}
+		if got := m.Actions[c.action].TimeoutS; got != 600 {
+			t.Errorf("%s %s timeout_s = %d, want 600", c.engine, c.action, got)
+		}
+	}
+}
+
+func TestActionTimeoutValidation(t *testing.T) {
+	for name, a := range map[string]Action{
+		"negative": {HTTP: &ActionHTTP{Method: "GET", Path: "/x"}, TimeoutS: -1},
+		"on a cmd": {Cmd: []string{"true"}, TimeoutS: 5},
+	} {
+		if err := a.validate(name); err == nil {
+			t.Errorf("%s: timeout_s accepted", name)
+		}
 	}
 }
 

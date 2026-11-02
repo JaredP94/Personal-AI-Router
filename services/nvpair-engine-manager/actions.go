@@ -145,11 +145,7 @@ func (e *Executor) dispatchAction(ctx context.Context, st *engineState, engine, 
 			req.Header.Set("Authorization", "Bearer "+key)
 		}
 	}
-	client := e.client
-	if ((engine == "ollama" && action == "run_model") || action == "load_model") && e.ollamaLoadClient != nil {
-		client = e.ollamaLoadClient
-	}
-	resp, err := client.Do(req)
+	resp, err := e.actionClient(act.TimeoutS).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("action %q: %w", action, err)
 	}

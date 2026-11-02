@@ -19,10 +19,10 @@ import (
 
 var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
 
-const (
-	engineResponseHeaderTimeout     = 30 * time.Second
-	ollamaLoadResponseHeaderTimeout = 10 * time.Minute
-)
+// engineResponseHeaderTimeout bounds how long a loopback action, download or
+// probe waits for response headers before treating the engine as hung. It is
+// also the default for an HTTP action that declares no timeout_s.
+const engineResponseHeaderTimeout = 30 * time.Second
 
 // EngineStatus is the snapshot returned by engine:status and
 // engine:get-installed.
@@ -74,13 +74,17 @@ type engineState struct {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
-	reg              *Registry
-	tools            toolEnv
-	toolInstallMu    sync.Mutex // serialize tool installs and recheck detection after waiting
-	reporter         *Reporter
-	emit             func(method string, params any)
-	client           *http.Client
-	ollamaLoadClient *http.Client
+	reg           *Registry
+	tools         toolEnv
+	toolInstallMu sync.Mutex // serialize tool installs and recheck detection after waiting
+	reporter      *Reporter
+	emit          func(method string, params any)
+	client        *http.Client
+	// actionClients caches one client per non-default response-header
+	// timeout an action declares in timeout_s, so a manifest value is
+	// honored without building a client per call.
+	actionClientsMu sync.Mutex
+	actionClients   map[time.Duration]*http.Client
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
@@ -127,7 +131,7 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		reporter:            reporter,
 		emit:                emit,
 		client:              newEngineHTTPClient(engineResponseHeaderTimeout),
-		ollamaLoadClient:    newEngineHTTPClient(ollamaLoadResponseHeaderTimeout),
+		actionClients:       make(map[time.Duration]*http.Client),
 		progress:            newProgressHub(),
 		baseDir:             baseDir,
 		desired:             newDesiredStateStore(baseDir),
@@ -307,3 +311,26 @@ func startFailedID(engine string) string { return "engine-manager:start-failed:"
 func unhealthyID(engine string) string { return "engine-manager:unhealthy:" + engine }
 
 func exitedID(engine string) string { return "engine-manager:exited:" + engine }
+
+// actionClient returns the client for an action's declared response-header
+// timeout: the shared client when the action declares none, otherwise a cached
+// client built for the declared value. The timeout is a property of the action
+// in the manifest, not of the engine's name, so any engine can declare a slow
+// action. The whole call stays bounded by the executor's action timeout.
+func (e *Executor) actionClient(timeoutS int) *http.Client {
+	d := time.Duration(timeoutS) * time.Second
+	if d <= 0 || d == engineResponseHeaderTimeout {
+		return e.client
+	}
+	e.actionClientsMu.Lock()
+	defer e.actionClientsMu.Unlock()
+	if c, ok := e.actionClients[d]; ok {
+		return c
+	}
+	if e.actionClients == nil {
+		e.actionClients = make(map[time.Duration]*http.Client)
+	}
+	c := newEngineHTTPClient(d)
+	e.actionClients[d] = c
+	return c
+}
