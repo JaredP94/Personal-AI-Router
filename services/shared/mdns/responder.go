@@ -5,15 +5,9 @@
 // advertises a single service instance and answers queries for it on every
 // multicast-capable IPv4 interface.
 //
-// It exists because grandcat/zeroconf's Server (and its Resolver, which the
-// browser side in nvpair-shared/discovery works around too) binds a single UDP
-// socket to the multicast group address 224.0.0.x:5353 for both sending and
-// receiving. Windows refuses to send packets from a socket whose local address
-// is a multicast group, so on Windows the library's outbound announcements,
-// probes, and reactive responses never reach the wire — and the WriteTo errors
-// are silently dropped inside zeroconf, so nothing logs a problem. On a
-// multi-homed / VPN Windows host this is exactly why the machine stays
-// invisible to LAN peers.
+// Sending on the multicast receive socket is unreliable on Windows. We use
+// separate source-bound senders, as does nvpair-shared/discovery, rather than
+// silently losing announcements and reactive responses on multi-homed hosts.
 //
 // We keep zeroconf's receive trick (join the group on each multicast interface,
 // which works fine on Windows) but send every reply/announcement from UDP 5353
@@ -37,6 +31,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +91,9 @@ type Responder struct {
 	addrMu sync.RWMutex
 	// ifaceAddrs maps interface index to its IPv4 unicast addresses.
 	ifaceAddrs map[int][]net.IP
+	ifaceInfo  map[int]net.Interface
+	running    bool
+	sender     Sender
 }
 
 // NewResponder builds a Responder for the given service instance. domain
@@ -127,6 +125,7 @@ func NewResponder(instance, service, domain string, port int, txt []string) (*Re
 	hostBase = strings.Trim(hostBase, ".")
 	hostName := hostBase + "." + domain + "."
 
+	initial := netmon.Enumerate()
 	r := &Responder{
 		instance:     instance,
 		service:      service,
@@ -139,7 +138,8 @@ func NewResponder(instance, service, domain string, port int, txt []string) (*Re
 		// netmon's IfaceV4 applies the same filter we used to build by hand
 		// (up + multicast + non-loopback interface, non-loopback IPv4), and
 		// is what watchAddrs feeds back on every change.
-		ifaceAddrs: netmon.Enumerate().IfaceV4,
+		ifaceAddrs: initial.IfaceV4,
+		ifaceInfo:  initial.Interfaces,
 	}
 	if len(r.ifaceAddrs) == 0 {
 		return nil, errors.New("no multicast-capable IPv4 interfaces with non-loopback addresses")
@@ -157,14 +157,18 @@ func (r *Responder) ifaces() map[int][]net.IP {
 }
 
 // UpdateTXT swaps the advertised TXT records and re-announces immediately. It
-// is safe to call before or during Run (announcements are sent on freshly
-// opened per-interface sockets, independent of Run's receive socket). Callers
-// with a static TXT never need it.
+// is safe to call before or during Run. Before Run only the stored records are
+// changed; during Run the cached sender sockets announce them immediately.
 func (r *Responder) UpdateTXT(txt []string) {
 	r.txtMu.Lock()
 	r.txt = append([]string(nil), txt...)
 	r.txtMu.Unlock()
-	r.sendAnnouncement()
+	r.addrMu.RLock()
+	running := r.running
+	r.addrMu.RUnlock()
+	if running {
+		r.sendAnnouncement()
+	}
 }
 
 // currentTXT returns a copy of the live TXT set, safe against a concurrent UpdateTXT.
@@ -186,21 +190,22 @@ func (r *Responder) watchAddrs(ctx context.Context) {
 		slog.Warn("mdns: network monitor unavailable; advertised addresses are static", "err", err)
 		return
 	}
-	for range mon.Subscribe() {
-		next := mon.Snapshot().IfaceV4
-		if len(next) == 0 {
-			continue // keep the last good set rather than going dark
-		}
-		r.addrMu.Lock()
-		changed := !ifaceAddrsEqual(r.ifaceAddrs, next)
-		if changed {
-			r.ifaceAddrs = next
-		}
-		r.addrMu.Unlock()
-		if changed {
-			slog.Debug("mdns: interface addresses changed, re-announcing")
-			r.sendAnnouncement()
-		}
+	changes := mon.Subscribe()
+	r.refreshInterfaces(mon.Snapshot())
+	for range changes {
+		r.refreshInterfaces(mon.Snapshot())
+	}
+}
+
+func (r *Responder) refreshInterfaces(snapshot netmon.Snapshot) {
+	r.addrMu.Lock()
+	changed := !ifaceAddrsEqual(r.ifaceAddrs, snapshot.IfaceV4) || !reflect.DeepEqual(r.ifaceInfo, snapshot.Interfaces)
+	r.ifaceAddrs = snapshot.IfaceV4
+	r.ifaceInfo = snapshot.Interfaces
+	r.sender.Refresh(snapshot)
+	r.addrMu.Unlock()
+	if changed {
+		r.sendAnnouncement()
 	}
 }
 
@@ -237,10 +242,12 @@ func ifaceAddrsEqual(a, b map[int][]net.IP) bool {
 //
 // The receive socket binds the real mDNS group 224.0.0.251:5353 with
 // SO_REUSEADDR (see setReuseAddr) so multiple responders — and the browser's
-// zeroconf socket — coexist on 5353 on the same host.
+// receive sockets — coexist on 5353 on the same host.
 func (r *Responder) Run(ctx context.Context) error {
-	lc := net.ListenConfig{Control: setReuseAddr}
-	pktConn, err := lc.ListenPacket(ctx, "udp4", mdnsGroupV4.String()+":"+fmt.Sprint(mdnsPort))
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer r.sender.Close()
+	pktConn, err := ListenPacket(ctx, "udp4", mdnsGroupV4.String()+":"+fmt.Sprint(mdnsPort))
 	if err != nil {
 		return fmt.Errorf("listen mdns: %w", err)
 	}
@@ -260,11 +267,8 @@ func (r *Responder) Run(ctx context.Context) error {
 
 	var joined int
 	for ifIdx := range r.ifaces() {
-		ifi, err := net.InterfaceByIndex(ifIdx)
-		if err != nil {
-			continue
-		}
-		if err := pc.JoinGroup(ifi, &net.UDPAddr{IP: mdnsGroupV4}); err != nil {
+		ifi := r.ifaceInfo[ifIdx]
+		if err := pc.JoinGroup(&ifi, &net.UDPAddr{IP: mdnsGroupV4}); err != nil {
 			slog.Debug("mdns: JoinGroup failed", "iface", ifi.Name, "err", err)
 			continue
 		}
@@ -274,19 +278,23 @@ func (r *Responder) Run(ctx context.Context) error {
 		return errors.New("failed to join mDNS group on any interface")
 	}
 
+	r.addrMu.Lock()
+	r.running = true
+	r.addrMu.Unlock()
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		r.announceLoop(ctx)
 	}()
 
-	go r.watchAddrs(ctx)
-
 	go func() {
-		<-ctx.Done()
-		_ = udpConn.Close()
+		defer wg.Done()
+		r.watchAddrs(ctx)
 	}()
+
+	stop := context.AfterFunc(ctx, func() { _ = udpConn.Close() })
+	defer stop()
 
 	buf := make([]byte, 65536)
 	for {
@@ -309,16 +317,23 @@ func (r *Responder) Run(ctx context.Context) error {
 		if cm != nil {
 			ifIndex = cm.IfIndex
 		}
-		var msg dns.Msg
-		if err := msg.Unpack(buf[:n]); err != nil {
-			continue
-		}
-		r.handleQuery(&msg, ifIndex, from)
+		r.receivePacket(buf[:n], ifIndex, from)
 	}
 
+	cancel()
 	wg.Wait()
+	r.addrMu.Lock()
+	r.running = false
+	r.addrMu.Unlock()
 	r.sendGoodbye()
 	return nil
+}
+
+func (r *Responder) receivePacket(buf []byte, ifIndex int, from net.Addr) {
+	var msg dns.Msg
+	if err := msg.Unpack(buf); err == nil {
+		r.handleQuery(&msg, ifIndex, from)
+	}
 }
 
 // handleQuery answers an incoming query for our service, instance, or host name,
@@ -570,19 +585,21 @@ func (r *Responder) sendUnicast(buf []byte, ifIndex int, to net.Addr) {
 }
 
 // sendOnInterface is the core of the Windows send workaround: it transmits buf
-// from a fresh UDP 5353 socket bound to the given interface address, never from
+// from a reusable UDP 5353 socket bound to the given interface address, never from
 // the multicast-bound receive socket that Windows refuses to send from.
 func (r *Responder) sendOnInterface(buf []byte, ifIndex int, target *net.UDPAddr) error {
-	addrs, ok := r.ifaces()[ifIndex]
+	r.addrMu.RLock()
+	defer r.addrMu.RUnlock()
+	addrs, ok := r.ifaceAddrs[ifIndex]
 	if !ok || len(addrs) == 0 {
 		return errors.New("no addresses on interface")
 	}
 	src := addrs[0]
-	ifi, err := net.InterfaceByIndex(ifIndex)
-	if err != nil {
-		return err
+	ifi, ok := r.ifaceInfo[ifIndex]
+	if !ok {
+		return errors.New("no metadata for interface")
 	}
-	if err := SendFromInterface(buf, ifi, src, target); err != nil {
+	if err := r.sender.Send(buf, &ifi, src, target, r.receivePacket); err != nil {
 		slog.Debug("mdns: send failed", "iface", ifi.Name, "ip", src.String(), "target", target.String(), "err", err)
 		return err
 	}

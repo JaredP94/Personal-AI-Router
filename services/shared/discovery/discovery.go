@@ -6,11 +6,11 @@
 // nvpair-workload-manager, nvpair-cluster-manager) each carried a near-identical copy
 // of (the mDNS dedup).
 //
-// The core is a scan-and-diff state machine: each scan browses a service type
-// over grandcat/zeroconf, re-sends the PTR query from a per-interface unicast
-// UDP 5353 socket (the Windows send workaround — zeroconf sends from a
-// multicast-bound socket Windows refuses to transmit on), and reconciles the
-// result against the known-node map. Address/TXT comparison is order-insensitive
+// The core is a scan-and-diff state machine: each scan queries a service type
+// using reusable receive sockets and per-interface unicast-bound UDP 5353
+// senders (the Windows multicast-send workaround), and reconciles the result
+// against the known-node map. netmon refreshes the cached interface set and
+// transport only when the host network changes. Address/TXT comparison is order-insensitive
 // so a multi-homed node whose records come back reordered doesn't churn a
 // spurious "updated".
 //
@@ -45,10 +45,8 @@ import (
 	"sync"
 	"time"
 
-	"nvpair-shared/mdns"
-
-	"github.com/grandcat/zeroconf"
 	"github.com/miekg/dns"
+	"nvpair-shared/netmon"
 )
 
 // Event types emitted by Run.
@@ -204,6 +202,11 @@ type Browser struct {
 	domain  string
 	opt     options
 
+	// scanMu serializes network ownership and scan windows (Run or Poll).
+	scanMu  sync.Mutex
+	runCtx  context.Context
+	network *browserNetwork
+
 	mu     sync.RWMutex
 	nodes  map[string]Node
 	misses map[string]int
@@ -219,7 +222,7 @@ type Browser struct {
 	sendMisses map[string]int
 
 	// browseFunc performs one browse cycle and returns the seen set keyed the
-	// same way as the node map. Defaults to the real zeroconf browse; overridden
+	// same way as the node map. Defaults to the real mDNS browse; overridden
 	// in tests to exercise reconciliation deterministically.
 	browseFunc func(context.Context) map[string]Node
 }
@@ -285,9 +288,6 @@ const sendFailureThreshold = 3
 // consecutive-failure counters. An interface that succeeds is cleared outright,
 // so recovery is immediate while failure has to persist.
 func (b *Browser) recordSendOutcomes(outcomes map[string]bool) {
-	if len(outcomes) == 0 {
-		return
-	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for iface, ok := range outcomes {
@@ -346,6 +346,18 @@ func (b *Browser) Nodes() []Node {
 // receives Discovered/Updated/Removed events and is closed on return; pass nil
 // to only maintain the map (query it via Nodes()).
 func (b *Browser) Run(ctx context.Context, events chan<- Event) {
+	b.scanMu.Lock()
+	b.runCtx = ctx
+	b.scanMu.Unlock()
+	defer func() {
+		b.scanMu.Lock()
+		defer b.scanMu.Unlock()
+		if b.network != nil {
+			b.network.close()
+			b.network = nil
+		}
+		b.runCtx = nil
+	}()
 	if events != nil {
 		defer close(events)
 	}
@@ -528,64 +540,59 @@ func (b *Browser) probeLiveness(nodes []Node) []verdict {
 	return verdicts
 }
 
-// browse performs one real mDNS browse cycle over zeroconf plus the
-// per-interface unicast query re-send, returning the seen set keyed like the
-// node map.
+// browse performs one fresh observation window using the Run-owned transport,
+// returning the seen set keyed like the node map. Standalone Poll calls own and
+// close their one-shot transport.
 func (b *Browser) browse(ctx context.Context) map[string]Node {
 	seen := make(map[string]Node)
 
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		slog.Warn("failed to create mDNS resolver", "err", err)
-		return seen
-	}
-
-	entries := make(chan *zeroconf.ServiceEntry)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for entry := range entries {
-			if b.opt.selfInstance != "" && entry.Instance == b.opt.selfInstance {
-				continue // our own advertisement
-			}
-			addrs := make([]string, 0, len(entry.AddrIPv4)+len(entry.AddrIPv6))
-			for _, ip := range entry.AddrIPv4 {
-				addrs = append(addrs, ip.String())
-			}
-			for _, ip := range entry.AddrIPv6 {
-				if !isLinkLocal(ip) {
-					addrs = append(addrs, ip.String())
-				}
-			}
-			node := Node{
-				ID:        entry.Instance,
-				Host:      entry.HostName,
-				Port:      entry.Port,
-				Addresses: addrs,
-				TXT:       entry.Text,
-			}
-			seen[b.key(node)] = node
+	b.scanMu.Lock()
+	defer b.scanMu.Unlock()
+	network := b.network
+	if network == nil {
+		owner := b.runCtx
+		if owner == nil {
+			owner = ctx
 		}
-	}()
-
+		network = newBrowserNetwork(owner)
+		if b.runCtx != nil {
+			b.network = network
+		} else {
+			defer network.close()
+		}
+	}
+	if err := network.prepare(); err != nil {
+		slog.Warn("failed to prepare mDNS receiver", "err", err)
+	}
+	r := network.resolver
+	// Discard answers queued between scans. Reusing a receiver must not turn
+	// an old response into fresh liveness evidence.
+	for {
+		select {
+		case <-network.packets:
+		default:
+			goto drained
+		}
+	}
+drained:
 	scanCtx, cancel := context.WithTimeout(ctx, b.opt.scanTimeout)
 	defer cancel()
-
-	if err := resolver.Browse(scanCtx, b.service, b.domain, entries); err != nil {
-		slog.Warn("mDNS browse error", "service", b.service, "err", err)
+	// Even if receive setup failed, actual source-bound writes still provide
+	// address-selection evidence. Absence is not a successful send.
+	b.recordSendOutcomes(network.query(b.service, b.domain))
+	if r == nil {
+		return seen
 	}
-	// grandcat/zeroconf binds its single send/receive socket to the multicast
-	// wildcard 224.0.0.0:5353. Windows refuses to send from a socket whose local
-	// address is a multicast group, so the library's outgoing PTR query is
-	// silently dropped there (the WriteTo error is swallowed inside zeroconf).
-	// We re-send the query from a per-interface unicast-bound socket, which
-	// Windows delivers; receive works fine on Windows (joined sockets receive
-	// multicast regardless of local binding), so we keep zeroconf for that.
-	b.recordSendOutcomes(sendMulticastQuery(b.service, b.domain))
-	<-scanCtx.Done()
-	<-done
-
-	return seen
+	for {
+		select {
+		case <-scanCtx.Done():
+			return seen
+		case packet := <-r.packets:
+			for _, node := range b.nodesFromPacket(packet) {
+				seen[b.key(node)] = node
+			}
+		}
+	}
 }
 
 // sendMulticastQuery emits a single mDNS PTR query for `<service>.<domain>.` on
@@ -597,7 +604,7 @@ func (b *Browser) browse(ctx context.Context) map[string]Node {
 // that fails at the socket is also the cheapest evidence available that the
 // kernel has no usable route out of that interface. Address selection consumes
 // it (see Browser.SendFailures) rather than paying for a probe of its own.
-func sendMulticastQuery(service, domain string) map[string]bool {
+func sendMulticastQuery(service, domain string, snapshot netmon.Snapshot, send func([]byte, *net.Interface, net.IP, *net.UDPAddr) error, sendIPv6 func([]byte)) map[string]bool {
 	outcomes := make(map[string]bool)
 	msg := new(dns.Msg)
 	qname := fmt.Sprintf("%s.%s.", strings.Trim(service, "."), strings.Trim(domain, "."))
@@ -609,11 +616,7 @@ func sendMulticastQuery(service, domain string) map[string]bool {
 		return outcomes
 	}
 
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		slog.Warn("mdns send: enumerate interfaces failed", "err", err)
-		return outcomes
-	}
+	sendIPv6(buf)
 
 	var sent int
 	// Why each interface could not carry the query, for the warning below. The
@@ -622,16 +625,16 @@ func sendMulticastQuery(service, domain string) map[string]bool {
 	// were DEBUG only — below the level the app ships with, so every field report
 	// of this warning has arrived without the one fact that explains it.
 	var failures []string
-	for _, ifi := range ifaces {
+	for _, ifi := range snapshot.Interfaces {
 		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		addrs, err := ifi.Addrs()
-		if err != nil {
-			continue
+		var addrs []net.Addr
+		for _, ip := range snapshot.IfaceV4[ifi.Index] {
+			addrs = append(addrs, &net.IPNet{IP: ip})
 		}
 		ifi := ifi
-		src, err := sendMulticastQueryOnInterface(buf, &ifi, addrs, mdns.SendFromInterface)
+		src, err := sendMulticastQueryOnInterface(buf, &ifi, addrs, send)
 		if src == nil {
 			continue
 		}

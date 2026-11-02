@@ -28,6 +28,22 @@ Concretely, the daemon:
 - **A scan that loses everything is treated as our own fault:** when more than one node is known and a scan returns *none* of them, no node is penalized for it — for up to six consecutive scans (~30s), after which they count normally. Independent machines do not leave the network in the same five-second window, but a process too starved to drain its multicast socket within `scanTimeout` hears silence from all of them at once; without this, one saturated machine dropped its entire cluster, idle peers included, in a single reconcile. The suppression needs two or more known nodes to engage: losing a lone peer looks the same whether it left or we stopped listening, so that case falls through to the ordinary threshold.
 - **Converges without mDNS:** a 15s sweep re-reads each peer over HTTP and folds any change into the directory, independent of browse events. It covers facts that change without moving the mDNS record (a model pull/delete, a late engine start) and facts that did move it but whose announcement was never received. The second case is why a peer's cluster membership is re-read from its `ni` port (`clusterUuid` on `/v1/node-info`, which under the broker is served plain — so it answers whether or not the two nodes share a cluster; a node-info run standalone with `--cluster-dir` gates the endpoint while clustered and will not answer a non-pinned peer, which the sweep treats as no answer): membership otherwise arrives solely as the `cluster-uuid=` TXT key, read once per record change, and the anti-flap probe above deliberately keeps a still-reachable peer's entry alive — so a missed re-advertisement would leave a departed peer's principal in place for the life of the process, suppressing the invite that would bring it back. Membership is refreshed before models on each tick, since the model fetch is pinned mTLS keyed on that principal. Only a peer's explicit report is acted on: a failed fetch, or a peer too old to report the field, leaves the annotation untouched rather than inferring "unclustered" from silence.
 
+## Discovery transport lifetime
+
+Periodic browsing reuses IPv4/IPv6 receive sockets and source-bound UDP 5353
+senders between scans. Interface metadata comes from `netmon` snapshots, refreshed
+on interface-change notifications rather than re-enumerated on every five-second
+scan. The responder reuses per-interface senders for announcements and replies;
+removed or re-addressed interfaces retire their cached senders, including when
+all eligible interfaces disappear. Shutdown sends the goodbye before closing them.
+
+Every scan still performs real per-interface writes, preserving the consecutive
+send-failure evidence that address selection consumes. Source binding preserves
+Windows' multicast-send workaround, and source-bound sockets read unicast traffic
+so replies/questions are not lost. Fresh scan windows, not a lifetime-wide DNS
+cache, drive the existing discovery and eviction rules. This reduces socket churn;
+it does not establish or reproduce the cause of reported macOS kernel panics.
+
 ## Worker control health
 
 An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
