@@ -161,6 +161,7 @@ Requests (caller → service):
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
+| `engine:remote-install-tool` | `{ node, tool }` | `{ opId, result: { tool, installed: true } }`, or the remote tool's typed error |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after a successful remote pull (live progress via `engine:remote-progress`); engine-level failures, including HTTP 200 streams containing `error`, return a JSON-RPC error |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
@@ -169,8 +170,10 @@ Requests (caller → service):
 
 ### Tool installs
 
-`engine:install-tool` installs only the fixed allowlist below. Tools are not
-engines: macmon never appears in engine lists, engine cards, or manifests.
+`engine:install-tool` installs only the fixed allowlist below.
+`engine:remote-install-tool` installs from that same allowlist on a pinned
+cluster peer over `ec`, preserving the typed tool error codes below. Tools are
+not engines: macmon never appears in engine lists, engine cards, or manifests.
 
 | Tool | Platforms | Detect (first executable regular file) | Install |
 |---|---|---|---|
@@ -184,7 +187,7 @@ a successful command must leave the tool detectable.
 
 | JSON-RPC code | Meaning |
 |---|---|
-| `-32602` | Invalid params: missing, empty, or unknown tool. |
+| `-32602` | Invalid params: missing or empty tool; also an unknown tool on the local method. |
 | `-32010` | `homebrew-missing`: no executable Homebrew candidate was found. Install Homebrew, then run `brew install macmon`. |
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
@@ -242,9 +245,9 @@ The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
 relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
-`remote-install` / `remote-pull-model` — mints an `opId`, relays each streamed
-progress frame up as `engine:remote-progress`, and settles the request with the
-terminal result. They fail if this node isn't clustered or the target isn't a
+`remote-install` / `remote-install-tool` / `remote-pull-model` — mints an `opId`,
+relays each streamed progress frame up as `engine:remote-progress`, and settles
+the request with the terminal result. They fail if this node isn't clustered or the target isn't a
 pinned cluster peer. See "Remote engine management" below.
 
 `engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
@@ -433,6 +436,7 @@ Endpoints (all under `/v1`):
 |---|---|---|
 | `GET /v1/engines` | JSON | remote `engine:get-installed` |
 | `POST /v1/engines/install` | NDJSON stream | remote install (+ optional start) with live progress |
+| `POST /v1/tools/install` | NDJSON stream | `{ opId, tool }` → terminal `{ opId, op: "install-tool", result: { tool, installed: true } }` |
 | `POST /v1/models/pull` | NDJSON stream | remote model pull with live progress |
 | `POST /v1/engines/start` | JSON | remote start → `EngineStatus` |
 | `POST /v1/engines/stop` | JSON | remote stop → `EngineStatus` |
@@ -443,6 +447,15 @@ The initiating node's engine-manager consumes that stream, relays each progress
 frame up as `engine:remote-progress`, and settles the originating
 `engine:remote-*` request on the terminal frame — so a UI gets one synchronous
 response plus a live progress feed keyed by `opId`.
+
+Error frames carry `message` and an optional integer `code`, omitted when no
+typed code is available. For example, a missing Homebrew install emits
+`{"type":"error","op":"install-tool","code":-32010,"message":"Homebrew was not found",...}`.
+`engine:remote-install-tool` preserves that code and the exact message in its
+JSON-RPC error. Codeless errors continue to map to `-32000`. The tool route
+requires POST (otherwise `405`, `Allow: POST`); malformed JSON or an empty or
+missing `tool` returns `400`. An unknown tool produces a codeless NDJSON error
+frame, so the remote JSON-RPC caller receives `-32000`.
 
 The broker wires both directions: it passes `--control-port`/`--cluster-dir`,
 registers `ec` with the discovery daemon whenever a cluster dir is configured, and

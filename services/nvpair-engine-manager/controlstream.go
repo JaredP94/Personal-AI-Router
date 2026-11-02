@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,9 @@ import (
 
 // controlInstallPath streams a remote engine install.
 const controlInstallPath = "/v1/engines/install"
+
+// controlToolInstallPath streams a remote tool install.
+const controlToolInstallPath = "/v1/tools/install"
 
 // controlPullPath streams a remote model pull.
 const controlPullPath = "/v1/models/pull"
@@ -39,6 +43,7 @@ type streamFrame struct {
 	Stage   string          `json:"stage,omitempty"`
 	Percent int             `json:"percent,omitempty"`
 	Message string          `json:"message,omitempty"`
+	Code    int             `json:"code,omitempty"`
 	Status  *EngineStatus   `json:"status,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 }
@@ -48,6 +53,12 @@ type installRequest struct {
 	OpID   string `json:"opId"`
 	Engine string `json:"engine"`
 	Start  bool   `json:"start"`
+}
+
+// toolInstallRequest is the POST /v1/tools/install body.
+type toolInstallRequest struct {
+	OpID string `json:"opId"`
+	Tool string `json:"tool"`
 }
 
 // pullRequest is the POST /v1/models/pull body. Params, when set, is passed
@@ -91,6 +102,31 @@ func (s *controlServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 			return streamFrame{}, err
 		}
 		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "install", Status: &st}, nil
+	})
+}
+
+// handleToolInstall installs an allowlisted tool and streams its terminal result.
+func (s *controlServer) handleToolInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req toolInstallRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxControlBody)).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if req.Tool == "" {
+		http.Error(w, `"tool" is required`, http.StatusBadRequest)
+		return
+	}
+	s.streamOp(w, r, req.OpID, req.Tool, "install-tool", func(ctx context.Context) (streamFrame, error) {
+		if err := s.exec.InstallTool(ctx, req.Tool); err != nil {
+			return streamFrame{}, err
+		}
+		result, _ := json.Marshal(map[string]any{"tool": req.Tool, "installed": true})
+		return streamFrame{Type: "result", OpID: req.OpID, Op: "install-tool", Result: result}, nil
 	})
 }
 
@@ -187,6 +223,10 @@ func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, e
 			frame := res.frame
 			if res.err != nil {
 				frame = streamFrame{Type: "error", OpID: opID, Engine: engine, Op: op, Message: res.err.Error()}
+				var te *toolError
+				if errors.As(res.err, &te) {
+					frame.Code = te.Code
+				}
 			}
 			_ = enc.Encode(frame)
 			flusher.Flush()

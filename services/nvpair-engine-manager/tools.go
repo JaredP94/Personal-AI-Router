@@ -97,6 +97,10 @@ func rpcCodeFor(err error) int {
 	if errors.As(err, &te) {
 		return te.Code
 	}
+	var re *remoteFrameError
+	if errors.As(err, &re) && re.Code != 0 {
+		return re.Code
+	}
 	return -32000
 }
 

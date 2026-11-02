@@ -7,9 +7,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"nvpair-shared/clustertrust"
 )
 
 // TestStreamOpEmitsProgressThenResult verifies streamOp forwards published
@@ -69,6 +75,135 @@ func TestHandleInstallRejectsMissingEngine(t *testing.T) {
 	s.handleInstall(rec, req)
 	if rec.Code != 400 {
 		t.Fatalf("expected 400 for missing engine, got %d", rec.Code)
+	}
+}
+
+// newToolControlPeer reuses the model gate's identities and exercises the real
+// ec mux over mTLS. The initiator pins the server even when it is not pinned back.
+func newToolControlPeer(t *testing.T, ex *Executor, pinned bool) (*httptest.Server, *clustertrust.Mesh) {
+	t.Helper()
+	serverCert, serverKey := mintLeaf(t, "uuid-server")
+	callerCert, callerKey := mintLeaf(t, "uuid-caller")
+	pins := map[string][]byte{}
+	if pinned {
+		pins["uuid-caller"] = callerCert
+	}
+	serverMesh := clustertrust.Open(clusterDirFor(t, serverCert, serverKey, pins))
+	callerMesh := clustertrust.Open(clusterDirFor(t, callerCert, callerKey, map[string][]byte{"uuid-server": serverCert}))
+	srv := httptest.NewUnstartedServer((&controlServer{exec: ex, mesh: serverMesh}).mux())
+	srv.TLS = serverMesh.ServerTLSConfig()
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, callerMesh
+}
+
+func toolControlRequest(t *testing.T, srv *httptest.Server, mesh *clustertrust.Mesh, method, body string) (int, http.Header, string) {
+	t.Helper()
+	cfg, ok := mesh.ClientTLSConfig("uuid-server")
+	if !ok {
+		t.Fatal("caller must pin server")
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(method, srv.URL+"/v1/tools/install", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, resp.Header, string(data)
+}
+
+func TestToolInstallRouteRefusesUnpinnedCaller(t *testing.T) {
+	ex, _, _, _ := newToolTestExecutor(t)
+	srv, mesh := newToolControlPeer(t, ex, false)
+	code, _, body := toolControlRequest(t, srv, mesh, "POST", `{"tool":"macmon"}`)
+	if code != 403 {
+		t.Fatalf("unpinned caller: HTTP %d, want 403: %s", code, body)
+	}
+}
+
+func TestToolInstallRouteStreamsCodedError(t *testing.T) {
+	ex, _, _, _ := newToolTestExecutor(t)
+	srv, mesh := newToolControlPeer(t, ex, true)
+	code, headers, body := toolControlRequest(t, srv, mesh, "POST", `{"opId":"tool-op","tool":"macmon"}`)
+	if code != 200 || headers.Get("Content-Type") != "application/x-ndjson" {
+		t.Fatalf("expected NDJSON HTTP 200, got %d: %s", code, body)
+	}
+	var frame struct {
+		Type    string `json:"type"`
+		OpID    string `json:"opId"`
+		Op      string `json:"op"`
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Type != "error" || frame.OpID != "tool-op" || frame.Op != "install-tool" || frame.Code != -32010 || frame.Message != "Homebrew was not found" {
+		t.Fatalf("bad coded error frame: %s", body)
+	}
+}
+
+func TestToolInstallRouteResult(t *testing.T) {
+	ex, brew, detect, _ := newToolTestExecutor(t)
+	writeToolFile(t, brew, fmt.Sprintf("#!/bin/sh\nprintf '#!/bin/sh\\n' > %q\n/bin/chmod +x %q\n", detect, detect), 0o755)
+	srv, mesh := newToolControlPeer(t, ex, true)
+	code, _, body := toolControlRequest(t, srv, mesh, "POST", `{"opId":"tool-op","tool":"macmon"}`)
+	if code != 200 {
+		t.Fatalf("HTTP %d: %s", code, body)
+	}
+	frames := decodeFrames(t, body)
+	if len(frames) != 1 || frames[0].Type != "result" || frames[0].Op != "install-tool" || frames[0].OpID != "tool-op" {
+		t.Fatalf("bad terminal result: %s", body)
+	}
+	var result struct {
+		Tool      string `json:"tool"`
+		Installed bool   `json:"installed"`
+	}
+	if err := json.Unmarshal(frames[0].Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Tool != "macmon" || !result.Installed {
+		t.Fatalf("unexpected tool result: %s", frames[0].Result)
+	}
+}
+
+func TestToolInstallRouteValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, body string
+		status             int
+	}{
+		{"method", "GET", "", 405},
+		{"invalid JSON", "POST", "{", 400},
+		{"empty tool", "POST", `{"tool":""}`, 400},
+		{"missing tool", "POST", `{}`, 400},
+		{"unknown tool", "POST", `{"tool":"rm"}`, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ex, _, _, _ := newToolTestExecutor(t)
+			srv, mesh := newToolControlPeer(t, ex, true)
+			code, headers, body := toolControlRequest(t, srv, mesh, tc.method, tc.body)
+			if code != tc.status {
+				t.Fatalf("HTTP %d, want %d: %s", code, tc.status, body)
+			}
+			if tc.status == 405 && headers.Get("Allow") != "POST" {
+				t.Fatalf("Allow = %q, want POST", headers.Get("Allow"))
+			}
+			if tc.name == "unknown tool" {
+				frames := decodeFrames(t, body)
+				if len(frames) != 1 || frames[0].Type != "error" || frames[0].Message != `unknown tool "rm"` || strings.Contains(body, `"code"`) {
+					t.Fatalf("unknown tool must yield a codeless error: %s", body)
+				}
+			}
+		})
 	}
 }
 
