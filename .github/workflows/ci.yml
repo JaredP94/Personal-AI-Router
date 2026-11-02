@@ -127,6 +127,13 @@ jobs:
               with:
                   go-version: '1.26.7'
                   cache-dependency-path: services/**/go.sum
+            # Hosted macOS VMs need an explicit on-link multicast route for
+            # real mDNS discovery; otherwise sends fail with no route to host.
+            - name: Configure runner multicast route
+              run: |
+                  interface=$(route -n get default | awk '/interface:/{print $2}')
+                  sudo route -n add -net 224.0.0.0/4 -interface "$interface"
+                  route -n get 224.0.0.251
             # Run the source guard before executing any application binary.
             # All runtime helpers must use per-test disposable app-data roots.
             - name: Check process isolation
