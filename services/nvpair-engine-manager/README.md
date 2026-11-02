@@ -119,23 +119,42 @@ is therefore not installed from PAIR's perspective; install the standalone CLI
 or explicitly configure a verified CLI through a manifest override. LM Studio
 retains its existing per-platform `runtime.cli` (`~/.lmstudio/bin/lms` on Unix).
 
-PAIR can uninstall oMLX only when the resolved CLI is under `~/.omlx`, which
-its declared uninstaller removes. Homebrew and `/usr/local` installations report
-`uninstall: false`; an uninstall request is rejected before stopping the engine or
-running the uninstall command. Remove those installations with their original
-package manager or installer instead. LM Studio under `~/.lmstudio` can still be
-uninstalled through PAIR (including its Windows user-profile installation).
+### Uninstall never removes models or user data
 
-For command-mode engines, `uninstall.cli_roots` declares the directory roots
-whose CLI files `uninstall.run` removes, for example `"cli_roots": ["~/.omlx"]`.
-The same coverage check gates both the capability and the request. Roots expand
-`~`, OS environment variables and `{install_dir}`, must be absolute after
-expansion, and match whole path components (not sibling prefixes). Missing or
-unresolvable roots cover nothing; an absent CLI reports `uninstall: false`.
-Coverage is lexical: deleting a root removes CLI symlinks within it, not external
-targets. Manifest authors must keep these declarations aligned with the actual
-command; PAIR does not infer ownership by parsing shell commands. Overrides that
-relocate a CLI must also declare an uninstaller that covers it. Process-mode
+Each manifest declares `models_dir`, its engine's model store (`~/.ollama`,
+`~/.lmstudio/models`, `~/.omlx/models`). It must be a literal path, never derived
+from `{install_dir}`. Engine removal is declarative: `uninstall.run` is for work
+only a command can do (stopping a daemon), and `uninstall.remove` lists the trees
+the engine manager deletes itself. Removal unlinks a symlink rather than
+following it, refuses a target that is or sits inside the model store, and when a
+target contains the store, removes everything except the store. Validation
+rejects a manifest whose `remove` reaches the store, or that declares `remove`
+without `models_dir`.
+
+The bundled uninstalls remove only what an install put down: Ollama's app or
+install directory; LM Studio's `~/.lmstudio/bin` and `llmster` runtime; oMLX's
+`~/.omlx/bin` CLI. LM Studio's conversations, credentials and settings, and
+oMLX's settings, model settings and API key, are left where they are.
+
+### Command-mode engines: only what PAIR installed
+
+A completed install writes `installed-by-pair.json` into the engine's install
+directory. A command-mode engine's CLI sits in a vendor location — the LM Studio
+and oMLX apps put theirs exactly where a PAIR install would — so only this marker
+tells PAIR's install from the user's. Without it, `uninstall: false` is reported
+and an uninstall request is rejected before stopping the engine or running any
+command. Engines PAIR installed before the marker existed have no marker either:
+remove those with the vendor's own uninstaller. The marker is cleared after a
+successful uninstall, and when the engine is found already gone.
+
+The command must also be covered: `uninstall.cli_roots` declares the directory
+roots whose CLI files the uninstall removes, for example
+`"cli_roots": ["~/.omlx/bin"]`. Homebrew and `/usr/local` oMLX installations are
+not covered and report `uninstall: false`. Roots expand `~`, OS environment
+variables and `{install_dir}`, must be absolute after expansion, and match whole
+path components (not sibling prefixes). Missing or unresolvable roots cover
+nothing; an absent CLI reports `uninstall: false`. Coverage is lexical: deleting
+a root removes CLI symlinks within it, not external targets. Process-mode
 engines retain the separate managed-install-directory request guard.
 
 ## JSON-RPC surface
@@ -206,7 +225,7 @@ and command-mode CLI coverage:
 | `delete_restarts_engine` | `delete_model` is declared with `restart_after: true` on a supported platform. |
 | `set_port` | The platform's start argv, CLI args, or environment reference `{port}` — a probe or stop template alone moves nothing — and `engine:set-port` would not refuse the engine as externally adopted, which is the same adoption check it makes (a command-mode engine with an official stop command can be moved). |
 | `install` | The effective manifest has a platform block for this host OS/architecture. |
-| `uninstall` | `install` is true, a nonempty uninstall command is declared, and the install is not externally adopted. Command mode additionally requires the resolved CLI to be within a declared `uninstall.cli_roots` directory. |
+| `uninstall` | `install` is true, an uninstall `run` or `remove` is declared, and the install is not externally adopted. Command mode additionally requires PAIR's install marker and the resolved CLI to be within a declared `uninstall.cli_roots` directory. |
 
 Unsupported platforms report all flags false. Bundled oMLX supports model listing
 but never pull/delete; its start command has no `{port}` input, so `set_port` is

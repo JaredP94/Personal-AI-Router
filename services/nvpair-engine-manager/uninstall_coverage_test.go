@@ -15,12 +15,19 @@ import (
 func TestCommandUninstallCoverage(t *testing.T) {
 	for _, tc := range []struct {
 		name, engine, cli string
-		allowed           bool
+		// installedByPAIR writes the install marker, as a completed PAIR
+		// install does. Coverage alone is not enough: the vendor's own app
+		// puts its CLI in the same place.
+		installedByPAIR bool
+		allowed         bool
+		refusal         string
 	}{
-		{"Homebrew only", "omlx", "opt/homebrew/bin/omlx", false},
-		{"usr local only", "omlx", "usr/local/bin/omlx", false},
-		{"HOME oMLX", "omlx", ".omlx/bin/omlx", true},
-		{"HOME LM Studio", "lmstudio", ".lmstudio/bin/lms", true},
+		{"Homebrew only", "omlx", "opt/homebrew/bin/omlx", true, false, "declared uninstaller does not cover the resolved CLI"},
+		{"usr local only", "omlx", "usr/local/bin/omlx", true, false, "declared uninstaller does not cover the resolved CLI"},
+		{"HOME oMLX", "omlx", ".omlx/bin/omlx", true, true, ""},
+		{"HOME LM Studio", "lmstudio", ".lmstudio/bin/lms", true, true, ""},
+		{"HOME oMLX the user installed", "omlx", ".omlx/bin/omlx", false, false, "no record of installing it"},
+		{"HOME LM Studio the user installed", "lmstudio", ".lmstudio/bin/lms", false, false, "no record of installing it"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := resolutionRoot(t)
@@ -46,6 +53,12 @@ func TestCommandUninstallCoverage(t *testing.T) {
 			m.Platforms[key] = p
 			ex := NewExecutor(reg, NewReporter(nil), nil, base)
 			ex.detectTimeout = 0 // never wait for a destructive-command regression
+			if tc.installedByPAIR {
+				st, _ := ex.state(tc.engine)
+				if err := writeInstallMarker(st.installDir, tc.engine); err != nil {
+					t.Fatal(err)
+				}
+			}
 			status, err := ex.Status(tc.engine)
 			if err != nil || !status.Installed || status.Capabilities.Uninstall != tc.allowed {
 				t.Errorf("status = %+v, %v; want installed and uninstall=%v", status, err, tc.allowed)
@@ -63,8 +76,8 @@ func TestCommandUninstallCoverage(t *testing.T) {
 					t.Error("covered CLI was not removed")
 				}
 			} else {
-				if err == nil || !strings.Contains(err.Error(), "declared uninstaller does not cover the resolved CLI") {
-					t.Errorf("want clear coverage refusal, got %v", err)
+				if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+					t.Errorf("want refusal containing %q, got %v", tc.refusal, err)
 				}
 				if !fileExists(cli) {
 					t.Error("external CLI was deleted")
@@ -116,6 +129,9 @@ func TestCommandUninstallManifestPolicy(t *testing.T) {
 			p.Uninstall.Run = rmCmd(cli)
 			ex := NewExecutor(reg, NewReporter(nil), nil, base)
 			ex.detectTimeout = 0
+			if err := writeInstallMarker(filepath.Join(base, "policy"), "policy"); err != nil {
+				t.Fatal(err)
+			}
 			status, err := ex.Status("policy")
 			if err != nil || status.Capabilities.Uninstall != tc.allowed {
 				t.Errorf("status = %+v, %v; want uninstall=%v", status, err, tc.allowed)

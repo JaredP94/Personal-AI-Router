@@ -65,6 +65,13 @@ type Platform struct {
 	Install   *Install   `json:"install,omitempty"`
 	Uninstall *Uninstall `json:"uninstall,omitempty"`
 	Runtime   Runtime    `json:"runtime"`
+	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
+	// {models_dir}. Nothing this service removes may delete it: Uninstall
+	// skips it, and validation rejects a removal at or inside it. It must be a
+	// literal path, never derived from {install_dir}, which lives under the
+	// app data root that "remove all data" deletes. Declare the engine's real
+	// default so PAIR and a user's own copy of the engine share one library.
+	ModelsDir string `json:"models_dir,omitempty"`
 }
 
 // Install describes how to obtain the engine in user mode. A pinned
@@ -84,11 +91,15 @@ type Install struct {
 	Mode string `json:"mode,omitempty"`
 }
 
-// Uninstall removes a user-mode install by running the engine's own
-// uninstaller (or removing its install dir). No download/checksum —
-// it only runs a local command.
+// Uninstall removes a user-mode install. Run is for work only a command can do
+// — stopping the engine's own daemon, or invoking a vendor uninstaller. Remove
+// lists the trees this service deletes itself, which is how model weights
+// survive: the runner always skips the platform's ModelsDir, so a Remove entry
+// that contains the model store takes everything except the models. Prefer
+// Remove over an `rm -rf` in Run; a shell string cannot be checked.
 type Uninstall struct {
-	Run []string `json:"run"`
+	Run    []string `json:"run,omitempty"`
+	Remove []string `json:"remove,omitempty"`
 	// CLIRoots declares the directories whose CLI files Run removes. Command
 	// mode refuses uninstall unless the resolved CLI is within one of these
 	// roots. Paths expand environment, ~ and {install_dir}; no roots means no
@@ -463,7 +474,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	base := map[string]any{}
-	for _, k := range []string{"detect", "install", "uninstall", "runtime"} {
+	for _, k := range []string{"detect", "install", "uninstall", "runtime", "models_dir"} {
 		raw, ok := top[k]
 		if !ok {
 			continue
@@ -605,8 +616,31 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install.mode %q invalid (want \"user\" or \"admin\")", key, p.Install.Mode)
 		}
 	}
-	if p.Uninstall != nil && len(p.Uninstall.Run) == 0 {
-		return fmt.Errorf("platform %q: uninstall.run is required when uninstall is present", key)
+	if strings.Contains(p.ModelsDir, "{") {
+		return fmt.Errorf("platform %q: models_dir %q must be a literal path, not a template — the model store must not be derived from the install directory", key, p.ModelsDir)
+	}
+	if p.Uninstall != nil {
+		if len(p.Uninstall.Run) == 0 && len(p.Uninstall.Remove) == 0 {
+			return fmt.Errorf("platform %q: uninstall needs run, remove, or both when present", key)
+		}
+		// Without a model store there is nothing for the runner to preserve, so
+		// a removal would be the unconditional delete this field exists to
+		// prevent.
+		if len(p.Uninstall.Remove) > 0 && strings.TrimSpace(p.ModelsDir) == "" {
+			return fmt.Errorf("platform %q: uninstall.remove requires models_dir, so the removal knows what to keep", key)
+		}
+		for _, target := range p.Uninstall.Remove {
+			if strings.Contains(target, "{models_dir}") {
+				return fmt.Errorf("platform %q: uninstall.remove %q names the model store — uninstall removes the engine, not the user's models", key, target)
+			}
+			resolved := filepath.Clean(expandPath(target))
+			store := filepath.Clean(expandPath(p.ModelsDir))
+			// Compared without case: one manifest runs on filesystems of both
+			// kinds, and wherever case is ignored a second spelling is the store.
+			if pathWithinRoot(strings.ToLower(store), strings.ToLower(resolved)) {
+				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
+			}
+		}
 	}
 	if err := validateProbe(key, "ready", p.Runtime.Ready); err != nil {
 		return err
@@ -735,6 +769,7 @@ func (m *Manifest) templatedStrings() []string {
 		}
 		if p.Uninstall != nil {
 			out = append(out, p.Uninstall.Run...)
+			out = append(out, p.Uninstall.Remove...)
 			out = append(out, p.Uninstall.CLIRoots...)
 		}
 		out = append(out, p.Runtime.Bin)
