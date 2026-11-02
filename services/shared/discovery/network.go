@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
@@ -44,6 +45,7 @@ func newBrowserNetwork(ctx context.Context) *browserNetwork {
 
 func (n *browserNetwork) refresh(snapshot netmon.Snapshot) error {
 	if n.resolver != nil && n.resolver.healthy() && reflect.DeepEqual(n.snapshot, snapshot) {
+		n.resolver.retrySetup(n.ctx)
 		return nil
 	}
 	if n.resolver != nil {
@@ -65,6 +67,7 @@ func (n *browserNetwork) prepare() error {
 		if n.resolver == nil || !n.resolver.healthy() {
 			return n.refresh(n.monitor.Snapshot())
 		}
+		n.resolver.retrySetup(n.ctx)
 		return nil
 	}
 }
@@ -100,10 +103,50 @@ type resolver struct {
 	readers     sync.WaitGroup
 	failed      chan struct{}
 	failureOnce sync.Once
+
+	// Setup retries run only on the serialized scan path. Readers never access
+	// these fields; successful sockets and memberships survive partial failures.
+	families   []receiveFamily
+	open       func(context.Context, string, string) (*receiveSocket, error)
+	now        func() time.Time
+	retryAt    time.Time
+	retryDelay time.Duration
+}
+
+type receiveFamily struct {
+	network, address, group string
+	socket                  *receiveSocket
+	pending                 []net.Interface
+}
+
+// receiveSocket keeps the platform multicast operations alongside their socket.
+type receiveSocket struct {
+	net.PacketConn
+	join func(*net.Interface, net.Addr) error
+	v6   *ipv6.PacketConn
+}
+
+func openReceiveSocket(ctx context.Context, network, address string) (*receiveSocket, error) {
+	conn, err := mdns.ListenPacket(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	socket := &receiveSocket{PacketConn: conn}
+	if network == "udp4" {
+		socket.join = ipv4.NewPacketConn(conn).JoinGroup
+	} else {
+		socket.v6 = ipv6.NewPacketConn(conn)
+		socket.join = socket.v6.JoinGroup
+	}
+	return socket, nil
 }
 
 func newResolver(ctx context.Context, snapshot netmon.Snapshot, packets chan *dns.Msg) (*resolver, error) {
-	r := &resolver{packets: packets, failed: make(chan struct{})}
+	return newResolverWithReceiver(ctx, snapshot, packets, openReceiveSocket, time.Now)
+}
+
+func newResolverWithReceiver(ctx context.Context, snapshot netmon.Snapshot, packets chan *dns.Msg, open func(context.Context, string, string) (*receiveSocket, error), now func() time.Time) (*resolver, error) {
+	r := &resolver{packets: packets, failed: make(chan struct{}), open: open, now: now}
 	for _, ifi := range snapshot.Interfaces {
 		if ifi.Flags&net.FlagUp != 0 && ifi.Flags&net.FlagMulticast != 0 {
 			r.interfaces = append(r.interfaces, ifi)
@@ -112,54 +155,92 @@ func newResolver(ctx context.Context, snapshot netmon.Snapshot, packets chan *dn
 	if len(r.interfaces) == 0 {
 		return nil, errors.New("no multicast interfaces")
 	}
-	for _, family := range []struct{ network, address, group string }{{"udp4", "224.0.0.251:5353", "224.0.0.251"}, {"udp6", "[ff02::fb]:5353", "ff02::fb"}} {
-		conn, err := mdns.ListenPacket(ctx, family.network, family.address)
-		if err != nil {
-			slog.Debug("mdns: receive socket unavailable", "network", family.network, "err", err)
-			continue
-		}
-		group := &net.UDPAddr{IP: net.ParseIP(family.group)}
-		var join func(*net.Interface, net.Addr) error
-		var pc6 *ipv6.PacketConn
-		if family.network == "udp4" {
-			join = ipv4.NewPacketConn(conn).JoinGroup
-		} else {
-			pc6 = ipv6.NewPacketConn(conn)
-			join = pc6.JoinGroup
-		}
-		joined := 0
-		for _, ifi := range r.interfaces {
-			if err := join(&ifi, group); err == nil {
-				joined++
-			}
-		}
-		if joined == 0 {
-			_ = conn.Close()
-			continue
-		}
-		r.conns = append(r.conns, conn)
-		if pc6 != nil {
-			r.v6 = pc6
-			_ = pc6.SetMulticastHopLimit(255)
-		}
-		r.readers.Add(1)
-		go func() {
-			defer r.readers.Done()
-			buf := make([]byte, 65536)
-			for {
-				n, from, err := conn.ReadFrom(buf)
-				if err != nil {
-					r.failureOnce.Do(func() { close(r.failed) })
-					return
-				}
-				r.receive(buf[:n], 0, from)
-			}
-		}()
+	r.families = []receiveFamily{
+		{network: "udp4", address: "224.0.0.251:5353", group: "224.0.0.251", pending: r.interfaces},
+		{network: "udp6", address: "[ff02::fb]:5353", group: "ff02::fb", pending: r.interfaces},
 	}
+	r.retrySetup(ctx)
 	if len(r.conns) == 0 {
 		return nil, errors.New("failed to join any mDNS receive group")
 	}
 	return r, nil
+}
+
+// Retry only failed binds/memberships with 1s -> 60s capped backoff, at scan
+// boundaries. An unavailable family must not churn the working receive path.
+func (r *resolver) retrySetup(ctx context.Context) {
+	if ctx.Err() != nil || r.now().Before(r.retryAt) {
+		return
+	}
+	incomplete := false
+	for i := range r.families {
+		family := &r.families[i]
+		if len(family.pending) == 0 {
+			continue
+		}
+		fresh := family.socket == nil
+		if fresh {
+			var err error
+			family.socket, err = r.open(ctx, family.network, family.address)
+			if err != nil {
+				slog.Debug("mdns: receive socket unavailable", "network", family.network, "err", err)
+				incomplete = true
+				continue
+			}
+		}
+		group := &net.UDPAddr{IP: net.ParseIP(family.group)}
+		var pending []net.Interface
+		joined := 0
+		for _, ifi := range family.pending {
+			if err := family.socket.join(&ifi, group); err != nil {
+				pending = append(pending, ifi)
+			} else {
+				joined++
+			}
+		}
+		family.pending = pending
+		incomplete = incomplete || len(pending) > 0
+		if fresh {
+			if joined == 0 {
+				_ = family.socket.Close()
+				family.socket = nil
+				continue
+			}
+			r.startReceiver(family.socket)
+		}
+	}
+	if incomplete {
+		if r.retryDelay == 0 {
+			r.retryDelay = time.Second
+		} else {
+			r.retryDelay = min(2*r.retryDelay, time.Minute)
+		}
+		r.retryAt = r.now().Add(r.retryDelay)
+	} else {
+		r.retryDelay = 0
+		r.retryAt = time.Time{}
+	}
+}
+
+func (r *resolver) startReceiver(conn *receiveSocket) {
+	r.conns = append(r.conns, conn)
+	if conn.v6 != nil {
+		r.v6 = conn.v6
+		_ = conn.v6.SetMulticastHopLimit(255)
+	}
+	r.readers.Add(1)
+	go func() {
+		defer r.readers.Done()
+		buf := make([]byte, 65536)
+		for {
+			n, from, err := conn.ReadFrom(buf)
+			if err != nil {
+				r.failureOnce.Do(func() { close(r.failed) })
+				return
+			}
+			r.receive(buf[:n], 0, from)
+		}
+	}()
 }
 
 func (n *browserNetwork) receive(buf []byte, _ int, _ net.Addr) {

@@ -816,7 +816,11 @@ memberships and retire removed or re-addressed senders. The responder reuses its
 senders for announcements and replies too. Shutdown closes the sockets after the
 responder's goodbye. A standalone `Browser.Poll` owns a one-shot transport; use
 `Run` for periodic discovery. The scan cadence and per-interface send-failure
-feedback used by address selection are unchanged.
+feedback used by address selection are unchanged. Partial browser receive-setup
+failures retry only the failed family binds or interface memberships at scan
+boundaries, with exponential backoff from 1 second to a 60-second cap. Successful
+sockets and memberships stay in place; a changed network snapshot rebuilds setup
+immediately rather than waiting for that backoff.
 
 This reduces measured socket and interface-query churn. It does **not** establish
 that discovery caused the macOS kernel panics or WLAN failures reported in
