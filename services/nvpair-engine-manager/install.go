@@ -67,6 +67,9 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	// Whether this install puts its Creates path in place, or finds the
 	// user's own copy already there. Decided before anything runs.
 	claims := true
+	// createdID is the identity of what this install put at Creates, taken
+	// as it was put there; the claim covers that bundle and nothing else.
+	createdID := ""
 	if inst.Creates != "" {
 		if _, err := os.Lstat(expandPath(inst.Creates)); err == nil {
 			claims = false
@@ -113,7 +116,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		}
 		if inst.DiskImage != nil {
 			e.emitInstallProgress(engine, "installing", 75)
-			created, err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage)
+			id, err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage)
 			if err != nil {
 				werr := fmt.Errorf("install from disk image failed: %w", err)
 				e.reportInstallFailed(engine, werr)
@@ -121,9 +124,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			}
 			// An app that arrived while the image downloaded or copied was
 			// left in place; it is the user's, whatever the earlier check saw.
-			if !created {
-				claims = false
-			}
+			createdID = id
 		}
 		if len(inst.Run) > 0 {
 			e.emitInstallProgress(engine, "installing", 75)
@@ -143,6 +144,16 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		}
 	}
 
+	if inst.Creates != "" && inst.DiskImage == nil && claims {
+		// A command-driven install: take the identity as soon as it ran.
+		createdID = fileIdentity(expandPath(inst.Creates))
+	}
+	if inst.Creates != "" {
+		// Claim only if Creates is still exactly what this install put there.
+		if createdID == "" || fileIdentity(expandPath(inst.Creates)) != createdID {
+			claims = false
+		}
+	}
 	if !e.waitDetect(engine, true, e.detectTimeout) {
 		err := fmt.Errorf("engine %q was not detected after install", engine)
 		e.reportInstallFailed(engine, err)
@@ -156,7 +167,8 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		// not one this install created.
 		clearInstallMarker(st.installDir)
 		slog.Info("engine was already in place; not recording it as installed by PAIR", "engine", engine, "path", inst.Creates)
-	} else if err := writeInstallMarker(st.installDir, engine, inst.Creates); err != nil {
+	} else if err := writeInstallMarker(st.installDir, engine, inst.Creates, createdID); err != nil {
+		clearInstallMarker(st.installDir)
 		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
 	}
 	e.reporter.clear(installFailedID(engine))

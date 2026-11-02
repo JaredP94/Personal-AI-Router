@@ -112,7 +112,7 @@ func TestInstallClaimsOnlyWhatItCreates(t *testing.T) {
 func TestInstallClaimFollowsTheCreatedFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// No file identity there: a claim naming what it created is refused.
-		if err := writeInstallMarker(t.TempDir(), "vendor", t.TempDir()); err == nil {
+		if err := writeInstallMarker(t.TempDir(), "vendor", t.TempDir(), ""); err == nil {
 			t.Fatal("a claim was recorded without a file identity")
 		}
 		return
@@ -123,7 +123,7 @@ func TestInstallClaimFollowsTheCreatedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	installDir := filepath.Join(dir, "install")
-	if err := writeInstallMarker(installDir, "vendor", app); err != nil {
+	if err := writeInstallMarker(installDir, "vendor", app, fileIdentity(app)); err != nil {
 		t.Fatal(err)
 	}
 	if !installedByPAIR(installDir, app) {
@@ -163,7 +163,7 @@ func TestInstallThatFindsACopyDropsAStaleClaim(t *testing.T) {
 	ex := newTestExecutor(t, m)
 	ex.detectTimeout = time.Second
 	st, _ := ex.state("vendor")
-	if err := writeInstallMarker(st.installDir, "vendor", ""); err != nil {
+	if err := writeInstallMarker(st.installDir, "vendor", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := ex.Install(context.Background(), "vendor"); err != nil {
@@ -178,7 +178,7 @@ func TestInstallThatFindsACopyDropsAStaleClaim(t *testing.T) {
 // install creates: it names no bundle, so it cannot vouch for the one there.
 func TestAMarkerWithoutAnIdentityCoversNoCreatedApp(t *testing.T) {
 	installDir := t.TempDir()
-	if err := writeInstallMarker(installDir, "omlx", ""); err != nil {
+	if err := writeInstallMarker(installDir, "omlx", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if installedByPAIR(installDir, "/Applications/oMLX.app") {
@@ -186,5 +186,55 @@ func TestAMarkerWithoutAnIdentityCoversNoCreatedApp(t *testing.T) {
 	}
 	if !installedByPAIR(installDir, "") {
 		t.Error("an unbound marker must still stand for an engine with no creates")
+	}
+}
+
+// A claim is refused when what is at creates is no longer what the install
+// put there, however soon after it was replaced.
+func TestClaimIsRefusedWhenTheCreatedAppWasReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no file identity")
+	}
+	dir := t.TempDir()
+	app := filepath.Join(dir, "Engine.app")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	placed := fileIdentity(app)
+	if err := os.RemoveAll(app); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(dir, "install")
+	if err := writeInstallMarker(installDir, "vendor", app, placed); err == nil {
+		t.Fatal("a claim was recorded for a replaced app")
+	}
+	if installedByPAIR(installDir, app) {
+		t.Fatal("a replaced app is claimed")
+	}
+}
+
+// Every bundled manifest is validated on every host, so a macOS disk-image
+// step must validate on Windows and Linux too.
+func TestDiskImageValidatesOnEveryHost(t *testing.T) {
+	p := Platform{
+		Detect:  []string{"~/.omlx/bin/omlx"},
+		Install: &Install{Fetch: &Fetch{URL: "https://x/y.dmg"}, DiskImage: &DiskImage{App: "oMLX.app", Into: "/Applications"}, Creates: "/Applications/oMLX.app"},
+		Runtime: Runtime{Mode: "command", Start: [][]string{{"{cli}", "start"}}},
+	}
+	if err := p.validate("darwin/arm64"); err != nil {
+		t.Fatalf("a valid disk-image platform was rejected on %s: %v", runtime.GOOS, err)
+	}
+	if err := p.validate("linux/amd64"); err == nil {
+		t.Error("a disk-image step outside macOS was accepted")
+	}
+	for _, into := range []string{"Applications", "{install_dir}"} {
+		bad := p
+		bad.Install = &Install{Fetch: p.Install.Fetch, DiskImage: &DiskImage{App: "oMLX.app", Into: into}}
+		if err := bad.validate("darwin/arm64"); err == nil {
+			t.Errorf("into %q accepted", into)
+		}
 	}
 }

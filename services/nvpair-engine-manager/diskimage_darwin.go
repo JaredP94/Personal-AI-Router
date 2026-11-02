@@ -28,24 +28,25 @@ const (
 // unless an app is already there, and then opens it when di.Open is set. An
 // app already in place is the user's and is never replaced.
 //
-// created reports whether this call put the app in place, so the caller
-// claims only what it created.
-func installAppFromDiskImage(ctx context.Context, image string, di *DiskImage) (created bool, err error) {
+// identity is the file identity of the bundle this call put in place, taken
+// from the staging copy before it was published, or "" when it placed nothing
+// (an app was already there). The caller claims only that bundle.
+func installAppFromDiskImage(ctx context.Context, image string, di *DiskImage) (identity string, err error) {
 	dest := filepath.Join(expandPath(di.Into), di.App)
 	if _, err := os.Lstat(dest); os.IsNotExist(err) {
-		if created, err = copyAppFromDiskImage(ctx, image, di.App, dest); err != nil {
-			return false, err
+		if identity, err = copyAppFromDiskImage(ctx, image, di.App, dest); err != nil {
+			return "", err
 		}
 	} else if err != nil {
-		return false, err
+		return "", err
 	}
 	if !di.Open {
-		return created, nil
+		return identity, nil
 	}
 	if out, err := exec.CommandContext(ctx, openPath, "-g", dest).CombinedOutput(); err != nil {
-		return created, fmt.Errorf("open %s: %w: %s", dest, err, strings.TrimSpace(string(out)))
+		return identity, fmt.Errorf("open %s: %w: %s", dest, err, strings.TrimSpace(string(out)))
 	}
-	return created, nil
+	return identity, nil
 }
 
 // copyAppFromDiskImage mounts the image read-only and copies the app into a
@@ -58,10 +59,10 @@ func installAppFromDiskImage(ctx context.Context, image string, di *DiskImage) (
 // after the client that asked is killed, so a cancelled attach would leave a
 // mount behind that no cleanup could see. It runs to completion under its own
 // bound, and the cancellation is honoured as soon as it returns.
-func copyAppFromDiskImage(ctx context.Context, image, app, dest string) (bool, error) {
+func copyAppFromDiskImage(ctx context.Context, image, app, dest string) (string, error) {
 	mnt, err := os.MkdirTemp("", "pair-dmg-")
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	defer func() {
 		detachDiskImage(mnt)
@@ -71,18 +72,18 @@ func copyAppFromDiskImage(ctx context.Context, image, app, dest string) (bool, e
 	out, err := exec.CommandContext(attachCtx, hdiutilPath, "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mnt, image).CombinedOutput()
 	cancelAttach()
 	if err != nil {
-		return false, fmt.Errorf("mount the disk image: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("mount the disk image: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return "", err
 	}
 	src := filepath.Join(mnt, app)
 	if info, err := os.Lstat(src); err != nil || !info.IsDir() {
-		return false, fmt.Errorf("the disk image has no %s", app)
+		return "", fmt.Errorf("the disk image has no %s", app)
 	}
 	staging, err := os.MkdirTemp(filepath.Dir(dest), "."+app+".pair-")
 	if err != nil {
-		return false, fmt.Errorf("prepare %s: %w", filepath.Dir(dest), err)
+		return "", fmt.Errorf("prepare %s: %w", filepath.Dir(dest), err)
 	}
 	placed := false
 	defer func() {
@@ -91,20 +92,26 @@ func copyAppFromDiskImage(ctx context.Context, image, app, dest string) (bool, e
 		}
 	}()
 	if out, err := exec.CommandContext(ctx, dittoPath, src, staging).CombinedOutput(); err != nil {
-		return false, fmt.Errorf("copy %s: %w: %s", app, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("copy %s: %w: %s", app, err, strings.TrimSpace(string(out)))
 	}
 	// MkdirTemp made the staging directory private; the app is for everyone.
 	if err := os.Chmod(staging, 0o755); err != nil {
-		return false, err
+		return "", err
 	}
 	if _, err := os.Lstat(dest); err == nil {
-		return false, nil // an app arrived while copying; it is the user's, so leave it
+		return "", nil // an app arrived while copying; it is the user's, so leave it
+	}
+	// Rename keeps the bundle's identity, so the one taken here is the
+	// bundle that lands at dest, captured before anyone else can touch it.
+	identity := fileIdentity(staging)
+	if identity == "" {
+		return "", fmt.Errorf("cannot identify the copied %s", app)
 	}
 	if err := os.Rename(staging, dest); err != nil {
-		return false, fmt.Errorf("place %s: %w", dest, err)
+		return "", fmt.Errorf("place %s: %w", dest, err)
 	}
 	placed = true
-	return true, nil
+	return identity, nil
 }
 
 func detachDiskImage(mnt string) {

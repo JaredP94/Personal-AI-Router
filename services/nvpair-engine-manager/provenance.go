@@ -49,7 +49,9 @@ func installMarkerPath(installDir string) string {
 // writeInstallMarker claims an install. Called only after an install this
 // service actually performed and detected — never on the adoption paths, which
 // return before any install work happens.
-func writeInstallMarker(installDir, engine, creates string) error {
+// identity, when creates is set, is the identity of what the install created,
+// taken as it created it; the marker is refused when it no longer matches.
+func writeInstallMarker(installDir, engine, creates, identity string) error {
 	path := installMarkerPath(installDir)
 	if path == "" {
 		return nil
@@ -62,11 +64,11 @@ func writeInstallMarker(installDir, engine, creates string) error {
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if creates != "" {
-		marker.Creates = creates
-		marker.Identity = fileIdentity(expandPath(creates))
-		if marker.Identity == "" {
-			return fmt.Errorf("cannot identify %s", creates)
+		if identity == "" || fileIdentity(expandPath(creates)) != identity {
+			return fmt.Errorf("%s is no longer what the install created", creates)
 		}
+		marker.Creates = creates
+		marker.Identity = identity
 	}
 	return writeJSONAtomic(path, marker)
 }

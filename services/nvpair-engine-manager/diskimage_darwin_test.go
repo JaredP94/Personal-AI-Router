@@ -59,13 +59,16 @@ func leftovers(t *testing.T, into, image string) {
 func TestDiskImageInstallCopiesTheApp(t *testing.T) {
 	image := buildDiskImage(t, "Test.app", "from-image")
 	into := t.TempDir()
-	created, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into})
-	if err != nil || !created {
-		t.Fatalf("created=%v err=%v", created, err)
+	id, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into})
+	if err != nil || id == "" {
+		t.Fatalf("identity=%q err=%v", id, err)
 	}
 	app := filepath.Join(into, "Test.app")
 	if got, err := os.ReadFile(filepath.Join(app, "Contents", "MacOS", "cli")); err != nil || string(got) != "from-image" {
 		t.Fatalf("copied app = %q, %v", got, err)
+	}
+	if got := fileIdentity(app); got != id {
+		t.Errorf("returned identity %q is not the placed app's %q", id, got)
 	}
 	if info, err := os.Stat(app); err != nil || info.Mode().Perm() != 0o755 {
 		t.Errorf("app mode = %v, %v; want 0755", info.Mode().Perm(), err)
@@ -83,9 +86,9 @@ func TestDiskImageInstallLeavesAnAppInPlace(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("users-own"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	created, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into})
-	if err != nil || created {
-		t.Fatalf("created=%v err=%v; an app already in place must not count as created", created, err)
+	id, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into})
+	if err != nil || id != "" {
+		t.Fatalf("identity=%q err=%v; an app already in place must not count as created", id, err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "users-own" {
 		t.Errorf("an app already in place was replaced: %q", got)
@@ -152,9 +155,9 @@ func TestDiskImageInstallCleansUpAfterCancellationDuringAttach(t *testing.T) {
 		} else {
 			time.AfterFunc(delay, cancel)
 		}
-		created, _ := installAppFromDiskImage(ctx, image, &DiskImage{App: "Test.app", Into: into})
+		id, _ := installAppFromDiskImage(ctx, image, &DiskImage{App: "Test.app", Into: into})
 		cancel()
-		if created {
+		if id != "" {
 			_ = os.RemoveAll(filepath.Join(into, "Test.app"))
 		}
 		leftovers(t, into, image)

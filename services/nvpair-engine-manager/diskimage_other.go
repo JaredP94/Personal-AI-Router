@@ -10,6 +10,6 @@ import (
 	"errors"
 )
 
-func installAppFromDiskImage(context.Context, string, *DiskImage) (bool, error) {
-	return false, errors.New("disk image installs are macOS-only")
+func installAppFromDiskImage(context.Context, string, *DiskImage) (string, error) {
+	return "", errors.New("disk image installs are macOS-only")
 }

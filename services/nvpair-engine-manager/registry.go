@@ -673,10 +673,16 @@ func (p *Platform) validate(key string) error {
 			if di.App != filepath.Base(di.App) || !strings.HasSuffix(di.App, ".app") || strings.ContainsAny(di.App, `/\`) {
 				return fmt.Errorf("platform %q: install.disk_image.app %q must be a bundle name such as Name.app", key, di.App)
 			}
-			if strings.Contains(di.Into, "{") || !filepath.IsAbs(expandPath(di.Into)) {
+			// Disk images are macOS-only, and every bundled platform is
+			// validated on every host, so the paths are checked as the POSIX
+			// paths they are, not as the host would read them.
+			if !strings.HasPrefix(key, "darwin/") {
+				return fmt.Errorf("platform %q: install.disk_image is macOS-only", key)
+			}
+			if strings.Contains(di.Into, "{") || !path.IsAbs(di.Into) {
 				return fmt.Errorf("platform %q: install.disk_image.into %q must be a literal absolute path", key, di.Into)
 			}
-			if p.Install.Creates != "" && filepath.Clean(expandPath(p.Install.Creates)) != filepath.Join(expandPath(di.Into), di.App) {
+			if p.Install.Creates != "" && path.Clean(p.Install.Creates) != path.Join(di.Into, di.App) {
 				return fmt.Errorf("platform %q: install.creates must name the app disk_image copies", key)
 			}
 		}
