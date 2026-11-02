@@ -403,7 +403,10 @@ const config: Configuration = {
     mac: {
         executableName: APP_EXECUTABLE_NAME,
         extendInfo: {
-            CFBundleDisplayName: APP_DISPLAY_NAME
+            CFBundleDisplayName: APP_DISPLAY_NAME,
+            NSLocalNetworkUsageDescription:
+                'PAIR uses the local network to discover and connect to your other PAIR nodes.',
+            NSBonjourServices: ['_nvpair-node._tcp']
         },
         icon: './resources/icons/logo.icns',
         // SMAppService (the privileged firewall helper) requires macOS 13+.

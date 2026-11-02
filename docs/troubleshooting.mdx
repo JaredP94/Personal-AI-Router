@@ -46,6 +46,14 @@ PAIR discovers peers on the local network. If **Add node** or
 - Allow PAIR through host firewalls on each system.
 - Retry with the peer's IP address in **Add node**.
 
+On macOS, check **System Settings > Privacy & Security > Local Network** and
+allow PAIR if it is listed. Packaged builds declare a local-network usage
+explanation and the `_nvpair-node._tcp` Bonjour service. A reporter in
+[NVIDIA/Personal-AI-Router#3](https://github.com/NVIDIA/Personal-AI-Router/issues/3)
+found these keys necessary but not sufficient on macOS 27 for Go-sent multicast.
+The declarations alone do not establish that discovery works; use a peer's IP
+address if automatic discovery remains unavailable.
+
 ## Pairing Fails or Stalls
 
 A PIN belongs to one invitation attempt. A mistyped PIN, a canceled or expired
