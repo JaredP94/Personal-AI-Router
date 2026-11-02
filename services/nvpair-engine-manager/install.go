@@ -414,7 +414,7 @@ func (e *Executor) runCommand(ctx context.Context, argv []string) error {
 	configureSysProcAttr(cmd) // hide the console window on Windows
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

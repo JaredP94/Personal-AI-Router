@@ -242,6 +242,14 @@ a successful command must leave the tool detectable.
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
 
+### Startup cancellation
+
+A command-mode control CLI can launch its daemon before the CLI exits. Failed
+or canceled starts run the bounded official stop command if a CLI actually ran,
+including nonzero exits, before releasing the lifecycle lock. A command that
+could not spawn does not authorize cleanup. Shutdown cancellation therefore
+cannot skip cleanup merely because readiness had not begun.
+
 ### Shutdown sweep
 
 `engine:prepare-shutdown` and the EOF/transport-exit path join one concurrent

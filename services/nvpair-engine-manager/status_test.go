@@ -67,7 +67,13 @@ func TestStatus_DoesNotReadoptAfterStopDuringProbe(t *testing.T) {
 		status, err := ex.Status("fake")
 		finished <- statusResult{status, err}
 	}()
-	awaitProbeStart(t, fixture.probeStarted)
+	select {
+	case <-fixture.probeStarted:
+	case got := <-finished:
+		t.Fatalf("passive status returned before readiness request: %+v err=%v", got.status, got.err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("readiness did not start and status still pending")
+	}
 
 	// Bound the wait for Stop so a lock regression fails promptly.
 	stopped := make(chan error, 1)

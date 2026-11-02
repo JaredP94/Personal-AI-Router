@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -108,6 +109,16 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 }
 
 func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
+	testStopAllDetachedCommandDaemon(t, "touch")
+}
+
+// The CLI can launch its daemon before returning. Cancellation in that window
+// must run the stop CLI too, even though the start command exits unsuccessfully.
+func TestStopAllStopsDetachedCommandDaemonBeforeCLIExit(t *testing.T) {
+	testStopAllDetachedCommandDaemon(t, "touchwait")
+}
+
+func testStopAllDetachedCommandDaemon(t *testing.T, command string) {
 	dir := t.TempDir()
 	startMarker := filepath.Join(dir, "started")
 	stopMarker := filepath.Join(dir, "stopped")
@@ -121,7 +132,7 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	platform.Runtime.Mode = "command"
 	platform.Runtime.Bin = ""
 	platform.Runtime.Port = port
-	platform.Runtime.Start = [][]string{{fakeEngineBin, "touch", startMarker}}
+	platform.Runtime.Start = [][]string{{fakeEngineBin, command, startMarker}}
 	platform.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}, GraceS: 1}
 	platform.Runtime.Ready = &Probe{
 		HTTP:     "http://127.0.0.1:{port}/",
@@ -135,7 +146,10 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	// Model a control CLI that launches a detached daemon and returns before
 	// that daemon becomes ready. The daemon deliberately answers 503 until its
 	// stop CLI runs, which keeps Start inside waitReady.
+	readinessStarted := make(chan struct{})
+	var readyOnce sync.Once
 	daemon := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		readyOnce.Do(func() { close(readinessStarted) })
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})}
 	t.Cleanup(func() { _ = daemon.Close() })
@@ -184,6 +198,15 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	if !portServing(port) {
 		t.Fatal("detached command daemon did not start serving")
 	}
+	if command == "touch" {
+		// A marker written by the CLI does not prove cmd.Wait has returned.
+		// Observe readiness I/O to synchronize with the intended startup phase.
+		select {
+		case <-readinessStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("start did not enter readiness wait")
+		}
+	}
 
 	ex.StopAll()
 
@@ -200,6 +223,25 @@ func TestStopAllStopsDetachedCommandDaemonBeforeReadiness(t *testing.T) {
 	}
 	if hasErr(ex.Errors(), startFailedID("fake")) {
 		t.Fatalf("shutdown cancellation retained a command-mode start-failed error: %+v", ex.Errors())
+	}
+}
+
+func TestFailedCommandSpawnDoesNotRunStopCLI(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "stopped")
+	manifest := testEngineManifest(fakeEngineBin)
+	p := manifest.Platforms[hostKey()]
+	p.Runtime.Mode = "command"
+	p.Runtime.Bin = ""
+	p.Runtime.Start = [][]string{{filepath.Join(t.TempDir(), "nonexistent")}}
+	p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", marker}}
+	p.Runtime.Ready, p.Runtime.Health = nil, nil
+	manifest.Platforms[hostKey()] = p
+	ex := newTestExecutor(t, manifest)
+	if err := ex.Start(context.Background(), "fake"); err == nil {
+		t.Fatal("expected spawn failure")
+	}
+	if fileExists(marker) {
+		t.Fatal("spawn failure invoked stop CLI despite no started process")
 	}
 }
 

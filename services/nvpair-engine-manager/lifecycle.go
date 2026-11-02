@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -305,6 +306,13 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 			argv[i] = expandPath(argv[i])
 		}
 		if err := e.runCommand(ctx, argv); err != nil {
+			// The CLI may have detached a daemon before exiting nonzero or
+			// being canceled. An ExitError proves it actually ran; clean up
+			// its possible side effects, but not a command that failed to spawn.
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				started = true
+			}
 			werr := fmt.Errorf("start command failed: %w", err)
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 			return cleanup(werr)

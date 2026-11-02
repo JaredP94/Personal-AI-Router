@@ -80,6 +80,13 @@ func main() {
 				_ = os.WriteFile(os.Args[2], []byte("ok"), 0o644)
 			}
 			return
+		case "touchwait": // publish daemon side effects before the control CLI exits
+			if len(os.Args) < 3 {
+				os.Exit(2)
+			}
+			_ = os.WriteFile(os.Args[2], []byte("ok"), 0o644)
+			time.Sleep(time.Hour)
+			return
 		case "echo": // print args to stdout so a cmd-action can capture output
 			fmt.Println(strings.Join(os.Args[2:], " "))
 			return
