@@ -38,6 +38,7 @@ import type {
     Workload,
     WorkloadLiveEngine,
     WorkloadLiveProgress,
+    WorkloadRemoval,
     WorkloadState
 } from '@/shared/types/workloads'
 import type { WorkerState, WorkerStatus } from '@/shared/types/workers'
@@ -55,7 +56,7 @@ import {
     parseEngineCapabilities
 } from '@/shared/utils/engines'
 import { engineProgressKey } from '@/shared/utils/engine-progress'
-import { workloadKey } from '@/shared/utils/workloads'
+import { workloadKey, workloadMatchesRemoval } from '@/shared/utils/workloads'
 import { currentPlatform, platformDisplayName } from '@/shared/utils/platform'
 import { emitBridgePush } from './broadcaster'
 import { createStructuredLogger } from '@/shared/utils/log'
@@ -673,6 +674,7 @@ function parseWorkload(value: JsonValue | undefined): Workload | null {
         engine,
         state: stateValue,
         originatedFrom: nullableStringValue(obj.originatedFrom),
+        runId: nullableStringValue(obj.runId),
         createdAt: numberValue(obj.createdAt),
         startedAt: nullableNumberValue(obj.startedAt),
         completedAt: nullableNumberValue(obj.completedAt),
@@ -1520,6 +1522,13 @@ class ModularBridgeState {
     private workloads = new Map<string, Workload>()
     // Exists only during one epoch snapshot fetch, including removal tombstones.
     private workloadRecovery: Set<string> | null = null
+    /**
+     * Broker removals seen while a recovery snapshot is fetched. A removal
+     * names a job by `(originatedFrom, id)` only, so it is kept as itself
+     * rather than as keys: it must also retire a matching job that is not in
+     * the catalog yet but is in the older snapshot.
+     */
+    private workloadRecoveryRemovals: WorkloadRemoval[] = []
     private logs: LogEntry[] = []
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
@@ -1948,7 +1957,7 @@ class ModularBridgeState {
      */
     seedWorkloads(workloads: Workload[]): WsInvokeResponse<'workloads:get-initial'> {
         for (const workload of workloads) {
-            const key = workloadKey(workload.originatedFrom, workload.id)
+            const key = workloadKey(workload)
             if (!this.workloads.has(key)) this.workloads.set(key, workload)
         }
         return this.getWorkloads()
@@ -1958,6 +1967,7 @@ class ModularBridgeState {
     beginWorkloadRecovery(): Set<string> {
         const snapshot = new Set<string>()
         this.workloadRecovery = snapshot
+        this.workloadRecoveryRemovals = []
         return snapshot
     }
 
@@ -1965,18 +1975,19 @@ class ModularBridgeState {
     endWorkloadRecovery(snapshot: Set<string>, workloads?: Workload[]): void {
         if (this.workloadRecovery !== snapshot) return
         this.workloadRecovery = null
+        const removals = this.workloadRecoveryRemovals
+        this.workloadRecoveryRemovals = []
         if (!workloads) {
             snapshot.clear()
             return
         }
-        const baseline = new Map(
-            workloads.map(workload => [workloadKey(workload.originatedFrom, workload.id), workload])
-        )
+        const baseline = new Map(workloads.map(workload => [workloadKey(workload), workload]))
         for (const [key, workload] of this.workloads) {
             if (!snapshot.has(key) && !baseline.has(key)) this.evictWorkload(key, workload)
         }
         for (const [key, workload] of baseline) {
             if (snapshot.has(key)) continue
+            if (removals.some(removal => workloadMatchesRemoval(workload, removal))) continue
             this.workloads.set(key, workload)
             emitBridgePush('workloads:upsert', workload)
         }
@@ -1988,22 +1999,29 @@ class ModularBridgeState {
         const obj = objectValue(params)
         const workload = parseWorkload(obj?.workloadInfo)
         if (!workload) return
-        const key = workloadKey(workload.originatedFrom, workload.id)
+        const key = workloadKey(workload)
         this.workloadRecovery?.add(key)
         this.workloads.set(key, workload)
         emitBridgePush('workloads:upsert', workload)
     }
 
-    /** Relay a broker `workloads:remove` (`{ workloadId, originatedFrom? }`) into the catalog + UI. */
+    /**
+     * Relay a broker `workloads:remove` (`{ workloadId, originatedFrom? }`) into
+     * the catalog + UI. It names no engine and no run, so, like the broker's own
+     * store, it drops every job matching the pair.
+     */
     removeWorkloadFromParams(params: JsonValue | undefined): void {
         const obj = objectValue(params)
         const workloadId = stringValue(obj?.workloadId)
         if (!workloadId) return
-        const originatedFrom = nullableStringValue(obj?.originatedFrom)
-        const key = workloadKey(originatedFrom, workloadId)
-        this.workloadRecovery?.add(key)
-        this.workloads.delete(key)
-        emitBridgePush('workloads:remove', { workloadId, originatedFrom })
+        const removal = { workloadId, originatedFrom: nullableStringValue(obj?.originatedFrom) }
+        if (this.workloadRecovery) this.workloadRecoveryRemovals.push(removal)
+        for (const [key, workload] of this.workloads) {
+            if (!workloadMatchesRemoval(workload, removal)) continue
+            this.workloadRecovery?.add(key)
+            this.workloads.delete(key)
+        }
+        emitBridgePush('workloads:remove', removal)
     }
 
     /**
@@ -2027,7 +2045,9 @@ class ModularBridgeState {
         this.workloads.delete(key)
         emitBridgePush('workloads:remove', {
             workloadId: workload.id,
-            originatedFrom: workload.originatedFrom
+            originatedFrom: workload.originatedFrom,
+            engine: workload.engine,
+            runId: workload.runId ?? null
         })
     }
 

@@ -3,14 +3,15 @@
 
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
-import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress, WorkloadRemoval } from '@/shared/types/workloads'
 import deepEqual from '@/ui/utils/deep-equal'
 import {
     liveProgressKey,
     liveProgressKeyIsJob,
     mergeWorkloadLiveProgress,
     workloadExecutionNodeId,
-    workloadKey
+    workloadKey,
+    workloadMatchesRemoval
 } from '@/shared/utils/workloads'
 import { stateOrder, MAX_HISTORY_ITEMS } from '@/ui/constants/app'
 
@@ -48,7 +49,7 @@ let unsubs: Array<() => void> = []
 // buffer pushes and flush them in a single commit on the next animation frame.
 type PendingOp =
     | { kind: 'upsert'; workload: Workload }
-    | { kind: 'remove'; key: string; originatedFrom: string | null; id: string }
+    | { kind: 'remove'; removal: WorkloadRemoval }
     | { kind: 'live'; key: string; frame: WorkloadLiveProgress }
 let pendingOps: PendingOp[] = []
 let flushHandle = 0
@@ -76,16 +77,17 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                     // A job that has already finished has no live line: the
                     // broker retires its live view, so a frame that arrives
                     // after the terminal event must not bring it back.
-                    const workload = (updated ?? prev).get(
-                        workloadKey(op.frame.originatedFrom, op.frame.jobId)
+                    const finished = [...(updated ?? prev).values()].some(
+                        workload =>
+                            workload.id === op.frame.jobId &&
+                            workload.originatedFrom === op.frame.originatedFrom &&
+                            workload.engine === op.frame.engine &&
+                            (!op.frame.runId ||
+                                !workload.runId ||
+                                workload.runId === op.frame.runId) &&
+                            (workload.state === 'completed' || workload.state === 'failed')
                     )
-                    if (
-                        workload &&
-                        workload.engine === op.frame.engine &&
-                        (workload.state === 'completed' || workload.state === 'failed')
-                    ) {
-                        continue
-                    }
+                    if (finished) continue
                     const existing = base.get(op.key)
                     const merged = mergeWorkloadLiveProgress(existing, op.frame)
                     if (existing && deepEqual(existing, merged)) continue
@@ -104,7 +106,7 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                 }
                 const base = updated ?? prev
                 if (op.kind === 'upsert') {
-                    const key = workloadKey(op.workload.originatedFrom, op.workload.id)
+                    const key = workloadKey(op.workload)
                     const existing = base.get(key)
                     if (existing && deepEqual(existing, op.workload)) continue
                     if (!updated) updated = new Map(prev)
@@ -121,15 +123,35 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                         )
                     }
                 } else {
-                    if (!base.has(op.key)) continue
+                    const { removal } = op
+                    const keys = [...base]
+                        .filter(([, w]) => workloadMatchesRemoval(w, removal))
+                        .map(([k]) => k)
+                    if (keys.length === 0) continue
                     if (!updated) updated = new Map(prev)
-                    updated.delete(op.key)
+                    for (const key of keys) updated.delete(key)
                     if (!updatedLive) updatedLive = new Map(prevLive)
-                    // A removal names no engine, so it retires the live view
-                    // of the job on every engine of that origin.
-                    for (const liveKey of [...updatedLive.keys()]) {
-                        if (liveProgressKeyIsJob(liveKey, op.originatedFrom, op.id)) {
-                            updatedLive.delete(liveKey)
+                    if (removal.engine) {
+                        updatedLive.delete(
+                            liveProgressKey(
+                                removal.originatedFrom,
+                                removal.engine,
+                                removal.workloadId
+                            )
+                        )
+                    } else {
+                        // A removal that names no engine retires the live view
+                        // of the job on every engine of that origin.
+                        for (const liveKey of [...updatedLive.keys()]) {
+                            if (
+                                liveProgressKeyIsJob(
+                                    liveKey,
+                                    removal.originatedFrom,
+                                    removal.workloadId
+                                )
+                            ) {
+                                updatedLive.delete(liveKey)
+                            }
                         }
                     }
                 }
@@ -152,7 +174,7 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
         // below would be silently undone by rebuilding the map from the baseline
         // snapshot, which still lists the now-retired job. Record such removes so
         // the merge can subtract them — these deltas are newer than the snapshot.
-        const removedDuringInit = new Set<string>()
+        const removedDuringInit: WorkloadRemoval[] = []
         let initializing = true
 
         // Subscribe BEFORE fetching the baseline so a `workloads:upsert` that
@@ -166,10 +188,9 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
                     pendingOps.push({ kind: 'upsert', workload })
                     schedule()
                 }),
-                window.pairApi.workloads.onRemove(({ workloadId, originatedFrom }) => {
-                    const key = workloadKey(originatedFrom, workloadId)
-                    if (initializing) removedDuringInit.add(key)
-                    pendingOps.push({ kind: 'remove', key, originatedFrom, id: workloadId })
+                window.pairApi.workloads.onRemove((removal: WorkloadRemoval) => {
+                    if (initializing) removedDuringInit.push(removal)
+                    pendingOps.push({ kind: 'remove', removal })
                     schedule()
                 }),
                 // The live view of a running job. It is a snapshot, not a
@@ -192,7 +213,10 @@ export const useWorkloadsStore = create<WorkloadsStore>((set, get) => ({
             // Subtract jobs a `workloads:remove` retired during the fetch (that
             // delta is newer than the snapshot), before overlaying upserts — so a
             // remove-then-readd of the same key still surfaces the re-add.
-            for (const key of removedDuringInit) map.delete(key)
+            for (const [key, workload] of map) {
+                if (removedDuringInit.some(removal => workloadMatchesRemoval(workload, removal)))
+                    map.delete(key)
+            }
             // Overlay upserts that already landed during the fetch (also newer than
             // the baseline), so seeding never regresses a live transition.
             for (const [key, workload] of get().workloads) {

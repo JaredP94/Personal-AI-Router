@@ -126,7 +126,7 @@ function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]):
 
         const color = getWorkloadStateColor(workload.state)
         result.push({
-            workloadId: workloadKey(workload.originatedFrom, workload.id),
+            workloadId: workloadKey(workload),
             nodeId: executionNodeId,
             color: `${WORKLOAD_COLOR_MAP[color]}${workload.state === 'running' ? 'FF' : '88'}`,
             path,

@@ -39,7 +39,7 @@ import type {
     NodeItemMetrics,
     NodeInferenceMetricsSnapshot
 } from '@/shared/types/metrics'
-import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress, WorkloadRemoval } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type {
     AvailableNode,
@@ -171,7 +171,7 @@ export interface WsPushChannelMap {
     // workload ids are a per-node proxy counter (the catalog is keyed by the
     // (originatedFrom, id) pair).
     'workloads:upsert': Workload
-    'workloads:remove': { workloadId: string; originatedFrom: string | null }
+    'workloads:remove': WorkloadRemoval
     /**
      * The broker's live view of a running job: what PAIR measured of the
      * client's stream (elapsed time, chunks, bytes, time to first byte) plus
