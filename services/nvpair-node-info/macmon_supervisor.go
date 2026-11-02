@@ -123,7 +123,7 @@ func (s *macmonSupervisor) runChild(ctx context.Context, path string, interval t
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	cmd.Stdout = writer
-	cmd.Stderr = macmonStderrWriter{}
+	cmd.Stderr = &macmonStderrWriter{}
 	if err := cmd.Start(); err != nil {
 		writer.Close()
 		return false, false
@@ -220,9 +220,27 @@ func waitMacmon(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
-type macmonStderrWriter struct{}
+const macmonStderrLimit = 4096
 
-func (macmonStderrWriter) Write(data []byte) (int, error) {
-	slog.Debug("macmon stderr", "output", string(data))
+// Each child owns one writer, used only by exec's stderr-copy goroutine.
+type macmonStderrWriter struct {
+	logged    int
+	truncated bool
+}
+
+func (w *macmonStderrWriter) Write(data []byte) (int, error) {
+	logger := slog.Default()
+	if w.truncated || !logger.Enabled(context.Background(), slog.LevelDebug) {
+		return len(data), nil
+	}
+	n := min(len(data), macmonStderrLimit-w.logged)
+	if n > 0 {
+		logger.Debug("macmon stderr", "output", string(data[:n]))
+		w.logged += n
+	}
+	if len(data) > n {
+		logger.Debug("macmon stderr truncated", "limit", macmonStderrLimit)
+		w.truncated = true
+	}
 	return len(data), nil
 }

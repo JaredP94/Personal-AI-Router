@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -512,6 +513,128 @@ func (b *macmonLogBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.b.String()
+}
+
+func TestMacmonSupervisorStderrBoundedPerChild(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(strconv.FormatBool(restart), func(t *testing.T) {
+			var logs macmonLogBuffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			// Each run emits 20 KiB, in multiple writes. The first run can
+			// exit to exercise a replacement child's independent budget.
+			script := "chunk='" + strings.Repeat("a", 1024) + "'\n"
+			if restart {
+				script += "if [ -e \"$DIR/wrote\" ]; then chunk='" + strings.Repeat("b", 1024) + "'; fi\n"
+			}
+			script += `i=0
+while [ "$i" -lt 20 ]; do printf '%s' "$chunk" >&2; i=$((i + 1)); done
+`
+			if restart {
+				script += `if [ ! -e "$DIR/wrote" ]; then : > "$DIR/wrote"; exit 1; fi
+`
+			}
+			script += `printf '%s\n' "$LINE"; exec sleep 30`
+			path := fakeMacmon(t, script)
+			cfg := macmonTestConfig(path)
+			cfg.Interval = func() time.Duration { return time.Hour }
+			s := newMacmonSupervisor(cfg)
+			cancel, done := runMacmonSupervisor(t, s)
+			waitFor(t, func() bool { status, _, _ := s.Latest(); return status == MacmonAvailable })
+			cancel()
+			<-done // Wait drains stderr before inspecting the complete log.
+
+			wantRuns := 1
+			if restart {
+				wantRuns = 2
+			}
+			if got := len(macmonArgs(path)); got != wantRuns {
+				t.Fatalf("child runs = %d, want %d", got, wantRuns)
+			}
+			var output strings.Builder
+			truncations := 0
+			decoder := json.NewDecoder(strings.NewReader(logs.String()))
+			for decoder.More() {
+				var record struct {
+					Level  string `json:"level"`
+					Msg    string `json:"msg"`
+					Output string `json:"output"`
+				}
+				if err := decoder.Decode(&record); err != nil {
+					t.Fatal(err)
+				}
+				if record.Level != "DEBUG" {
+					t.Errorf("stderr log level = %q, want DEBUG", record.Level)
+				}
+				switch record.Msg {
+				case "macmon stderr":
+					output.WriteString(record.Output)
+				case "macmon stderr truncated":
+					truncations++
+				default:
+					t.Errorf("unexpected log message %q", record.Msg)
+				}
+			}
+			want := strings.Repeat("a", 4096)
+			if restart {
+				want += strings.Repeat("b", 4096)
+			}
+			if got := output.String(); got != want {
+				t.Errorf("logged stderr = %d bytes (a=%d, b=%d), want 4096 bytes per child", len(got), strings.Count(got, "a"), strings.Count(got, "b"))
+			}
+			if truncations != wantRuns {
+				t.Errorf("truncation records = %d, want %d", truncations, wantRuns)
+			}
+		})
+	}
+}
+
+func TestMacmonStderrWriterTruncatesOnlyAfterLimit(t *testing.T) {
+	var logs macmonLogBuffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	writer := macmonStderrWriter{}
+	for _, size := range []int{0, 1024, 3072, 0, 1, 20 * 1024} {
+		before := logs.String()
+		data := bytes.Repeat([]byte("x"), size)
+		if n, err := writer.Write(data); n != size || err != nil {
+			t.Fatalf("Write = %d, %v, want %d, nil", n, err, size)
+		}
+		got := strings.Count(logs.String(), "macmon stderr truncated")
+		want := 0
+		if size == 1 || size == 20*1024 {
+			want = 1
+		}
+		if got != want {
+			t.Errorf("after Write(%d): truncation records = %d, want %d", size, got, want)
+		}
+		if size == 20*1024 && logs.String() != before {
+			t.Error("Write logged more stderr after truncation")
+		}
+	}
+}
+
+func TestMacmonStderrWriterSkipsDisabledDebug(t *testing.T) {
+	var logs macmonLogBuffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	writer := macmonStderrWriter{}
+	data := bytes.Repeat([]byte("x"), 20*1024)
+	allocs := testing.AllocsPerRun(100, func() {
+		if n, err := writer.Write(data); n != len(data) || err != nil {
+			t.Fatalf("Write = %d, %v, want %d, nil", n, err, len(data))
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("disabled debug Write allocated %g times, want no conversion or logging work", allocs)
+	}
+	if output := logs.String(); output != "" {
+		t.Errorf("stderr logged with debug disabled: %s", output)
+	}
 }
 
 func TestMacmonSupervisorStderrIsDebugOnly(t *testing.T) {
