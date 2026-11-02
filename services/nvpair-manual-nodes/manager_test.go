@@ -41,8 +41,12 @@ func (rw *captureRW) Read(_ []byte) (int, error) {
 
 func (rw *captureRW) Write(p []byte) (int, error) {
 	cp := append([]byte(nil), p...)
-	rw.frames <- cp
-	return len(p), nil
+	select {
+	case rw.frames <- cp:
+		return len(p), nil
+	case <-time.After(2 * time.Second):
+		return 0, context.DeadlineExceeded
+	}
 }
 
 type fakeRoundTripper struct {
@@ -79,12 +83,14 @@ func httpJSON(status int, body string) (*http.Response, error) {
 	}, nil
 }
 
-func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
+func newTestManager(t *testing.T) (*Manager, *captureRW, *fakeRoundTripper) {
+	t.Helper()
 	rw := newCaptureRW()
 	m, err := NewManager(NewCodec(rw), tlsClientOptions{}, nil)
 	if err != nil {
 		panic(err)
 	}
+	bindTestManager(t, m)
 	rt := newFakeRoundTripper()
 	m.client = &http.Client{Transport: rt, Timeout: time.Second}
 	m.tlsClient = &http.Client{Transport: rt, Timeout: time.Second}
@@ -101,7 +107,11 @@ func newTestManager() (*Manager, *captureRW, *fakeRoundTripper) {
 func newPollRecordingServer(t *testing.T, polls chan<- string, tls bool) (host string, port int, client *http.Client) {
 	t.Helper()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		polls <- r.Header.Get("X-NVPAIR-Poll")
+		select {
+		case polls <- r.Header.Get("X-NVPAIR-Poll"):
+		case <-r.Context().Done():
+			return
+		}
 		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "peer-uuid"})
 	})
 	var srv *httptest.Server
@@ -110,7 +120,8 @@ func newPollRecordingServer(t *testing.T, polls chan<- string, tls bool) (host s
 	} else {
 		srv = httptest.NewServer(handler)
 	}
-	t.Cleanup(srv.Close)
+	srv.Client().Timeout = time.Second
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close() })
 	h, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
 	if err != nil {
 		t.Fatalf("split listener address: %v", err)
@@ -136,7 +147,7 @@ func TestProbeNodeInfoPollIntentFollowsSchedulingDemand(t *testing.T) {
 		{"scheduling demand", true, "scheduling"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _, _ := newTestManager()
+			m, _, _ := newTestManager(t)
 			polls := make(chan string, 1)
 			host, port, client := newPollRecordingServer(t, polls, false)
 			m.setSchedulingDemand(tc.demand)
@@ -145,7 +156,7 @@ func TestProbeNodeInfoPollIntentFollowsSchedulingDemand(t *testing.T) {
 			if !up || info.HostUUID != "peer-uuid" {
 				t.Fatalf("probeNodeInfo = %v, %+v; want a successful peer response", up, info)
 			}
-			if got := <-polls; got != tc.want {
+			if got := receivePoll(t, m.ctx, polls); got != tc.want {
 				t.Fatalf("poll intent = %q, want %q", got, tc.want)
 			}
 		})
@@ -164,24 +175,17 @@ func TestProbeNodeTelemetryPollIntentFollowsSchedulingDemand(t *testing.T) {
 		{"scheduling demand", true, "scheduling"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _, _ := newTestManager()
-			polls := make(chan string, 1)
-			host, port, client := newPollRecordingServer(t, polls, true)
-			m.telemetryTLSClient = client
+			m, _, rt := newTestManager(t)
+			peer := newInventoryPeer(t, m, rt, "node.local", "peer-uuid")
+			configureHealthyNode(rt, "node.local", nil, sampleInfo())
 			m.setSchedulingDemand(tc.demand)
 			// Registered directly rather than through addNode: addNode probes in
 			// the background, and that probe would race this one for the header.
 			const id = "manual:node.local"
-			entry := ManualEntry{Address: host, TLSPort: port}
-			m.mu.Lock()
-			m.nodes[id] = &trackedNode{
-				entry:  entry,
-				status: ManualNodeStatus{ID: id},
-			}
-			m.mu.Unlock()
+			entry := peer.track(m, id)
 
-			m.probeNodeTelemetry(context.Background(), id, entry)
-			if got := <-polls; got != tc.want {
+			m.probeNodeTelemetry(m.ctx, id, entry)
+			if got := receivePoll(t, m.ctx, peer.polls); got != tc.want {
 				t.Fatalf("poll intent = %q, want %q", got, tc.want)
 			}
 		})
@@ -191,14 +195,14 @@ func TestProbeNodeTelemetryPollIntentFollowsSchedulingDemand(t *testing.T) {
 // A freshly spawned worker has been told nothing; an unrenewed scheduling lease
 // is the safe default until the broker says a scheduler is waiting on telemetry.
 func TestFreshManagerProbesInTheBackground(t *testing.T) {
-	m, _, _ := newTestManager()
+	m, _, _ := newTestManager(t)
 	polls := make(chan string, 1)
 	host, port, client := newPollRecordingServer(t, polls, false)
 
 	if up, _ := m.probeNodeInfo(client, "http", host, port); !up {
 		t.Fatal("probeNodeInfo failed")
 	}
-	if got := <-polls; got != "background" {
+	if got := receivePoll(t, m.ctx, polls); got != "background" {
 		t.Fatalf("poll intent = %q, want background before the broker pushes any demand", got)
 	}
 }
@@ -206,7 +210,7 @@ func TestFreshManagerProbesInTheBackground(t *testing.T) {
 // The demand decision arrives as a broker notification, so dispatch must accept
 // it (rather than dropping it as an unknown notification) and apply it.
 func TestHandleSetSchedulingDemand(t *testing.T) {
-	m, _, _ := newTestManager()
+	m, _, _ := newTestManager(t)
 	for _, tc := range []struct {
 		name string
 		json string
@@ -248,6 +252,11 @@ func configureHealthyNode(rt *fakeRoundTripper, addr string, models []string, in
 		return httpJSON(http.StatusOK, string(data))
 	})
 
+	rt.set(http.MethodGet, net.JoinHostPort(addr, "14322"), "/v1/models", func(*http.Request) (*http.Response, error) {
+		data, _ := json.Marshal(engineManagerModels{Models: models, ModelsByEngine: map[string][]string{"ollama": models}})
+		return httpJSON(http.StatusOK, string(data))
+	})
+
 	infoHost := net.JoinHostPort(addr, "14318")
 	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
 		data, _ := json.Marshal(info)
@@ -282,7 +291,7 @@ func configureHealthyLMStudio(rt *fakeRoundTripper, addr string, models []string
 // server reports up with its model ids parsed from /v1/models, and an absent
 // one (no handler registered, so the request errors) reports down.
 func TestProbeLMStudioReportsModels(t *testing.T) {
-	m, _, rt := newTestManager()
+	m, _, rt := newTestManager(t)
 	configureHealthyLMStudio(rt, "node.local", []string{"qwen2.5-7b", "llama-3.1-8b"})
 
 	up, models := m.probeLMStudio("node.local", lmStudioPort)
@@ -325,7 +334,7 @@ func configureHealthyOMLX(rt *fakeRoundTripper, addr string, models []string) {
 // server reports up with its model ids parsed from /v1/models, a loopback-only
 // 403 proxy also reports up, and an absent one reports down.
 func TestProbeOMLXReportsModels(t *testing.T) {
-	m, _, rt := newTestManager()
+	m, _, rt := newTestManager(t)
 	configureHealthyOMLX(rt, "node.local", []string{"mlx-qwen", "mlx-llama"})
 
 	up, models := m.probeOMLX("node.local", omlxPort)
@@ -487,17 +496,20 @@ func TestNodeID(t *testing.T) {
 }
 
 func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) {
-	m, rw, rt := newTestManager()
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
 	configureHealthyNode(rt, "node.local", []string{"llama3", "mistral"}, sampleInfo())
 
-	m.handleMessage(requestMessage(1, "node/add", ManualEntry{Address: "node.local", Name: "lab"}))
+	entry := peer.entry
+	entry.Name = "lab"
+	m.handleMessage(requestMessage(1, "node/add", entry))
 
 	resp := readCaptureUntil(t, rw, responseWithID(1))
 	initial := decodeResult[ManualNodeStatus](t, resp)
-	if initial.ID != "lab" || initial.Address != "node.local" {
+	if initial.ID != "lab" || initial.Address != entry.Address {
 		t.Fatalf("initial status = %+v", initial)
 	}
-	if initial.OllamaPort != 11434 || initial.NodeInfoPort != 14318 {
+	if initial.OllamaPort != 11434 || initial.NodeInfoPort != entry.TLSPort {
 		t.Fatalf("default ports not set: %+v", initial)
 	}
 	if initial.OllamaUp || initial.NodeInfoUp {
@@ -530,7 +542,7 @@ func TestNodeAddRespondsWithInitialStatusThenDiscoversProbeResult(t *testing.T) 
 }
 
 func TestNodeAddValidationErrors(t *testing.T) {
-	m, rw, _ := newTestManager()
+	m, rw, _ := newTestManager(t)
 
 	m.handleMessage(requestMessageRaw(1, "node/add", json.RawMessage(`"bad"`)))
 	resp := readCaptureFrame(t, rw)
@@ -550,10 +562,11 @@ func TestNodeAddValidationErrors(t *testing.T) {
 }
 
 func TestNodesListReturnsCurrentStatuses(t *testing.T) {
-	m, rw, rt := newTestManager()
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
 
-	m.handleMessage(requestMessage(1, "node/add", ManualEntry{Address: "node.local"}))
+	m.handleMessage(requestMessage(1, "node/add", peer.entry))
 	_ = readCaptureUntil(t, rw, methodIs("node/discovered"))
 
 	m.handleMessage(requestMessage(2, "nodes/list", nil))
@@ -573,7 +586,7 @@ func TestNodesListReturnsCurrentStatuses(t *testing.T) {
 }
 
 func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
-	m, rw, _ := newTestManager()
+	m, rw, _ := newTestManager(t)
 	m.nodes["lab"] = &trackedNode{
 		entry:  ManualEntry{Name: "lab", Address: "node.local"},
 		status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318},
@@ -607,19 +620,27 @@ func TestNodeRemoveReturnsRemovedAndNotifies(t *testing.T) {
 }
 
 func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
-	m, rw, rt := newTestManager()
+	m, rw, rt := newTestManager(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	rt.set(http.MethodGet, net.JoinHostPort("node.local", "11434"), "/", func(*http.Request) (*http.Response, error) {
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	rt.set(http.MethodGet, net.JoinHostPort("node.local", "11434"), "/", func(req *http.Request) (*http.Response, error) {
 		close(started)
-		<-release
+		select {
+		case <-release:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
 		return httpJSON(http.StatusOK, `{}`)
 	})
 	rt.set(http.MethodGet, net.JoinHostPort("node.local", "11434"), "/api/tags", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusOK, `{"models":[]}`)
-	})
-	rt.set(http.MethodGet, net.JoinHostPort("node.local", "14318"), "/v1/node-info", func(*http.Request) (*http.Response, error) {
-		return httpJSON(http.StatusOK, `{"GPUs":[]}`)
 	})
 
 	status := m.addNode(ManualEntry{Address: "node.local", Name: "lab"})
@@ -646,18 +667,19 @@ func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
 }
 
 func TestProbeNodeEmitsUpdatedOnStateChange(t *testing.T) {
-	m, rw, rt := newTestManager()
-	m.nodes["lab"] = &trackedNode{entry: ManualEntry{Name: "lab", Address: "node.local"}, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
-	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
+	m.probeNode(entry)
 	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	if len(first.OllamaModels) != 1 || first.OllamaModels[0] != "llama3" {
 		t.Fatalf("first update models = %#v", first.OllamaModels)
 	}
 
 	configureHealthyNode(rt, "node.local", []string{"mistral"}, sampleInfo())
-	m.probeNode(ManualEntry{Name: "lab", Address: "node.local"})
+	m.probeNode(entry)
 	second := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	if len(second.OllamaModels) != 1 || second.OllamaModels[0] != "mistral" {
 		t.Fatalf("second update models = %#v", second.OllamaModels)
@@ -665,8 +687,12 @@ func TestProbeNodeEmitsUpdatedOnStateChange(t *testing.T) {
 }
 
 func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
-	m, rw, rt := newTestManager()
-	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m, rw, rt := newTestManager(t)
+	// Real TLS reads take variable time; hold age fixed while testing equality.
+	now := time.Now()
+	m.now = func() time.Time { return now }
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, sampleInfo())
 
@@ -678,7 +704,7 @@ func TestProbeNodeNoUpdateWhenStable(t *testing.T) {
 }
 
 func TestProbeFailuresClearAvailability(t *testing.T) {
-	m, rw, rt := newTestManager()
+	m, rw, rt := newTestManager(t)
 	entry := ManualEntry{Name: "lab", Address: "node.local"}
 	m.nodes["lab"] = &trackedNode{
 		entry: entry,
@@ -712,26 +738,29 @@ func TestProbeFailuresClearAvailability(t *testing.T) {
 	}
 }
 
-// TestProbeFailurePreservesHostUUID: a node-info blip
-// (while Ollama stays reachable) must NOT blank the learned HostUUID, or the
-// broker would rekey the live node UUID -> manual-id -> UUID.
-func TestProbeFailurePreservesHostUUID(t *testing.T) {
-	m, rw, rt := newTestManager()
-	entry := ManualEntry{Name: "lab", Address: "node.local"}
+// A failed authenticated read revokes service eligibility and the UUID, even
+// while the bare engine remains reachable. Recovery must prove identity again.
+func TestProbeFailureClearsUnprovenHostUUID(t *testing.T) {
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 	m.nodes["lab"] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: "lab", Address: "node.local", OllamaPort: 11434, NodeInfoPort: 14318}}
 
 	info := sampleInfo()
 	info.HostUUID = "node-uuid"
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
 
-	// First probe learns the UUID.
+	// First probe proves the UUID over pinned mTLS.
 	m.probeNode(entry)
 	first := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
 	if first.HostUUID != "node-uuid" {
 		t.Fatalf("first probe HostUUID = %q, want node-uuid", first.HostUUID)
 	}
 
-	// node-info goes down while Ollama stays up: the UUID must be preserved.
+	// Keep the actual address's bare engine reachable as well: any accidental
+	// fallback after a failed PAIR proof must make the assertion fail.
+	configureHealthyNode(rt, entry.Address, []string{"llama3"}, info)
+	// A failed proof must clear identity and cannot bypass to a bare engine.
 	rt.set(http.MethodGet, net.JoinHostPort("node.local", "14318"), "/v1/node-info", func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("node-info down")
 	})
@@ -740,11 +769,11 @@ func TestProbeFailurePreservesHostUUID(t *testing.T) {
 	if down.NodeInfoUp {
 		t.Fatal("node-info should be down")
 	}
-	if down.HostUUID != "node-uuid" {
-		t.Fatalf("HostUUID dropped on node-info failure: %q", down.HostUUID)
+	if down.HostUUID != "" || down.ClusterUUID != "" || down.PeerRecordID != "" || down.IdentityVerification != "unverified" || down.OllamaUp {
+		t.Fatalf("failed proof retained identity or engine availability: %+v", down)
 	}
 
-	// node-info recovers: still the same UUID (no flap).
+	// Node-info recovers: the same UUID is eligible only after a fresh proof.
 	configureHealthyNode(rt, "node.local", []string{"llama3"}, info)
 	m.probeNode(entry)
 	up := decodeParams[ManualNodeStatus](t, readCaptureUntil(t, rw, methodIs("node/updated")))
@@ -754,8 +783,9 @@ func TestProbeFailurePreservesHostUUID(t *testing.T) {
 }
 
 func TestManualTelemetryAgeIncludesProbeDuration(t *testing.T) {
-	m, rw, rt := newTestManager()
-	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 	m.nodes["lab"] = &trackedNode{
 		entry: entry,
 		status: ManualNodeStatus{
@@ -784,15 +814,12 @@ func TestManualTelemetryAgeIncludesProbeDuration(t *testing.T) {
 		return httpJSON(http.StatusOK, string(data))
 	})
 
-	ollamaHost := net.JoinHostPort("node.local", "11434")
-	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+	emHost := net.JoinHostPort("node.local", "14322")
+	rt.set(http.MethodGet, emHost, "/v1/models", func(*http.Request) (*http.Response, error) {
 		mu.Lock()
 		simulatedTime = simulatedTime.Add(2500 * time.Millisecond)
 		mu.Unlock()
-		return httpJSON(http.StatusOK, `{}`)
-	})
-	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
-		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+		return httpJSON(http.StatusOK, `{"models":["llama3"],"modelsByEngine":{"ollama":["llama3"]}}`)
 	})
 
 	m.probeNode(entry)
@@ -807,8 +834,9 @@ func TestManualTelemetryAgeIncludesProbeDuration(t *testing.T) {
 }
 
 func TestManualTelemetryAgeInvalidTelemetryZero(t *testing.T) {
-	m, rw, rt := newTestManager()
-	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 	m.nodes["lab"] = &trackedNode{
 		entry: entry,
 		status: ManualNodeStatus{
@@ -837,15 +865,12 @@ func TestManualTelemetryAgeInvalidTelemetryZero(t *testing.T) {
 		return httpJSON(http.StatusOK, string(data))
 	})
 
-	ollamaHost := net.JoinHostPort("node.local", "11434")
-	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+	emHost := net.JoinHostPort("node.local", "14322")
+	rt.set(http.MethodGet, emHost, "/v1/models", func(*http.Request) (*http.Response, error) {
 		mu.Lock()
 		simulatedTime = simulatedTime.Add(2500 * time.Millisecond)
 		mu.Unlock()
-		return httpJSON(http.StatusOK, `{}`)
-	})
-	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
-		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+		return httpJSON(http.StatusOK, `{"models":["llama3"],"modelsByEngine":{"ollama":["llama3"]}}`)
 	})
 
 	m.probeNode(entry)
@@ -860,8 +885,9 @@ func TestManualTelemetryAgeInvalidTelemetryZero(t *testing.T) {
 }
 
 func TestManualTelemetryAgeSaturatesOnOverflow(t *testing.T) {
-	m, rw, rt := newTestManager()
-	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 	m.nodes["lab"] = &trackedNode{
 		entry: entry,
 		status: ManualNodeStatus{
@@ -890,15 +916,12 @@ func TestManualTelemetryAgeSaturatesOnOverflow(t *testing.T) {
 		return httpJSON(http.StatusOK, string(data))
 	})
 
-	ollamaHost := net.JoinHostPort("node.local", "11434")
-	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+	emHost := net.JoinHostPort("node.local", "14322")
+	rt.set(http.MethodGet, emHost, "/v1/models", func(*http.Request) (*http.Response, error) {
 		mu.Lock()
 		simulatedTime = simulatedTime.Add(2500 * time.Millisecond)
 		mu.Unlock()
-		return httpJSON(http.StatusOK, `{}`)
-	})
-	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
-		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+		return httpJSON(http.StatusOK, `{"models":["llama3"],"modelsByEngine":{"ollama":["llama3"]}}`)
 	})
 
 	m.probeNode(entry)
@@ -913,8 +936,9 @@ func TestManualTelemetryAgeSaturatesOnOverflow(t *testing.T) {
 }
 
 func TestManualTelemetryAgeNeverDecreases(t *testing.T) {
-	m, rw, rt := newTestManager()
-	entry := ManualEntry{Name: "lab", Address: "node.local"}
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "node-uuid")
+	entry := peer.track(m, "lab")
 	m.nodes["lab"] = &trackedNode{
 		entry: entry,
 		status: ManualNodeStatus{
@@ -943,15 +967,12 @@ func TestManualTelemetryAgeNeverDecreases(t *testing.T) {
 		return httpJSON(http.StatusOK, string(data))
 	})
 
-	ollamaHost := net.JoinHostPort("node.local", "11434")
-	rt.set(http.MethodGet, ollamaHost, "/", func(*http.Request) (*http.Response, error) {
+	emHost := net.JoinHostPort("node.local", "14322")
+	rt.set(http.MethodGet, emHost, "/v1/models", func(*http.Request) (*http.Response, error) {
 		mu.Lock()
 		simulatedTime = simulatedTime.Add(-500 * time.Millisecond)
 		mu.Unlock()
-		return httpJSON(http.StatusOK, `{}`)
-	})
-	rt.set(http.MethodGet, ollamaHost, "/api/tags", func(*http.Request) (*http.Response, error) {
-		return httpJSON(http.StatusOK, `{"models":[{"name":"llama3"}]}`)
+		return httpJSON(http.StatusOK, `{"models":["llama3"],"modelsByEngine":{"ollama":["llama3"]}}`)
 	})
 
 	m.probeNode(entry)
@@ -987,7 +1008,7 @@ func TestCPUAndMemoryNilAwareEquality(t *testing.T) {
 }
 
 func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
-	m, rw, _ := newTestManager()
+	m, rw, _ := newTestManager(t)
 	m.handleMessage(requestMessage(1, "bogus", nil))
 	resp := readCaptureFrame(t, rw)
 	if resp.Error == nil || resp.Error.Code != -32601 {
@@ -996,7 +1017,7 @@ func TestUnknownMethodReturnsMethodNotFound(t *testing.T) {
 }
 
 func TestLogSetLevelRequest(t *testing.T) {
-	m, rw, _ := newTestManager()
+	m, rw, _ := newTestManager(t)
 	m.handleMessage(requestMessage(1, applog.SetLevelMethod, applog.SetLevelParams{Level: "debug"}))
 	resp := readCaptureFrame(t, rw)
 	result := decodeResult[map[string]string](t, resp)
@@ -1013,6 +1034,12 @@ func TestLogSetLevelRequest(t *testing.T) {
 
 func TestShutdownRequestCancelsRun(t *testing.T) {
 	server, client := net.Pipe()
+	if err := server.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	defer server.Close()
 	defer client.Close()
 
@@ -1021,7 +1048,7 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 	done := make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(manualTestContext(t))
 	defer cancel()
 	go func() {
 		done <- mgr.Run(ctx)
@@ -1050,7 +1077,7 @@ func TestShutdownRequestCancelsRun(t *testing.T) {
 }
 
 func TestNotificationIsIgnored(t *testing.T) {
-	m, rw, _ := newTestManager()
+	m, rw, _ := newTestManager(t)
 	m.handleMessage(notificationMessage("node/add", ManualEntry{Address: "node.local"}))
 	if got := m.listNodes(); len(got) != 0 {
 		t.Fatalf("notification mutated state: %#v", got)
@@ -1100,6 +1127,7 @@ func TestSyncClusterMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	bindTestManager(t, m)
 
 	m.syncClusterMembers()
 
@@ -1177,7 +1205,8 @@ func TestAddNodeSupersedesClusterSeededEntryAtSameAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	m.client = &http.Client{Transport: newFakeRoundTripper()}
+	bindTestManager(t, m)
+	m.client = &http.Client{Transport: newFakeRoundTripper(), Timeout: time.Second}
 
 	m.syncClusterMembers()
 	if got := len(m.listNodes()); got != 1 {
@@ -1207,7 +1236,8 @@ func TestAddNodeSupersedesClusterSeededEntryAtSameAddress(t *testing.T) {
 }
 
 func TestProbeEngineManagerReportsModels(t *testing.T) {
-	m, _, rt := newTestManager()
+	m, _, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "uuid-node-1")
 
 	infoHost := net.JoinHostPort("node.local", "14318")
 	rt.set(http.MethodGet, infoHost, "/v1/node-info", func(*http.Request) (*http.Response, error) {
@@ -1230,8 +1260,8 @@ func TestProbeEngineManagerReportsModels(t *testing.T) {
 		}`)
 	})
 
-	m.addNode(ManualEntry{Address: "node.local", Name: "test-node"})
-	m.probeNode(ManualEntry{Address: "node.local", Name: "test-node"})
+	entry := peer.track(m, "test-node")
+	m.probeNode(entry)
 
 	nodes := m.listNodes()
 	if len(nodes) != 1 {
@@ -1271,11 +1301,12 @@ func TestProbeEngineManagerReportsModels(t *testing.T) {
 }
 
 func TestProbeNodeSkipsPlaintextEngineProbesForClusteredNode(t *testing.T) {
-	m, _, rt := newTestManager()
+	m, _, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "clustered.local", "uuid-clustered-1")
 
 	var plaintextProbes int
 	for _, port := range []string{"11434", "1234", "1236"} {
-		host := net.JoinHostPort("clustered.local", port)
+		host := net.JoinHostPort(peer.entry.Address, port)
 		rt.set(http.MethodGet, host, "/", func(*http.Request) (*http.Response, error) {
 			plaintextProbes++
 			return httpJSON(http.StatusForbidden, `{"error":"cluster peers must use mTLS"}`)
@@ -1291,10 +1322,12 @@ func TestProbeNodeSkipsPlaintextEngineProbesForClusteredNode(t *testing.T) {
 		return httpJSON(http.StatusOK, `{"hostUuid":"uuid-clustered-1","clusterUuid":"uuid-clustered-1"}`)
 	})
 
-	entry := ManualEntry{Address: "clustered.local", Name: "clustered-peer", MTLS: true}
-	m.addNode(entry)
+	entry := peer.track(m, "clustered-peer")
 	m.probeNode(entry)
 
+	if got := m.nodes[nodeID(entry)].status; got.IdentityVerification != "verified" || !got.NodeInfoUp {
+		t.Fatalf("expected proven PAIR peer: %+v", got)
+	}
 	if plaintextProbes != 0 {
 		t.Fatalf("expected 0 plaintext engine probes for clustered/mTLS node, got %d", plaintextProbes)
 	}
@@ -1342,6 +1375,9 @@ func writePipeRequest(t *testing.T, conn net.Conn, id int, method string, params
 		t.Fatalf("marshal request: %v", err)
 	}
 	data = append(data, '\n')
+	if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set write deadline: %v", err)
+	}
 	if _, err := conn.Write(data); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -1367,7 +1403,8 @@ func TestTelemetryIntervalForNodeDeterministicAndBounded(t *testing.T) {
 }
 
 func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T) {
-	m, rw, rt := newTestManager()
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "reachable.local", "peer-uuid-1")
 	m.telemetryInterval = func(_ string) time.Duration {
 		return 10 * time.Millisecond
 	}
@@ -1382,9 +1419,9 @@ func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T)
 		{Name: "GPU 1", UtilizationPercent: gpuReading(uint32(77))},
 	}
 
-	var pollHeader string
+	var pollHeader atomic.Value
 	rt.set(http.MethodGet, net.JoinHostPort("reachable.local", "14318"), "/v1/node-info", func(req *http.Request) (*http.Response, error) {
-		pollHeader = req.Header.Get("X-NVPAIR-Poll")
+		pollHeader.Store(req.Header.Get("X-NVPAIR-Poll"))
 		data, _ := json.Marshal(info)
 		return httpJSON(http.StatusOK, string(data))
 	})
@@ -1395,7 +1432,9 @@ func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T)
 		return httpJSON(http.StatusOK, `{"models":[]}`)
 	})
 
-	m.addNode(ManualEntry{Address: "reachable.local", Name: "reachable-node"})
+	entry := peer.entry
+	entry.Name = "reachable-node"
+	m.addNode(entry)
 
 	msg := readCaptureUntil(t, rw, methodIs("node/telemetry"))
 	var telem NodeTelemetryNotification
@@ -1422,8 +1461,8 @@ func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T)
 	}
 	// No workload is queued or running in this test, so the broker has pushed no
 	// scheduling demand and every poll is a background read.
-	if pollHeader != "background" {
-		t.Errorf("expected X-NVPAIR-Poll = background, got %q", pollHeader)
+	if pollHeader.Load() != "background" {
+		t.Errorf("expected X-NVPAIR-Poll = background, got %q", pollHeader.Load())
 	}
 
 	// Remove reachable node and drain frames so its loop stops
@@ -1440,12 +1479,16 @@ func TestNodeTelemetryEmittedForReachableNodeAndNoneForUnreachable(t *testing.T)
 		return nil, errors.New("connection refused")
 	})
 
-	m.addNode(ManualEntry{Address: "unreachable.local", Name: "unreachable-node"})
+	peer.server.CloseClientConnections()
+	peer.server.Close()
+	entry.Name = "unreachable-node"
+	m.addNode(entry)
 	assertNoCaptureMethod(t, rw, "node/telemetry")
 }
 
 func TestNodeTelemetryLoopStopsOnRemove(t *testing.T) {
-	m, rw, rt := newTestManager()
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "peer-uuid-1")
 	m.telemetryInterval = func(_ string) time.Duration {
 		return 10 * time.Millisecond
 	}
@@ -1463,7 +1506,9 @@ func TestNodeTelemetryLoopStopsOnRemove(t *testing.T) {
 		return httpJSON(http.StatusOK, `{"models":[]}`)
 	})
 
-	m.addNode(ManualEntry{Address: "node.local", Name: "node-1"})
+	entry := peer.entry
+	entry.Name = "node-1"
+	m.addNode(entry)
 	_ = readCaptureUntil(t, rw, methodIs("node/telemetry"))
 
 	if !m.removeNode("node-1") {
@@ -1481,70 +1526,23 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestTelemetryLoopReusesKeepAliveConnections(t *testing.T) {
-	var newConns atomic.Int32
-	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/node-info" {
-			w.Header().Set("Content-Type", "application/json")
-			info := sampleInfo()
-			info.HostUUID = "peer-uuid"
-			info.TelemetryValid = true
-			_ = json.NewEncoder(w).Encode(info)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	ts.Config.ConnState = func(c net.Conn, state http.ConnState) {
-		if state == http.StateNew {
-			newConns.Add(1)
-		}
-	}
-	ts.StartTLS()
-	defer ts.Close()
-
-	host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rw := newCaptureRW()
-	m, err := NewManager(NewCodec(rw), tlsClientOptions{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Route 10s topology probes to a dummy roundtripper so only telemetry connects to ts
-	dummy := newFakeRoundTripper()
-	m.client = &http.Client{Transport: dummy}
-	m.tlsClient = &http.Client{Transport: dummy}
-
-	// Configure telemetryTLSClient with the test server's TLS config and keep-alives enabled
-	tlsTransport := telemetryTransport(ts.Client().Transport.(*http.Transport).TLSClientConfig)
-	m.telemetryTLSClient = &http.Client{
-		Timeout:   telemetryProbeTimeout,
-		Transport: tlsTransport,
-	}
-
-	m.telemetryInterval = func(_ string) time.Duration {
-		return 10 * time.Millisecond
-	}
-
-	m.addNode(ManualEntry{Address: host, TLSPort: port, Name: "test-node"})
-
-	// Collect several node/telemetry frames across ticks
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "node.local", "peer-uuid")
+	configureHealthyNode(rt, "node.local", nil, sampleInfo())
+	m.telemetryInterval = func(string) time.Duration { return 10 * time.Millisecond }
+	// Start with a known binding so discovery's one-shot identity hint is not
+	// counted as a telemetry connection. The periodic reads must reuse one socket.
+	entry := peer.track(m, "test-node")
+	m.mu.Lock()
+	m.startTelemetryLoopLocked(nodeID(entry), m.nodes[nodeID(entry)])
+	m.mu.Unlock()
 	for i := 0; i < 4; i++ {
 		_ = readCaptureUntil(t, rw, methodIs("node/telemetry"))
 	}
-
 	if !m.removeNode("test-node") {
 		t.Fatal("failed to remove node")
 	}
-
-	// With keep-alive connection reuse, only 1 connection is dialed
-	if got := newConns.Load(); got != 1 {
+	if got := peer.newConns.Load(); got != 1 {
 		t.Fatalf("expected 1 connection created across multiple telemetry ticks, got %d", got)
 	}
 }
@@ -1555,6 +1553,7 @@ func TestTelemetryTimeoutBelowInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestManager(t, m)
 	if m.telemetryClient.Timeout != 1500*time.Millisecond {
 		t.Errorf("telemetryClient timeout = %v, want 1.5s", m.telemetryClient.Timeout)
 	}
@@ -1568,54 +1567,37 @@ func TestTelemetryTimeoutBelowInterval(t *testing.T) {
 }
 
 func TestTelemetryCancellationOnRemovalAbortsInFlightRequest(t *testing.T) {
-	m, rw, _ := newTestManager()
-	m.telemetryInterval = func(_ string) time.Duration {
-		return 5 * time.Millisecond
-	}
-
+	m, rw, rt := newTestManager(t)
+	peer := newInventoryPeer(t, m, rt, "slow.local", "slow-peer")
+	m.telemetryInterval = func(string) time.Duration { return 5 * time.Millisecond }
 	inFlight := make(chan struct{})
 	reqAborted := make(chan struct{})
-
-	m.telemetryClient = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if strings.HasSuffix(req.URL.Path, "/v1/node-info") {
-				select {
-				case <-inFlight:
-				default:
-					close(inFlight)
-				}
-				<-req.Context().Done()
-				select {
-				case <-reqAborted:
-				default:
-					close(reqAborted)
-				}
-				return nil, req.Context().Err()
-			}
-			return httpJSON(http.StatusOK, `{}`)
-		}),
-	}
-
-	m.addNode(ManualEntry{Address: "slow.local", Name: "slow-node"})
-
-	// Wait until the request is in-flight
+	rt.set(http.MethodGet, "slow.local:14318", "/v1/node-info", func(req *http.Request) (*http.Response, error) {
+		close(inFlight)
+		select {
+		case <-req.Context().Done():
+			close(reqAborted)
+			return nil, req.Context().Err()
+		case <-m.ctx.Done():
+			return nil, m.ctx.Err()
+		}
+	})
+	entry := peer.track(m, "slow-node")
+	m.mu.Lock()
+	m.startTelemetryLoopLocked(nodeID(entry), m.nodes[nodeID(entry)])
+	m.mu.Unlock()
 	select {
 	case <-inFlight:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for telemetry request to enter in-flight")
 	}
-
-	// Removing the node must cancel its context and abort the in-flight request immediately
 	if !m.removeNode("slow-node") {
 		t.Fatal("failed to remove slow-node")
 	}
-
 	select {
 	case <-reqAborted:
-		// In-flight request was aborted immediately by context cancellation
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("in-flight telemetry request was not aborted on node removal")
 	}
-
 	_ = readCaptureUntil(t, rw, methodIs("node/removed"))
 }

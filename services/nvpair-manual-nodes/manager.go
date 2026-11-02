@@ -82,6 +82,7 @@ const (
 )
 
 type NodeTelemetryNotification struct {
+	PeerRecordID      string `json:"peerRecordId,omitempty"`
 	ID                string `json:"id"`
 	HostUUID          string `json:"hostUuid,omitempty"`
 	GPUUtilizationPct uint32 `json:"gpuUtilizationPct"`
@@ -143,12 +144,14 @@ type MemoryInfo struct {
 }
 
 type NodeInfoResponse struct {
-	GPUs           []GPUInfo   `json:"GPUs"`
-	CPU            *CPUInfo    `json:"cpu,omitempty"`
-	Memory         *MemoryInfo `json:"memory,omitempty"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
-	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
+	PeerMetadata   *noderec.PeerMetadataParams `json:"peerMetadata,omitempty"`
+	PeerRecordID   string                      `json:"-"`
+	GPUs           []GPUInfo                   `json:"GPUs"`
+	CPU            *CPUInfo                    `json:"cpu,omitempty"`
+	Memory         *MemoryInfo                 `json:"memory,omitempty"`
+	TelemetryValid bool                        `json:"telemetryValid"`
+	MSSince        int64                       `json:"msSince"`
+	SampleSeq      uint64                      `json:"sampleSeq,omitempty"`
 	// HostUUID is the remote node's stable per-host identity, reported by
 	// node-info. We surface it so a manual node is tracked by the same permanent
 	// identity as the rest of the fleet — including deduping with the same
@@ -182,12 +185,15 @@ type ManualEntry struct {
 // 14318 otherwise) so existing UI that displays the port stays
 // correct.
 type ManualNodeStatus struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name,omitempty"`
-	Address      string   `json:"address"`
-	OllamaUp     bool     `json:"ollama_up"`
-	OllamaPort   int      `json:"ollama_port"`
-	OllamaModels []string `json:"ollama_models,omitempty"`
+	IdentityVerification string                      `json:"identityVerification,omitempty"`
+	PeerRecordID         string                      `json:"peerRecordId,omitempty"`
+	PeerMetadata         *noderec.PeerMetadataParams `json:"peerMetadata,omitempty"`
+	ID                   string                      `json:"id"`
+	Name                 string                      `json:"name,omitempty"`
+	Address              string                      `json:"address"`
+	OllamaUp             bool                        `json:"ollama_up"`
+	OllamaPort           int                         `json:"ollama_port"`
+	OllamaModels         []string                    `json:"ollama_models,omitempty"`
 	// LM Studio is probed on its default OpenAI-API port the same way Ollama
 	// is on 11434, so a manually-added node running LM Studio can be bridged
 	// into lmstudio-proxy by a supervising broker.
@@ -239,6 +245,7 @@ type trackedNode struct {
 	entry       ManualEntry
 	status      ManualNodeStatus
 	fromCluster bool
+	peerSeen    bool
 
 	// consecutiveFails counts back-to-back probes where neither
 	// service answered (OllamaUp && NodeInfoUp both false). Reset
@@ -298,7 +305,9 @@ type Manager struct {
 	// node is probed over cluster mTLS (presenting our leaf, accepting any
 	// currently-pinned server cert) since a clustered peer's node-info is
 	// pin-gated and serves no plaintext listener.
-	mesh *clustertrust.Mesh
+	mesh              *clustertrust.Mesh
+	inventoryPoolOnce sync.Once
+	inventoryPool     *clustertrust.PeerClientPool
 
 	// emPort is the port a remote node's engine-manager surface is probed on.
 	// It is engineManagerPort in production; a test points it at an ephemeral
@@ -379,6 +388,8 @@ func (m *Manager) getTelemetryTLSConfigAnyClient() *http.Client {
 }
 
 func (m *Manager) closeIdleTelemetry() {
+	m.inventoryPoolOnce.Do(func() { m.inventoryPool = clustertrust.NewPeerClientPool(m.mesh, probeTimeout) })
+	m.inventoryPool.CloseIdle()
 	m.mu.Lock()
 	if m.telemetryAnyTransport != nil {
 		m.telemetryAnyTransport.CloseIdleConnections()
@@ -671,58 +682,33 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	addr := entry.Address
 	id := nodeID(entry)
 
-	// Pick scheme + port + client based on the entry's TLS hint.
-	// The operator decides which scheme this manual node uses; we
-	// don't probe both. TLSPort > 0 means HTTPS on that port via
-	// the TLS client (which carries the operator's client cert,
-	// if configured). Otherwise it's plain HTTP on the historical
-	// 14318.
-	scheme := "http"
-	nodeInfoPort := 14318
-	probeClient := m.client
-	if entry.TLSPort > 0 {
-		scheme = "https"
-		nodeInfoPort = entry.TLSPort
-		probeClient = m.tlsClient
-		// Clustered: a TLS manual node is a cluster peer whose node-info is
-		// pin-gated mTLS with no plaintext listener. Dial it with our cluster
-		// leaf, accepting any currently-pinned server cert (a manual node has no
-		// cluster-uuid= TXT to key a specific pin on). Refresh first so a cluster
-		// joined, or a peer paired, after startup is seen; falls back to the BYO
-		// tlsClient while unclustered.
-		m.mesh.Refresh()
-		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
-			probeClient = &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
-		}
+	m.mu.RLock()
+	tracked, exists := m.nodes[id]
+	if !exists || tracked.entry != entry {
+		m.mu.RUnlock()
+		return
 	}
-	nodeInfoUp, info := m.probeNodeInfo(probeClient, scheme, addr, nodeInfoPort)
+	prior := tracked.status
+	peerSeen := tracked.peerSeen || tracked.fromCluster || prior.PeerRecordID != ""
+	m.mu.RUnlock()
+	// Use the request start as the age anchor so transport time cannot make a
+	// remotely sampled observation look fresher than it is.
 	nodeInfoReceived := m.clockNow()
-	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() {
-		m.mesh.Refresh()
-		if cfg, ok := m.mesh.ClientTLSConfigAny(); ok {
-			tlsClient := &http.Client{Timeout: probeTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}
-			for _, port := range []int{14319, 14318} {
-				if up, tlsInfo := m.probeNodeInfo(tlsClient, "https", addr, port); up {
-					nodeInfoUp = true
-					info = tlsInfo
-					nodeInfoPort = port
-					nodeInfoReceived = m.clockNow()
-					break
-				}
-			}
-		}
-	}
-
-	var clusterUUID string
-	if info.ClusterUUID != nil {
+	info, nodeInfoPort, nodeInfoUp := m.authenticatedNodeInfo(m.ctx, entry, prior.ClusterUUID)
+	clusterUUID := ""
+	emPort := 0
+	if nodeInfoUp {
 		clusterUUID = *info.ClusterUUID
+		emPort = info.PeerMetadata.Services[noderec.ServiceEngineManager]
+		peerSeen = true
 	}
-	if clusterUUID == "" && m.mesh != nil && info.HostUUID != "" && m.mesh.HasPin(info.HostUUID) {
-		clusterUUID = info.HostUUID
+	if !peerSeen && entry.TLSPort == 0 && !entry.MTLS {
+		// Public PAIR presence can only deny the bare-engine bypass, never
+		// establish an identity or supply service inventory.
+		publicUp, _ := m.probeNodeInfo(m.client, "http", addr, 14318)
+		peerSeen = publicUp
 	}
-
-	useTLS := entry.TLSPort > 0 || (nodeInfoUp && scheme == "https")
-	emUp, emRes, engineNative := m.probeEngineManager(addr, clusterUUID, useTLS, m.engineNativeDue(id))
+	emUp, emRes, engineNative := m.probePeerEngineManager(m.ctx, addr, clusterUUID, info.PeerRecordID, emPort, m.engineNativeDue(id))
 
 	finalModels := emRes.Models
 	finalModelsByEngine := emRes.ModelsByEngine
@@ -731,7 +717,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	// Plaintext engine probes are only valid for unclustered/non-mTLS nodes;
 	// clustered peers reject non-loopback plaintext requests on their proxy
 	// ports and publish their authoritative inventory via Engine Manager (:14322).
-	canProbePlaintextEngines := !entry.MTLS && !useTLS && clusterUUID == ""
+	canProbePlaintextEngines := !peerSeen && !entry.MTLS && entry.TLSPort == 0
 
 	var (
 		ollamaUp, lmStudioUp, omlxUp             bool
@@ -826,45 +812,71 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 	}
 
+	verification := "manual"
+	if peerSeen {
+		verification = "unverified"
+	}
+	if nodeInfoUp {
+		verification = "verified"
+	}
 	newStatus := ManualNodeStatus{
-		ID:             id,
-		Name:           entry.Name,
-		Address:        addr,
-		OllamaUp:       ollamaUp,
-		OllamaPort:     11434,
-		OllamaModels:   ollamaModels,
-		LMStudioUp:     lmStudioUp,
-		LMStudioPort:   lmStudioPort,
-		LMStudioModels: lmStudioModels,
-		OMLXUp:         omlxUp,
-		OMLXPort:       omlxPort,
-		OMLXModels:     omlxModels,
-		NodeInfoUp:     nodeInfoUp,
-		NodeInfoPort:   nodeInfoPort,
-		TLSEnabled:     entry.TLSPort > 0,
-		MTLSRequired:   entry.TLSPort > 0 && entry.MTLS,
-		GPUs:           info.GPUs,
-		CPU:            info.CPU,
-		Memory:         info.Memory,
-		TelemetryValid: info.TelemetryValid,
-		MSSince:        msSince,
-		SampleSeq:      info.SampleSeq,
-		HostUUID:       info.HostUUID,
-		ClusterUUID:    clusterUUID,
-		Models:         finalModels,
-		ModelsByEngine: finalModelsByEngine,
-		LoadedByEngine: finalLoadedByEngine,
-		EngineNative:   engineNative,
+		IdentityVerification: verification,
+		PeerRecordID:         info.PeerRecordID,
+		PeerMetadata:         info.PeerMetadata,
+		ID:                   id,
+		Name:                 entry.Name,
+		Address:              addr,
+		OllamaUp:             ollamaUp,
+		OllamaPort:           11434,
+		OllamaModels:         ollamaModels,
+		LMStudioUp:           lmStudioUp,
+		LMStudioPort:         lmStudioPort,
+		LMStudioModels:       lmStudioModels,
+		OMLXUp:               omlxUp,
+		OMLXPort:             omlxPort,
+		OMLXModels:           omlxModels,
+		NodeInfoUp:           nodeInfoUp,
+		NodeInfoPort:         nodeInfoPort,
+		TLSEnabled:           entry.TLSPort > 0,
+		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
+		GPUs:                 info.GPUs,
+		CPU:                  info.CPU,
+		Memory:               info.Memory,
+		TelemetryValid:       info.TelemetryValid,
+		MSSince:              msSince,
+		SampleSeq:            info.SampleSeq,
+		HostUUID:             info.HostUUID,
+		ClusterUUID:          clusterUUID,
+		Models:               finalModels,
+		ModelsByEngine:       finalModelsByEngine,
+		LoadedByEngine:       finalLoadedByEngine,
+		EngineNative:         engineNative,
 	}
 
+	if nodeInfoUp {
+		newStatus.OllamaPort = info.PeerMetadata.Services[noderec.ServiceOllama]
+		newStatus.LMStudioPort = info.PeerMetadata.Services[noderec.ServiceLMStudio]
+		newStatus.OMLXPort = info.PeerMetadata.Services[noderec.ServiceOMLX]
+		newStatus.OllamaUp = newStatus.OllamaUp && newStatus.OllamaPort > 0
+		newStatus.LMStudioUp = newStatus.LMStudioUp && newStatus.LMStudioPort > 0
+		newStatus.OMLXUp = newStatus.OMLXUp && newStatus.OMLXPort > 0
+	}
 	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.OMLXUp || newStatus.NodeInfoUp || emUp
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
-	if !exists {
+	if !exists || tn != tracked || tn.entry != entry {
 		m.mu.Unlock()
 		return
 	}
+	if newStatus.PeerRecordID != "" {
+		m.mesh.Refresh()
+		if newStatus.PeerRecordID != m.mesh.PeerRecordID(newStatus.ClusterUUID) {
+			m.mu.Unlock()
+			return
+		}
+	}
+	tn.peerSeen = peerSeen
 
 	prev := tn.status
 	prevFails := tn.consecutiveFails
@@ -872,14 +884,8 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	// so a transient node-info blip (while Ollama stays reachable) doesn't rekey
 	// a live node UUID -> manual-id -> UUID — the broker keys the discovery store
 	// by HostUUID.
-	if !nodeInfoUp && newStatus.HostUUID == "" {
-		newStatus.HostUUID = prev.HostUUID
-	}
-	if newStatus.ClusterUUID == "" {
-		newStatus.ClusterUUID = prev.ClusterUUID
-	}
-	if newStatus.ClusterUUID == "" && m.mesh != nil && newStatus.HostUUID != "" && m.mesh.HasPin(newStatus.HostUUID) {
-		newStatus.ClusterUUID = newStatus.HostUUID
+	if newStatus.PeerRecordID != prev.PeerRecordID {
+		tn.engineNative = nil
 	}
 	// A node with no view keeps the one it had: the last-good rule the
 	// node-scanner's engine-native sweep follows too. A node that never
@@ -901,7 +907,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	curFails := tn.consecutiveFails
 	m.mu.Unlock()
 
-	changed := prev.OllamaUp != newStatus.OllamaUp ||
+	changed := prev.IdentityVerification != newStatus.IdentityVerification || prev.PeerRecordID != newStatus.PeerRecordID || prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
 		prev.OMLXUp != newStatus.OMLXUp ||
 		prev.OMLXPort != newStatus.OMLXPort ||
@@ -988,153 +994,6 @@ type engineManagerModels struct {
 	Models         []string            `json:"models"`
 	ModelsByEngine map[string][]string `json:"modelsByEngine"`
 	LoadedByEngine map[string][]string `json:"loadedByEngine"`
-}
-
-// probeEngineManager checks nvpair-engine-manager's LAN /v1/models endpoint on addr:14322.
-// When reachable, it provides the authoritative model list, per-engine attribution, and
-// loaded-in-memory models across all supported engines (Ollama, LM Studio, oMLX) in a
-// single sweep. Tries cluster mTLS first if clustered, then configured TLS client, then HTTP.
-//
-// When the caller asks for it, the engine's own view of itself is read as well,
-// over the same transport the model list was just read over: the engine's
-// counters are cluster data exactly like the model inventory, so a peer is read
-// over cluster mTLS pinned to the principal it advertises, and the view is
-// never read over a weaker transport than the list beside it.
-func (m *Manager) probeEngineManager(addr, clusterUUID string, useTLS bool, wantEngineNative bool) (bool, engineManagerModels, *enginenative.Stats) {
-	if m.mesh != nil && m.mesh.Clustered() {
-		m.mesh.Refresh()
-		var cfg *tls.Config
-		var ok bool
-		if clusterUUID != "" && m.mesh.HasPin(clusterUUID) {
-			cfg, ok = m.mesh.ClientTLSConfig(clusterUUID)
-		}
-		if !ok {
-			cfg, ok = m.mesh.ClientTLSConfigAny()
-		}
-		if ok {
-			tlsClient := &http.Client{
-				Timeout:   probeTimeout,
-				Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true},
-			}
-			if success, res := m.fetchEngineManagerModels(tlsClient, "https", addr, m.emPort); success {
-				return true, res, readEngineNative(tlsClient, "https", addr, m.emPort, wantEngineNative)
-			}
-		}
-	}
-
-	if useTLS && m.tlsClient != nil {
-		if success, res := m.fetchEngineManagerModels(m.tlsClient, "https", addr, m.emPort); success {
-			return true, res, readEngineNative(m.tlsClient, "https", addr, m.emPort, wantEngineNative)
-		}
-	}
-
-	if success, res := m.fetchEngineManagerModels(m.client, "http", addr, m.emPort); success {
-		return true, res, readEngineNative(m.client, "http", addr, m.emPort, wantEngineNative)
-	}
-
-	return false, engineManagerModels{}, nil
-}
-
-func (m *Manager) fetchEngineManagerModels(client *http.Client, scheme, addr string, port int) (bool, engineManagerModels) {
-	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
-	start := time.Now()
-	resp, err := client.Get(url)
-	if err != nil {
-		slog.Debug("manual probe engine-manager failed",
-			"addr", addr, "port", port, "scheme", scheme, "err", err,
-			"duration_ms", time.Since(start).Milliseconds())
-		return false, engineManagerModels{}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		slog.Debug("manual probe engine-manager non-OK",
-			"addr", addr, "port", port, "scheme", scheme, "status", resp.StatusCode,
-			"duration_ms", time.Since(start).Milliseconds())
-		return false, engineManagerModels{}
-	}
-	var res engineManagerModels
-	if err := json.NewDecoder(io.LimitReader(resp.Body, modelsResponseLimit)).Decode(&res); err != nil {
-		slog.Debug("manual probe engine-manager decode failed",
-			"addr", addr, "port", port, "scheme", scheme, "err", err,
-			"duration_ms", time.Since(start).Milliseconds())
-		return false, engineManagerModels{}
-	}
-	if len(res.Models) == 0 && len(res.ModelsByEngine) > 0 {
-		for _, mList := range res.ModelsByEngine {
-			res.Models = append(res.Models, mList...)
-		}
-		res.Models = mergeModels(res.Models)
-	}
-	slog.Debug("manual probe engine-manager ok",
-		"addr", addr, "port", port, "scheme", scheme,
-		"models", len(res.Models), "engines", len(res.ModelsByEngine),
-		"duration_ms", time.Since(start).Milliseconds())
-	return true, res
-}
-
-// readEngineNative reads the engine's own view of a manual node: the counters,
-// the rates and the active models the node's engine-manager publishes at
-// GET /v1/engine-stats.
-//
-// The read rides the client the model list was just read over, so the view is
-// cluster data read exactly as the list beside it is: a peer is read over
-// cluster mTLS pinned to the principal it advertises, and there is no
-// plaintext fallback for a peer.
-//
-// The answer is PAIR's own type, so it is decoded as-is. A node whose engine
-// publishes no admin API answers "unsupported", and so does an engine that
-// could not be reached; neither is a view, so neither is carried. Every
-// failure — an unreachable node, a non-200, a malformed answer — leaves the
-// caller with no view: a node with no engine-native view is a normal state,
-// not a fault.
-//
-// want is false when the view is not due for a fresh reading (it is read on
-// its own slower cadence); the view is then simply not read.
-func readEngineNative(client *http.Client, scheme, addr string, port int, want bool) *enginenative.Stats {
-	if !want {
-		return nil
-	}
-	url := scheme + "://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/engine-stats"
-	start := time.Now()
-	resp, err := client.Get(url)
-	if err != nil {
-		slog.Debug("manual probe engine-stats failed",
-			"addr", addr, "port", port, "scheme", scheme, "err", err,
-			"duration_ms", time.Since(start).Milliseconds())
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		slog.Debug("manual probe engine-stats non-OK",
-			"addr", addr, "port", port, "scheme", scheme, "status", resp.StatusCode,
-			"duration_ms", time.Since(start).Milliseconds())
-		return nil
-	}
-	var stats enginenative.Stats
-	if err := json.NewDecoder(io.LimitReader(resp.Body, engineNativeResponseLimit)).Decode(&stats); err != nil {
-		slog.Debug("manual probe engine-stats decode failed",
-			"addr", addr, "port", port, "scheme", scheme, "err", err,
-			"duration_ms", time.Since(start).Milliseconds())
-		return nil
-	}
-	// "unsupported" is the em surface's answer for an engine with no admin API
-	// and for an engine that could not be reached. Neither is a view of the
-	// engine, so neither is carried.
-	if !stats.Supported {
-		return nil
-	}
-	// The stamp says when the numbers were observed. The em surface stamps it
-	// with the reading it took; a peer that does not stamp it (an older one)
-	// gets the local observation time instead, so the field is never a lie
-	// about when it was read.
-	if stats.ObservedAt == 0 {
-		stats.ObservedAt = time.Now().UnixMilli()
-	}
-	slog.Debug("manual probe engine-stats ok",
-		"addr", addr, "port", port, "scheme", scheme,
-		"engine", stats.Engine, "requests", stats.Totals.Requests,
-		"duration_ms", time.Since(start).Milliseconds())
-	return &stats
 }
 
 // engineNativeDue reports whether this node's engine view is due for a fresh
@@ -1406,6 +1265,8 @@ func (m *Manager) runTelemetryLoop(ctx context.Context, id string, entry ManualE
 }
 
 func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry ManualEntry) {
+	ctx, cancel := context.WithTimeout(ctx, telemetryProbeTimeout)
+	defer cancel()
 	if ctx.Err() != nil {
 		return
 	}
@@ -1415,55 +1276,15 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 		m.mu.RUnlock()
 		return
 	}
-	addr := entry.Address
-	scheme := "http"
-	nodeInfoPort := 14318
-	probeClient := m.getTelemetryClient()
-	clusterUUID := tn.status.ClusterUUID
-	if clusterUUID == "" && m.mesh != nil && tn.status.HostUUID != "" && m.mesh.HasPin(tn.status.HostUUID) {
-		clusterUUID = tn.status.HostUUID
-	}
-	if entry.TLSPort > 0 {
-		scheme = "https"
-		nodeInfoPort = entry.TLSPort
-		probeClient = m.getTelemetryTLSClient()
-		if m.mesh != nil && m.mesh.Clustered() {
-			m.mesh.Refresh()
-			if clusterUUID != "" && m.telemetryPeerPool != nil {
-				if client, ok := m.telemetryPeerPool.Client(clusterUUID); ok {
-					probeClient = client
-				}
-			} else if anyClient := m.getTelemetryTLSConfigAnyClient(); anyClient != nil {
-				probeClient = anyClient
-			}
-		}
-	}
+	tracked := tn
+	trackedEntry := tn.entry
+	prior := tn.status
 	m.mu.RUnlock()
-
-	nodeInfoUp, info := m.probeNodeInfoWithPoll(ctx, probeClient, scheme, addr, nodeInfoPort, m.pollIntent())
-	nodeInfoReceived := m.clockNow()
-	if !nodeInfoUp && entry.TLSPort == 0 && m.mesh != nil && m.mesh.Clustered() && ctx.Err() == nil {
-		m.mesh.Refresh()
-		var tlsClient *http.Client
-		if clusterUUID != "" && m.telemetryPeerPool != nil {
-			if client, ok := m.telemetryPeerPool.Client(clusterUUID); ok {
-				tlsClient = client
-			}
-		}
-		if tlsClient == nil {
-			tlsClient = m.getTelemetryTLSConfigAnyClient()
-		}
-		if tlsClient != nil {
-			for _, port := range []int{14319, 14318} {
-				if up, tlsInfo := m.probeNodeInfoWithPoll(ctx, tlsClient, "https", addr, port, m.pollIntent()); up {
-					nodeInfoUp = true
-					info = tlsInfo
-					nodeInfoReceived = m.clockNow()
-					break
-				}
-			}
-		}
+	if trackedEntry != entry || prior.PeerRecordID == "" {
+		return
 	}
+	nodeInfoReceived := m.clockNow()
+	info, _, nodeInfoUp := m.authenticatedNodeInfo(ctx, entry, prior.ClusterUUID)
 
 	if !nodeInfoUp || ctx.Err() != nil {
 		return
@@ -1471,23 +1292,12 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 
 	m.mu.Lock()
 	tn, exists = m.nodes[id]
-	if !exists {
+	m.mesh.Refresh()
+	if !exists || tn != tracked || tn.entry != entry || tn.status.PeerRecordID != info.PeerRecordID || prior.PeerRecordID != info.PeerRecordID || info.PeerRecordID != m.mesh.PeerRecordID(prior.ClusterUUID) {
 		m.mu.Unlock()
 		return
 	}
-	if info.ClusterUUID != nil && *info.ClusterUUID != "" && tn.status.ClusterUUID == "" {
-		tn.status.ClusterUUID = *info.ClusterUUID
-	}
-	if tn.status.ClusterUUID == "" && m.mesh != nil && info.HostUUID != "" && m.mesh.HasPin(info.HostUUID) {
-		tn.status.ClusterUUID = info.HostUUID
-	}
-	if info.HostUUID != "" && tn.status.HostUUID == "" {
-		tn.status.HostUUID = info.HostUUID
-	}
 	hostUUID := info.HostUUID
-	if hostUUID == "" {
-		hostUUID = tn.status.HostUUID
-	}
 	m.mu.Unlock()
 
 	var msSince int64
@@ -1518,6 +1328,7 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 	}
 
 	_ = m.codec.Notify("node/telemetry", NodeTelemetryNotification{
+		PeerRecordID:      info.PeerRecordID,
 		ID:                id,
 		HostUUID:          hostUUID,
 		GPUUtilizationPct: utilization,

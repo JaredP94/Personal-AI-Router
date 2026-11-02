@@ -37,7 +37,7 @@ func TestProbeNodeInfoRejectsAnOversizedAnswer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			m, _, _ := newTestManager()
+			m, _, _ := newTestManager(t)
 			if up, _ := m.probeNodeInfo(srv.Client(), "http", host, port); up != tc.want {
 				t.Fatalf("probeNodeInfo up = %v, want %v", up, tc.want)
 			}
