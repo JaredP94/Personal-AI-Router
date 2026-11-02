@@ -158,6 +158,9 @@ func (b *Broker) ingestTelemetryAt(source nodeSource, value noderec.NodeTelemetr
 	if b.telemetry == nil {
 		return
 	}
+	if !b.authorizedTelemetry(source, value.HostUUID, value.PeerRecordID) {
+		return
+	}
 	projected, ok := b.telemetry.Upsert(source, value, receivedAt)
 	if ok {
 		b.fanTelemetryToScheduler(projected)
@@ -175,8 +178,13 @@ func (b *Broker) removeTelemetry(source nodeSource, hostUUID string) {
 }
 
 func (b *Broker) fanTelemetryToScheduler(telemetry noderec.NodeTelemetry) {
+	queuedAt := time.Now()
 	b.schedulerFeedMu.Lock()
 	defer b.schedulerFeedMu.Unlock()
+	if !b.authorizedTelemetry(sourceScanner, telemetry.HostUUID, telemetry.PeerRecordID) && !b.authorizedTelemetry(sourceManual, telemetry.HostUUID, telemetry.PeerRecordID) {
+		telemetry = noderec.NodeTelemetry{HostUUID: telemetry.HostUUID}
+	}
+	telemetry = observedTelemetryAt(telemetryObservation{value: telemetry, receivedAt: queuedAt}, time.Now())
 
 	scheduler := b.getScheduler()
 	if scheduler == nil {
@@ -195,7 +203,12 @@ func (b *Broker) replayTelemetryToScheduler(scheduler *rpcWorker) int {
 		return 0
 	}
 	replayed := 0
-	for _, telemetry := range b.telemetry.Snapshot(time.Now()) {
+	snapshotAt := time.Now()
+	for _, telemetry := range b.telemetry.Snapshot(snapshotAt) {
+		telemetry = observedTelemetryAt(telemetryObservation{value: telemetry, receivedAt: snapshotAt}, time.Now())
+		if !b.authorizedTelemetry(sourceScanner, telemetry.HostUUID, telemetry.PeerRecordID) && !b.authorizedTelemetry(sourceManual, telemetry.HostUUID, telemetry.PeerRecordID) {
+			continue
+		}
 		if err := scheduler.Notify(schedulerwire.MethodTelemetry, telemetry); err != nil {
 			slog.Warn("replay telemetry to scheduler failed", "host_uuid", telemetry.HostUUID, "err", err)
 			break

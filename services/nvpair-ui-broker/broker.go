@@ -74,8 +74,10 @@ type VersionResult struct {
 // the rest of the NVPAIR codebase uses snake_case, so this is the
 // deliberate camelCase island at the broker's outer boundary.
 type AvailableNode struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	PeerRecordID         string `json:"peerRecordId,omitempty"`
+	IdentityVerification string `json:"identityVerification,omitempty"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
 	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
 	// It is invariant across a PC rename and unique per physical machine, so it
 	// is the key clients should dedup/track nodes by; id/name stay the hostname
@@ -258,19 +260,22 @@ type Broker struct {
 	// goroutine) while request handlers and the log-level fan-out read
 	// them (on the read-loop / reader goroutines). Every access therefore
 	// goes through the get*/set* helpers under this lock.
-	workersMu     sync.Mutex
-	scanner       *scannerProcess
-	nodeInfo      *nodeInfoProcess
-	proxy         *proxyProcess
-	lmstudioProxy *proxyProcess
-	omlxProxy     *proxyProcess
-	workloadMgr   *workloadManagerProcess
-	errorsProc    *errorsProcess
-	engineMgr     *rpcWorker
-	manualNodes   *rpcWorker
-	settings      *rpcWorker
-	clusterMgr    *clusterManagerProcess
-	scheduler     *rpcWorker
+	workersMu                  sync.Mutex
+	scannerInventoryGeneration atomic.Uint64
+	manualInventoryGeneration  atomic.Uint64
+	manualCallbackMu           sync.Mutex
+	scanner                    *scannerProcess
+	nodeInfo                   *nodeInfoProcess
+	proxy                      *proxyProcess
+	lmstudioProxy              *proxyProcess
+	omlxProxy                  *proxyProcess
+	workloadMgr                *workloadManagerProcess
+	errorsProc                 *errorsProcess
+	engineMgr                  *rpcWorker
+	manualNodes                *rpcWorker
+	settings                   *rpcWorker
+	clusterMgr                 *clusterManagerProcess
+	scheduler                  *rpcWorker
 
 	// Per-worker supervisors own the (re)spawn + crash-detect + restart
 	// lifecycle of each worker. nil when the worker's binary wasn't resolved
@@ -508,6 +513,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		ollamaPortReady:         make(chan struct{}),
 		lmstudioPortReady:       make(chan struct{}),
 	}
+	b.relayDir.Authorize = b.authorizedDirectoryNode
 	b.initWorkerRegistry()
 	return b
 }
@@ -523,6 +529,7 @@ func (b *Broker) registerService(p noderec.RegisterParams) {
 	if sc := b.getScanner(); sc != nil {
 		go sc.pushRegister(p)
 	}
+	b.pushPeerMetadataToNodeInfo()
 }
 
 // unregisterService removes a local service from the cache and the daemon.
@@ -533,6 +540,7 @@ func (b *Broker) unregisterService(svc noderec.ServiceKey) {
 	if sc := b.getScanner(); sc != nil {
 		go sc.pushUnregister(svc)
 	}
+	b.pushPeerMetadataToNodeInfo()
 }
 
 // get*/set* are the workersMu-guarded accessors for the supervised worker
@@ -706,19 +714,33 @@ func (b *Broker) getClusterMgr() *clusterManagerProcess {
 // starting a child process.
 var (
 	launchScannerProcess = func(b *Broker) (*scannerProcess, error) {
+		generation := b.scannerInventoryGeneration.Add(1)
 		return startScanner(
 			b.scannerPath,
 			applog.LevelString(),
 			b.store,
 			b.relayDir,
-			b.failWorkloadsForNode,
+			func(uuid, name string) {
+				if !b.hasDecisionInventory(uuid) {
+					b.failWorkloadsForNode(uuid, name)
+				}
+			},
 			func(telemetry noderec.NodeTelemetry) { b.ingestTelemetry(sourceScanner, telemetry) },
 			func(hostUUID string) { b.removeTelemetry(sourceScanner, hostUUID) },
+			b.authorizedDirectoryNode,
+			func() bool { return b.scannerInventoryGeneration.Load() == generation },
 			b.clusterDirArgs()...,
 		)
 	}
 	launchManualNodesProcess = func(b *Broker) (*rpcWorker, error) {
-		return startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), b.forwardManualNodesNotification)
+		generation := b.manualInventoryGeneration.Add(1)
+		return startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), func(method string, params json.RawMessage) {
+			b.manualCallbackMu.Lock()
+			defer b.manualCallbackMu.Unlock()
+			if b.manualInventoryGeneration.Load() == generation {
+				b.forwardManualNodesNotification(method, params)
+			}
+		})
 	}
 )
 
@@ -750,26 +772,11 @@ func (b *Broker) spawnScanner() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
-	// Deliberately NOT passed b.clusterDirArgs(): node-info stays plain HTTP even
-	// when clustered, and is the ONE documented exception to "the inter-node
-	// cluster data plane is always mTLS" (errors and workload-manager admit only
-	// pinned members, in either direction). Its GPU/CPU/memory inventory is the
-	// lowest-sensitivity inter-node surface and is read directly by consumers that
-	// hold no cluster identity — the desktop app's two-second telemetry poll and
-	// baseline LAN discovery — so gating it would remove node telemetry from the UI.
-	// The accepted risk and its compensating controls are recorded under
-	// the repository-root SECURITY.md.
-	//
-	// node-info still implements the cluster-gated mode (pass it --cluster-dir and
-	// it admits only pinned peers). It is kept, unenabled, on purpose: it is the
-	// swap point if the desktop telemetry read is ever solved another way. Enabling
-	// it here without solving that first WILL blank the UI's node cards.
-	//
-	// Do pass --node-id: node-info reports the broker's already-resolved UUID so
-	// /v1/node-info agrees with the identity the fleet keys on, even on a custom
-	// --cluster-dir data root (node-info gets no cluster-dir, so it would
-	// otherwise resolve the default root and could report a different UUID).
-	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification, "--node-id", b.nodeID)
+	// Keep the public hardware preview and enable pinned cluster mTLS on the
+	// same port. Services never use the preview as proof. --node-id aligns the
+	// inventory with this broker, including a custom cluster data root.
+	args := append([]string{"--node-id", b.nodeID}, b.clusterDirArgs()...)
+	np, err := startNodeInfo(b.nodeInfoPath, applog.LevelString(), b.forwardNodeInfoNotification, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -783,6 +790,7 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 	// node-info binds the fixed :14318 (force_ports is inert), so the broker
 	// knows its port. Idempotent across restarts.
 	b.registerService(noderec.RegisterParams{Service: noderec.ServiceNodeInfo, Port: nodeInfoHTTPPort})
+	b.pushPeerMetadataToNodeInfo()
 	slog.Info("node-info started", "path", b.nodeInfoPath, "pid", np.cmd.Process.Pid)
 	return np, nil
 }
@@ -1025,7 +1033,7 @@ func (b *Broker) spawnJobScheduler() (supervisedHandle, error) {
 	b.setScheduler(w)
 	replayed := b.replayActiveWorkloadsToScheduler(w)
 	telemetryReplayed := b.replayTelemetryToScheduler(w)
-	if err := w.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
+	if err := w.Notify("discovery:nodes-changed", b.schedulerNodes()); err != nil {
 		slog.Warn("push discovery baseline to scheduler failed", "err", err)
 	}
 	b.schedulerFeedMu.Unlock()
@@ -1209,9 +1217,8 @@ func (b *Broker) clusterManagerConfigDir() string {
 // inter-node mTLS (nvpair-errors, nvpair-workload-manager, nvpair-node-scanner,
 // nvpair-manual-nodes, nvpair-engine-manager) so each serves/dials pinned cluster
 // peers once this node is clustered; absent it, those workers stay on plain HTTP
-// (or, for engine-manager's ec surface, don't bind it at all). nvpair-node-info is
-// deliberately excluded — it stays plain HTTP even on a clustered node (see the
-// spawnNodeInfo call site), so it is never passed --cluster-dir.
+// (or, for engine-manager's ec surface, don't bind it at all). Node-info uses it
+// for its authenticated inventory personality while retaining public previews.
 func (b *Broker) clusterDirArgs() []string {
 	if b.clusterDir == "" {
 		return nil
@@ -1266,6 +1273,7 @@ func resolveLocalNodeID(clusterDir string) string {
 // are idempotent and run on their own goroutine, because they are
 // bounded-but-blocking writes and the caller is the cluster-manager's reader.
 func (b *Broker) applyClusterIdentityChange() {
+	b.withdrawUnauthorizedInventory()
 	if b.clusterDir == "" {
 		return
 	}
@@ -1517,11 +1525,15 @@ func (b *Broker) forwardManualNodesNotification(method string, params json.RawMe
 // the alias's key changed (node-info revealed its real UUID) the
 // old key is reprojected from a surviving alias or released.
 func (b *Broker) upsertManualNode(s manualNodeStatus) {
-	key := manualToEnriched(s).storeKey()
+	s = b.normalizeManualStatus(s)
+	incoming := manualToEnriched(s)
+	b.annotateManualTrust(&incoming, s)
+	key := incoming.storeKey()
 	receivedAt := time.Now()
 
 	b.manualMu.Lock()
 	oldKey, existed := b.manualNodeKeys[s.ID]
+	priorProof := b.manualNodeStatuses[s.ID].status.PeerRecordID
 	b.manualNodeKeys[s.ID] = key
 	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
 	canonical, ok := b.survivingAliasLocked(key)
@@ -1530,6 +1542,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 		canonical = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
 	}
 
+	if existed && oldKey == key && priorProof != canonical.status.PeerRecordID {
+		b.removeTelemetry(sourceManual, key)
+	}
 	en := manualToEnriched(canonical.status)
 	b.annotateManualTrust(&en, canonical.status)
 	b.store.Upsert(en, sourceManual)
@@ -1588,8 +1603,12 @@ func (b *Broker) reprojectOrRelease(key string) {
 		b.bridgeManualNode(survivor.status, key)
 		return
 	}
-	if b.store.Remove(key, sourceManual) && b.relayDir != nil {
-		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
+	b.store.Remove(key, sourceManual)
+	if b.relayDir != nil {
+		b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeRemoved, noderec.RecordSelector(key))
+	}
+	if b.workloads != nil && !b.hasDecisionInventory(key) {
+		b.failWorkloadsForNode(key, key)
 	}
 	b.removeManualNodeFromProxies(key)
 	b.removeTelemetry(sourceManual, key)
@@ -1639,6 +1658,9 @@ func (b *Broker) survivingAliasLocked(key string) (manualNodeStatusEntry, bool) 
 // the discovery store. The durable broker-owned list is left intact and is
 // replayed into the replacement worker after it starts.
 func (b *Broker) clearManualNodesState() {
+	b.manualCallbackMu.Lock()
+	defer b.manualCallbackMu.Unlock()
+	b.manualInventoryGeneration.Add(1)
 	b.setManualNodes(nil)
 	b.manualMu.Lock()
 	keys := b.manualNodeKeys
@@ -1653,8 +1675,12 @@ func (b *Broker) clearManualNodesState() {
 		}
 		seen[key] = true
 		// Drop only the manual claim; a co-located scanner node keeps its record.
-		if b.store.Remove(key, sourceManual) && b.relayDir != nil {
-			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeRemoved, noderec.DirectoryNode{HostUUID: key})
+		b.store.Remove(key, sourceManual)
+		if b.relayDir != nil {
+			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeRemoved, noderec.RecordSelector(key))
+		}
+		if b.workloads != nil && !b.hasDecisionInventory(key) {
+			b.failWorkloadsForNode(key, key)
 		}
 		b.removeTelemetry(sourceManual, key)
 		// Pull the now-orphaned node out of every proxy too, so inference
@@ -2114,7 +2140,7 @@ func (b *Broker) fanDiscoveryToScheduler() {
 	if sc == nil {
 		return
 	}
-	if err := sc.Notify("discovery:nodes-changed", b.store.Snapshot()); err != nil {
+	if err := sc.Notify("discovery:nodes-changed", b.schedulerNodes()); err != nil {
 		slog.Warn("fan discovery:nodes-changed to scheduler failed", "err", err)
 	}
 }
@@ -2605,6 +2631,7 @@ func (b *Broker) forwardClusterManagerNotification(method string, params json.Ra
 // fewer refresh triggers than the record does — otherwise a peer converges on a
 // principal we have already stopped advertising.
 func (b *Broker) applyClusterTrustChange() {
+	b.withdrawUnauthorizedInventory()
 	slog.Info("cluster pin set changed; re-deriving peer trust")
 	if sc := b.getScanner(); sc != nil {
 		go sc.reloadTrust()

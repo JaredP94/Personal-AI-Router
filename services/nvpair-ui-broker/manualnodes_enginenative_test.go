@@ -23,7 +23,7 @@ import (
 // discovery:get-nodes snapshot is taken from, and the relay directory the
 // discovery:nodes-changed stream is taken from.
 func TestManualNodeCarriesTheEngineNativeView(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "remote-node-uuid")
 	const uuid = "remote-node-uuid"
 
 	view := &enginenative.Stats{
@@ -44,6 +44,7 @@ func TestManualNodeCarriesTheEngineNativeView(t *testing.T) {
 		EngineNative: view,
 	}
 
+	status = ownedManualStatus(t, b, status)
 	b.upsertManualNode(status)
 
 	// The client-facing snapshot (discovery:get-nodes) carries the view.
@@ -74,8 +75,8 @@ func TestManualNodeCarriesTheEngineNativeView(t *testing.T) {
 // TestManualNodeWithoutAnEngineNativeViewCarriesNone pins that a node with no
 // view carries none: the field is absent, not empty.
 func TestManualNodeWithoutAnEngineNativeViewCarriesNone(t *testing.T) {
-	b := newManualTestBroker()
-	b.upsertManualNode(manualStatus("Retirement-Plan", "100.107.205.77", "remote-node-uuid"))
+	b := newManualTestBroker(t, "remote-node-uuid")
+	b.upsertManualNode(manualStatus(t, b, "Retirement-Plan", "100.107.205.77", "remote-node-uuid"))
 
 	snap := b.store.Snapshot()
 	if len(snap) != 1 {
@@ -97,7 +98,7 @@ func TestManualNodeWithoutAnEngineNativeViewCarriesNone(t *testing.T) {
 // reads: the node record the broker publishes for a manual node carries the
 // same engineNative field a discovered node's record carries.
 func TestManualNodeEngineNativeViewIsOnTheNodeRecord(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "remote-node-uuid")
 	view := &enginenative.Stats{Engine: enginenative.EngineOmlx, Supported: true}
 	status := manualNodeStatus{
 		ID:           "Retirement-Plan",
@@ -108,6 +109,7 @@ func TestManualNodeEngineNativeViewIsOnTheNodeRecord(t *testing.T) {
 		NodeInfoPort: 14318,
 		EngineNative: view,
 	}
+	status = ownedManualStatus(t, b, status)
 	node := b.manualToDirectoryNode(status, "remote-node-uuid")
 	if node.EngineNative == nil {
 		t.Fatal("the manual node's record carries no engine-native view")

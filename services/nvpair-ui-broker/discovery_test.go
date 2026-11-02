@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
@@ -18,8 +20,8 @@ func TestDiscoveryStoreRekeysOnRename(t *testing.T) {
 	s := newDiscoveryStore()
 	const uuid = "11111111-1111-1111-1111-111111111111"
 
-	s.Upsert(EnrichedNode{ID: "old-host", HostUUID: uuid}, sourceScanner)
-	s.Upsert(EnrichedNode{ID: "new-host", HostUUID: uuid}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "old-host", HostUUID: uuid}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "new-host", HostUUID: uuid}, sourceScanner)
 
 	snap := s.Snapshot()
 	if len(snap) != 1 {
@@ -37,24 +39,31 @@ func TestDiscoveryStoreRekeysOnRename(t *testing.T) {
 // case: two different machines that share a hostname stay two entries.
 func TestDiscoveryStoreDistinctUUIDsSameName(t *testing.T) {
 	s := newDiscoveryStore()
-	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "aaaaaaaa-0000-0000-0000-000000000001"}, sourceScanner)
-	s.Upsert(EnrichedNode{ID: "samename", HostUUID: "bbbbbbbb-0000-0000-0000-000000000002"}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "samename", HostUUID: "aaaaaaaa-0000-0000-0000-000000000001"}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "samename", HostUUID: "bbbbbbbb-0000-0000-0000-000000000002"}, sourceScanner)
 	if got := len(s.Snapshot()); got != 2 {
 		t.Fatalf("two machines sharing a hostname must not merge: got %d entries, want 2", got)
 	}
 }
 
 // TestManualToEnrichedHostUUID verifies the manual-node ingestion boundary: a
-// manual node keys by the remote's real hostUuid once node-info reports one, and
-// by its manual id until then.
+// manual node keys by the proven peer's hostUuid, never by an unproven claim.
 func TestManualToEnrichedHostUUID(t *testing.T) {
-	withUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9", HostUUID: "real-uuid"})
+	b := newManualTestBroker(t, "real-uuid")
+	status := ownedManualStatus(t, b, manualNodeStatus{ID: "manual:10.0.0.9", HostUUID: "real-uuid"})
+	withUUID := manualToEnriched(status)
+	b.annotateManualTrust(&withUUID, status)
 	if withUUID.storeKey() != "real-uuid" {
 		t.Fatalf("store key = %q, want the real hostUuid", withUUID.storeKey())
 	}
+	claimedUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9", HostUUID: "real-uuid"})
+	wantManualKey := noderec.ManualRecordID("manual:10.0.0.9")
+	if claimedUUID.storeKey() != wantManualKey {
+		t.Fatalf("unproven hostUuid must use the manual config namespace: got %q, want %q", claimedUUID.storeKey(), wantManualKey)
+	}
 	noUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9"})
-	if noUUID.storeKey() != "manual:10.0.0.9" {
-		t.Fatalf("store key = %q, want the manual id fallback", noUUID.storeKey())
+	if noUUID.storeKey() != wantManualKey {
+		t.Fatalf("store key = %q, want namespaced manual config key %q", noUUID.storeKey(), wantManualKey)
 	}
 }
 
@@ -79,8 +88,8 @@ func TestDiscoveryStoreSourceOwnership(t *testing.T) {
 	// Manual-remove overlap: scanner + manual both claim uuid; removing the
 	// manual claim must leave the scanner's node in the snapshot.
 	s := newDiscoveryStore()
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid, Port: 14318}, sourceScanner)
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid, Port: 14318}, sourceManual)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid, Port: 14318}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid, Port: 14318}, sourceManual)
 	if got := len(s.Snapshot()); got != 1 {
 		t.Fatalf("shared uuid should be one record, got %d", got)
 	}
@@ -95,8 +104,8 @@ func TestDiscoveryStoreSourceOwnership(t *testing.T) {
 
 	// Symmetric: removing the scanner claim leaves the manual node.
 	s = newDiscoveryStore()
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceManual)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid}, sourceManual)
 	s.Remove(uuid, sourceScanner)
 	if got := len(s.Snapshot()); got != 1 {
 		t.Fatalf("removing the scanner claim evicted the manual node (got %d entries)", got)
@@ -109,8 +118,8 @@ func TestDiscoveryStoreSourceOwnership(t *testing.T) {
 func TestDiscoveryStoreScannerProjectionWins(t *testing.T) {
 	const uuid = "shared-uuid"
 	s := newDiscoveryStore()
-	s.Upsert(EnrichedNode{ID: "manual-host", HostUUID: uuid, Trusted: false}, sourceManual)
-	s.Upsert(EnrichedNode{ID: "mdns-host", HostUUID: uuid, Trusted: true}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "manual-host", HostUUID: uuid, Trusted: false}, sourceManual)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "mdns-host", HostUUID: uuid, Trusted: true}, sourceScanner)
 	snap := s.Snapshot()
 	if len(snap) != 1 {
 		t.Fatalf("want one record, got %d", len(snap))
@@ -126,22 +135,48 @@ func TestDiscoveryStoreScannerProjectionWins(t *testing.T) {
 	}
 }
 
-func newManualTestBroker() *Broker {
-	return &Broker{
+func newManualTestBroker(t *testing.T, peers ...string) *Broker {
+	t.Helper()
+	dir := t.TempDir()
+	clustertrusttest.Join(t, dir, "fixture-cluster", "local-node", peers...)
+	b := &Broker{
+		nodeID:             "local-node",
+		mesh:               clustertrust.Open(dir),
 		manualNodeKeys:     make(map[string]string),
 		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
 		store:              newDiscoveryStore(),
 		telemetry:          newTelemetryCache(),
 		relayDir:           relay.NewDirectory(),
 	}
+	b.relayDir.Authorize = b.authorizedDirectoryNode
+	return b
 }
 
-func manualStatus(id, addr, uuid string) manualNodeStatus {
-	return manualNodeStatus{ID: id, Address: addr, HostUUID: uuid, NodeInfoPort: 14318}
+// ownedManualStatus models a broker-owned worker's authenticated status, using
+// this test mesh's current pin record. TLS authentication itself is exercised by
+// the cross-service proof tests, not these broker projection tests.
+func ownedManualStatus(t *testing.T, b *Broker, status manualNodeStatus) manualNodeStatus {
+	t.Helper()
+	status.ClusterUUID = status.HostUUID
+	status.PeerRecordID = b.mesh.PeerRecordID(status.HostUUID)
+	if status.PeerRecordID == "" {
+		t.Fatalf("missing fixture pin for %q", status.HostUUID)
+	}
+	status.PeerMetadata = &noderec.PeerMetadataParams{
+		HostUUID: status.HostUUID,
+		Name:     status.ID,
+		Services: map[noderec.ServiceKey]int{},
+	}
+	return status
+}
+
+func manualStatus(t *testing.T, b *Broker, id, addr, uuid string) manualNodeStatus {
+	t.Helper()
+	return ownedManualStatus(t, b, manualNodeStatus{ID: id, Address: addr, HostUUID: uuid, NodeInfoPort: 14318})
 }
 
 func TestManualNodeBridgesToRelayDir(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "remote-node-uuid")
 	const uuid = "remote-node-uuid"
 
 	status := manualNodeStatus{
@@ -155,6 +190,13 @@ func TestManualNodeBridgesToRelayDir(t *testing.T) {
 		OllamaPort:   11434,
 	}
 
+	status = ownedManualStatus(t, b, status)
+	status.PeerMetadata.Services = map[noderec.ServiceKey]int{
+		noderec.ServiceEngineControl: 14323,
+		noderec.ServiceEngineManager: 14322,
+		noderec.ServiceNodeInfo:      14318,
+		noderec.ServiceOllama:        11434,
+	}
 	b.upsertManualNode(status)
 
 	// Check relayDir
@@ -195,7 +237,7 @@ func TestManualNodeBridgesToRelayDir(t *testing.T) {
 }
 
 func TestManualNodeModelsAttribution(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "remote-node-uuid")
 	const uuid = "remote-node-uuid"
 
 	status := manualNodeStatus{
@@ -217,6 +259,13 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 		},
 	}
 
+	status = ownedManualStatus(t, b, status)
+	status.PeerMetadata.Services = map[noderec.ServiceKey]int{
+		noderec.ServiceNodeInfo: 14318,
+		noderec.ServiceOllama:   11434,
+		noderec.ServiceLMStudio: 1234,
+		noderec.ServiceOMLX:     1236,
+	}
 	b.upsertManualNode(status)
 
 	// Check discovery store snapshot
@@ -225,6 +274,20 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 		t.Fatalf("expected 1 node in store snapshot, got %d", len(snap))
 	}
 	sn := snap[0]
+	raw, err := json.Marshal(sn)
+	if err != nil {
+		t.Fatalf("marshal available node: %v", err)
+	}
+	var identity struct {
+		PeerRecordID         string `json:"peerRecordId"`
+		IdentityVerification string `json:"identityVerification"`
+	}
+	if err := json.Unmarshal(raw, &identity); err != nil {
+		t.Fatalf("decode available node identity: %v", err)
+	}
+	if identity.PeerRecordID != status.PeerRecordID || identity.IdentityVerification != "verified" {
+		t.Fatalf("available node wire identity = %+v, want current peer record and verified marker", identity)
+	}
 	if len(sn.Models) != 3 || sn.Models[0] != "llama3:8b" || sn.Models[1] != "qwen2.5:7b" || sn.Models[2] != "mlx-qwen" {
 		t.Errorf("unexpected Models in snapshot: %#v", sn.Models)
 	}
@@ -259,7 +322,7 @@ func TestManualNodeModelsAttribution(t *testing.T) {
 	if len(rn.ModelsByEngine["omlx"]) != 1 {
 		t.Errorf("unexpected ModelsByEngine in relayDir: %#v", rn.ModelsByEngine)
 	}
-	// Also ensure ServiceOllama, ServiceLMStudio, and ServiceOMLX were inferred from ModelsByEngine
+	// Authenticated metadata supplies the engine ports; model names do not.
 	if svc, ok := rn.Services[noderec.ServiceOllama]; !ok || svc.Port != 11434 {
 		t.Errorf("ServiceOllama = %+v, want port 11434", svc)
 	}
@@ -288,9 +351,9 @@ func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
 		{"remove-B-first", "alias-b", "alias-a", "10.0.0.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			b := newManualTestBroker()
-			b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", uuid))
-			b.upsertManualNode(manualStatus("alias-b", "10.0.0.2", uuid))
+			b := newManualTestBroker(t, "shared-uuid")
+			b.upsertManualNode(manualStatus(t, b, "alias-a", "10.0.0.1", uuid))
+			b.upsertManualNode(manualStatus(t, b, "alias-b", "10.0.0.2", uuid))
 			if got := len(b.store.Snapshot()); got != 1 {
 				t.Fatalf("two aliases for one machine should be one record, got %d", got)
 			}
@@ -320,14 +383,14 @@ func TestManualAliasesShareKeyUntilLastRemoved(t *testing.T) {
 // stay — reprojected from the alias that still owns it — alongside the rekeyed
 // alias's new record.
 func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "shared-uuid", "alias-a-uuid")
 	const shared = "shared-uuid"
 
-	b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", shared))
-	b.upsertManualNode(manualStatus("alias-b", "10.0.0.2", shared))
+	b.upsertManualNode(manualStatus(t, b, "alias-a", "10.0.0.1", shared))
+	b.upsertManualNode(manualStatus(t, b, "alias-b", "10.0.0.2", shared))
 
 	// alias-a rekeys onto its own UUID; alias-b still owns the shared key.
-	b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", "alias-a-uuid"))
+	b.upsertManualNode(manualStatus(t, b, "alias-a", "10.0.0.1", "alias-a-uuid"))
 
 	snap := b.store.Snapshot()
 	if len(snap) != 2 {
@@ -353,11 +416,11 @@ func TestManualRekeyReprojectsSharedOldKey(t *testing.T) {
 // refreshManualNodesTrust passes must project a deterministic canonical alias
 // without emitting spurious discovery store change notifications.
 func TestManualAliasesDoNotOscillateOnUpsertOrTrustRefresh(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "shared-uuid")
 	const shared = "shared-uuid"
 
-	b.upsertManualNode(manualStatus("alias-b", "10.0.0.1", shared))
-	b.upsertManualNode(manualStatus("alias-a", "10.0.0.1", shared))
+	b.upsertManualNode(manualStatus(t, b, "alias-b", "10.0.0.1", shared))
+	b.upsertManualNode(manualStatus(t, b, "alias-a", "10.0.0.1", shared))
 
 	snap := b.store.Snapshot()
 	if len(snap) != 1 || snap[0].ID != "alias-a" {
@@ -371,7 +434,7 @@ func TestManualAliasesDoNotOscillateOnUpsertOrTrustRefresh(t *testing.T) {
 	// refreshManualNodesTrust across map iterations must not flip the projected
 	// ID or emit store changes.
 	for i := 0; i < 10; i++ {
-		b.upsertManualNode(manualStatus("alias-b", "10.0.0.1", shared))
+		b.upsertManualNode(manualStatus(t, b, "alias-b", "10.0.0.1", shared))
 		b.refreshManualNodesTrust()
 	}
 
@@ -387,12 +450,13 @@ func TestManualAliasesDoNotOscillateOnUpsertOrTrustRefresh(t *testing.T) {
 // A failed, lexically first alias must not hide a working address for the same
 // host. Operational failover may change the address, but not the display identity.
 func TestManualAliasesRetainReachableRouteWithStableIdentity(t *testing.T) {
-	b := newManualTestBroker()
+	b := newManualTestBroker(t, "shared-uuid")
 	const shared = "shared-uuid"
-	first := manualStatus("alias-a", "192.0.2.1", shared)
+	first := manualStatus(t, b, "alias-a", "192.0.2.1", shared)
 	first.NodeInfoUp = true
 	first.OllamaUp = true
 	first.OllamaModels = []string{"test-model"}
+	first.PeerMetadata.Services[noderec.ServiceOllama] = 11434
 	second := first
 	second.ID = "alias-b"
 	second.Address = "192.0.2.2"
@@ -421,7 +485,7 @@ func TestManualAliasesRetainReachableRouteWithStableIdentity(t *testing.T) {
 	}
 	assertRoute("192.0.2.1")
 
-	b.upsertManualNode(manualStatus("alias-a", "192.0.2.1", shared))
+	b.upsertManualNode(manualStatus(t, b, "alias-a", "192.0.2.1", shared))
 	assertRoute("192.0.2.2")
 	for i := 0; i < 3; i++ {
 		b.upsertManualNode(second)
@@ -430,7 +494,7 @@ func TestManualAliasesRetainReachableRouteWithStableIdentity(t *testing.T) {
 	}
 
 	// A healthy node-info endpoint alone must not displace a known engine route.
-	metadataOnly := manualStatus("alias-a", "192.0.2.1", shared)
+	metadataOnly := manualStatus(t, b, "alias-a", "192.0.2.1", shared)
 	metadataOnly.NodeInfoUp = true
 	b.upsertManualNode(metadataOnly)
 	assertRoute("192.0.2.2")
@@ -443,7 +507,7 @@ func TestManualAliasesRetainReachableRouteWithStableIdentity(t *testing.T) {
 func TestDiscoveryStoreRemoveWrongSourceNoop(t *testing.T) {
 	const uuid = "u"
 	s := newDiscoveryStore()
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid}, sourceScanner)
 	if s.Remove(uuid, sourceManual) { // manual never claimed it
 		t.Fatal("removing an unowned source must report false (nothing removed)")
 	}
@@ -457,8 +521,8 @@ func TestDiscoveryStoreRemoveWrongSourceNoop(t *testing.T) {
 func TestDiscoveryStoreRemoveReportsFinalClaim(t *testing.T) {
 	const uuid = "shared-uuid"
 	s := newDiscoveryStore()
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceScanner)
-	s.Upsert(EnrichedNode{ID: "host", HostUUID: uuid}, sourceManual)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid}, sourceScanner)
+	s.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host", HostUUID: uuid}, sourceManual)
 
 	if s.Remove(uuid, sourceScanner) {
 		t.Fatal("removing one of two claims must report false (node still present)")
@@ -475,7 +539,7 @@ func TestDiscoveryStoreRemoveReportsFinalClaim(t *testing.T) {
 // the given display name and stable host UUID.
 func nodeRemovedFrame(t *testing.T, name, uuid string) json.RawMessage {
 	t.Helper()
-	b, err := json.Marshal(noderec.NodeEvent{Node: noderec.DirectoryNode{Name: name, HostUUID: uuid}})
+	b, err := json.Marshal(noderec.NodeEvent{Node: noderec.DirectoryNode{IdentityVerification: "local", Name: name, HostUUID: uuid}})
 	if err != nil {
 		t.Fatalf("marshal node event: %v", err)
 	}
@@ -489,8 +553,8 @@ func nodeRemovedFrame(t *testing.T, name, uuid string) json.RawMessage {
 func TestHandleNotifyNodeLostOnlyOnFinalClaim(t *testing.T) {
 	const uuid = "peer-uuid"
 	store := newDiscoveryStore()
-	store.Upsert(EnrichedNode{ID: "peer-friendly-name", HostUUID: uuid}, sourceScanner)
-	store.Upsert(EnrichedNode{ID: "peer-friendly-name", HostUUID: uuid}, sourceManual)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: "peer-friendly-name", HostUUID: uuid}, sourceScanner)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: "peer-friendly-name", HostUUID: uuid}, sourceManual)
 
 	var calls int
 	sp := &scannerProcess{store: store, onNodeLost: func(string, string) { calls++ }}
@@ -512,7 +576,7 @@ func TestHandleNotifyNodeLostUsesHostUUID(t *testing.T) {
 	const uuid = "peer-uuid"
 	const name = "peer-friendly-name"
 	store := newDiscoveryStore()
-	store.Upsert(EnrichedNode{ID: name, HostUUID: uuid}, sourceScanner)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: name, HostUUID: uuid}, sourceScanner)
 
 	var gotUUID, gotName string
 	var calls int
@@ -567,14 +631,14 @@ func TestDiscoveryStoreMergesManualAddressesIntoScannerNode(t *testing.T) {
 	const uuid = "shared-uuid-123"
 	s := newDiscoveryStore()
 
-	s.Upsert(EnrichedNode{
+	s.Upsert(EnrichedNode{IdentityVerification: "local",
 		ID:        "host",
 		HostUUID:  uuid,
 		Addresses: []string{"192.168.1.50"},
 		TXT:       []string{"ip=192.168.1.50"},
 	}, sourceScanner)
 
-	s.Upsert(EnrichedNode{
+	s.Upsert(EnrichedNode{IdentityVerification: "local",
 		ID:        "host",
 		HostUUID:  uuid,
 		Addresses: []string{"100.64.1.2"},

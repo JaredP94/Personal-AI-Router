@@ -102,7 +102,8 @@ func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
 		_ = schedulerSide.Close()
 	})
 	worker := &rpcWorker{peer: NewPeer(NewCodec(brokerSide))}
-	b := &Broker{telemetry: newTelemetryCache()}
+	b := &Broker{nodeID: "node-a", store: newDiscoveryStore(), telemetry: newTelemetryCache()}
+	b.store.Upsert(EnrichedNode{HostUUID: "node-a", IdentityVerification: "local"}, sourceScanner)
 	b.telemetry.Upsert(sourceScanner, noderec.NodeTelemetry{
 		HostUUID:          "node-a",
 		GPUUtilizationPct: 45,
@@ -132,12 +133,13 @@ func TestReplayTelemetryToSchedulerIncludesCurrentAge(t *testing.T) {
 }
 
 func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
-	b := newManualTestBroker()
-	first := manualStatus("first", "10.0.0.1", "node-a")
+	b := newManualTestBroker(t, "node-a")
+	first := manualStatus(t, b, "first", "10.0.0.1", "node-a")
 	b.upsertManualNode(first)
 
 	rawFirst, err := json.Marshal(manualNodeTelemetryParams{
 		ID:                "first",
+		PeerRecordID:      first.PeerRecordID,
 		HostUUID:          "node-a",
 		GPUUtilizationPct: 25,
 		TelemetryValid:    true,
@@ -148,7 +150,7 @@ func TestManualTelemetryReprojectsSurvivingAliasAtOriginalAge(t *testing.T) {
 	}
 	b.forwardManualNodesNotification("node/telemetry", rawFirst)
 
-	second := manualStatus("second", "10.0.0.2", "node-a")
+	second := manualStatus(t, b, "second", "10.0.0.2", "node-a")
 	b.upsertManualNode(second)
 	b.removeManualNode("second")
 
@@ -202,8 +204,8 @@ func TestManualNodeTelemetryPreservesSampleSeq(t *testing.T) {
 }
 
 func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
-	b := newManualTestBroker()
-	node := manualStatus("manual-node-1", "10.0.0.1", "node-uuid-1")
+	b := newManualTestBroker(t, "node-uuid-1")
+	node := manualStatus(t, b, "manual-node-1", "10.0.0.1", "node-uuid-1")
 	b.upsertManualNode(node)
 
 	// Step 1: Status updates must NOT feed scheduler telemetry
@@ -222,6 +224,7 @@ func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
 	// Send node/telemetry
 	telemParams := manualNodeTelemetryParams{
 		ID:                "manual-node-1",
+		PeerRecordID:      node.PeerRecordID,
 		HostUUID:          "node-uuid-1",
 		GPUUtilizationPct: 88,
 		TelemetryValid:    true,
@@ -278,6 +281,7 @@ func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
 	// Verify mismatched hostUuid is dropped
 	mismatchedParams := manualNodeTelemetryParams{
 		ID:                "manual-node-1",
+		PeerRecordID:      node.PeerRecordID,
 		HostUUID:          "different-uuid-999",
 		GPUUtilizationPct: 99,
 		TelemetryValid:    true,
@@ -288,6 +292,21 @@ func TestManualNodeTelemetryIngestedWithoutNodesChanged(t *testing.T) {
 	snapMismatched := b.telemetry.Snapshot(time.Now())
 	if len(snapMismatched) != 1 || snapMismatched[0].HostUUID != "node-uuid-1" || snapMismatched[0].GPUUtilizationPct != 88 {
 		t.Fatalf("mismatched hostUuid telemetry was not dropped: %+v", snapMismatched)
+	}
+
+	// Even the registered ID and matching hostUuid cannot authenticate a sample
+	// without the current peer record proof.
+	unprovenParams := telemParams
+	unprovenParams.PeerRecordID = ""
+	unprovenParams.GPUUtilizationPct = 99
+	rawUnproven, err := json.Marshal(unprovenParams)
+	if err != nil {
+		t.Fatalf("marshal unproven telemetry: %v", err)
+	}
+	b.forwardManualNodesNotification("node/telemetry", rawUnproven)
+	snapUnproven := b.telemetry.Snapshot(time.Now())
+	if len(snapUnproven) != 1 || snapUnproven[0].GPUUtilizationPct != 88 || snapUnproven[0].SampleSeq != 99 {
+		t.Fatalf("unproven telemetry replaced the authenticated sample: %+v", snapUnproven)
 	}
 
 	// Verify removal cleans up what was ingested leaving no cached telemetry
