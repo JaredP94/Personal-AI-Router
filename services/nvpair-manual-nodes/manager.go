@@ -1361,7 +1361,7 @@ func (m *Manager) probeNodeInfoWithPoll(ctx context.Context, client *http.Client
 			"duration_ms", time.Since(start).Milliseconds())
 		return false, NodeInfoResponse{}
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, probeErrorResponseLimit))
 	slog.Debug("manual probe node-info up",
 		"addr", addr, "port", port, "scheme", scheme, "gpus", len(result.GPUs),
 		"has_cpu", result.CPU != nil, "has_memory", result.Memory != nil,
