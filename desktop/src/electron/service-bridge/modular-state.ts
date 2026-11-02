@@ -1009,10 +1009,10 @@ function sensorFansValue(value: JsonValue | undefined): SensorFan[] | null {
         const name = nullableStringValue(obj.name)
         const rpm = nullableNumberValue(obj.rpm)
         const maxRpm = nullableNumberValue(obj.maxRpm)
-        if (name === null || rpm === null || maxRpm === null) continue
+        if (!name || rpm === null || maxRpm === null || rpm < 0 || maxRpm < 0) continue
         fans.push({ name, rpm, maxRpm })
     }
-    return fans
+    return value.length === 0 || fans.length > 0 ? fans : null
 }
 
 function sensorPowerValue(value: JsonValue | undefined): SensorPower | null {

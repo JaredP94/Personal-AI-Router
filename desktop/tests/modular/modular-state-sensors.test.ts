@@ -122,6 +122,28 @@ describe('node-info sensors through metrics updates and renderer state', () => {
         expect(current().sensors?.fans).toBeNull()
     })
 
+    it.each<{ fan: JsonValue }>([
+        { fan: { name: '', rpm: 0, maxRpm: 20 } },
+        { fan: { name: 'negative rpm', rpm: -1, maxRpm: 20 } },
+        { fan: { name: 'negative max', rpm: 0, maxRpm: -1 } },
+        { fan: { name: 'missing rpm', maxRpm: 20 } }
+    ])('keeps invalid-only fans unknown: $fan', ({ fan }) => {
+        merge({ fans: [fan] })
+        expect(current().sensors?.fans).toBeNull()
+    })
+
+    it('drops empty names and negative speeds without losing valid fans', () => {
+        merge({
+            fans: [
+                { name: '', rpm: 0, maxRpm: 20 },
+                { name: 'negative rpm', rpm: -1, maxRpm: 20 },
+                { name: 'negative max', rpm: 0, maxRpm: -1 },
+                { name: 'fan0', rpm: 0, maxRpm: 5349 }
+            ]
+        })
+        expect(current().sensors?.fans).toEqual([{ name: 'fan0', rpm: 0, maxRpm: 5349 }])
+    })
+
     it('treats unknown enum strings as null', () => {
         merge({ macmon: 'maybe', thermalPressure: 'boiling', memoryPressure: 'full' })
         expect(current().sensors).toMatchObject({

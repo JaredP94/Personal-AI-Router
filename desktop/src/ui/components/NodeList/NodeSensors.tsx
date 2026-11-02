@@ -42,6 +42,12 @@ export default function NodeSensorsPanel({
         if (sensors.macmon === 'available' && installOutcome !== null) setInstallOutcome(null)
     }, [sensors.macmon, installOutcome])
 
+    useEffect(() => {
+        if (installOutcome !== 'installed') return
+        const timer = setTimeout(() => setInstallOutcome(null), 30_000)
+        return () => clearTimeout(timer)
+    }, [installOutcome])
+
     const install = async () => {
         setInstalling(true)
         const outcome = await window.pairApi.nodes.installMacmon(node.id)
@@ -87,7 +93,11 @@ export default function NodeSensorsPanel({
         } else if (canInstall) {
             notice = (
                 <>
-                    <span>Sensors unavailable — </span>
+                    <span>
+                        {installOutcome === 'failed'
+                            ? 'Install failed — '
+                            : 'Sensors unavailable — '}
+                    </span>
                     <Button kind="secondary" size="tiny" onClick={install} disabled={installing}>
                         {installing && (
                             <span

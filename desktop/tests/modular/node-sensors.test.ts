@@ -140,6 +140,7 @@ afterEach(async () => {
     useConnectionStore.setState({ selfId: '' })
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
 })
 
 it('renders no sensors button without sensors', async () => {
@@ -343,6 +344,39 @@ it('keeps the installed notice during macmon warm-up until readings are availabl
     await panel(readings({ macmon: 'available' }))
     expect(text()).not.toContain('Installed — waiting for readings…')
     expect(text()).not.toContain('Sensors not responding')
+})
+
+it.each(['missing', 'failed'])(
+    'expires the installed notice after 30 seconds when macmon stays %s',
+    async status => {
+        vi.useFakeTimers()
+        installMacmon.mockResolvedValue('installed')
+        await panel(readings({ macmon: 'missing' }))
+        await click(button('Install macmon'))
+        await act(async () => vi.advanceTimersByTime(20_000))
+        await panel(readings({ macmon: status === 'missing' ? 'missing' : 'failed' }))
+        await act(async () => vi.advanceTimersByTime(9_999))
+        expect(text()).toContain('Installed — waiting for readings…')
+        await act(async () => vi.advanceTimersByTime(1))
+        expect(text()).not.toContain('Installed — waiting for readings…')
+        if (status === 'failed') expect(text()).toContain('Sensors not responding')
+        else {
+            expect(text()).toContain('Sensors unavailable — Install macmon')
+            expect(button('Install macmon').disabled).toBe(false)
+        }
+    }
+)
+
+it('shows a failed install outcome and allows retry while macmon is missing', async () => {
+    vi.useFakeTimers()
+    await panel(readings({ macmon: 'missing' }))
+    await click(button('Install macmon'))
+    expect(text()).toContain('Install failed — Install macmon')
+    expect(button('Install macmon').disabled).toBe(false)
+    installMacmon.mockResolvedValue('installed')
+    await click(button('Install macmon'))
+    expect(text()).toContain('Installed — waiting for readings…')
+    expect(text()).not.toContain('Install failed')
 })
 
 it('renders Sensors not responding and no install control when macmon failed', async () => {
