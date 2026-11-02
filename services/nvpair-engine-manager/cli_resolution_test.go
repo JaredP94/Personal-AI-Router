@@ -116,7 +116,9 @@ func TestOmlxCLICandidatesAgreeAcrossConsumers(t *testing.T) {
 			if tc.want != "" {
 				want = filepath.Join(home, tc.want)
 			}
-			assertCommandPresence(t, reg, base, "omlx", want, tc.want == ".omlx/bin/omlx")
+			// No install marker: these model an oMLX the user installed, so
+			// uninstall is never offered, wherever the CLI resolves.
+			assertCommandPresence(t, reg, base, "omlx", want, false)
 		})
 	}
 }

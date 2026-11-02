@@ -44,10 +44,13 @@ func capabilitiesFor(m *Manifest, platform string, adopted bool, installDir stri
 	_, list := m.Actions["list_models"]
 	_, pull := m.Actions["pull_model"]
 	deleteAction, deleteModel := m.Actions["delete_model"]
-	uninstall := p.Uninstall != nil && len(p.Uninstall.Run) > 0 && !adopted
+	uninstall := p.Uninstall != nil && (len(p.Uninstall.Run) > 0 || len(p.Uninstall.Remove) > 0) && !adopted
 	if uninstall && p.Runtime.modeOrDefault() == "command" {
+		// Uninstall declines a command-mode engine PAIR has no record of
+		// installing, so offering it would only lead to that refusal.
 		goos := strings.SplitN(platform, "/", 2)[0]
-		uninstall = uninstallerCoversCLI(p.Uninstall, detectedExecutable(&p, installDir, goos), installDir, goos)
+		uninstall = installedByPAIR(installDir) &&
+			uninstallerCoversCLI(p.Uninstall, detectedExecutable(&p, installDir, goos), installDir, goos)
 	}
 	return Capabilities{
 		ListModels:  list,
@@ -68,7 +71,7 @@ func capabilitiesFor(m *Manifest, platform string, adopted bool, installDir stri
 // Coverage is lexical: removing a root removes a CLI symlink inside that root,
 // not its external target. Never follow a symlink to claim ownership elsewhere.
 func uninstallerCoversCLI(un *Uninstall, cli, installDir, goos string) bool {
-	if un == nil || len(un.Run) == 0 || cli == "" || !filepath.IsAbs(cli) {
+	if un == nil || (len(un.Run) == 0 && len(un.Remove) == 0) || cli == "" || !filepath.IsAbs(cli) {
 		return false
 	}
 	for _, root := range un.CLIRoots {

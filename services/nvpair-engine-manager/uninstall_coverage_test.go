@@ -15,12 +15,19 @@ import (
 func TestCommandUninstallCoverage(t *testing.T) {
 	for _, tc := range []struct {
 		name, engine, cli string
-		allowed           bool
+		// installedByPAIR writes the install marker, as a completed PAIR
+		// install does. Coverage alone is not enough: the vendor's own app
+		// puts its CLI in the same place.
+		installedByPAIR bool
+		allowed         bool
+		refusal         string
 	}{
-		{"Homebrew only", "omlx", "opt/homebrew/bin/omlx", false},
-		{"usr local only", "omlx", "usr/local/bin/omlx", false},
-		{"HOME oMLX", "omlx", ".omlx/bin/omlx", true},
-		{"HOME LM Studio", "lmstudio", ".lmstudio/bin/lms", true},
+		{"Homebrew only", "omlx", "opt/homebrew/bin/omlx", true, false, "declared uninstaller does not cover the resolved CLI"},
+		{"usr local only", "omlx", "usr/local/bin/omlx", true, false, "declared uninstaller does not cover the resolved CLI"},
+		{"HOME oMLX", "omlx", ".omlx/bin/omlx", true, true, ""},
+		{"HOME LM Studio", "lmstudio", ".lmstudio/bin/lms", true, true, ""},
+		{"HOME oMLX the user installed", "omlx", ".omlx/bin/omlx", false, false, "no record of installing it"},
+		{"HOME LM Studio the user installed", "lmstudio", ".lmstudio/bin/lms", false, false, "no record of installing it"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := resolutionRoot(t)
@@ -40,12 +47,23 @@ func TestCommandUninstallCoverage(t *testing.T) {
 			if tc.allowed {
 				target = cli
 			}
+			if p.Uninstall == nil {
+				// Bundled oMLX declares no uninstall (its runtime is the oMLX
+				// app); the policy under test is the generic cli_roots one.
+				p.Uninstall = &Uninstall{CLIRoots: []string{"~/.omlx/bin"}}
+			}
 			p.Uninstall.Run = rmCmd(target)
 			stopMarker := filepath.Join(home, "stop-ran")
 			p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}}
 			m.Platforms[key] = p
 			ex := NewExecutor(reg, NewReporter(nil), nil, base)
 			ex.detectTimeout = 0 // never wait for a destructive-command regression
+			if tc.installedByPAIR {
+				st, _ := ex.state(tc.engine)
+				if err := writeInstallMarker(st.installDir, tc.engine); err != nil {
+					t.Fatal(err)
+				}
+			}
 			status, err := ex.Status(tc.engine)
 			if err != nil || !status.Installed || status.Capabilities.Uninstall != tc.allowed {
 				t.Errorf("status = %+v, %v; want installed and uninstall=%v", status, err, tc.allowed)
@@ -63,8 +81,8 @@ func TestCommandUninstallCoverage(t *testing.T) {
 					t.Error("covered CLI was not removed")
 				}
 			} else {
-				if err == nil || !strings.Contains(err.Error(), "declared uninstaller does not cover the resolved CLI") {
-					t.Errorf("want clear coverage refusal, got %v", err)
+				if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+					t.Errorf("want refusal containing %q, got %v", tc.refusal, err)
 				}
 				if !fileExists(cli) {
 					t.Error("external CLI was deleted")
@@ -116,6 +134,9 @@ func TestCommandUninstallManifestPolicy(t *testing.T) {
 			p.Uninstall.Run = rmCmd(cli)
 			ex := NewExecutor(reg, NewReporter(nil), nil, base)
 			ex.detectTimeout = 0
+			if err := writeInstallMarker(filepath.Join(base, "policy"), "policy"); err != nil {
+				t.Fatal(err)
+			}
 			status, err := ex.Status("policy")
 			if err != nil || status.Capabilities.Uninstall != tc.allowed {
 				t.Errorf("status = %+v, %v; want uninstall=%v", status, err, tc.allowed)
@@ -129,5 +150,24 @@ func TestCommandUninstallManifestPolicy(t *testing.T) {
 				t.Errorf("uncovered uninstall not refused safely: %v", err)
 			}
 		})
+	}
+}
+
+// oMLX's runtime is the oMLX app, which PAIR never installs; the CLI in
+// ~/.omlx/bin is a shim the app rewrites whenever its server starts. Removing
+// the shim would report an uninstall that did not happen, so the bundled
+// manifest offers none.
+func TestBundledOMLXOffersNoUninstall(t *testing.T) {
+	m, ok := bundledManifestSet(t)["omlx"]
+	if !ok {
+		t.Fatal("no bundled omlx manifest")
+	}
+	for key, p := range m.Platforms {
+		if p.Uninstall != nil {
+			t.Errorf("%s: omlx declares an uninstall", key)
+		}
+		if got := capabilitiesFor(m, key, false, t.TempDir()).Uninstall; got {
+			t.Errorf("%s: uninstall capability offered", key)
+		}
 	}
 }
