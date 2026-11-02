@@ -18,9 +18,9 @@ type macmonLinePayload struct {
 		GPU *float64 `json:"gpu_temp_avg"`
 	} `json:"temp"`
 	Fans *[]struct {
-		Name   string  `json:"name"`
-		RPM    float64 `json:"rpm"`
-		MaxRPM float64 `json:"max_rpm"`
+		Name   *string  `json:"name"`
+		RPM    *float64 `json:"rpm"`
+		MaxRPM *float64 `json:"max_rpm"`
 	} `json:"fans"`
 	SystemW   *float64   `json:"sys_power"`
 	CPUW      *float64   `json:"cpu_power"`
@@ -40,13 +40,16 @@ func parseMacmonLine(line []byte) (macmonSample, bool) {
 		sample.GPUTempC = payload.Temp.GPU
 	}
 	if payload.Fans != nil {
-		fans := make([]SensorFan, len(*payload.Fans))
-		for i, fan := range *payload.Fans {
-			fans[i] = SensorFan{
-				Name:   fan.Name,
-				RPM:    uint32(math.Round(fan.RPM)),
-				MaxRPM: uint32(math.Round(fan.MaxRPM)),
+		fans := make([]SensorFan, 0, len(*payload.Fans))
+		for _, fan := range *payload.Fans {
+			if fan.Name == nil || *fan.Name == "" || fan.RPM == nil || fan.MaxRPM == nil || *fan.RPM < 0 || *fan.MaxRPM < 0 {
+				continue
 			}
+			fans = append(fans, SensorFan{
+				Name:   *fan.Name,
+				RPM:    uint32(math.Round(*fan.RPM)),
+				MaxRPM: uint32(math.Round(*fan.MaxRPM)),
+			})
 		}
 		sample.Fans = &fans
 	}

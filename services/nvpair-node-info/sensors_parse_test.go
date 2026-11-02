@@ -100,6 +100,42 @@ func TestParseMacmonLineRoundsFanRPM(t *testing.T) {
 	}
 }
 
+func TestParseMacmonLineDropsInvalidFans(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fan  string
+	}{
+		{"missing rpm", `{"name":"invalid","max_rpm":5349}`},
+		{"missing max_rpm", `{"name":"invalid","rpm":1200}`},
+		{"null rpm", `{"name":"invalid","rpm":null,"max_rpm":5349}`},
+		{"null max_rpm", `{"name":"invalid","rpm":1200,"max_rpm":null}`},
+		{"negative rpm", `{"name":"invalid","rpm":-1,"max_rpm":5349}`},
+		{"negative max_rpm", `{"name":"invalid","rpm":1200,"max_rpm":-1}`},
+		{"empty name", `{"name":"","rpm":1200,"max_rpm":5349}`},
+		{"missing name", `{"rpm":1200,"max_rpm":5349}`},
+		{"null name", `{"name":null,"rpm":1200,"max_rpm":5349}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `{"timestamp":"2026-11-02T06:29:04Z","fans":[` + tc.fan + `,{"name":"fan1","rpm":0,"max_rpm":5777}]}`
+			s, ok := parseMacmonLine([]byte(line))
+			if !ok || s.Fans == nil {
+				t.Fatalf("fan array rejected: sample=%+v, ok=%v", s, ok)
+			}
+			want := []SensorFan{{Name: "fan1", RPM: 0, MaxRPM: 5777}}
+			if !reflect.DeepEqual(*s.Fans, want) {
+				t.Fatalf("fans = %+v, want %+v", *s.Fans, want)
+			}
+		})
+	}
+}
+
+func TestParseMacmonLineAllFansInvalid(t *testing.T) {
+	s, ok := parseMacmonLine([]byte(`{"timestamp":"2026-11-02T06:29:04Z","fans":[{"name":"fan0","max_rpm":5349}]}`))
+	if !ok || s.Fans == nil || *s.Fans == nil || len(*s.Fans) != 0 {
+		t.Fatalf("invalid-only fan array must remain a usable empty list: sample=%+v, ok=%v", s, ok)
+	}
+}
+
 func TestParseMacmonLineRejectsGarbage(t *testing.T) {
 	for _, line := range []string{
 		"not json", `{}`, `{"timestamp":"x"}`, `null`, `[]`,
