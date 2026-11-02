@@ -213,7 +213,7 @@ Requests (caller → service):
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-install-tool` | `{ node, tool }` | `{ opId, result: { tool, installed: true } }`, or the remote tool's typed error |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after a successful remote pull (live progress via `engine:remote-progress`); engine-level failures, including HTTP 200 streams containing `error`, return a JSON-RPC error |
-| `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
+| `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always loopback `127.0.0.1`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
@@ -241,6 +241,22 @@ a successful command must leave the tool detectable.
 | `-32010` | `homebrew-missing`: no executable Homebrew candidate was found. Install Homebrew, then run `brew install macmon`. |
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
+
+### Local bind permission
+
+A local `bind` override must be an IP address on loopback unless the operator
+explicitly enables the persisted node setting `engine_allow_lan_bind` (default
+false). Engine-manager reads it live through the broker on each non-loopback
+override; absent settings workers, read errors, invalid replies and a two-second
+timeout all deny permission. Revoking it affects subsequent starts, not listeners
+already running. Remote starts always use `127.0.0.1`, regardless of this setting.
+This opt-in does not add authentication to third-party engine APIs. It governs
+per-call overrides, not user-authored manifest launch commands.
+
+Internal notifications `engine:settings-request{id, method}` (only
+`settings/get-engine-allow-lan-bind`) and
+`engine:settings-reply{id, result, error?}` carry the correlated read between
+worker and broker; neither is a client subscription event.
 
 ### Passive status and model deadlines
 

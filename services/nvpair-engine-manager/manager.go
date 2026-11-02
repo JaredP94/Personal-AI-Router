@@ -62,11 +62,12 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
-	codec *Codec
-	exec  *Executor
-	peers *peerDirectory
-	addrs *reach.Chooser
-	mesh  *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
+	codec         *Codec
+	settingsRelay settingsRelay
+	exec          *Executor
+	peers         *peerDirectory
+	addrs         *reach.Chooser
+	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
@@ -80,11 +81,12 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 	// handleMessage is reached before Run() installs the real CancelFunc
 	// (e.g. a unit test calling it directly); Run overwrites it.
 	return &Manager{
-		codec: codec,
-		exec:  exec,
-		peers: newPeerDirectory(),
-		addrs: reach.NewChooser(),
-		mesh:  mesh,
+		codec:         codec,
+		settingsRelay: settingsRelay{send: codec.Notify},
+		exec:          exec,
+		peers:         newPeerDirectory(),
+		addrs:         reach.NewChooser(),
+		mesh:          mesh,
 		remoteHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
 			ResponseHeaderTimeout: remoteResponseHeaderTimeout,
 		}),
@@ -168,6 +170,10 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		return
 	}
 
+	if msg.Method == "engine:settings-reply" && msg.IsNotification() {
+		m.settingsRelay.reply(msg.Params)
+		return
+	}
 	if msg.Method == noderec.NotifyNodes {
 		m.applyDiscovery(msg)
 		return
@@ -298,9 +304,16 @@ func (m *Manager) runOp(ctx context.Context, msg *Message) {
 		m.codec.RespondError(msg.ID, -32602, "port must be between 0 and 65535")
 		return
 	}
-	if p.Bind != "" && net.ParseIP(p.Bind) == nil {
-		m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
-		return
+	if p.Bind != "" {
+		ip := net.ParseIP(p.Bind)
+		if ip == nil {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a valid IP address")
+			return
+		}
+		if !ip.IsLoopback() && !m.lanBindAllowed(ctx) {
+			m.codec.RespondError(msg.ID, -32602, "bind must be a loopback address unless engine_allow_lan_bind is enabled")
+			return
+		}
 	}
 	start := func() error {
 		return m.exec.StartWith(ctx, p.Engine, startOpts{Port: p.Port, Bind: p.Bind})

@@ -232,6 +232,50 @@ func TestClusterAutoSyncRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEngineAllowLANBindRoundTrip(t *testing.T) {
+	m, rw, path := newTestManager(t)
+
+	got := callAndDecode[map[string]bool](t, m, rw, 1, "settings/get-engine-allow-lan-bind", nil)
+	if got["value"] != false {
+		t.Fatalf("default engine-allow-lan-bind = %v, want false", got["value"])
+	}
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 2, "settings/set-engine-allow-lan-bind", map[string]bool{"value": true})
+	got = callAndDecode[map[string]bool](t, m, rw, 3, "settings/get-engine-allow-lan-bind", nil)
+	if got["value"] != true {
+		t.Fatalf("after set, value = %v, want true", got["value"])
+	}
+	reloadedRW := newCaptureRW()
+	reloaded, err := NewManager(NewCodec(reloadedRW), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := callAndDecode[map[string]bool](t, reloaded, reloadedRW, 1, "settings/get-engine-allow-lan-bind", nil)
+	if !persisted["value"] {
+		t.Fatal("LAN bind permission did not persist")
+	}
+	for _, raw := range []string{`{}`, `{"value":null}`, `{"value":"true"}`} {
+		callExpectError(t, m, rw, 4, "settings/set-engine-allow-lan-bind", json.RawMessage(raw), -32602)
+	}
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	callExpectError(t, m, rw, 4, "settings/set-engine-allow-lan-bind", json.RawMessage(`{"value":false}`), -32603)
+	got = callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-engine-allow-lan-bind", nil)
+	if !got["value"] {
+		t.Fatal("failed save changed live permission")
+	}
+	if err := os.Remove(path + ".tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = callAndDecode[map[string]bool](t, m, rw, 4, "settings/set-engine-allow-lan-bind", map[string]bool{"value": false})
+	got = callAndDecode[map[string]bool](t, m, rw, 5, "settings/get-engine-allow-lan-bind", nil)
+	if got["value"] != false {
+		t.Fatalf("after unset, value = %v, want false", got["value"])
+	}
+}
+
 // TestClusterIDRoundTrip locks down the basic get/set contract for
 // the cluster identifier. Empty is the default; the round-trip is
 // byte-for-byte (no normalization, no trimming) so a future

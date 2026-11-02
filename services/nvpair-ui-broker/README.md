@@ -703,6 +703,13 @@ Opt into / out of the `engine:<event>` stream (off by default). Acks `{ subscrib
 
 Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim and its response relayed straight back. This covers the whole engine control plane: `engine:get-installed`, `engine:describe`, `engine:status`, `engine:install`, `engine:uninstall`, `engine:start`, `engine:stop`, `engine:restart`, `engine:set-port`, `engine:action`, `engine:logs`, `engine:errors`, `engine:models`. (`engine:set-port` persists the engine's server port as a manifest override that survives a restart — see the `nvpair-engine-manager` README.) Lifecycle ops run for minutes (reporting progress via the `engine:install-progress` / `engine:state-changed` push events), so the relay imposes **no broker-side timeout** — fire the request and watch the event stream for the outcome. Error `-32000 "engine-manager not available"` when no engine-manager is supervised.
 
+Engine-manager's internal `engine:settings-request{id, method}` is handled
+separately from subscriptions. Only `settings/get-engine-allow-lan-bind` is
+forwarded to node-settings, with a two-second bound, and the correlated
+`engine:settings-reply{id, result, error?}` goes directly to the captured worker.
+It is read-only and is never broadcast to desktop or TUI clients. Missing workers
+and failed reads deny the non-loopback override.
+
 #### `settings/<method>` (generic relay)
 
 Any `settings/*` request is forwarded to `nvpair-node-settings` and its response relayed back: `settings/get-force-ports`, `settings/set-force-ports`, `settings/get-cluster-id`, `settings/set-cluster-id`, `settings/get-cluster-auto-sync`, `settings/set-cluster-auto-sync`, `settings/get-cluster-friendly-name`, `settings/set-cluster-friendly-name`, `settings/get-telemetry-config`, `settings/set-telemetry-config`. Error `-32000 "node-settings not available"` when no settings worker is supervised.

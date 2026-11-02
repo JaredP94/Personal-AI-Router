@@ -31,9 +31,11 @@
 - ⚠️ nvpair-job-scheduler → scheduler:tick
 - ⚠️ nvpair-node-info → n/a
 - ⚠️ nvpair-node-settings → settings/get-cluster-auto-sync
+- ⚠️ nvpair-node-settings → settings/get-engine-allow-lan-bind
 - ⚠️ nvpair-node-settings → settings/get-force-ports
 - ⚠️ nvpair-node-settings → settings/get-telemetry-config
 - ⚠️ nvpair-node-settings → settings/set-cluster-auto-sync
+- ⚠️ nvpair-node-settings → settings/set-engine-allow-lan-bind
 - ⚠️ nvpair-node-settings → settings/set-force-ports
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
@@ -42,6 +44,7 @@
 - ⚠️ nvpair-ui-broker → metrics:unsubscribe
 - ⚠️ nvpair-ui-broker → proxy:get-status
 - ⚠️ nvpair-ui-broker → proxy:unsubscribe
+- ⚠️ nvpair-ui-broker → settings/get-engine-allow-lan-bind
 - ⚠️ nvpair-ui-broker → workloads:unsubscribe
 - ⚠️ ollama-proxy → node/selected
 - ⚠️ ollama-proxy → node/set-local-backend
@@ -214,11 +217,13 @@
 | `settings/get-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/get-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/get-cluster-id` | request (we call) | ✅ yes |
+| `settings/get-engine-allow-lan-bind` | request (we call) | ⚠️ not called |
 | `settings/get-force-ports` | request (we call) | ⚠️ not called |
 | `settings/get-telemetry-config` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-auto-sync` | request (we call) | ⚠️ not called |
 | `settings/set-cluster-friendly-name` | request (we call) | ✅ yes |
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
+| `settings/set-engine-allow-lan-bind` | request (we call) | ⚠️ not called |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
 | `settings/set-telemetry-config` | request (we call) | ✅ yes |
 
@@ -296,6 +301,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `broker:epoch` | notification (we consume) | ✅ yes |
 | `discovery:nodes-changed` | notification (we consume) | ✅ yes |
 | `engine:restore-enabled` | notification (we consume) | ➖ ignored |
+| `engine:settings-reply` | notification (we consume) | ➖ ignored |
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `errors:update` | notification (we consume) | ✅ yes |
@@ -334,6 +340,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `proxy:subscribe` | request (we call) | ✅ yes |
 | `proxy:unsubscribe` | request (we call) | ⚠️ not called |
 | `ready` | request (we call) | ✅ yes |
+| `settings/get-engine-allow-lan-bind` | request (we call) | ⚠️ not called |
 | `telemetry/get-status` | request (we call) | ✅ yes |
 | `telemetry/purge-storage` | request (we call) | ✅ yes |
 | `telemetry/start` | request (we call) | ✅ yes |
