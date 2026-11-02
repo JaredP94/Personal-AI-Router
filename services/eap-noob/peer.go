@@ -90,6 +90,7 @@ func (p *Peer) Export(label string, context []byte, length int) ([]byte, error) 
 func (p *Peer) Receive(in []byte) (Outcome, error) {
 	wm, err := decode(in)
 	if err != nil {
+		p.completionVerified = false
 		return p.fail(ErrInvalidMessageStructure, "malformed JSON")
 	}
 	if wm.EAP != "" {

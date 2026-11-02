@@ -96,3 +96,17 @@ func TestPeerRejectsSuccessBeforeVerifiedCompletion(t *testing.T) {
 		t.Fatal("peer stored an association on an unverified EAP-Success")
 	}
 }
+
+// Any message between the verified Completion and EAP-Success clears the
+// verification, a malformed one included.
+func TestPeerSuccessNeedsTheCompletionDirectlyBeforeIt(t *testing.T) {
+	srv := NewServer(ServerConfig{Dirs: 2}, nil)
+	peer := NewPeer(PeerConfig{PreferDir: 2}, nil)
+	driveConversation(t, srv, peer)
+	peer.completionVerified = true // as after a verified Completion request
+	if _, err := peer.Receive([]byte("not json")); err != nil {
+		t.Fatalf("malformed input: %v", err)
+	}
+	out, err := peer.Receive(resultBytes(eapSuccess))
+	expectStateMismatch(t, out, err)
+}
