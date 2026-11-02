@@ -5,6 +5,7 @@ package main
 
 import (
 	"log/slog"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -18,7 +19,8 @@ import (
 // — identity + advertised services — without enrichment or liveness (those
 // decorate it later in the daemon). The directory is keyed by hostUuid (the
 // stable identity invite/attribution correlate on); name is the mDNS instance
-// (hostname). trusted is supplied by the caller from the cluster pin set.
+// (hostname). Every browse record starts as an independently keyed unverified
+// preview; only a completed authenticated inventory read can promote a peer.
 //
 // Addresses are carried through whole rather than reduced to one. The node ranked
 // its own addresses from evidence no observer has — which of its interfaces the
@@ -32,7 +34,7 @@ import (
 // nodeid.Resolve), so a record without it can't be keyed by a stable identity.
 // We skip it (and warn) rather than key it by the mutable, non-unique hostname —
 // node identity is the UUID everywhere, with no hostname fallback.
-func toDirectoryNode(raw RawNode, trusted bool) (noderec.DirectoryNode, bool) {
+func toDirectoryNode(raw RawNode) (noderec.DirectoryNode, bool) {
 	rec := noderec.ParseTXT(raw.TXT)
 	if rec.HostUUID == "" {
 		slog.Warn("skipping _nvpair-node record without uuid=; cannot key it by a stable identity",
@@ -51,13 +53,15 @@ func toDirectoryNode(raw RawNode, trusted bool) (noderec.DirectoryNode, bool) {
 		svcs[k] = noderec.ServiceStatus{Port: port}
 	}
 	return noderec.DirectoryNode{
-		HostUUID:    rec.HostUUID,
-		Name:        raw.ID,
-		IP:          ip,
-		IPs:         ips,
-		ClusterUUID: rec.ClusterUUID,
-		Trusted:     trusted,
-		Services:    svcs,
+		HostUUID:             rec.HostUUID,
+		Name:                 raw.ID,
+		IP:                   ip,
+		IPs:                  ips,
+		ClusterUUID:          rec.ClusterUUID,
+		Trusted:              false,
+		IdentityVerification: "unverified",
+		PeerRecordID:         noderec.PreviewRecordID(raw.ID, rec.HostUUID),
+		Services:             svcs,
 		// Models is enriched separately from engine-manager's em /v1/models
 		// (daemon.enrichModelsAt), not carried in the record's TXT.
 		LastSeen: time.Now().Unix(),
@@ -87,8 +91,12 @@ func newDirectory() *directory {
 func (d *directory) upsert(n noderec.DirectoryNode) (isNew bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, existed := d.nodes[n.HostUUID]
-	d.nodes[n.HostUUID] = carryEngineNative(d.nodes[n.HostUUID], n)
+	key := n.RecordKey()
+	if key == "" {
+		return false
+	}
+	_, existed := d.nodes[key]
+	d.nodes[key] = carryEngineNative(d.nodes[key], n)
 	return !existed
 }
 
@@ -99,116 +107,23 @@ func (d *directory) upsert(n noderec.DirectoryNode) (isNew bool) {
 // deliberately replaced by a record that carries one takes the new one: only
 // the absent case is carried forward.
 func carryEngineNative(stored, incoming noderec.DirectoryNode) noderec.DirectoryNode {
-	if incoming.EngineNative == nil && stored.EngineNative != nil {
+	if incoming.ServicePeer() && incoming.PeerRecordID == stored.PeerRecordID && incoming.EngineNative == nil && stored.EngineNative != nil {
 		incoming.EngineNative = stored.EngineNative
 	}
 	return incoming
 }
 
-// supersedeMinAge is how much older a record must be than the one arriving at
-// its address before it is worth asking whether it has been replaced.
-//
-// Note what it is NOT: evidence. LastSeen is not a liveness clock — the browser
-// reports a node only when its record CHANGES (shared/discovery, reconcile), so
-// a healthy peer with a stable advertisement produces no events and its LastSeen
-// freezes at first discovery exactly like a ghost's does. A frozen timestamp
-// says nothing about whether the node is alive, and anything willing to wait out
-// the window satisfies it. Nothing may be deleted on the strength of it; it
-// earns its place only as a cheap filter that keeps the identity probe in
-// daemon.supersedingUpsert off the common path.
-const supersedeMinAge int64 = 300 // seconds, matching DirectoryNode.LastSeen
-
-// supersedeCandidates lists the records a newly browsed node MIGHT have replaced,
-// for the caller to confirm or reject with proof. It decides nothing and deletes
-// nothing.
-//
-// This is the peer-side counterpart to dropSelf: when a node's appdata is wiped
-// it mints a fresh hostUuid, so the fleet sees the same machine arrive as a
-// stranger while the pre-wipe record lingers under the old key. dropSelf handles
-// that re-stamp for the local node; nothing handled it for peers, so a reset
-// node showed up twice everywhere downstream.
-//
-// A record is nominated — and no more than nominated — when it shares the
-// arriving node's Name, carries a different hostUuid, and is at least
-// supersedeMinAge older:
-//
-//   - Same Name. A wipe clears identity but not the hostname.
-//   - Older than supersedeMinAge (a filter, not evidence — see above).
-//
-// A shared address is deliberately NOT part of this. It reads as "one machine"
-// only if an address belongs to one machine at a time, and it does not: a
-// direct-connect link between two machines uses the same small subnet on every
-// such pair, so identically-provisioned hosts genuinely advertise the same
-// address on it, and matching there nominated live peers as each other's ghosts.
-// Nor is it needed — a wiped machine keeps its hostname whether or not it comes
-// back on the same address.
-//
-// Both remaining signals come from an unauthenticated mDNS record that anything
-// on the LAN can claim, so together they describe the SHAPE of a wipe and equally
-// the shape of a spoof — and, now that the address is gone, also the shape of two
-// hosts that merely share a hostname. daemon.supersedingUpsert must confirm a
-// candidate is really gone before deleting it.
-//
-// The arriving record still needs an address of its own, since that is where the
-// confirming read is made — not because matching it against anything would mean
-// something.
-//
-// selfUUID is never nominated, and never nominates: the local record is
-// registry-driven rather than browse-driven, and its LastSeen advances only when
-// this node republishes, so it must not be displaceable by a peer that happens
-// to claim its name.
-//
-// Candidates are returned sorted by hostUuid so the resulting removals are
-// emitted in a deterministic order rather than map-iteration order.
-func (d *directory) supersedeCandidates(n noderec.DirectoryNode, selfUUID string) []noderec.DirectoryNode {
-	if n.IP == "" || n.Name == "" || n.HostUUID == selfUUID {
-		return nil
-	}
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	var candidates []noderec.DirectoryNode
-	for uuid, other := range d.nodes {
-		if uuid == n.HostUUID || uuid == selfUUID {
-			continue
-		}
-		if other.Name != n.Name {
-			continue
-		}
-		if n.LastSeen-other.LastSeen < supersedeMinAge {
-			continue
-		}
-		candidates = append(candidates, other)
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].HostUUID < candidates[j].HostUUID })
-	return candidates
-}
-
-// upsertEvicting stores a node and deletes the records the caller has PROVEN it
-// replaced, returning the entries actually removed so the caller can emit
-// removals and drop their caches.
-//
-// The proof is a network read, so it is gathered without this lock held and each
-// eviction is re-validated here against the entry the caller actually judged. A
-// record that was removed, re-addressed, renamed, or refreshed while the probe
-// was in flight is left alone: the state the verdict was formed against is gone,
-// and it must be judged again from the new one.
-func (d *directory) upsertEvicting(n noderec.DirectoryNode, proven []noderec.DirectoryNode) (evicted []noderec.DirectoryNode) {
+// replaceIfCurrent prevents a completed probe from overwriting a newer record.
+func (d *directory) replaceIfCurrent(old, replacement noderec.DirectoryNode) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, old := range proven {
-		if old.HostUUID == n.HostUUID {
-			continue
-		}
-		current, present := d.nodes[old.HostUUID]
-		if !present || current.IP != old.IP || current.Name != old.Name || current.LastSeen != old.LastSeen {
-			continue
-		}
-		delete(d.nodes, old.HostUUID)
-		evicted = append(evicted, current)
+	current, ok := d.nodes[old.RecordKey()]
+	if !ok || !reflect.DeepEqual(current, old) {
+		return false
 	}
-	sort.Slice(evicted, func(i, j int) bool { return evicted[i].HostUUID < evicted[j].HostUUID })
-	d.nodes[n.HostUUID] = carryEngineNative(d.nodes[n.HostUUID], n)
-	return evicted
+	delete(d.nodes, old.RecordKey())
+	d.nodes[replacement.RecordKey()] = replacement
+	return true
 }
 
 // remove drops a node by hostUuid and reports whether it existed.
@@ -326,51 +241,6 @@ func (d *directory) applyEngineNative(hostUUID, ip string, emPort int, stats *en
 	n.EngineNative = stats
 	d.nodes[hostUUID] = n
 	return n, moved, true
-}
-
-// applyClusterIdentity sets one node's cluster principal and the trust annotation
-// derived from it, reporting whether either changed. It is the write path for both
-// membership reconciles — the pin-set pass (daemon.reconcileTrust) and the
-// node-info pass (daemon.refreshClusterIdentityOnce) — and mirrors applyModels: it
-// updates just those two fields in place, preserving everything the browse and
-// enrichment paths own, and reports no change for an entry that already agrees so
-// the caller stays silent in the steady state.
-//
-// The two fields move together because trust is derived from the principal: a peer
-// that leaves its cluster is no longer pinned under it, so leaving one stale while
-// updating the other would describe a node that cannot exist. For the same reason
-// trust is computed here, from the principal this call settles on, rather than
-// supplied by the caller: a caller computing it from a snapshot would race the
-// other reconcile and could write back a principal that had already moved.
-//
-// A nil clusterUUID means "keep whatever is stored" — the pin-set pass re-derives
-// trust without claiming to know the principal, since only the peer's own record
-// or report can say what it is.
-//
-// A node that has since been evicted reports no change — there is nothing to
-// annotate, and a later rediscovery evaluates both from scratch.
-func (d *directory) applyClusterIdentity(hostUUID string, clusterUUID *string, trustFor func(clusterUUID string) bool) (node noderec.DirectoryNode, changed bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	n, present := d.nodes[hostUUID]
-	if !present {
-		return n, false
-	}
-	settled := n.ClusterUUID
-	if clusterUUID != nil {
-		settled = *clusterUUID
-	}
-	trusted := false
-	if settled != "" {
-		trusted = trustFor(settled)
-	}
-	if n.ClusterUUID == settled && n.Trusted == trusted {
-		return n, false
-	}
-	n.ClusterUUID = settled
-	n.Trusted = trusted
-	d.nodes[hostUUID] = n
-	return n, true
 }
 
 // sameByEngine reports whether two per-engine model maps are semantically equal:

@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -105,10 +106,14 @@ func newRefreshTestDaemon() *daemon {
 // seedEMNode adds a directory entry advertising engine-manager (em) at ip:port,
 // with no model inventory yet (the state before any enrichment).
 func seedEMNode(d *daemon, hostUUID, ip string, emPort int) {
+	// These tests exercise owned loopback inventory/cache mechanics. Remote
+	// authentication is covered by the real mTLS inventory fixture.
+	d.reg = newRegistry(hostUUID, "", selfAddrs(ip))
 	d.dir.upsert(noderec.DirectoryNode{
-		HostUUID: hostUUID,
-		Name:     hostUUID,
-		IP:       ip,
+		IdentityVerification: "local",
+		HostUUID:             hostUUID,
+		Name:                 hostUUID,
+		IP:                   ip,
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 			noderec.ServiceEngineManager: {Port: emPort},
 		},
@@ -140,27 +145,17 @@ func TestRefreshPopulatesInitialEmptyInventory(t *testing.T) {
 }
 
 func TestRefreshModelsFallsBackToASecondPublishedAddress(t *testing.T) {
-	d := newRefreshTestDaemon()
-	_, port := startModelsStub(t, http.StatusOK, map[string]any{
-		"models": []string{"reachable-model"},
-	})
-	const peerUUID = "peer-multihomed-models"
-	d.dir.upsert(noderec.DirectoryNode{
-		HostUUID: peerUUID,
-		Name:     peerUUID,
-		IP:       "127.0.0.2",
-		IPs:      []string{"127.0.0.2", "127.0.0.1"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
-			noderec.ServiceEngineManager: {Port: port},
-		},
-	})
-
-	if !d.refreshNodeModelsCandidates(peerUUID, "127.0.0.2", []string{"127.0.0.2", "127.0.0.1"}, port, "") {
-		t.Fatal("model inventory did not refresh through the second published address")
+	d, srv, _ := secureInventoryFixture(t, "uuid-peer")
+	host, p, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	port, _ := strconv.Atoi(p)
+	n := noderec.DirectoryNode{HostUUID: "uuid-peer", ClusterUUID: "uuid-peer", IP: host, Trusted: true, IdentityVerification: "verified", PeerRecordID: d.mesh.PeerRecordID("uuid-peer"), Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: port}}}
+	d.dir.upsert(n)
+	if !d.refreshNodeModelsCandidates("uuid-peer", host, []string{"127.0.0.2", host}, port, "uuid-peer") {
+		t.Fatal("model inventory did not refresh through authenticated second address")
 	}
-	got, _ := d.dir.get(peerUUID)
-	if want := []string{"reachable-model"}; !reflect.DeepEqual(got.Models, want) {
-		t.Fatalf("Models = %v, want %v", got.Models, want)
+	got, _ := d.dir.get("uuid-peer")
+	if !reflect.DeepEqual(got.Models, []string{"authenticated-model"}) {
+		t.Fatalf("Models=%v", got.Models)
 	}
 }
 
@@ -454,10 +449,11 @@ func TestApplyModelsGuard(t *testing.T) {
 
 	// Re-addressed mid-sweep: node present but IP changed -> not overwritten.
 	d.upsert(noderec.DirectoryNode{
-		HostUUID: "peer-E",
-		IP:       "10.0.0.9",
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
-		Models:   []string{"old"},
+		IdentityVerification: "local",
+		HostUUID:             "peer-E",
+		IP:                   "10.0.0.9",
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14322}},
+		Models:               []string{"old"},
 	})
 	if _, changed, ok := d.applyModels("peer-E", "127.0.0.1", 14322, []string{"new"}, nil, nil); ok || changed {
 		t.Errorf("applyModels with a stale IP = (changed %v, ok %v), want (false, false)", changed, ok)

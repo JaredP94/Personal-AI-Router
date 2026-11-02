@@ -86,7 +86,7 @@ func TestTelemetryMixedMeasuredGPUReadings(t *testing.T) {
 				t.Fatal(err)
 			}
 			var output bytes.Buffer
-			d := &daemon{codec: NewCodec(&output), http: server.Client()}
+			d := &daemon{codec: NewCodec(&output), http: server.Client(), reg: newRegistry("node-a", "", selfAddrs("127.0.0.1"))}
 			if !d.refreshNodeTelemetry(context.Background(), "node-a", u.Hostname(), port) {
 				t.Fatal("no telemetry")
 			}

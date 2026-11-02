@@ -57,6 +57,7 @@ func TestModelFetchTransportFollowsMembership(t *testing.T) {
 	// Join a cluster that pins one peer.
 	clustertrusttest.Join(t, clusterDir, "cluster-models", "principal-self", "principal-peer")
 	d.mesh.Refresh()
+	d.reconcileIdentity()
 
 	if _, scheme, ok := d.modelsClient("192.168.1.42", "principal-peer"); !ok || scheme != "https" {
 		t.Fatalf("pinned peer: scheme=%q ok=%v, want https/true", scheme, ok)
@@ -127,11 +128,13 @@ func TestClusterUUIDAppearsOnJoinWithoutRestart(t *testing.T) {
 // cluster we may or may not have joined yet.
 func peerEntry(hostUUID, clusterUUID string) noderec.DirectoryNode {
 	return noderec.DirectoryNode{
-		HostUUID:    hostUUID,
-		Name:        hostUUID,
-		IP:          "192.0.2.10",
-		ClusterUUID: clusterUUID,
-		Services:    map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+		IdentityVerification: "unverified",
+		PeerRecordID:         noderec.PreviewRecordID(hostUUID, hostUUID),
+		HostUUID:             hostUUID,
+		Name:                 hostUUID,
+		IP:                   "192.0.2.10",
+		ClusterUUID:          clusterUUID,
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
 	}
 }
 
@@ -145,36 +148,28 @@ func peerEntry(hostUUID, clusterUUID string) noderec.DirectoryNode {
 // process: both proxies dropped the peer as an unpinned relay peer, so the node
 // listed only its own models and never routed inference anywhere, while its
 // roster and pins on disk said it was a healthy member of a three-node cluster.
-func TestReloadTrustAdoptsPeerPinnedAfterDiscovery(t *testing.T) {
+func TestReloadTrustDoesNotPromoteAnUnprovenPeer(t *testing.T) {
 	const peerUUID = "principal-peer"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
 	d := newMembershipTestDaemon(clusterDir)
-
-	// Discovered before we hold any cluster identity.
-	d.dir.upsert(toDirectoryNodeTrusted(peerEntry("peer-host", peerUUID), d))
-	if n, _ := d.dir.get("peer-host"); n.Trusted {
-		t.Fatal("peer annotated trusted while this node held no pins")
+	preview := peerEntry("peer-host", peerUUID)
+	d.dir.upsert(preview)
+	for _, stage := range []string{"before-join", "after-join", "after-removal"} {
+		if stage == "after-join" {
+			clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
+			d.reloadTrust()
+		}
+		if stage == "after-removal" {
+			clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
+			d.reloadTrust()
+		}
+		n, exists := d.dir.get(preview.RecordKey())
+		if !exists || n.Trusted || n.RecordKey() == n.HostUUID {
+			t.Fatalf("%s promoted or lost preview: %+v", stage, n)
+		}
 	}
-
-	// The join lands on disk and the cluster-manager announces it. No browse
-	// event accompanies it, and none ever will.
-	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
-	d.reloadTrust()
-
-	if n, _ := d.dir.get("peer-host"); !n.Trusted {
-		t.Fatal("peer still untrusted after its pin landed; routing would drop it")
-	}
-	// The same pass converges what we advertise, so peers can pin us back.
-	if got := d.reg.record().ClusterUUID; got != "principal-self" {
-		t.Fatalf("advertised cluster-uuid=%q, want principal-self", got)
-	}
-
-	// A removal is picked up just as promptly, and for the same reason.
-	clustertrusttest.RemovePeerPin(t, clusterDir, peerUUID)
-	d.reloadTrust()
-
-	if n, _ := d.dir.get("peer-host"); n.Trusted {
-		t.Fatal("peer still trusted after its pin was removed")
+	if d.reg.record().ClusterUUID != "principal-self" {
+		t.Fatal("local membership did not converge")
 	}
 }
 
@@ -183,18 +178,16 @@ func TestReloadTrustAdoptsPeerPinnedAfterDiscovery(t *testing.T) {
 // known node, so an unconditional write would push a directory-sized
 // discovery:nodes snapshot through the broker to every subscriber on each pass.
 func TestTrustReconcileIsSilentWhenNothingChanged(t *testing.T) {
-	const peerUUID = "principal-peer"
 	clusterDir := filepath.Join(t.TempDir(), "cluster")
-	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", peerUUID)
+	clustertrusttest.Join(t, clusterDir, "cluster-xyz", "principal-self", "principal-peer")
 	d := newMembershipTestDaemon(clusterDir)
-
-	d.dir.upsert(toDirectoryNodeTrusted(peerEntry("peer-host", peerUUID), d))
-	d.dir.upsert(toDirectoryNodeTrusted(peerEntry("stranger", "principal-stranger"), d))
-
-	for _, hostUUID := range []string{"peer-host", "stranger"} {
-		if _, changed := d.dir.applyClusterIdentity(hostUUID, nil, d.mesh.HasPin); changed {
-			t.Fatalf("%s reported a trust change on a steady-state pass", hostUUID)
-		}
+	d.dir.upsert(peerEntry("peer-host", "principal-peer"))
+	d.dir.upsert(peerEntry("stranger", "principal-stranger"))
+	capture := &notifyCapture{}
+	d.codec = NewCodec(capture)
+	d.reconcileTrust()
+	if len(capture.frames) != 0 {
+		t.Fatal("steady-state proof reconciliation emitted notifications")
 	}
 }
 
@@ -236,7 +229,7 @@ func TestPeerLeavingItsClusterClearsInviteGate(t *testing.T) {
 		ID:  "peer",
 		TXT: []string{"v=1", "uuid=" + peerUUID, "cluster-uuid=their-cluster", "ip=192.168.1.9"},
 	}})
-	n, ok := d.dir.get(peerUUID)
+	n, ok := d.dir.get(noderec.PreviewRecordID("peer", peerUUID))
 	if !ok {
 		t.Fatal("peer advertising a cluster principal was not recorded")
 	}
@@ -249,20 +242,13 @@ func TestPeerLeavingItsClusterClearsInviteGate(t *testing.T) {
 		ID:  "peer",
 		TXT: []string{"v=1", "uuid=" + peerUUID, "ip=192.168.1.9"},
 	}})
-	n, ok = d.dir.get(peerUUID)
+	n, ok = d.dir.get(noderec.PreviewRecordID("peer", peerUUID))
 	if !ok {
 		t.Fatal("peer dropped from the directory when it left its cluster")
 	}
 	if n.Clustered() {
 		t.Errorf("peer still annotated as clustered (clusterUuid=%q) after it stopped advertising one", n.ClusterUUID)
 	}
-}
-
-// toDirectoryNodeTrusted annotates an entry the way onBrowse does at the moment
-// it is folded in, so a test can reproduce "discovered at time T" faithfully.
-func toDirectoryNodeTrusted(n noderec.DirectoryNode, d *daemon) noderec.DirectoryNode {
-	n.Trusted = d.mesh.HasPin(n.ClusterUUID)
-	return n
 }
 
 func mustClusterUUID(t *testing.T, d *daemon, hostUUID string) string {
