@@ -12,6 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-02
+
+Unsigned, unnotarized **macOS arm64 release** for this fork. Windows, Linux
+desktop and Intel Mac packages are not published. Privileged-helper
+registration and helper-based firewall setup remain unavailable in unsigned
+builds; Settings → Service shows manual firewall guidance instead. See the
+[release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.8.0)
+for validation scope and limitations.
+
+**Upgrade notes:** Desktop `0.8.0` ships service product `2.6.0`. Relay
+protocol stays v2. No JSON-RPC method was removed; `engine:install-tool`,
+`engine:remote-install-tool` and the `/v1/node-info` `sensors` object are
+additive. Installing macmon on a *remote* peer needs that peer on
+`nvpair-engine-manager` 1.3.0 or newer; an older peer answers with a generic
+error. macmon is a Homebrew dependency PAIR can install on demand; it is not
+bundled.
+
 ### Added
 - **Apple Silicon Node Sensors (`nvpair-node-info` 1.3.0, `nvpair-engine-manager` 1.3.0, `desktop`)**: Node cards on Apple Silicon gain a Sensors drawer (CPU/GPU temperature, fan speed, power draw, memory pressure and swap) and Throttling / Memory pressure badges. Temperature, fan, and power come from macmon, a Homebrew dependency PAIR can install locally or on a trusted cluster peer; it is not bundled. Thermal and memory pressure are read directly and work without macmon.
 

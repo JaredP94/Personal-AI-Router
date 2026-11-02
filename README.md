@@ -82,13 +82,21 @@ This project exists as a forward-looking extension that introduces practical fea
    - **Fixed: a manual peer's engine-native view was never fetched.** The engine-native view was read only by the node-scanner, and only for the nodes in its own mDNS directory, so a peer registered as a manual node — reached over Tailscale or a static address — carried its model list but no engine counters. `nvpair-manual-nodes` now reads the engine's counters over the same pinned cluster-mTLS client it already used for the model list.
    - **Fixed: a job's live frame rarely carried the engine's numbers.** The job's two live publishers shared one per-job frame limiter, and the chunk-driven one won nearly every window, so the engine's half of the frame was almost never published. Both publishers now put both halves on the frame they leave, so whichever publisher leaves a frame carries the whole view; the one-frame-per-two-seconds bound is unchanged.
 
+11. **Apple Silicon Node Sensors (0.8.0)**
+   - A thermometer button on Apple Silicon node cards opens a Sensors drawer: CPU and GPU temperature, each fan's speed against its maximum, system power with the CPU, GPU and Neural Engine split, and the memory pressure level with swap use. The collapsed card shows a "Throttling" or "Memory pressure" badge when macOS reports either above normal. Colour comes only from macOS's own pressure levels; temperatures are never coloured.
+   - Temperature, fan and power readings come from [macmon](https://github.com/vladkens/macmon) (MIT), which reads Apple's sensors without `sudo`. It is an install dependency, not bundled: when it is missing, the drawer offers **Install macmon**, which runs `brew install macmon` on this machine or on a trusted cluster peer. Thermal pressure, memory pressure and swap are read directly and work without it.
+   - Nothing is fabricated: an unmeasured reading shows "—", never `0`, and a fanless Mac reads "No fans". Readings are display-only and do not change scheduling. `/v1/node-info` gains an optional `sensors` object, and engine-manager gains `engine:install-tool` and `engine:remote-install-tool`; both are additive and the relay protocol stays v2.
+
+12. **Aligned Metrics Layout (0.8.0)**
+   - Node cards, job cards and the performance legend show their metrics as aligned key/value groups. Each group names its window once ("Last 60 s", "Since broker start", "This request", "Engine total", "Engine average"), the per-model breakdown is a table, values use tabular figures, and an unreported value reads as a muted dash. Legend rows are buttons, so soloing a series works from the keyboard.
+
 ## What is supported
 
 | | |
 | --- | --- |
 | **Operating systems** | Windows 11; Linux; macOS |
 | **Architectures** | x64 and arm64 on all three. Windows on ARM is experimental. |
-| **Packaging targets** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. Published assets vary by release; this fork's current candidate ships **macOS arm64 only**. For other targets, [build from source](docs/building.mdx). |
+| **Packaging targets** | Windows `.exe`; Linux `.deb`; macOS `.dmg`. Published assets vary by release; this fork's current release ships **macOS arm64 only**. For other targets, [build from source](docs/building.mdx). |
 | **Mixing nodes** | Windows, Linux, and macOS nodes can all be paired with each other |
 | **Inference engines** | Ollama, LM Studio, and oMLX (Apple Silicon MLX) |
 
@@ -114,17 +122,15 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.7.0` (2026-10-22), an unsigned,
+The latest published build is **`0.8.0` (2026-11-02), an unsigned,
 unnotarized macOS Apple Silicon release**, not an NVIDIA-signed release.
-It is the first non-prerelease build of the 0.7.0 line: it carries
-everything the `0.7.0-rc.N` candidates carried, and those earlier candidates
-remain available on the releases page.
+Earlier releases and candidates remain available on the releases page.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
 and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
 Automatic updater installation is not certified for this unsigned release;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.7.0).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.8.0).
 It is marked as GitHub's Latest release for the Terminal installer and in-app
 update discovery.
 
@@ -133,8 +139,8 @@ Upstream official releases are separate and available at
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** Desktop `0.7.0` ships service
-product `2.5.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+**Upgrade clients and services together:** Desktop `0.8.0` ships service
+product `2.6.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 
@@ -147,7 +153,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the release, pass `--version 0.7.0` using `bash -s --` after the pipe.
+To pin the release, pass `--version 0.8.0` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.
