@@ -142,6 +142,8 @@ func testStopAllDetachedCommandDaemon(t *testing.T, command string) {
 	platform.Runtime.Health = nil
 	manifest.Platforms[hostKey()] = platform
 	ex := newTestExecutor(t, manifest)
+	// This must run even if fixture setup/readiness fails before explicit StopAll.
+	t.Cleanup(ex.StopAll)
 
 	// Model a control CLI that launches a detached daemon and returns before
 	// that daemon becomes ready. The daemon deliberately answers 503 until its
@@ -195,9 +197,7 @@ func testStopAllDetachedCommandDaemon(t *testing.T, command string) {
 	if err := <-daemonStarted; err != nil {
 		t.Fatalf("detached command daemon: %v", err)
 	}
-	if !portServing(port) {
-		t.Fatal("detached command daemon did not start serving")
-	}
+	waitPortServing(t, port)
 	if command == "touch" {
 		// A marker written by the CLI does not prove cmd.Wait has returned.
 		// Observe readiness I/O to synchronize with the intended startup phase.
