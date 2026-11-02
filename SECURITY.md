@@ -87,10 +87,22 @@ credential store.
 
 ### LAN Metadata and Overlay Addresses
 
-In the **broker-managed deployment**, `/v1/node-info` serves unauthenticated
-plaintext hardware/utilization metadata even after pairing. Standalone node-info
-with `--cluster-dir` can instead use membership-gated mTLS; do not assume that
-mode is active in the desktop bundle.
+In the **broker-managed deployment**, `/v1/node-info` retains an unauthenticated
+plaintext hardware/utilization preview. It also serves inventory and broker-owned
+service metadata over pinned cluster mTLS on the same port. Services grant peer
+trust and use remote inventory for routing or scheduling only after that mTLS
+read proves the exact current certificate and matching response identity. Public
+previews have independent record keys and an explicit `unverified` marker; a
+claimed host UUID cannot replace or remove a verified record. Proofs are bound
+to the local admission and both certificates and are withdrawn on authorization
+changes or worker retirement. Older peers without authenticated service metadata
+remain previews, not service targets. Explicitly configured bare-engine manual
+routes remain a separately labelled bypass and supply no peer telemetry.
+Manual-entry kind is not yet persisted: after a manual-nodes worker restart,
+an address previously added for a PAIR peer can be routed as an unauthenticated
+plaintext bare engine if no PAIR endpoint answers there, including when another
+machine has taken that address. Persisting PAIR-vs-bare-engine intent is required
+to prevent that downgrade across worker restarts.
 
 PAIR can advertise/rank Tailscale CGNAT addresses (`100.64.0.0/10`) and use known
 peer address fallbacks. This is not arbitrary tailnet peer enumeration, and
