@@ -326,6 +326,13 @@ mechanism (no CRL/OCSP). This keypair + `trusted/` store is the shared
 trust fabric other inter-node services (`nvpair-workload-manager`,
 `nvpair-errors` peer-sync) are intended to reuse. Full format in spec §7.4.
 
+A peer's UUID reaches the store from the network (pairing, endorsed roster
+entries), so the store treats it as an opaque identifier, never a path. It
+refuses to load, pin, or remove an identifier that is not a single local
+filename component — empty, `.`/`..`, either platform's separators, Windows
+drive or stream syntax, NUL bytes, or a reserved device name — without
+cleaning or renaming it, and without touching disk or announcing a change.
+
 ## Inter-node networking
 
 - One HTTP listener on TCP **`14321`** serves both the plain-HTTP **pairing
