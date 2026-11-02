@@ -135,10 +135,16 @@ func terminatePID(pid int, grace time.Duration) {
 // /proc/<pid>/exe can suffix " (deleted)" when the file was replaced while
 // the process still runs.
 func normalizeEngineImage(path string) string {
-	path = filepath.Clean(strings.TrimSuffix(path, " (deleted)"))
-	// macOS reports a running image by its resolved path (/private/var/...)
-	// while the configured path may go through a symlink (/var/...), so
-	// compare both sides resolved.
+	return filepath.Clean(strings.TrimSuffix(path, " (deleted)"))
+}
+
+// canonicalEnginePath is normalizeEngineImage with symlinks resolved. macOS
+// reports a running image by its resolved path (/private/var/...) while the
+// configured path may go through a link (/var/...). Use it only to compare,
+// never on its own to decide ownership: resolving an install directory that is
+// itself a link would make whatever it points at look managed.
+func canonicalEnginePath(path string) string {
+	path = normalizeEngineImage(path)
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return resolved
 	}
@@ -155,7 +161,7 @@ func isOurEngineImage(image, binPath string) bool {
 	if image == "" || binPath == "" {
 		return false
 	}
-	return strings.EqualFold(normalizeEngineImage(image), normalizeEngineImage(binPath))
+	return strings.EqualFold(canonicalEnginePath(image), canonicalEnginePath(binPath))
 }
 
 // isManagedInstallPath reports whether binPath is inside this engine's
@@ -174,12 +180,32 @@ func isManagedInstallPath(binPath, installDir string) bool {
 	if err != nil {
 		return false
 	}
-	// binPath is compared resolved (see normalizeEngineImage), so the install
-	// directory must be too.
-	if resolved, err := filepath.EvalSymlinks(dirAbs); err == nil {
-		dirAbs = resolved
+	return pathUnder(dirAbs, binAbs)
+}
+
+// isOwnedInstallPath is the ownership test for stopping or removing an engine:
+// binPath must be inside the install directory both as written and with every
+// link resolved. As written alone, a link inside the install directory could
+// lead to an external binary; resolved alone, an install directory that is
+// itself a link would claim whatever it points at.
+func isOwnedInstallPath(binPath, installDir string) bool {
+	if !isManagedInstallPath(binPath, installDir) {
+		return false
 	}
-	rel, err := filepath.Rel(dirAbs, binAbs)
+	binAbs, err := filepath.Abs(canonicalEnginePath(binPath))
+	if err != nil {
+		return false
+	}
+	dirAbs, err := filepath.Abs(canonicalEnginePath(installDir))
+	if err != nil {
+		return false
+	}
+	return pathUnder(dirAbs, binAbs)
+}
+
+// pathUnder reports whether path is dir or inside it, by whole components.
+func pathUnder(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
 	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}

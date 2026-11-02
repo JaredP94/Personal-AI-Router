@@ -397,7 +397,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			// we manage :11435) is never touched; we decline only a process
 			// whose image we can't confirm is ours.
 			pid, image, ok := pidOnPort(port)
-			if ok && isManagedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath) {
+			if ok && isOwnedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath) {
 				st.mu.Lock()
 				st.stopping = true
 				if st.healthStop != nil {
