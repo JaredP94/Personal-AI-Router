@@ -333,6 +333,18 @@ it('waits for readings after install and clears that state when available', asyn
     expect(button('Install macmon').disabled).toBe(false)
 })
 
+it('keeps the installed notice during macmon warm-up until readings are available', async () => {
+    installMacmon.mockResolvedValue('installed')
+    await panel(readings({ macmon: 'missing' }))
+    await click(button('Install macmon'))
+    await panel(readings({ macmon: 'failed' }))
+    expect(text()).toContain('Installed — waiting for readings…')
+    expect(text()).not.toContain('Sensors not responding')
+    await panel(readings({ macmon: 'available' }))
+    expect(text()).not.toContain('Installed — waiting for readings…')
+    expect(text()).not.toContain('Sensors not responding')
+})
+
 it('renders Sensors not responding and no install control when macmon failed', async () => {
     await panel(readings({ macmon: 'failed', memoryPressure: 'critical' }))
     for (const label of ['Temperature', 'Fans', 'Power'])

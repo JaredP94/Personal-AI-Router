@@ -65,7 +65,12 @@ export default function NodeSensorsPanel({
                 : '—'
 
     let notice: ReactNode = null
-    if (sensors.macmon === 'failed') {
+    if (
+        installOutcome === 'installed' &&
+        (sensors.macmon === 'missing' || sensors.macmon === 'failed')
+    ) {
+        notice = 'Installed — waiting for readings…'
+    } else if (sensors.macmon === 'failed') {
         notice = 'Sensors not responding'
     } else if (sensors.macmon === 'missing') {
         if (installOutcome === 'homebrew-missing') {
@@ -79,8 +84,6 @@ export default function NodeSensorsPanel({
             )
         } else if (installOutcome === 'unsupported-platform') {
             notice = "macmon isn't supported on this Mac"
-        } else if (installOutcome === 'installed') {
-            notice = 'Installed — waiting for readings…'
         } else if (canInstall) {
             notice = (
                 <>
