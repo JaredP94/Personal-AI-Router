@@ -72,6 +72,7 @@ type engineState struct {
 type Executor struct {
 	reg              *Registry
 	tools            toolEnv
+	toolInstallMu    sync.Mutex // serialize tool installs and recheck detection after waiting
 	reporter         *Reporter
 	emit             func(method string, params any)
 	client           *http.Client

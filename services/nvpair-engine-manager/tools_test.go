@@ -30,8 +30,9 @@ func newToolTestExecutor(t *testing.T) (*Executor, string, string, string) {
 	args := filepath.Join(dir, "args")
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, dir)
 	ex.tools = toolEnv{
-		Platform:  "darwin/arm64",
-		BrewPaths: []string{brew},
+		InstallTimeout: 15 * time.Minute,
+		Platform:       "darwin/arm64",
+		BrewPaths:      []string{brew},
 		Tools: map[string]toolSpec{
 			"macmon": {Platforms: []string{"darwin/arm64"}, Detect: []string{detect}, Formula: "macmon"},
 		},
@@ -96,8 +97,9 @@ func TestInstallToolHomebrewMissing(t *testing.T) {
 func TestDefaultToolAllowlist(t *testing.T) {
 	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
 	want := toolEnv{
-		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
-		BrewPaths: []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
+		InstallTimeout: 15 * time.Minute,
+		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
+		BrewPaths:      []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
 		Tools: map[string]toolSpec{
 			"macmon": {Platforms: []string{"darwin/arm64"}, Detect: []string{"/opt/homebrew/bin/macmon", "/usr/local/bin/macmon"}, Formula: "macmon"},
 		},
@@ -143,6 +145,46 @@ func TestInstallToolBrewFailsKeepsBoundedTail(t *testing.T) {
 	}
 	if len(te.Msg) > 4096+128 {
 		t.Fatalf("error too long: %d bytes", len(te.Msg))
+	}
+}
+
+func TestInstallToolConcurrentCallsRunBrewOnce(t *testing.T) {
+	ex, brew, detect, args := newToolTestExecutor(t)
+	writeToolFile(t, brew, fmt.Sprintf("#!/bin/sh\nprintf 'run\\n' >> %q\n/bin/sleep 0.2\nprintf '#!/bin/sh\\n' > %q\n/bin/chmod +x %q\n", args, detect, detect), 0o755)
+	results := make(chan error, 2)
+	go func() { results <- ex.InstallTool(context.Background(), "macmon") }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if data, _ := os.ReadFile(args); len(data) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first brew did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	go func() { results <- ex.InstallTool(context.Background(), "macmon") }()
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(args)
+	if err != nil || string(data) != "run\n" {
+		t.Fatalf("brew invocations = %q, err = %v; want one", data, err)
+	}
+}
+
+func TestInstallToolTimeout(t *testing.T) {
+	ex, brew, detect, _ := newToolTestExecutor(t)
+	ex.tools.InstallTimeout = 100 * time.Millisecond
+	writeToolFile(t, brew, fmt.Sprintf("#!/bin/sh\n/bin/sleep 0.3\nprintf '#!/bin/sh\\n' > %q\n/bin/chmod +x %q\n", detect, detect), 0o755)
+	te := requireToolCode(t, ex.InstallTool(context.Background(), "macmon"), -32012)
+	if !strings.Contains(te.Msg, "timed out") {
+		t.Fatalf("timeout error = %q, want timed out", te.Msg)
+	}
+	if _, err := os.Stat(detect); !os.IsNotExist(err) {
+		t.Fatalf("brew completed after timeout: %v", err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"time"
 )
 
 const (
@@ -35,15 +36,17 @@ type toolSpec struct {
 // toolEnv is immutable after construction and injectable for tests. Tools are
 // deliberately separate from engine manifests and the engine registry.
 type toolEnv struct {
-	Platform  string
-	BrewPaths []string
-	Tools     map[string]toolSpec
+	InstallTimeout time.Duration
+	Platform       string
+	BrewPaths      []string
+	Tools          map[string]toolSpec
 }
 
 func defaultToolEnv() toolEnv {
 	return toolEnv{
-		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
-		BrewPaths: []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
+		InstallTimeout: 15 * time.Minute,
+		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
+		BrewPaths:      []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
 		Tools: map[string]toolSpec{
 			"macmon": {
 				Platforms: []string{"darwin/arm64"},
@@ -69,6 +72,8 @@ func firstToolExecutable(paths []string) string {
 // InstallTool installs an allowlisted tool as the current user. It does not
 // alter engine state, search PATH, or override the user's Homebrew environment.
 func (e *Executor) InstallTool(ctx context.Context, name string) error {
+	e.toolInstallMu.Lock()
+	defer e.toolInstallMu.Unlock()
 	spec, ok := e.tools.Tools[name]
 	if !ok {
 		return fmt.Errorf("unknown tool %q", name)
@@ -83,7 +88,12 @@ func (e *Executor) InstallTool(ctx context.Context, name string) error {
 	if brew == "" {
 		return &toolError{Code: codeHomebrewMissing, Msg: "Homebrew was not found"}
 	}
-	if err := e.runCommandTail(ctx, []string{brew, "install", spec.Formula}, 20, 4096); err != nil {
+	installCtx, cancel := context.WithTimeout(ctx, e.tools.InstallTimeout)
+	defer cancel()
+	if err := e.runCommandTail(installCtx, []string{brew, "install", spec.Formula}, 20, 4096); err != nil {
+		if errors.Is(installCtx.Err(), context.DeadlineExceeded) {
+			return &toolError{Code: codeToolInstallFailed, Msg: fmt.Sprintf("install tool %s timed out", name)}
+		}
 		return &toolError{Code: codeToolInstallFailed, Msg: fmt.Sprintf("install tool %s: %v", name, err)}
 	}
 	if firstToolExecutable(spec.Detect) == "" {
