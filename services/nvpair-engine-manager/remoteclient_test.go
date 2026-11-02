@@ -35,9 +35,10 @@ func TestRemoteStartUsesReadinessHeaderBudget(t *testing.T) {
 	}
 }
 
-// A remote Ollama load can withhold headers while a cold model loads. A remote
-// LM Studio delete can likewise restart the peer's engine before it replies.
-// Both need the longer response-header budget; other model calls remain bounded.
+// A remote load on any engine can withhold headers while a cold model loads. A
+// remote LM Studio delete can likewise restart the peer's engine before it
+// replies. Both need the longer response-header budget; other model calls
+// remain bounded.
 func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -60,9 +61,11 @@ func TestRemoteSlowModelOperationsUseReadinessHeaderBudget(t *testing.T) {
 	if _, err := c.postJSON(context.Background(), controlDeletePath, "lmstudio", lmstudio); err != nil {
 		t.Fatalf("remote delete was cut off by the ordinary response-header budget: %v", err)
 	}
-	if _, err := c.postJSON(context.Background(), controlLoadPath, "lmstudio", lmstudio); err == nil ||
-		!strings.Contains(err.Error(), "timeout awaiting response headers") {
-		t.Fatalf("remote LM Studio load error = %v, want the ordinary bounded response-header timeout", err)
+	for _, engine := range []string{"lmstudio", "omlx"} {
+		load := modelActionRequest{Engine: engine, Model: "qwen2.5"}
+		if _, err := c.postJSON(context.Background(), controlLoadPath, engine, load); err != nil {
+			t.Fatalf("remote %s load was cut off by the ordinary response-header budget: %v", engine, err)
+		}
 	}
 	if _, err := c.postJSON(context.Background(), controlUnloadPath, "ollama", ollama); err == nil ||
 		!strings.Contains(err.Error(), "timeout awaiting response headers") {
@@ -75,22 +78,16 @@ func TestRemoteReadinessBudgetCoversEngineStartupAllowance(t *testing.T) {
 		t.Fatalf("readiness budget %s must exceed the ordinary budget %s",
 			remoteReadyResponseHeaderTimeout, remoteResponseHeaderTimeout)
 	}
-	cases := []struct {
-		path   string
-		engine string
-		want   bool
-	}{
-		{controlStartPath, "ollama", true},
-		{controlDeletePath, "lmstudio", true},
-		{controlLoadPath, "ollama", true},
-		{controlLoadPath, "lmstudio", false},
-		{controlStopPath, "ollama", false},
-		{controlUnloadPath, "ollama", false},
-		{controlEnginesPath, "", false},
-	}
-	for _, tc := range cases {
-		if got := waitsForEngineReadiness(tc.path, tc.engine); got != tc.want {
-			t.Errorf("waitsForEngineReadiness(%q, %q) = %v, want %v", tc.path, tc.engine, got, tc.want)
+	for path, want := range map[string]bool{
+		controlStartPath:   true,
+		controlDeletePath:  true,
+		controlLoadPath:    true,
+		controlStopPath:    false,
+		controlUnloadPath:  false,
+		controlEnginesPath: false,
+	} {
+		if got := waitsForEngineReadiness(path); got != want {
+			t.Errorf("waitsForEngineReadiness(%q) = %v, want %v", path, got, want)
 		}
 	}
 }
