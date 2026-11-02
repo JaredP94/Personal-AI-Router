@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"nvpair-shared/httpcon"
 	"nvpair-shared/noderec"
 )
 
@@ -271,7 +272,7 @@ func checkOllamaHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -285,7 +286,7 @@ func checkLMStudioHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -334,7 +335,7 @@ func (b *Broker) reconcileAdvertiseOMLX(client *http.Client) {
 func checkOMLXHealth(client *http.Client, port int) bool {
 	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/health", port))
 	if err == nil {
-		resp.Body.Close()
+		httpcon.DrainAndClose(resp.Body)
 		if resp.StatusCode == http.StatusOK {
 			return true
 		}
@@ -343,6 +344,6 @@ func checkOMLXHealth(client *http.Client, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	httpcon.DrainAndClose(resp.Body)
 	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
