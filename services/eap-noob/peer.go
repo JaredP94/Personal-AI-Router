@@ -35,6 +35,10 @@ type Peer struct {
 	cfg   PeerConfig
 	store Store
 	state State
+	// completionVerified is set only while the last message the peer handled
+	// was a Completion request whose MACs verified. EAP-Success is accepted
+	// only then: anything else would register on the server's word alone.
+	completionVerified bool
 
 	methodState
 
@@ -91,6 +95,7 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 	if wm.EAP != "" {
 		return p.onResult(wm)
 	}
+	p.completionVerified = false
 	if wm.ErrorCode != nil {
 		return Outcome{State: p.state, Done: true, Err: &ProtocolError{Code: *wm.ErrorCode, Info: wm.ErrorInfo}}, nil
 	}
@@ -116,7 +121,12 @@ func (p *Peer) Receive(in []byte) (Outcome, error) {
 }
 
 func (p *Peer) onResult(wm *wireMessage) (Outcome, error) {
+	verified := p.completionVerified
+	p.completionVerified = false
 	if wm.EAP == eapSuccess {
+		if !verified {
+			return p.fail(ErrStateMismatch, "success before verified Completion")
+		}
 		assoc := &Association{
 			PeerId:       p.peerId,
 			NAI:          p.nai,
@@ -230,6 +240,9 @@ func (p *Peer) onNegotiationRequest(wm *wireMessage) (Outcome, error) {
 }
 
 func (p *Peer) onKeyExchangeRequest(wm *wireMessage) (Outcome, error) {
+	if p.state != StateUnregistered || p.suite == nil {
+		return p.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	jwk, err := rawToJWK(wm.PKs)
 	if err != nil {
 		return p.fail(ErrInvalidData, "bad PKs")
@@ -342,6 +355,7 @@ func (p *Peer) onCompletionRequest(wm *wireMessage) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	p.completionVerified = true
 	return Outcome{Send: b, State: p.state}, nil
 }
 

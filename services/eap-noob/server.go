@@ -264,6 +264,9 @@ func (s *Server) buildKeyExchangeRequest() (Outcome, error) {
 }
 
 func (s *Server) onKeyExchange(wm *wireMessage) (Outcome, error) {
+	if s.state != StateUnregistered || s.suite == nil || s.priv == nil {
+		return s.fail(ErrStateMismatch, "key exchange requires negotiation during the initial exchange")
+	}
 	if err := s.checkPeerId(wm); err != nil {
 		return s.fail(ErrUnexpectedPeerIdentier, err.Error())
 	}
@@ -365,6 +368,12 @@ func (s *Server) buildCompletionRequest() (Outcome, error) {
 }
 
 func (s *Server) onCompletion(wm *wireMessage) (Outcome, error) {
+	// Completion follows the OOB step: Waiting in the server-to-peer direction,
+	// OOBReceived in the peer-to-server direction. Either way the keys must
+	// already be derived, or MACp would be checked against an empty key.
+	if (s.state != StateWaiting && s.state != StateOOBReceived) || s.suite == nil || len(s.keyM.Kmp) == 0 {
+		return s.fail(ErrStateMismatch, "completion before authentication keys are ready")
+	}
 	if err := s.checkPeerId(wm); err != nil {
 		return s.fail(ErrUnexpectedPeerIdentier, err.Error())
 	}
