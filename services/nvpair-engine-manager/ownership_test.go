@@ -37,6 +37,9 @@ func TestIsOwnedInstallPathRejectsLinksOut(t *testing.T) {
 	if isOwnedInstallPath(external, linkedDir) {
 		t.Error("an external binary was owned through an install directory that links to it")
 	}
+	if isOwnedInstallPath(filepath.Join(linkedDir, "Ollama.app", "ollama"), linkedDir) {
+		t.Error("an external binary spelled through the linked install directory was owned")
+	}
 
 	// A binary inside a real install directory that links out.
 	realDir := filepath.Join(base, "engine-bin", "other")

@@ -192,6 +192,13 @@ func isOwnedInstallPath(binPath, installDir string) bool {
 	if !isManagedInstallPath(binPath, installDir) {
 		return false
 	}
+	// PAIR creates the install directory itself. One that is a link leads
+	// somewhere PAIR did not install into, so nothing reached through it is
+	// PAIR's, however the path is spelled. Links above it (/var on macOS)
+	// are the system's and are fine.
+	if info, err := os.Lstat(filepath.Clean(installDir)); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	binAbs, err := filepath.Abs(canonicalEnginePath(binPath))
 	if err != nil {
 		return false
