@@ -126,8 +126,23 @@ func TestMacmonSupervisorPassesIntervalMs(t *testing.T) {
 	})
 }
 
+func TestMacmonSupervisorStartedChildIsNotMissing(t *testing.T) {
+	path := fakeMacmon(t, `exec sleep 30`)
+	s := newMacmonSupervisor(macmonTestConfig(path))
+	runMacmonSupervisor(t, s)
+	waitFor(t, func() bool { return len(macmonArgs(path)) == 1 })
+	status, sample, _ := s.Latest()
+	if status != MacmonFailed || sample != nil {
+		t.Fatalf("started child status/sample = %q/%v, want failed/nil", status, sample)
+	}
+}
+
 func TestMacmonSupervisorRestartsOnIntervalChange(t *testing.T) {
-	path := fakeMacmon(t, `printf '%s\n' "$$" >> "$DIR/pids"; printf '%s\n' "$LINE"; exec sleep 30`)
+	// Only the original child publishes: the replacement must retain available
+	// and the original sample even while it has not produced any stdout.
+	path := fakeMacmon(t, `printf '%s\n' "$$" >> "$DIR/pids"
+if [ "$3" = 250 ]; then printf '%s\n' "$LINE"; fi
+exec sleep 30`)
 	var fast atomic.Bool
 	cfg := macmonTestConfig(path)
 	cfg.Interval = func() time.Duration {
@@ -153,12 +168,16 @@ func TestMacmonSupervisorRestartsOnIntervalChange(t *testing.T) {
 	if err != nil || oldPID <= 0 {
 		t.Fatalf("invalid original child PID: %q, %v", data, err)
 	}
+	_, originalSample, _ := s.Latest()
 	changedAt := time.Now()
 	fast.Store(true)
 	waitFor(t, func() bool {
-		status, _, interval := s.Latest()
-		if status == MacmonFailed {
-			t.Fatal("interval restart reported a failure")
+		status, sample, interval := s.Latest()
+		if status != MacmonAvailable {
+			t.Fatalf("interval restart status = %q, want available", status)
+		}
+		if sample != originalSample {
+			t.Fatal("interval restart changed the sample before new stdout")
 		}
 		args := macmonArgs(path)
 		return len(args) == 2 && args[1] == "pipe -i 100" && interval == 100*time.Millisecond

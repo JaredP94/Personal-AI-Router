@@ -125,6 +125,9 @@ func (s *macmonSupervisor) runChild(ctx context.Context, path string, interval t
 	}
 	s.mu.Lock()
 	s.interval, s.started = interval, true
+	if s.status == MacmonMissing {
+		s.status = MacmonFailed
+	}
 	s.mu.Unlock()
 
 	scanned := make(chan bool, 1)
