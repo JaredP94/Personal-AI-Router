@@ -64,6 +64,17 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if err := os.MkdirAll(st.installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
+	// Whether this install puts its Creates path in place, or finds the
+	// user's own copy already there. Decided before anything runs.
+	claims := true
+	// createdID is the identity of what this install put at Creates, taken
+	// as it was put there; the claim covers that bundle and nothing else.
+	createdID := ""
+	if inst.Creates != "" {
+		if _, err := os.Lstat(expandPath(inst.Creates)); err == nil {
+			claims = false
+		}
+	}
 
 	vars := map[string]string{"install_dir": st.installDir}
 
@@ -86,9 +97,15 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			return werr
 		}
 	} else {
-		if inst.Fetch != nil {
+		if len(inst.FetchVariants) > 0 || inst.Fetch != nil {
+			fetch := inst.fetchFor(hostOSMajorVersion())
+			if fetch == nil {
+				err := fmt.Errorf("%s has no build for this version of the operating system", st.manifest.DisplayName)
+				e.reportInstallFailed(engine, err)
+				return err
+			}
 			e.emitInstallProgress(engine, "downloading", 0)
-			dp, err := e.download(ctx, engine, inst.Fetch)
+			dp, err := e.download(ctx, engine, fetch)
 			if err != nil {
 				e.reportInstallFailed(engine, err)
 				return err
@@ -96,6 +113,18 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			defer os.Remove(dp)
 			vars["download"] = dp
 			e.emitInstallProgress(engine, "verified", 50)
+		}
+		if inst.DiskImage != nil {
+			e.emitInstallProgress(engine, "installing", 75)
+			id, err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage)
+			if err != nil {
+				werr := fmt.Errorf("install from disk image failed: %w", err)
+				e.reportInstallFailed(engine, werr)
+				return werr
+			}
+			// An app that arrived while the image downloaded or copied was
+			// left in place; it is the user's, whatever the earlier check saw.
+			createdID = id
 		}
 		if len(inst.Run) > 0 {
 			e.emitInstallProgress(engine, "installing", 75)
@@ -115,6 +144,16 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		}
 	}
 
+	if inst.Creates != "" && inst.DiskImage == nil && claims {
+		// A command-driven install: take the identity as soon as it ran.
+		createdID = fileIdentity(expandPath(inst.Creates))
+	}
+	if inst.Creates != "" {
+		// Claim only if Creates is still exactly what this install put there.
+		if createdID == "" || fileIdentity(expandPath(inst.Creates)) != createdID {
+			claims = false
+		}
+	}
 	if !e.waitDetect(engine, true, e.detectTimeout) {
 		err := fmt.Errorf("engine %q was not detected after install", engine)
 		e.reportInstallFailed(engine, err)
@@ -122,7 +161,14 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	}
 	// Claim the install now that it is real and detected. A failure to record it
 	// only costs the ability to uninstall later, so it must not fail the install.
-	if err := writeInstallMarker(st.installDir, engine); err != nil {
+	// An install that found the user's own copy in place claims nothing.
+	if !claims {
+		// Whatever an earlier claim covered is gone: the copy in place now is
+		// not one this install created.
+		clearInstallMarker(st.installDir)
+		slog.Info("engine was already in place; not recording it as installed by PAIR", "engine", engine, "path", inst.Creates)
+	} else if err := writeInstallMarker(st.installDir, engine, inst.Creates, createdID); err != nil {
+		clearInstallMarker(st.installDir)
 		slog.Warn("could not record that PAIR installed this engine; uninstall will decline it", "engine", engine, "err", err)
 	}
 	e.reporter.clear(installFailedID(engine))
@@ -168,7 +214,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	// test above can never vouch for ownership. Without the install marker
 	// this could be the copy the user installed themselves, holding the data
 	// they built up in it — decline rather than guess.
-	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir) {
+	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir, installCreates(st.plat)) {
 		err := fmt.Errorf("cannot uninstall engine %q: NVIDIA PAIR has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
@@ -451,4 +497,12 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// installCreates is the platform's install.creates, or "" when it has none.
+func installCreates(p *Platform) string {
+	if p.Install == nil {
+		return ""
+	}
+	return p.Install.Creates
 }

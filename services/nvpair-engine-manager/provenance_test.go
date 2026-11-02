@@ -14,17 +14,17 @@ import (
 
 func TestInstallMarkerRoundTrip(t *testing.T) {
 	installDir := filepath.Join(t.TempDir(), "lmstudio")
-	if installedByPAIR(installDir) {
+	if installedByPAIR(installDir, "") {
 		t.Fatal("an install directory that does not exist cannot be ours")
 	}
-	if err := writeInstallMarker(installDir, "lmstudio"); err != nil {
+	if err := writeInstallMarker(installDir, "lmstudio", "", ""); err != nil {
 		t.Fatalf("writeInstallMarker: %v", err)
 	}
-	if !installedByPAIR(installDir) {
+	if !installedByPAIR(installDir, "") {
 		t.Error("marker written but not recognized")
 	}
 	clearInstallMarker(installDir)
-	if installedByPAIR(installDir) {
+	if installedByPAIR(installDir, "") {
 		t.Error("marker survived clearInstallMarker; a stale claim lets PAIR remove a user's own install")
 	}
 }
@@ -116,7 +116,7 @@ func TestUninstallRemovesAMarkedEngineAndKeepsItsData(t *testing.T) {
 	binary, weights, settings := vendorEngineOnDisk(t, vendorRoot)
 	ex := vendorExecutor(t, vendorEngineManifest(vendorRoot, []string{filepath.Join(vendorRoot, "bin")}))
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
+	if err := writeInstallMarker(installDir, "vendor", "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -136,7 +136,7 @@ func TestUninstallRemovesAMarkedEngineAndKeepsItsData(t *testing.T) {
 	if !fileExists(settings) {
 		t.Error("uninstall deleted the user's settings")
 	}
-	if installedByPAIR(installDir) {
+	if installedByPAIR(installDir, "") {
 		t.Error("marker survived a completed uninstall")
 	}
 }
@@ -148,14 +148,14 @@ func TestUninstallClearsTheMarkerWhenAlreadyGone(t *testing.T) {
 	vendorRoot := t.TempDir() // nothing laid down, so detection fails
 	ex := vendorExecutor(t, vendorEngineManifest(vendorRoot, []string{filepath.Join(vendorRoot, "bin")}))
 	installDir := filepath.Join(ex.baseDir, "vendor")
-	if err := writeInstallMarker(installDir, "vendor"); err != nil {
+	if err := writeInstallMarker(installDir, "vendor", "", ""); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := ex.Uninstall(context.Background(), "vendor"); err != nil {
 		t.Fatalf("uninstalling an absent engine should succeed: %v", err)
 	}
-	if installedByPAIR(installDir) {
+	if installedByPAIR(installDir, "") {
 		t.Error("stale marker left behind for an engine that is already gone")
 	}
 }

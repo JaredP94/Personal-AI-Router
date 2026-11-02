@@ -72,12 +72,19 @@ Create `manifests/omlx.json` in `services/nvpair-engine-manager`:
     "/usr/local/bin/omlx"
   ],
   "install": {
-    "fetch": { "url": "https://omlx.ai/install.sh" },
-    "run": ["bash", "{download}"],
+    "fetch_variants": [
+      { "url": ".../oMLX-<version>-macos26-27.dmg", "sha256": "…", "min_os_version": 26 },
+      { "url": ".../oMLX-<version>-macos15-sequoia.dmg", "sha256": "…", "min_os_version": 15 }
+    ],
+    "disk_image": { "app": "oMLX.app", "into": "/Applications", "open": true },
+    "creates": "/Applications/oMLX.app",
     "mode": "user"
   },
+  "models_dir": "~/.omlx/models",
   "uninstall": {
-    "run": ["sh", "-c", "pkill -x omlx 2>/dev/null; sleep 2; rm -rf \"$HOME/.omlx\""]
+    "cli_roots": ["~/.omlx/bin"],
+    "run": ["/bin/sh", "-c", "pkill -f '^/Applications/oMLX.app/Contents/MacOS/oMLX' 2>/dev/null; sleep 2; exit 0"],
+    "remove": ["/Applications/oMLX.app", "~/.omlx/bin/omlx", "~/.omlx/bin/omlx-cluster-python"]
   },
   "runtime": {
     "mode": "command",
@@ -120,7 +127,7 @@ Create `manifests/omlx.json` in `services/nvpair-engine-manager`:
 
 CLI resolution uses the first existing `detect` candidate unless a user explicitly
 overrides `runtime.cli`. Homebrew and `/usr/local` paths assume the same CLI and
-`start`/`stop` semantics as install.sh. App-bundle executables are not CLI
+`start`/`stop` semantics as the app's `~/.omlx/bin/omlx` shim. App-bundle executables are not CLI
 candidates: lowercase `omlx` can match the GUI's `oMLX` binary on macOS, and
 `omlx-cli` lifecycle semantics are unverified. The JSON above is an integration
 plan, not the authoritative runtime/action contract; see the shipped manifest and
@@ -211,7 +218,7 @@ Create `services/omlx-proxy/` as a modular build target in `services/`:
    export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUrl: string }> = {
        ollama: { docsUrl: 'https://docs.ollama.com/', installUrl: 'https://ollama.com/download' },
        'lm-studio': { docsUrl: 'https://lmstudio.ai/docs', installUrl: 'https://lmstudio.ai/' },
-       omlx: { docsUrl: 'https://omlx.ai/', installUrl: 'https://omlx.ai/' }
+       omlx: { docsUrl: 'https://github.com/jundot/omlx', installUrl: 'https://github.com/jundot/omlx/releases/latest' }
    } as const
    ```
 

@@ -8,11 +8,42 @@
     "/usr/local/bin/omlx"
   ],
   "install": {
-    "fetch": { "url": "https://omlx.ai/install.sh" },
-    "run": ["bash", "{download}"],
+    "fetch_variants": [
+      {
+        "url": "https://github.com/jundot/omlx/releases/download/v0.7.3/oMLX-0.7.3-macos26-27.dmg",
+        "sha256": "2acfde41aeac0b022dbca803ca109437f3ccaf0c33f3415881526b985bee86f2",
+        "min_os_version": 26
+      },
+      {
+        "url": "https://github.com/jundot/omlx/releases/download/v0.7.3/oMLX-0.7.3-macos15-sequoia.dmg",
+        "sha256": "cd5e3b454798a002f32ef2f3bf06ae033ea2f4e5b02aa039a2c68445498605f1",
+        "min_os_version": 15
+      }
+    ],
+    "disk_image": {
+      "app": "oMLX.app",
+      "into": "/Applications",
+      "open": true
+    },
+    "creates": "/Applications/oMLX.app",
     "mode": "user"
   },
   "models_dir": "~/.omlx/models",
+  "uninstall": {
+    "cli_roots": [
+      "~/.omlx/bin"
+    ],
+    "run": [
+      "/bin/sh",
+      "-c",
+      "pkill -f '^/Applications/oMLX.app/Contents/MacOS/oMLX' 2>/dev/null; sleep 2; exit 0"
+    ],
+    "remove": [
+      "/Applications/oMLX.app",
+      "~/.omlx/bin/omlx",
+      "~/.omlx/bin/omlx-cluster-python"
+    ]
+  },
   "runtime": {
     "mode": "command",
     "port": 1235,

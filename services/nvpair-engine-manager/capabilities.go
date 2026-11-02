@@ -49,7 +49,11 @@ func capabilitiesFor(m *Manifest, platform string, adopted bool, installDir stri
 		// Uninstall declines a command-mode engine PAIR has no record of
 		// installing, so offering it would only lead to that refusal.
 		goos := strings.SplitN(platform, "/", 2)[0]
-		uninstall = installedByPAIR(installDir) &&
+		creates := ""
+		if p.Install != nil {
+			creates = p.Install.Creates
+		}
+		uninstall = installedByPAIR(installDir, creates) &&
 			uninstallerCoversCLI(p.Uninstall, detectedExecutable(&p, installDir, goos), installDir, goos)
 	}
 	return Capabilities{
