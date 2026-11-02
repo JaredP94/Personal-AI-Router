@@ -254,15 +254,41 @@ func TestStartDoesNotWaitForPassiveProbe(t *testing.T) {
 	awaitProbeStart(t, fixture.probeStarted)
 	port, err := freePort()
 	require.NoError(t, err)
+	// Keep the operation observable even if startup finishes between polls.
+	// Persistence is the last step of StartWith, after spawning and readiness.
+	ex.desired.mu.Lock()
+	var persistOnce sync.Once
+	allowPersistence := func() { persistOnce.Do(ex.desired.mu.Unlock) }
+	t.Cleanup(func() {
+		allowPersistence()
+		fixture.releaseProbe()
+		ex.StopAll()
+	})
 	started := make(chan error, 1)
 	go func() { started <- ex.StartWith(context.Background(), "fake", startOpts{Port: port}) }()
-	defer func() { fixture.releaseProbe(); _ = ex.Stop("fake") }()
-	require.NoError(t, awaitResult(t, started))
+	// Only lifecycle entry has this short deadline, not real process startup.
+	require.Eventually(t, func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.opDone != nil
+	}, 2*time.Second, time.Millisecond, "Start waited for a passive readiness probe")
+	select {
+	case <-finished:
+		t.Fatal("passive probe finished before lifecycle entry was observed")
+	default:
+	}
 	fixture.releaseProbe()
-	got := awaitResult(t, finished)
-	require.NoError(t, got.err)
-	require.True(t, got.status.Running)
-	require.Equal(t, port, got.status.Port)
+	require.NoError(t, awaitResult(t, finished).err)
+	allowPersistence()
+	select {
+	case err := <-started:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("engine startup did not finish after lifecycle entry")
+	}
+	status := ex.snapshot("fake", st)
+	require.True(t, status.Running)
+	require.Equal(t, port, status.Port)
 }
 
 type statusResult struct {
