@@ -29,7 +29,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -80,8 +79,13 @@ func startBrokerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonr
 // cluster that directory describes (see newInterNodeCluster).
 func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
+	for _, arg := range args {
+		if arg == "--workload-manager-path" && portBusy(14320) {
+			t.Skip("workload-manager inter-node port 14320 already in use; skipping")
+		}
+	}
 	args = append([]string{"--cluster-dir", clusterDir}, args...)
-	cmd := exec.Command(brokerBin, args...)
+	cmd := testCommand(t, brokerBin, args...)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()

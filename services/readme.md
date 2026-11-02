@@ -280,8 +280,19 @@ cd tests
 go test ./...
 ```
 
+Every runtime launch uses a per-test temporary app-data root for `HOME`,
+`USERPROFILE`, `XDG_CONFIG_HOME`, `APPDATA`, and `LOCALAPPDATA`, inherited by
+supervised workers. Restart tests explicitly reuse their own temporary root.
+Runtime commands inherit the remaining environment with those five roots
+overridden; build commands keep the original home/config roots so Go's caches
+are not redirected into disposable test state. The
+`TestProcessHelpersRequireIsolation` source guard rejects launch helpers that
+bypass the isolated command factory or replace its environment.
+
 Expect this to take a few minutes. Run it before opening a merge request, and
-after any change to a JSON-RPC method, payload, or notification.
+after any change to a JSON-RPC method, payload, or notification. CI runs the
+cross-process suite on macOS arm64; component vet/tests run on both macOS and
+Linux.
 
 ### Tests that skip themselves
 

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -26,13 +25,7 @@ import (
 func startBrokerInDir(t *testing.T, configDir string, extraArgs ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
 	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", t.TempDir()}, extraArgs...)
-	cmd := exec.Command(brokerBin, args...)
-	cmd.Env = append(os.Environ(),
-		"HOME="+configDir,
-		"XDG_CONFIG_HOME="+configDir,
-		"APPDATA="+configDir,
-		"LOCALAPPDATA="+configDir,
-	)
+	cmd := testCommandInDir(t, configDir, brokerBin, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("broker stdin pipe: %v", err)
@@ -85,6 +78,9 @@ func waitForResponseID(t *testing.T, msgs <-chan jsonrpc.Message, id int, timeou
 // config dir, and asserts cluster:get-node-id reports the restored clusterId
 // (rather than the "" a fresh cluster-manager comes up with).
 func TestBrokerRestoresClusterIdentityAfterRestart(t *testing.T) {
+	if portBusy(14321) {
+		t.Skip("cluster-manager inter-node port 14321 already in use; skipping")
+	}
 	configDir := t.TempDir()
 	const clusterID = "restore-test-cluster-0001"
 	const friendly = "Restore Test Lab"

@@ -15,7 +15,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -75,18 +74,9 @@ func startBrokerWithDirsAndEnv(t *testing.T, configDir, clusterDir string, extra
 func startSupervisedBrokerInDir(t *testing.T, workDir, configDir, clusterDir string, extraEnv []string, extraArgs ...string) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, stderrLines <-chan string, cleanup func()) {
 	t.Helper()
 	args := append([]string{"--scanner-path", scannerBin, "--cluster-dir", clusterDir}, extraArgs...)
-	cmd := exec.Command(brokerBin, args...)
+	cmd := testCommandInDir(t, configDir, brokerBin, args...)
 	cmd.Dir = workDir
-	// Every supervised worker must use disposable per-test config. In
-	// particular, managed-port startup can persist an Ollama backend port; a
-	// cross-process test must never read or rewrite the developer's real file.
-	cmd.Env = append(os.Environ(),
-		"HOME="+configDir,
-		"XDG_CONFIG_HOME="+configDir,
-		"APPDATA="+configDir,
-		"LOCALAPPDATA="+configDir,
-	)
-	cmd.Env = append(cmd.Env, extraEnv...)
+	addTestEnv(t, cmd, extraEnv...)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -199,17 +189,40 @@ const methodErrorsUpdate = "errors:update"
 
 var proxyPidRe = regexp.MustCompile(`proxy started.*\bpid=(\d+)`)
 
-// portBusy reports whether a TCP port on localhost is already bound — used
+// portBusy probes the same wildcard address the workers bind, not just IPv4
+// loopback (which can coexist with an IPv6 listener on macOS). It is used
 // to skip tests whose supervised workers need a fatal-on-conflict listener
 // (nvpair-errors --peer-sync on 14319, ollama-proxy on 11435) when something
 // else on the host already holds it.
 func portBusy(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return true
+	for _, host := range []string{"", "127.0.0.1", "::1"} {
+		if host == "::1" {
+			// An unavailable IPv6 loopback is not an occupied port. Probe
+			// support independently before interpreting a bind failure.
+			probe, err := net.Listen("tcp6", "[::1]:0")
+			if err != nil {
+				continue
+			}
+			probe.Close()
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return true
+		}
+		ln.Close()
 	}
-	ln.Close()
 	return false
+}
+
+func TestPortBusyDetectsIPv6Listener(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 unavailable: %v", err)
+	}
+	defer ln.Close()
+	if !portBusy(ln.Addr().(*net.TCPAddr).Port) {
+		t.Fatal("IPv6 listener was missed by the worker-port preflight")
+	}
 }
 
 // TestBrokerCrashSurfacingAndRestart kills the broker's supervised proxy
@@ -291,7 +304,7 @@ func TestBrokerShutsDownOnSignal(t *testing.T) {
 		// other tests' teardown already exercises.
 		t.Skip("signalling a specific process is not supported on Windows")
 	}
-	cmd := exec.Command(brokerBin,
+	cmd := testCommand(t, brokerBin,
 		"--scanner-path", scannerBin,
 		"--proxy-path", proxyBin,
 		"--cluster-dir", t.TempDir(),
@@ -424,19 +437,10 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy default port 11435 already in use; skipping")
 	}
-	cfg := t.TempDir()
-	cmd := exec.Command(brokerBin,
+	cmd := testCommand(t, brokerBin,
 		"--scanner-path", scannerBin,
 		"--proxy-path", proxyBin,
 		"--engine-manager-path", engineMgrBin,
-	)
-	// Isolate per-user state (proxy-port.json, any engine override) to a
-	// temp dir so the test leaves the real config untouched.
-	cmd.Env = append(os.Environ(),
-		"HOME="+cfg,
-		"XDG_CONFIG_HOME="+cfg,
-		"APPDATA="+cfg,
-		"LOCALAPPDATA="+cfg,
 	)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
@@ -583,7 +587,7 @@ func waitWorkerRunning(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Messag
 
 func signalWorker(t *testing.T, pid int, signal string) {
 	t.Helper()
-	if output, err := exec.Command("kill", "-"+signal, strconv.Itoa(pid)).CombinedOutput(); err != nil {
+	if output, err := testCommand(t, "kill", "-"+signal, strconv.Itoa(pid)).CombinedOutput(); err != nil {
 		t.Fatalf("kill -%s %d: %v %s", signal, pid, err, output)
 	}
 }
@@ -597,7 +601,7 @@ func TestHungSchedulerRestarts(t *testing.T) {
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 	old := waitWorkerRunning(t, stdin, msgs, "scheduler").PID
 	signalWorker(t, old, "STOP")
-	t.Cleanup(func() { _ = exec.Command("kill", "-CONT", strconv.Itoa(old)).Run() })
+	t.Cleanup(func() { _ = testCommand(t, "kill", "-CONT", strconv.Itoa(old)).Run() })
 	waitWorkerState(t, msgs, "scheduler", "degraded", 8*time.Second)
 	waitWorkerState(t, msgs, "scheduler", "restarting", 10*time.Second)
 	status := waitWorkerState(t, msgs, "scheduler", "running", 5*time.Second)
@@ -609,7 +613,7 @@ func TestHungSchedulerRestarts(t *testing.T) {
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if exec.Command("kill", "-0", strconv.Itoa(old)).Run() != nil {
+		if testCommand(t, "kill", "-0", strconv.Itoa(old)).Run() != nil {
 			break
 		}
 		select {
@@ -632,7 +636,7 @@ func TestHungEngineManagerOnlyDegrades(t *testing.T) {
 		Workers []workerHealthStatus `json:"workers"`
 	}
 	signalWorker(t, pid, "STOP")
-	t.Cleanup(func() { _ = exec.Command("kill", "-CONT", strconv.Itoa(pid)).Run() })
+	t.Cleanup(func() { _ = testCommand(t, "kill", "-CONT", strconv.Itoa(pid)).Run() })
 	waitWorkerState(t, msgs, "engine-manager", "degraded", 8*time.Second)
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()

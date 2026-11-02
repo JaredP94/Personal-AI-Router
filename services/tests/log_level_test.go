@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -47,7 +46,7 @@ func (b *safeBuffer) Reset() {
 func startProxyWithLog(t *testing.T, level string) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, stderr *safeBuffer, cleanup func()) {
 	t.Helper()
 
-	cmd := exec.Command(proxyBin, "--log-level", level)
+	cmd := testCommand(t, proxyBin, "--log-level", level)
 	stderrBuf := &safeBuffer{}
 	cmd.Stderr = stderrBuf
 
@@ -185,8 +184,8 @@ func TestLogSetLevelViaRPC(t *testing.T) {
 // TestLogLevelEnvFallback verifies NVPAIR_LOG_LEVEL is honoured when --log-level
 // is not passed.
 func TestLogLevelEnvFallback(t *testing.T) {
-	cmd := exec.Command(proxyBin)
-	cmd.Env = append(cmd.Environ(), "NVPAIR_LOG_LEVEL=debug")
+	cmd := testCommand(t, proxyBin)
+	addTestEnv(t, cmd, "NVPAIR_LOG_LEVEL=debug")
 	stderrBuf := &safeBuffer{}
 	cmd.Stderr = stderrBuf
 

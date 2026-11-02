@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -35,7 +34,7 @@ import (
 func startNodeSettings(t *testing.T, settingsPath string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
 
-	cmd := exec.Command(nodeSettingsBin, "--settings", settingsPath)
+	cmd := testCommand(t, nodeSettingsBin, "--settings", settingsPath)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
