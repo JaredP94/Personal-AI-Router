@@ -242,6 +242,14 @@ a successful command must leave the tool detectable.
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
 
+### Shutdown sweep
+
+`engine:prepare-shutdown` and the EOF/transport-exit path join one concurrent
+engine sweep per executor. Every caller waits for it to finish. Later calls
+retry only process-handle or command-stop failures that can still be resolved;
+a declined foreign listener is not repeatedly probed. Shutdown rejects new starts
+and never changes saved ON/OFF intent. Engines still stop concurrently.
+
 ### Local bind permission
 
 A local `bind` override must be an IP address on loopback unless the operator

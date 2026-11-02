@@ -141,8 +141,13 @@ type Executor struct {
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
 	shuttingDown atomic.Bool
-	mu           sync.Mutex
-	engines      map[string]*engineState
+	// All shutdown entry points join one concurrent sweep. Only actionable
+	// process/command stop failures are retained for a later retry.
+	stopAllOnce sync.Once
+	retryMu     sync.Mutex
+	failedStops []string
+	mu          sync.Mutex
+	engines     map[string]*engineState
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
