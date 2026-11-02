@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -61,7 +62,11 @@ func pidOnPort(port int) (pid int, image string, ok bool) {
 func lsofPID(port int) (int, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
+	lsof := systemTool("lsof", lsofLocations)
+	if lsof == "" {
+		return 0, false
+	}
+	out, err := exec.CommandContext(ctx, lsof, "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN").Output()
 	if err != nil {
 		return 0, false
 	}
@@ -77,7 +82,11 @@ func lsofPID(port int) (int, bool) {
 func ssPID(port int) (int, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), portLookupTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ss", "-ltnp", "sport", "=", ":"+strconv.Itoa(port)).Output()
+	ss := systemTool("ss", ssLocations)
+	if ss == "" {
+		return 0, false
+	}
+	out, err := exec.CommandContext(ctx, ss, "-ltnp", "sport", "=", ":"+strconv.Itoa(port)).Output()
 	if err != nil {
 		return 0, false
 	}
@@ -95,19 +104,6 @@ func ssPID(port int) (int, bool) {
 		return p, true
 	}
 	return 0, false
-}
-
-// procImage resolves a PID's executable path via /proc (Linux). macOS has no
-// /proc, so it returns "" there and the image check is skipped — reclamation
-// on macOS relies on the caller declining when the image can't be confirmed.
-func procImage(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	if path, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-		return path
-	}
-	return ""
 }
 
 // signalPID sends SIGTERM (or SIGKILL when force) to the process group when
@@ -136,4 +132,25 @@ func pidAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// lsofLocations and ssLocations are where the system installs each tool. The
+// PID a lookup returns is the one a stop signals, so the tool is never found
+// through PATH, where a directory the user or another program put first could
+// supply a different binary.
+var (
+	lsofLocations = []string{"/usr/sbin/lsof", "/usr/bin/lsof", "/sbin/lsof", "/bin/lsof"}
+	ssLocations   = []string{"/usr/sbin/ss", "/usr/bin/ss", "/sbin/ss", "/bin/ss"}
+)
+
+// systemTool returns the first of locations that is an executable file, or ""
+// when none is.
+func systemTool(name string, locations []string) string {
+	for _, path := range locations {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+			return path
+		}
+	}
+	slog.Debug("system tool not found at a fixed location", "tool", name)
+	return ""
 }

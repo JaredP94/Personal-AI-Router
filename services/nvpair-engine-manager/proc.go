@@ -135,8 +135,14 @@ func terminatePID(pid int, grace time.Duration) {
 // /proc/<pid>/exe can suffix " (deleted)" when the file was replaced while
 // the process still runs.
 func normalizeEngineImage(path string) string {
-	path = strings.TrimSuffix(path, " (deleted)")
-	return filepath.Clean(path)
+	path = filepath.Clean(strings.TrimSuffix(path, " (deleted)"))
+	// macOS reports a running image by its resolved path (/private/var/...)
+	// while the configured path may go through a symlink (/var/...), so
+	// compare both sides resolved.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 // isOurEngineImage reports whether the listener on our managed port is
@@ -167,6 +173,11 @@ func isManagedInstallPath(binPath, installDir string) bool {
 	dirAbs, err := filepath.Abs(installDir)
 	if err != nil {
 		return false
+	}
+	// binPath is compared resolved (see normalizeEngineImage), so the install
+	// directory must be too.
+	if resolved, err := filepath.EvalSymlinks(dirAbs); err == nil {
+		dirAbs = resolved
 	}
 	rel, err := filepath.Rel(dirAbs, binAbs)
 	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
