@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !windows
+//go:build darwin || linux
 
 package main
 
@@ -11,8 +11,9 @@ import (
 	"syscall"
 )
 
-// fileIdentity is a path's device and inode, without following a final link,
-// or "" when it cannot be read.
+// fileIdentity combines device, inode, and a generation timestamp without
+// following a final link. The timestamp prevents inode reuse from transferring
+// an install claim to a replacement bundle. It returns "" on read failure.
 func fileIdentity(path string) string {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -22,5 +23,10 @@ func fileIdentity(path string) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("%d:%d", st.Dev, st.Ino)
+	return fileIdentityFromStat(st)
+}
+
+func fileIdentityFromStat(st *syscall.Stat_t) string {
+	stamp := fileGenerationTime(st)
+	return fmt.Sprintf("%d:%d:%d:%d", st.Dev, st.Ino, stamp.Sec, stamp.Nsec)
 }
