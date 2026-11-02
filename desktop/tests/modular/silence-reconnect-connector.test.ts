@@ -27,7 +27,6 @@ vi.mock('@/electron/config/ui-config', () => ({
     getModularLogLevel: () => 'info'
 }))
 vi.mock('@/electron/service-bridge/broadcaster', () => ({ emitBridgePush: vi.fn() }))
-vi.mock('@/electron/service-bridge/manual-nodes-store', () => ({ listManualNodeEntries: () => [] }))
 vi.mock('@/electron/service-bridge/node-info-poller', () => ({
     startNodeInfoPoller: vi.fn(),
     stopNodeInfoPoller: vi.fn()

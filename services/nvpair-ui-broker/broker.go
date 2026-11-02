@@ -180,17 +180,19 @@ type Broker struct {
 	// heartbeatInterval is the period runHeartbeat ticks at. Injected so tests
 	// can drive the stream without waiting out jsonrpc.HeartbeatInterval;
 	// NewBroker defaults it, and heartbeatEvery() falls back again if unset.
-	heartbeatInterval     time.Duration
-	nodeID                string
-	scannerPath           string
-	nodeInfoPath          string
-	proxyPath             string
-	lmstudioProxyPath     string
-	omlxProxyPath         string
-	workloadMgrPath       string
-	errorsPath            string
-	engineMgrPath         string
-	manualNodesPath       string
+	heartbeatInterval time.Duration
+	nodeID            string
+	scannerPath       string
+	nodeInfoPath      string
+	proxyPath         string
+	lmstudioProxyPath string
+	omlxProxyPath     string
+	workloadMgrPath   string
+	errorsPath        string
+	engineMgrPath     string
+	manualNodesPath   string
+	// manualNodesConfigPath is the durable manual-node list the broker owns.
+	manualNodesConfigPath string
 	settingsPath          string
 	clusterMgrPath        string
 	schedulerPath         string
@@ -401,6 +403,8 @@ type Broker struct {
 	manualMu           sync.Mutex
 	manualNodeKeys     map[string]string
 	manualNodeStatuses map[string]manualNodeStatusEntry
+	manualPersistMu    sync.Mutex
+	manualMutationMu   sync.Mutex
 
 	// schedMu guards each engine's cached priority and generation. Per-engine
 	// delivery locks serialize asynchronous node/set-priority calls; a stale
@@ -479,6 +483,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		errorsPath:              paths.errors,
 		engineMgrPath:           paths.engineMgr,
 		manualNodesPath:         paths.manualNodes,
+		manualNodesConfigPath:   defaultManualNodesConfigPath(),
 		settingsPath:            paths.settings,
 		clusterMgrPath:          paths.clusterMgr,
 		schedulerPath:           paths.scheduler,
@@ -977,6 +982,7 @@ func (b *Broker) spawnManualNodes() (supervisedHandle, error) {
 	// default is background, so re-assert demand now rather than at the next
 	// transition.
 	b.pushSchedulingDemandOnStart()
+	go b.replayPersistedManualNodes(w)
 	slog.Info("manual-nodes started", "path", b.manualNodesPath, "pid", w.cmd.Process.Pid)
 	return w, nil
 }
@@ -1620,10 +1626,8 @@ func (b *Broker) survivingAliasLocked(key string) (manualNodeStatusEntry, bool) 
 
 // clearManualNodesState is the manual-nodes supervisor's clearHandle: on a
 // crash it drops the worker handle and evicts every manual-origin node from
-// the discovery store. The restarted process comes up with no entries (it
-// keeps no persistent state and the broker doesn't re-feed them), so
-// leaving the old manual nodes in the snapshot would strand stale entries
-// that never age out. Clients re-add manual nodes after a restart.
+// the discovery store. The durable broker-owned list is left intact and is
+// replayed into the replacement worker after it starts.
 func (b *Broker) clearManualNodesState() {
 	b.setManualNodes(nil)
 	b.manualMu.Lock()
@@ -1644,8 +1648,8 @@ func (b *Broker) clearManualNodesState() {
 		}
 		b.removeTelemetry(sourceManual, key)
 		// Pull the now-orphaned node out of every proxy too, so inference
-		// doesn't keep a stale manual target the crashed prober can no
-		// longer vouch for. Clients re-add manual nodes after the restart.
+		// doesn't keep a stale manual target while the replacement worker
+		// restores and re-probes the durable entry.
 		b.removeManualNodeFromProxies(key)
 	}
 }
@@ -3583,7 +3587,29 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 	}
 	id := msg.ID
 	method := msg.Method
-	relayErr := mn.RelayRequest(method, msg.Params, func(result json.RawMessage, rpcErr *RPCError, err error) {
+	params := append(json.RawMessage(nil), msg.Params...)
+	mutates := method == "node/add" || method == "node/remove"
+	if mutates {
+		b.manualMutationMu.Lock()
+	}
+	var added persistedManualNode
+	removeID := ""
+	if method == "node/add" {
+		_ = json.Unmarshal(params, &added)
+	}
+	if method == "node/remove" {
+		var remove struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(params, &remove) == nil && remove.ID != "" {
+			removeID = b.manualAliasForKey(remove.ID)
+			params, _ = json.Marshal(map[string]string{"id": removeID})
+		}
+	}
+	relayErr := mn.RelayRequest(method, params, func(result json.RawMessage, rpcErr *RPCError, err error) {
+		if mutates {
+			defer b.manualMutationMu.Unlock()
+		}
 		switch {
 		case err != nil:
 			if e := b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes call failed: %v", err)); e != nil {
@@ -3594,12 +3620,33 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 				log.Printf("failed to relay manual-nodes error for %s: %v", method, e)
 			}
 		default:
+			if method == "node/add" && added.Address != "" {
+				var status struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(result, &status) == nil {
+					added.ID = status.ID
+				}
+				if err := b.persistManualNode(added); err != nil {
+					_ = b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes persistence failed: %v", err))
+					return
+				}
+			}
+			if method == "node/remove" && removeID != "" {
+				if err := b.removePersistedManualNode(removeID); err != nil {
+					_ = b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes persistence failed: %v", err))
+					return
+				}
+			}
 			if e := b.codec.Respond(id, result); e != nil {
 				log.Printf("failed to relay manual-nodes result for %s: %v", method, e)
 			}
 		}
 	})
 	if relayErr != nil {
+		if mutates {
+			b.manualMutationMu.Unlock()
+		}
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-nodes call failed: %v", relayErr)); err != nil {
 			log.Printf("failed to respond to %s: %v", msg.Method, err)
 		}
