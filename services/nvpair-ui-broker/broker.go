@@ -405,6 +405,12 @@ type Broker struct {
 	manualNodeStatuses map[string]manualNodeStatusEntry
 	manualPersistMu    sync.Mutex
 	manualMutationMu   sync.Mutex
+	// manualMutationTail is closed when the most recently queued manual-node
+	// mutation finishes. Each node/add or node/remove waits for the one before
+	// it, so mutations apply in the order clients sent them without blocking
+	// the request loop. Guarded by manualMutationQueueMu.
+	manualMutationQueueMu sync.Mutex
+	manualMutationTail    chan struct{}
 
 	// schedMu guards each engine's cached priority and generation. Per-engine
 	// delivery locks serialize asynchronous node/set-priority calls; a stale
@@ -3578,20 +3584,51 @@ func (b *Broker) relayToSettings(msg *Message) {
 // notification is merged into the discovery store by
 // forwardManualNodesNotification, so the snapshot stays in sync.
 func (b *Broker) relayToManualNodes(msg *Message) {
+	if msg.Method != "node/add" && msg.Method != "node/remove" {
+		b.relayManualNodesRequest(msg, nil)
+		return
+	}
+	// A mutation waits for the one before it and for any replay into a new
+	// worker, and that wait can last as long as a hung worker takes to be
+	// restarted. It must not hold up the request loop meanwhile, so it runs in
+	// its own goroutine, chained behind the previous mutation.
+	b.manualMutationQueueMu.Lock()
+	prev := b.manualMutationTail
+	done := make(chan struct{})
+	b.manualMutationTail = done
+	b.manualMutationQueueMu.Unlock()
+	go func() {
+		defer close(done)
+		if prev != nil {
+			<-prev
+		}
+		b.manualMutationMu.Lock()
+		defer b.manualMutationMu.Unlock()
+		finished := make(chan struct{})
+		b.relayManualNodesRequest(msg, finished)
+		<-finished
+	}()
+}
+
+// relayManualNodesRequest relays one request to the current manual-nodes
+// worker. finished, when set, is closed once the request is settled.
+func (b *Broker) relayManualNodesRequest(msg *Message, finished chan struct{}) {
+	settle := func() {
+		if finished != nil {
+			close(finished)
+		}
+	}
 	mn := b.getManualNodes()
 	if mn == nil {
 		if err := b.codec.RespondError(msg.ID, -32000, "manual-nodes not available"); err != nil {
 			log.Printf("failed to respond to %s: %v", msg.Method, err)
 		}
+		settle()
 		return
 	}
 	id := msg.ID
 	method := msg.Method
 	params := append(json.RawMessage(nil), msg.Params...)
-	mutates := method == "node/add" || method == "node/remove"
-	if mutates {
-		b.manualMutationMu.Lock()
-	}
 	var added persistedManualNode
 	removeID := ""
 	if method == "node/add" {
@@ -3607,9 +3644,7 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 		}
 	}
 	relayErr := mn.RelayRequest(method, params, func(result json.RawMessage, rpcErr *RPCError, err error) {
-		if mutates {
-			defer b.manualMutationMu.Unlock()
-		}
+		defer settle()
 		switch {
 		case err != nil:
 			if e := b.codec.RespondError(id, -32000, fmt.Sprintf("manual-nodes call failed: %v", err)); e != nil {
@@ -3644,9 +3679,7 @@ func (b *Broker) relayToManualNodes(msg *Message) {
 		}
 	})
 	if relayErr != nil {
-		if mutates {
-			b.manualMutationMu.Unlock()
-		}
+		defer settle()
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-nodes call failed: %v", relayErr)); err != nil {
 			log.Printf("failed to respond to %s: %v", msg.Method, err)
 		}
