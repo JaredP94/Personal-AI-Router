@@ -177,10 +177,11 @@ The fan fields are `name`, `rpm`, and `maxRpm`. Power sub-fields are
 `systemW`, `cpuW`, `gpuW`, and `aneW`. Sensor JSON names are camelCase;
 the existing GPU fields are unchanged.
 
-Macmon readings and their `msSince` are omitted when the sample is older
-than three times the current sampling interval. Direct thermal pressure,
-memory pressure, and swap readings remain present independently, and the
-macmon status is unchanged. A missing sample has no `msSince`.
+Macmon readings and their `msSince` are dropped when older than 3 × the
+interval at which that sample was collected. Direct thermal pressure,
+memory pressure, and swap readings remain present independently. A `macmon`
+status of `available` whose sample is missing or stale is reported as `failed`.
+A missing sample has no `msSince`.
 
 ## Discovery
 

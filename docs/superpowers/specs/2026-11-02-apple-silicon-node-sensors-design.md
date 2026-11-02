@@ -189,8 +189,9 @@ is never reported as nominal.
 - **Exit or crash:** restarted with backoff (1 s doubling to 30 s). Status is
   `failed` while it is down. stderr is logged at debug level only. macmon prints
   nothing sensitive, but an unbounded stderr stream is not wanted in the logs.
-- **Staleness:** macmon readings older than 3 × the current interval are
-  dropped from the response. They are omitted, never sent as zero.
+- **Staleness:** macmon readings older than 3 × the interval at which that
+  sample was collected are dropped from the response. They are omitted, never
+  sent as zero.
 - **Shutdown:** the child process is killed when node-info shuts down. It must
   not outlive node-info.
 
@@ -410,6 +411,7 @@ this surface.
 - macmon is found only on the two Homebrew paths, not on `PATH`.
 - macmon follows the sampling-policy interval and is restarted when it changes.
   Readings older than 3 intervals are dropped.
+- Staleness is measured against the interval the sample was collected at, so an idle→interactive restart does not blank fresh-enough readings.
 - A fixed in-code tool allowlist in engine-manager, not an engine manifest, so
   macmon never shows up as an engine.
 - The new methods use the `engine:` prefix so the broker relay needs no change.
