@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Apple Silicon Node Sensors (`nvpair-node-info` 1.3.0, `nvpair-engine-manager` 1.3.0, `desktop`)**: Node cards on Apple Silicon gain a Sensors drawer (CPU/GPU temperature, fan speed, power draw, memory pressure and swap) and Throttling / Memory pressure badges. Temperature, fan, and power come from macmon, a Homebrew dependency PAIR can install locally or on a trusted cluster peer; it is not bundled. Thermal and memory pressure are read directly and work without macmon.
+
 ### Changed
 - **Aligned Metrics Layout (`desktop`)**: Node cards, job cards and the performance legend show their metrics as aligned key/value groups. Each group names its window once ("Last 60 s", "Since broker start", "This request", "Engine total", "Engine average") instead of repeating it in every label, the per-model breakdown is a table, values use tabular figures, and an unreported value reads as a muted dash. Legend rows are buttons, so soloing a series works from the keyboard. No wire contract or service binary changes.
 
