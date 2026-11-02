@@ -75,18 +75,17 @@ type MemoryInfo struct {
 }
 
 type NodeInfoResponse struct {
-	GPUs           []GPUInfo   `json:"GPUs"`
-	CPU            *CPUInfo    `json:"cpu,omitempty"`
-	Memory         *MemoryInfo `json:"memory,omitempty"`
-	Sensors        *SensorInfo `json:"sensors,omitempty"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
-	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
-	// HostUUID is this node's stable per-host identity (the same value the
-	// node-scanner advertises as uuid= and the cluster uses as nodeUuid). It lets
-	// a consumer that reaches this node only over HTTP — notably a user-added
-	// manual node, which never sees this host's mDNS record — key it by its
-	// permanent identity instead of the address it was typed under.
+	IdentityVerification string                      `json:"identityVerification,omitempty"`
+	PeerMetadata         *noderec.PeerMetadataParams `json:"peerMetadata,omitempty"`
+	GPUs                 []GPUInfo                   `json:"GPUs"`
+	CPU                  *CPUInfo                    `json:"cpu,omitempty"`
+	Memory               *MemoryInfo                 `json:"memory,omitempty"`
+	Sensors              *SensorInfo                 `json:"sensors,omitempty"`
+	TelemetryValid       bool                        `json:"telemetryValid"`
+	MSSince              int64                       `json:"msSince"`
+	SampleSeq            uint64                      `json:"sampleSeq,omitempty"`
+	// HostUUID is this node's stable identity. Public copies are claims; service
+	// consumers require a matching pinned certificate and owned service metadata.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the cluster principal this node currently holds, empty when
 	// it belongs to no cluster, and absent when this node does not (yet) know. It
@@ -106,16 +105,9 @@ type NodeInfoResponse struct {
 	ClusterUUID *string `json:"clusterUuid,omitempty"`
 }
 
-// clusterIdentity is the cluster principal this node reports, kept current by
-// the parent broker over stdin (noderec.MethodSetClusterIdentity). node-info
-// cannot derive it under the broker: it is spawned without a cluster dir so its
-// inventory stays readable by any LAN peer, which also denies it the trust store
-// membership is read from. Guarded because the stdin reader and every HTTP
-// handler touch it.
-//
-// `told` distinguishes "the broker says we hold no principal" from "the broker
-// has not said anything yet", which are the same empty string but must not be
-// the same answer: the first is reportable, the second has to stay absent.
+// clusterIdentity supports parent-supplied membership only for standalone
+// launches without --cluster-dir. Broker-managed launches read the live mesh;
+// public copies of either value confer no authority.
 type clusterIdentity struct {
 	mu   sync.RWMutex
 	uuid string
@@ -285,17 +277,14 @@ func mergeGPUInventory(static, recovered []GPUInfo) []GPUInfo {
 	return merged
 }
 
-// nodeInfoHandler serves the marshaled node inventory from body(). While this
-// node is a cluster member the endpoint is cluster-gated: the authenticated
-// client must present a cert pinned for its UUID (or this node's own leaf, for a
-// local self-read), or it gets a 403 — so a non-cluster peer can't read this
-// host's GPU inventory in the clear, and neither can a plain-HTTP caller on the
-// shared port. Refresh picks up a membership change or a peer paired after
-// startup.
+// nodeInfoHandler keeps plaintext hardware previews public. The TLS personality
+// admits only currently pinned cluster clients. A public copy of the same JSON
+// is never an identity proof: service consumers independently require pinned
+// mTLS, matching identities and current authorization after the read.
 func nodeInfoHandler(mesh *clustertrust.Mesh, body func(*http.Request) []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mesh.Refresh()
-		if mesh.Clustered() {
+		if r.TLS != nil && mesh.Clustered() {
 			if _, ok := mesh.VerifyClientPin(r); !ok {
 				http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
 				return
@@ -342,7 +331,7 @@ func main() {
 	keyPath := flag.String("key", "", "path to TLS server private key (PEM); enables HTTPS when set together with --cert")
 	clientCAPath := flag.String("client-ca", "", "path to PEM bundle of CAs trusted to sign client certificates; enables mTLS when set")
 	acceptHTTP := flag.Bool("accept-http", false, "keep the plaintext HTTP listener alive even when TLS is enabled (default: HTTPS-only when --cert is set)")
-	clusterDir := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/); when set, /v1/node-info is served only over mTLS scoped to pinned cluster peers instead of plaintext")
+	clusterDir := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/); enables pinned cluster mTLS inventory alongside public HTTP previews on the primary port")
 	nodeID := flag.String("node-id", "", "stable per-host UUID to report on /v1/node-info; when empty it is resolved from the local identity store. The broker passes its own resolved node UUID so both agree even on a custom data root")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
@@ -361,14 +350,11 @@ func main() {
 	// the address it was added under.
 	hostUUID := resolveHostUUID(*nodeID, *clusterDir)
 
-	// With a --cluster-dir, /v1/node-info is served on one port that carries both
-	// personalities (first-byte split): while this node is a cluster member only
-	// pin-gated mTLS callers are admitted, closing the plaintext GPU-inventory leak
-	// to non-cluster peers, and while it is not a member the plaintext inventory is
-	// served as usual. The membership answer is live, so a node that joins or
-	// leaves while this process runs changes personality in place. Without a
-	// --cluster-dir the bring-your-own --cert path and the plaintext default are
-	// unchanged.
+	// One primary port carries public display previews and pinned cluster mTLS
+	// inventory. Membership changes update the authenticated personality in place;
+	// the public preview is not a service authority in any membership state.
+	// Without --cluster-dir, standalone BYO TLS and HTTP flags remain available
+	// for display clients but cannot establish a verified PAIR peer.
 	mesh := clustertrust.Open(*clusterDir)
 	clusterGated := *clusterDir != ""
 
@@ -388,10 +374,8 @@ func main() {
 	// haven't migrated.
 	httpEnabled := !tlsOpts.Enabled() || *acceptHTTP
 	if clusterGated {
-		// The cluster-gated listener below owns *port and serves both
-		// personalities on it, so there is no separate plaintext listener to
-		// start. A member admits only pinned peers (the local scanner reads us
-		// over mTLS via self-trust); a non-member serves the plaintext inventory.
+		// The split listener owns *port for both personalities. Public display
+		// reads remain available; services authenticate the TLS personality.
 		if tlsOpts.Enabled() {
 			log.Print("--cluster-dir set: ignoring --cert/--key (cluster mTLS takes precedence)")
 		}
@@ -425,14 +409,8 @@ func main() {
 	collector := startStatsCollector()
 	defer collector.Stop()
 
-	// Where the reported cluster principal comes from is decided by the
-	// deployment, not by a fallback chain. With --cluster-dir this process holds
-	// the trust store and reads membership itself, so the answer is always known
-	// (the handler refreshes the mesh before building the body). Under the broker
-	// (no cluster dir, so the inventory stays plain for every LAN peer) it cannot
-	// read membership at all and the broker pushes it instead — until that first
-	// push the answer is genuinely unknown and the field is omitted. The two
-	// sources are mutually exclusive by construction.
+	// Membership has one source per deployment: the live mesh with a cluster
+	// directory, or the owning parent's explicit value without one.
 	identity := &clusterIdentity{}
 	clusterPrincipal := func() *string {
 		if !clusterGated {
@@ -449,6 +427,7 @@ func main() {
 		return &principal
 	}
 
+	metadata := &peerMetadata{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", nodeInfoHandler(mesh, func(r *http.Request) []byte {
 		var snap statsSnapshot
@@ -461,7 +440,7 @@ func main() {
 		default: // PollIntentForeground
 			snap = collector.Snapshot()
 		}
-		return buildResponse(gpus, cpu, memTotal, snap, hostUUID, clusterPrincipal())
+		return metadata.decorate(buildResponse(gpus, cpu, memTotal, snap, hostUUID, clusterPrincipal()), hostUUID, r.TLS != nil && mesh.Clustered())
 	}))
 
 	// Listener layout (set up below depending on flags). Exactly one of the two
@@ -520,9 +499,8 @@ func main() {
 			IdleTimeout:       clustertrust.PeerListenerIdleTimeout,
 		}
 		// The cluster leaf is resolved per handshake from the live mesh, so a
-		// non-member presents none and the handshake is refused; the plain
-		// sub-listener carries unclustered callers, whom the handler admits only
-		// while this node is not a member.
+		// non-member presents none and the handshake is refused. The plaintext
+		// sub-listener carries display-only previews in every membership state.
 		serve := func(l net.Listener) {
 			if err := tlsServer.Serve(l); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
 				log.Fatalf("node-info server error: %v", err)
@@ -601,6 +579,7 @@ func main() {
 
 	go applog.StdinRPC(notifier, func(msg applog.StdinMessage) {
 		handleClusterIdentity(msg, identity)
+		metadata.handle(msg, hostUUID)
 		handleDemand(msg, collector)
 	}, func() {
 		log.Print("stdin closed, shutting down")
