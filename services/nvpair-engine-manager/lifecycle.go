@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"nvpair-shared/httpcon"
 )
 
 const (
@@ -816,7 +818,7 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+		httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
