@@ -113,10 +113,16 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		}
 		if inst.DiskImage != nil {
 			e.emitInstallProgress(engine, "installing", 75)
-			if err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage); err != nil {
+			created, err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage)
+			if err != nil {
 				werr := fmt.Errorf("install from disk image failed: %w", err)
 				e.reportInstallFailed(engine, werr)
 				return werr
+			}
+			// An app that arrived while the image downloaded or copied was
+			// left in place; it is the user's, whatever the earlier check saw.
+			if !created {
+				claims = false
 			}
 		}
 		if len(inst.Run) > 0 {
@@ -196,7 +202,7 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	// test above can never vouch for ownership. Without the install marker
 	// this could be the copy the user installed themselves, holding the data
 	// they built up in it — decline rather than guess.
-	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir) {
+	if st.plat.Runtime.modeOrDefault() == "command" && !installedByPAIR(st.installDir, installCreates(st.plat)) {
 		err := fmt.Errorf("cannot uninstall engine %q: NVIDIA PAIR has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
@@ -479,4 +485,12 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// installCreates is the platform's install.creates, or "" when it has none.
+func installCreates(p *Platform) string {
+	if p.Install == nil {
+		return ""
+	}
+	return p.Install.Creates
 }

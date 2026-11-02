@@ -101,7 +101,7 @@ func TestInstallClaimsOnlyWhatItCreates(t *testing.T) {
 			t.Fatalf("install (preexisting=%v): %v", preexisting, err)
 		}
 		st, _ := ex.state("vendor")
-		if got := installedByPAIR(st.installDir); got == preexisting {
+		if got := installedByPAIR(st.installDir, app); got == preexisting {
 			t.Errorf("preexisting=%v: installedByPAIR = %v", preexisting, got)
 		}
 	}
@@ -110,6 +110,13 @@ func TestInstallClaimsOnlyWhatItCreates(t *testing.T) {
 // A claim that names what the install created covers that exact file only.
 // A copy put there later is a different file, so the claim lapses.
 func TestInstallClaimFollowsTheCreatedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// No file identity there: a claim naming what it created is refused.
+		if err := writeInstallMarker(t.TempDir(), "vendor", t.TempDir()); err == nil {
+			t.Fatal("a claim was recorded without a file identity")
+		}
+		return
+	}
 	dir := t.TempDir()
 	app := filepath.Join(dir, "Engine.app")
 	if err := os.MkdirAll(app, 0o755); err != nil {
@@ -119,7 +126,7 @@ func TestInstallClaimFollowsTheCreatedFile(t *testing.T) {
 	if err := writeInstallMarker(installDir, "vendor", app); err != nil {
 		t.Fatal(err)
 	}
-	if !installedByPAIR(installDir) {
+	if !installedByPAIR(installDir, app) {
 		t.Fatal("the claim did not cover the app it was written for")
 	}
 	if err := os.RemoveAll(app); err != nil {
@@ -128,7 +135,7 @@ func TestInstallClaimFollowsTheCreatedFile(t *testing.T) {
 	if err := os.MkdirAll(app, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if installedByPAIR(installDir) {
+	if installedByPAIR(installDir, app) {
 		t.Fatal("the claim covered an app put in place after the install")
 	}
 }
@@ -162,7 +169,22 @@ func TestInstallThatFindsACopyDropsAStaleClaim(t *testing.T) {
 	if err := ex.Install(context.Background(), "vendor"); err != nil {
 		t.Fatal(err)
 	}
-	if installedByPAIR(st.installDir) {
+	if installedByPAIR(st.installDir, app) || installedByPAIR(st.installDir, "") {
 		t.Fatal("a stale claim survived an install that found the user's copy")
+	}
+}
+
+// A marker written before claims recorded what they created covers nothing an
+// install creates: it names no bundle, so it cannot vouch for the one there.
+func TestAMarkerWithoutAnIdentityCoversNoCreatedApp(t *testing.T) {
+	installDir := t.TempDir()
+	if err := writeInstallMarker(installDir, "omlx", ""); err != nil {
+		t.Fatal(err)
+	}
+	if installedByPAIR(installDir, "/Applications/oMLX.app") {
+		t.Error("an unbound marker authorised an app it never named")
+	}
+	if !installedByPAIR(installDir, "") {
+		t.Error("an unbound marker must still stand for an engine with no creates")
 	}
 }

@@ -47,6 +47,11 @@ func TestCommandUninstallCoverage(t *testing.T) {
 			if tc.allowed {
 				target = cli
 			}
+			// The policy under test is cli_roots coverage; ownership of what an
+			// install creates is covered in omlx_install_test.go.
+			if p.Install != nil {
+				p.Install.Creates = ""
+			}
 			p.Uninstall.Run = rmCmd(target)
 			stopMarker := filepath.Join(home, "stop-ran")
 			p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}}

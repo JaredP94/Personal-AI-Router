@@ -81,9 +81,12 @@ func clearInstallMarker(installDir string) {
 	}
 }
 
-// installedByPAIR reports whether a claim stands: the marker exists and, when
-// it names what the install created, that is still the same file.
-func installedByPAIR(installDir string) bool {
+// installedByPAIR reports whether a claim stands. With no creates (an engine
+// whose install has nowhere a user copy could be, such as LM Studio's CLI),
+// the marker alone is the claim. When the manifest declares creates, the
+// marker must name that path and it must still be the very file the install
+// created; a marker from before identities were recorded covers nothing.
+func installedByPAIR(installDir, creates string) bool {
 	path := installMarkerPath(installDir)
 	if path == "" {
 		return false
@@ -96,8 +99,11 @@ func installedByPAIR(installDir string) bool {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return false
 	}
-	if marker.Creates == "" {
+	if creates == "" {
 		return true
+	}
+	if marker.Creates != creates || marker.Identity == "" {
+		return false
 	}
 	id := fileIdentity(expandPath(marker.Creates))
 	return id != "" && id == marker.Identity

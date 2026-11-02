@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // buildDiskImage makes a disk image laid out like a release: the app bundle
@@ -58,8 +59,9 @@ func leftovers(t *testing.T, into, image string) {
 func TestDiskImageInstallCopiesTheApp(t *testing.T) {
 	image := buildDiskImage(t, "Test.app", "from-image")
 	into := t.TempDir()
-	if err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into}); err != nil {
-		t.Fatal(err)
+	created, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into})
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
 	}
 	app := filepath.Join(into, "Test.app")
 	if got, err := os.ReadFile(filepath.Join(app, "Contents", "MacOS", "cli")); err != nil || string(got) != "from-image" {
@@ -81,8 +83,9 @@ func TestDiskImageInstallLeavesAnAppInPlace(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("users-own"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into}); err != nil {
-		t.Fatal(err)
+	created, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into})
+	if err != nil || created {
+		t.Fatalf("created=%v err=%v; an app already in place must not count as created", created, err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "users-own" {
 		t.Errorf("an app already in place was replaced: %q", got)
@@ -93,7 +96,7 @@ func TestDiskImageInstallLeavesAnAppInPlace(t *testing.T) {
 func TestDiskImageInstallCleansUpAfterAFailure(t *testing.T) {
 	image := buildDiskImage(t, "", "")
 	into := t.TempDir()
-	if err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into}); err == nil {
+	if _, err := installAppFromDiskImage(context.Background(), image, &DiskImage{App: "Test.app", Into: into}); err == nil {
 		t.Fatal("an image without the app installed")
 	}
 	if _, err := os.Lstat(filepath.Join(into, "Test.app")); !os.IsNotExist(err) {
@@ -109,7 +112,10 @@ func TestDiskImageInstallCleansUpAfterCancellation(t *testing.T) {
 	into := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- installAppFromDiskImage(ctx, image, &DiskImage{App: "Test.app", Into: into}) }()
+	go func() {
+		_, err := installAppFromDiskImage(ctx, image, &DiskImage{App: "Test.app", Into: into})
+		done <- err
+	}()
 	// Cancel once the copy has started: a staging directory has appeared.
 	for {
 		entries, _ := os.ReadDir(into)
@@ -132,4 +138,25 @@ func TestDiskImageInstallCleansUpAfterCancellation(t *testing.T) {
 		}
 	}
 	leftovers(t, into, image)
+}
+
+// hdiutil finishes attaching even when the client that asked is killed, so a
+// cancellation that lands during attach must still leave nothing mounted.
+func TestDiskImageInstallCleansUpAfterCancellationDuringAttach(t *testing.T) {
+	image := buildDiskImage(t, "Test.app", "from-image")
+	into := t.TempDir()
+	for _, delay := range []time.Duration{0, 50 * time.Millisecond, 120 * time.Millisecond} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if delay == 0 {
+			cancel()
+		} else {
+			time.AfterFunc(delay, cancel)
+		}
+		created, _ := installAppFromDiskImage(ctx, image, &DiskImage{App: "Test.app", Into: into})
+		cancel()
+		if created {
+			_ = os.RemoveAll(filepath.Join(into, "Test.app"))
+		}
+		leftovers(t, into, image)
+	}
 }
