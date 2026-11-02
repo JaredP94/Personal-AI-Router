@@ -816,11 +816,11 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 		delete(p.peerTransports, peerUUID)
 	}
 	if p.mesh == nil {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	cfg, ok := p.mesh.ClientTLSConfig(peerUUID)
 	if !ok {
-		return newProxyTransport(nil)
+		return unpinnedPeerTransport()
 	}
 	tr := newProxyTransport(cfg)
 	if p.peerTransports == nil {
@@ -828,6 +828,21 @@ func (p *Proxy) peerHTTPTransport(peerUUID string) *http.Transport {
 	}
 	p.peerTransports[peerUUID] = tr
 	return tr
+}
+
+// errPeerUnpinned is the dial error of a fail-closed peer transport.
+var errPeerUnpinned = stderrors.New("peer is not a pinned cluster member")
+
+// unpinnedPeerTransport fails every dial. A peer candidate is resolved only
+// while its pin is held, but the pin can go between resolution and dial; the
+// peer is then refused outright rather than dialed with a transport that does
+// not pin its certificate.
+func unpinnedPeerTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errPeerUnpinned
+		},
+	}
 }
 
 // dropUnpinnedPeerTransports closes idle conns for peer Transports whose pins

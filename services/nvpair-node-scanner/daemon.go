@@ -246,6 +246,15 @@ const engineNativeRefreshConcurrency = 16
 // what the scanner is willing to parse.
 const engineNativeResponseLimit = 1 << 20
 
+// nodeInfoResponseLimit and modelsResponseLimit cap how much of a node-info
+// or model-inventory answer is parsed. Both arrive from peers over the
+// network; a value that extends past its cap fails enrichment and leaves the
+// last-good cache intact.
+const (
+	nodeInfoResponseLimit = 1 << 20
+	modelsResponseLimit   = 16 << 20
+)
+
 // telemetryRefreshConcurrency limits simultaneous node-info GETs across every
 // telemetry tick.
 const telemetryRefreshConcurrency = 16
@@ -1386,7 +1395,7 @@ func (d *daemon) fetchNodeInfoWithin(ctx context.Context, ip string, port int) (
 		return NodeInfoResponse{}, false
 	}
 	var info NodeInfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, nodeInfoResponseLimit)).Decode(&info); err != nil {
 		return NodeInfoResponse{}, false
 	}
 	return info, true
@@ -1489,7 +1498,7 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string,
 		ModelsByEngine map[string][]string `json:"modelsByEngine"`
 		LoadedByEngine map[string][]string `json:"loadedByEngine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, modelsResponseLimit)).Decode(&body); err != nil {
 		return nil, nil, nil, false
 	}
 	return body.Models, body.ModelsByEngine, body.LoadedByEngine, true

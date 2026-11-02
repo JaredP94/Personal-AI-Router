@@ -10,6 +10,7 @@ package main
 // server side enforces with a 403.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -25,6 +26,8 @@ import (
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
+	// remoteStreamFrameBytes caps one NDJSON progress or result frame.
+	remoteStreamFrameBytes = 1 << 20
 )
 
 // remoteFrameError preserves an optional JSON-RPC code from an ec error frame.
@@ -183,15 +186,19 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 		return streamFrame{}, fmt.Errorf("remote %s: HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 
-	dec := json.NewDecoder(resp.Body)
+	// The limit applies per frame, so a long operation can report progress
+	// for as long as it runs while no single frame can grow without bound.
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), remoteStreamFrameBytes)
 	var result streamFrame
 	haveResult := false
-	for {
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
 		var f streamFrame
-		if derr := dec.Decode(&f); derr != nil {
-			if derr == io.EOF {
-				break
-			}
+		if derr := json.Unmarshal(line, &f); derr != nil {
 			return streamFrame{}, fmt.Errorf("remote %s: decode frame: %w", path, derr)
 		}
 		switch f.Type {
@@ -205,6 +212,9 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 		case "error":
 			return streamFrame{}, &remoteFrameError{Code: f.Code, Msg: f.Message}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return streamFrame{}, fmt.Errorf("remote %s: read frame: %w", path, err)
 	}
 	if !haveResult {
 		return streamFrame{}, fmt.Errorf("remote %s: stream ended without a result", path)

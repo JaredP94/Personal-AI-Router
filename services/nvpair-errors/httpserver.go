@@ -23,6 +23,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -73,10 +74,14 @@ func newErrorsMux(mgr *Manager, mesh *clustertrust.Mesh) *http.ServeMux {
 // peer reconcile our own origin (the manager rejects nodeId ==
 // localNodeID as a no-op, but we reject empty here so the client gets
 // a clear signal rather than a silent accept).
+// maxSyncBodyBytes caps a peer's pushed snapshot. A snapshot whose JSON value
+// extends past it is a 400 without reconciling any errors.
+const maxSyncBodyBytes = 1 << 20
+
 func handleIngest(w http.ResponseWriter, r *http.Request, mgr *Manager) {
 	defer r.Body.Close()
 	var env errors.SyncEnvelope
-	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxSyncBodyBytes)).Decode(&env); err != nil {
 		slog.Warn("ingest: bad request body", "err", err)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
