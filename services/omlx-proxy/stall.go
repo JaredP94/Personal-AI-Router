@@ -8,12 +8,37 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
 	"sync"
 	"time"
 )
+
+// The response-header deadline does not bound inference prefill after headers.
+// First-body timing is opt-in and independent; zero means wait until content,
+// an upstream error, or caller cancellation.
+const firstBodyTimeoutEnv = "NVPAIR_PROXY_FIRST_BODY_TIMEOUT"
+
+var proxyFirstBodyTimeout time.Duration
+
+func resolveFirstBodyTimeout(flagVal string) time.Duration {
+	raw := flagVal
+	if raw == "" {
+		raw = os.Getenv(firstBodyTimeoutEnv)
+	}
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		log.Printf("invalid first-body timeout %q, using default (disabled)", raw)
+		return 0
+	}
+	return d
+}
 
 var errFirstBodyTimeout = errors.New("upstream timed out before first response body byte")
 
@@ -124,8 +149,12 @@ func awaitFirstBody(ctx context.Context, body io.ReadCloser, budget time.Duratio
 		n, err := body.Read(first)
 		ready <- result{data: first[:n], err: err}
 	}()
-	timer := time.NewTimer(budget)
-	defer timer.Stop()
+	var deadline <-chan time.Time
+	if budget > 0 {
+		timer := time.NewTimer(budget)
+		defer timer.Stop()
+		deadline = timer.C
+	}
 	select {
 	case got := <-ready:
 		if len(got.data) == 0 && got.err != nil && !errors.Is(got.err, io.EOF) {
@@ -134,7 +163,7 @@ func awaitFirstBody(ctx context.Context, body io.ReadCloser, budget time.Duratio
 		return bodyWithPeek{Reader: io.MultiReader(bytes.NewReader(got.data), body), Closer: body}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-timer.C:
+	case <-deadline:
 		return nil, errFirstBodyTimeout
 	}
 }

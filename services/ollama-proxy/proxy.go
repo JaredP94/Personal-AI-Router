@@ -697,6 +697,7 @@ func (p *Proxy) serveHTTP(ctx context.Context, ln net.Listener) {
 		"dial_timeout", proxyDialTimeout,
 		"keep_alive", proxyKeepAlive,
 		"response_header_timeout", proxyResponseTimeout,
+		"first_body_timeout", proxyFirstBodyTimeout,
 		"max_idle_conns", proxyMaxIdleConns,
 		"idle_conn_timeout", proxyIdleConnTimeout,
 	)
@@ -1558,7 +1559,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				// Only successful inference waits for content. All commit effects
 				// below still happen once, for the node that actually serves.
 				if isInf && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					body, err := awaitFirstBody(r.Context(), resp.Body, proxyResponseTimeout)
+					body, err := awaitFirstBody(r.Context(), resp.Body, proxyFirstBodyTimeout)
 					if err != nil {
 						if r.Context().Err() == nil && stderrors.Is(err, errFirstBodyTimeout) {
 							p.noteStalled(cand.id, time.Now())

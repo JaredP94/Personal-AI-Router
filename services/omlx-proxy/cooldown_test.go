@@ -36,21 +36,31 @@ func (w *stallWire) Write(b []byte) (int, error) {
 // upstream again. Reset scheduler reservations so they cannot hide that bug.
 func TestStalledCandidateSecondRequest(t *testing.T) {
 	old := proxyResponseTimeout
-	proxyResponseTimeout = time.Second
+	// Leave scheduling slack between the measured stall and the next request.
+	// First-body opt-ins below remain shorter and independent of this window.
+	proxyResponseTimeout = 3 * time.Second
 	defer func() { proxyResponseTimeout = old }()
 
-	for _, headers := range []bool{false, true} {
-		name := "no-headers"
-		if headers {
-			name = "headers-without-body"
-		}
-		t.Run(name, func(t *testing.T) {
+	const originalBody = `{"model":"model","messages":[{"role":"user","content":"replay regression"}],"stream":false,"max_tokens":7}`
+	for _, tc := range []struct {
+		name, flag, env string
+		headers         bool
+	}{
+		{name: "no-headers-default"},
+		{name: "headers-without-body-flag", headers: true, flag: "1s"},
+		{name: "headers-without-body-env", headers: true, env: "1s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(firstBodyTimeoutEnv, tc.env)
+			oldFirstBody := proxyFirstBodyTimeout
+			proxyFirstBodyTimeout = resolveFirstBodyTimeout(tc.flag)
+			t.Cleanup(func() { proxyFirstBodyTimeout = oldFirstBody })
 			var stalledHits, goodHits atomic.Int32
 			release := make(chan struct{})
 			stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				stalledHits.Add(1)
 				_, _ = io.Copy(io.Discard, r.Body)
-				if headers {
+				if tc.headers {
 					w.Header().Set("Content-Type", "text/event-stream")
 					w.WriteHeader(http.StatusOK)
 					w.(http.Flusher).Flush()
@@ -61,7 +71,10 @@ func TestStalledCandidateSecondRequest(t *testing.T) {
 			defer close(release)
 			good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				goodHits.Add(1)
-				_, _ = io.Copy(io.Discard, r.Body)
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != originalBody {
+					t.Error("healthy peer did not receive the complete original request body")
+				}
 				_, _ = io.WriteString(w, "healthy")
 			}))
 			defer good.Close()
@@ -78,10 +91,10 @@ func TestStalledCandidateSecondRequest(t *testing.T) {
 					Nodes: []string{"stalled", "good"},
 					Ranks: []schedulerwire.NodeRank{{ID: "stalled"}, {ID: "good"}},
 				})
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-					strings.NewReader(`{"model":"model"}`)).WithContext(ctx)
+					strings.NewReader(originalBody)).WithContext(ctx)
 				rec := httptest.NewRecorder()
 				start := time.Now()
 				p.handleHTTP(rec, req)
@@ -103,9 +116,53 @@ func TestStalledCandidateSecondRequest(t *testing.T) {
 			if goodHits.Load() != 2 {
 				t.Fatalf("healthy hits = %d, want 2", goodHits.Load())
 			}
-			t.Logf("first=%s second=%s (configured deadline %s)", first, second, proxyResponseTimeout)
+			t.Logf("first=%s second=%s (header deadline %s, first-body deadline %s)", first, second, proxyResponseTimeout, proxyFirstBodyTimeout)
 			assertStallWorkloads(t, wire, 2)
 		})
+	}
+}
+
+// A response-header deadline must not become a post-header generation limit.
+// Long-context prefill can remain silent well beyond the header timeout.
+func TestDefaultFirstBodyWaitIsUnbounded(t *testing.T) {
+	t.Setenv(firstBodyTimeoutEnv, "")
+	oldFirstBody := proxyFirstBodyTimeout
+	proxyFirstBodyTimeout = resolveFirstBodyTimeout("")
+	defer func() { proxyFirstBodyTimeout = oldFirstBody }()
+	old := proxyResponseTimeout
+	proxyResponseTimeout = 100 * time.Millisecond
+	defer func() { proxyResponseTimeout = old }()
+	var fallbackHits atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(3 * proxyResponseTimeout)
+		_, _ = io.WriteString(w, "prefill-complete")
+	}))
+	defer slow.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		_, _ = io.WriteString(w, "duplicate")
+	}))
+	defer fallback.Close()
+	disc := NewDiscovery()
+	disc.AddManual(nodeForModel(t, "slow", slow.URL, "model"))
+	disc.AddManual(nodeForModel(t, "fallback", fallback.URL, "model"))
+	p := testProxy(disc, 1235)
+	defer p.closeIdleTransports()
+	p.SetPriority([]string{"slow", "fallback"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	p.handleHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"model"}`)).WithContext(ctx))
+	if rec.Code != http.StatusOK || rec.Body.String() != "prefill-complete" || fallbackHits.Load() != 0 {
+		t.Fatalf("default cut off healthy post-header prefill: status=%d body=%q fallback hits=%d",
+			rec.Code, rec.Body.String(), fallbackHits.Load())
+	}
+	if len(p.coolingSet(time.Now())) != 0 {
+		t.Fatal("healthy prefill created a default cooldown")
 	}
 }
 
@@ -276,9 +333,9 @@ func TestCallerCancellationDoesNotCoolCandidate(t *testing.T) {
 }
 
 func TestFinalBodyStallIsBounded(t *testing.T) {
-	old := proxyResponseTimeout
-	proxyResponseTimeout = 100 * time.Millisecond
-	defer func() { proxyResponseTimeout = old }()
+	old := proxyFirstBodyTimeout
+	proxyFirstBodyTimeout = 100 * time.Millisecond
+	defer func() { proxyFirstBodyTimeout = old }()
 	release := make(chan struct{})
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -309,7 +366,7 @@ func assertStallWorkloads(t *testing.T, wire *stallWire, count int) {
 	wire.mu.Lock()
 	data := append([]byte(nil), wire.b...)
 	wire.mu.Unlock()
-	started := make(map[string]bool)
+	started := make(map[string]string)
 	completed := make(map[string]bool)
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	for dec.More() {
@@ -325,9 +382,15 @@ func assertStallWorkloads(t *testing.T, wire *stallWire, count int) {
 		wl := frame.Params.WorkloadInfo
 		switch frame.Method {
 		case workloadStartedMethod:
-			started[wl.ID] = true
+			if wl.State != "running" || completed[wl.ID] {
+				t.Fatalf("invalid running workload event: %+v", wl)
+			}
+			started[wl.ID] = wl.ScheduledOn
 		case workloadCompletedMethod:
-			if completed[wl.ID] || wl.ScheduledOn != "good" || !started[wl.ID] {
+			if started[wl.ID] != "good" {
+				t.Fatalf("no running workload event on serving node before completion: id=%s runningOn=%q", wl.ID, started[wl.ID])
+			}
+			if completed[wl.ID] || wl.ScheduledOn != "good" {
 				t.Fatalf("invalid or duplicate completion: %+v", wl)
 			}
 			completed[wl.ID] = true

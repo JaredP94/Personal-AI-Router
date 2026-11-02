@@ -240,6 +240,13 @@ The reply is ordinary OpenAI-shaped JSON, abbreviated here:
 If you changed a port, or you are using LM Studio or oMLX rather than Ollama, copy the
 URL from **Endpoints → API endpoints** instead of assuming the one above.
 
+The proxies keep the `120s` response-header timeout, but impose **no first-body
+deadline by default** after headers arrive. Long-context prefill can legitimately
+be silent for several minutes. `--first-body-timeout` /
+`NVPAIR_PROXY_FIRST_BODY_TIMEOUT` is a separate opt-in; see
+[Troubleshooting](docs/troubleshooting.mdx#requests-are-silent-after-headers)
+before enabling it.
+
 That is a single machine working. To route across machines, pair a second one
 from **Settings → Cluster** and repeat the engine and model steps there. The
 inviting machine shows a six-digit PIN, and you enter that PIN on the machine you
