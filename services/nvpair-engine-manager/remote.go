@@ -22,6 +22,7 @@ import (
 type remoteParam struct {
 	Node   string          `json:"node"`
 	Engine string          `json:"engine,omitempty"`
+	Tool   string          `json:"tool,omitempty"`
 	Start  bool            `json:"start,omitempty"`
 	Port   int             `json:"port,omitempty"`
 	Model  string          `json:"model,omitempty"`
@@ -88,6 +89,20 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 			return
 		}
 		m.codec.Respond(msg.ID, map[string]any{"opId": opID, "status": terminal.Status})
+
+	case "engine:remote-install-tool":
+		if p.Tool == "" {
+			m.codec.RespondError(msg.ID, -32602, "tool is required")
+			return
+		}
+		opID := newOpID()
+		body := toolInstallRequest{OpID: opID, Tool: p.Tool}
+		terminal, err := client.stream(ctx, controlToolInstallPath, body, m.remoteProgressFn(opID, peer.nodeID))
+		if err != nil {
+			m.codec.RespondError(msg.ID, rpcCodeFor(err), err.Error())
+			return
+		}
+		m.codec.Respond(msg.ID, map[string]any{"opId": opID, "result": terminal.Result})
 
 	case "engine:remote-pull-model":
 		if p.Engine == "" {

@@ -27,6 +27,14 @@ const (
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
 )
 
+// remoteFrameError preserves an optional JSON-RPC code from an ec error frame.
+type remoteFrameError struct {
+	Code int
+	Msg  string
+}
+
+func (e *remoteFrameError) Error() string { return e.Msg }
+
 // remoteClient talks to one peer's ec surface.
 type remoteClient struct {
 	http *http.Client
@@ -195,7 +203,7 @@ func (c *remoteClient) stream(ctx context.Context, path string, body any, onProg
 			result = f
 			haveResult = true
 		case "error":
-			return streamFrame{}, fmt.Errorf("%s", f.Message)
+			return streamFrame{}, &remoteFrameError{Code: f.Code, Msg: f.Message}
 		}
 	}
 	if !haveResult {

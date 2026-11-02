@@ -6,7 +6,8 @@ import type { RoutingMetrics } from '@/shared/types/routing-metrics'
 import type {
     NodeInferenceMetrics,
     NodeInferenceMetricsSnapshot,
-    NodeItemMetrics
+    NodeItemMetrics,
+    NodeSensors
 } from '@/shared/types/metrics'
 import type { PerformanceMetric } from '@/ui/types/types'
 
@@ -46,6 +47,7 @@ export interface NodeMetricsHistory {
     gpuVramUsage: GpuMemoryMetricsHistory[]
     cpuUtilization: PerformanceMetric[]
     memoryUsage: PerformanceMetric[]
+    sensors: NodeSensors | null
 }
 
 interface MetricsStore {
@@ -175,7 +177,8 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
                         gpuUtilization: [],
                         gpuVramUsage: [],
                         cpuUtilization: [],
-                        memoryUsage: []
+                        memoryUsage: [],
+                        sensors: null
                     }
                     map.set(metrics.id, history)
                 }
@@ -184,6 +187,7 @@ export const useMetricsStore = create<MetricsStore>((set, get) => ({
                 if (lastTs === metrics.current.timestamp) return
 
                 const ts = metrics.current.timestamp
+                history.sensors = metrics.current.sensors
 
                 for (const gpu of metrics.current.gpuUtilization) {
                     let entry = history.gpuUtilization.find(h => h.id === gpu.id)

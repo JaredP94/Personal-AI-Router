@@ -48,6 +48,7 @@ import type { ModularProcessName } from '@/shared/constants/modular-binaries'
 import type { ServiceError, ServiceErrorSeverity } from '@/shared/types/errors'
 import type { ClusterNode } from '@/shared/types/cluster'
 import type { EngineType } from '@/shared/types/engines'
+import type { MacmonInstallOutcome } from '@/shared/types/metrics'
 import { APP_DISPLAY_NAME } from '@/shared/constants/app'
 
 const log = createStructuredLogger('service-bridge')
@@ -2266,6 +2267,46 @@ class ModularSupervisor {
             }
         } finally {
             state.finishRemoteModelPull(nodeId, engineType, model)
+        }
+    }
+
+    /** Install the macmon sensor tool through the broker, without engine state changes. */
+    async installMacmon(nodeId: string): Promise<MacmonInstallOutcome> {
+        try {
+            const selfId = getModularBridgeState().getSelfId()
+            if (nodeId && nodeId !== selfId) {
+                await this.callProcess(
+                    'broker',
+                    'engine:remote-install-tool',
+                    { node: nodeId, tool: 'macmon' },
+                    PULL_TIMEOUT_MS
+                )
+            } else {
+                await this.callProcess(
+                    'broker',
+                    'engine:install-tool',
+                    { tool: 'macmon' },
+                    PULL_TIMEOUT_MS
+                )
+            }
+            return 'installed'
+        } catch (err) {
+            if (err instanceof JsonRpcResponseError) {
+                if (err.code === -32010) return 'homebrew-missing'
+                if (err.code === -32011) return 'unsupported-platform'
+            }
+            this.reportError(
+                `Failed to install macmon on ${nodeId}: ${getErrorString(err)}`,
+                'error',
+                `macmon-install:${nodeId}`,
+                {
+                    id: 'engine-manager:install-failed:tool:macmon',
+                    nodeId,
+                    operation: 'install',
+                    action: 'dismiss'
+                }
+            )
+            return 'failed'
         }
     }
 

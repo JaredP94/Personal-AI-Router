@@ -1,6 +1,41 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+export type MacmonInstallOutcome =
+    | 'installed'
+    | 'homebrew-missing'
+    | 'unsupported-platform'
+    | 'failed'
+
+export type MacmonStatus = 'available' | 'missing' | 'failed'
+export type ThermalPressure = 'nominal' | 'moderate' | 'heavy' | 'trapping' | 'sleeping'
+export type MemoryPressure = 'normal' | 'warning' | 'critical'
+
+export interface SensorFan {
+    name: string
+    rpm: number
+    maxRpm: number
+}
+
+export interface SensorPower {
+    systemW: number | null
+    cpuW: number | null
+    gpuW: number | null
+    aneW: number | null
+}
+
+export interface NodeSensors {
+    macmon: MacmonStatus | null // null = unrecognised value
+    thermalPressure: ThermalPressure | null
+    memoryPressure: MemoryPressure | null
+    swapTotalBytes: number | null
+    swapUsedBytes: number | null
+    cpuTempC: number | null
+    gpuTempC: number | null
+    fans: SensorFan[] | null // [] = no fans, null = unknown
+    power: SensorPower | null
+}
+
 export interface GpuMetricValue {
     id: string // GPU ID from topology
     value: number | null // percentage, null when not measured
@@ -16,6 +51,7 @@ export interface NodeItemMetricsEntry {
     memoryUsage: number // percentage
     gpuUtilization: GpuMetricValue[] // percentage per GPU
     gpuVramUsage: GpuMemoryMetricValue[] // percentage per GPU, plus shared usage in bytes
+    sensors: NodeSensors | null
 }
 
 export interface NodeItemMetrics {

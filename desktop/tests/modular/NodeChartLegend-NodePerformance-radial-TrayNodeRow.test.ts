@@ -60,7 +60,8 @@ function history(
         gpuUtilization: [{ id: 'gpu-0', data: points(utilization) }],
         gpuVramUsage: [{ id: 'gpu-0', data: points(memory), sharedUsed: points([sharedUsed]) }],
         cpuUtilization: points([0]),
-        memoryUsage: points([0])
+        memoryUsage: points([0]),
+        sensors: null
     }
 }
 

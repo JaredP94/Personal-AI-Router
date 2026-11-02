@@ -251,6 +251,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:install", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
 		go m.runOp(ctx, msg)
 
+	case "engine:install-tool":
+		go m.runInstallTool(ctx, msg)
+
 	case "engine:set-port":
 		go m.runSetPort(ctx, msg)
 
@@ -270,7 +273,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:action":
 		go m.runAction(ctx, msg)
 
-	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-pull-model",
+	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-install-tool", "engine:remote-pull-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
 		"engine:remote-start", "engine:remote-stop":
 		go m.runRemote(ctx, msg)

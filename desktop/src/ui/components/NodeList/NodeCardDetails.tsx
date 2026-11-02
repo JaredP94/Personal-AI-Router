@@ -3,7 +3,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Flex, Stack } from '@nvidia/foundations-react-core'
-import { BarChartOutlined, SettingsOutlined } from '@/ui/components/icons'
+import { BarChartOutlined, SettingsOutlined, Thermometer } from '@/ui/components/icons'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import type { NodeItem } from '@/shared/types/nodes'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
@@ -25,6 +25,8 @@ import { hasInferenceReadyGpu, isGpuInferenceReady } from '@/ui/utils/gpu-infere
 import NodeEnginesInline from './NodeEnginesInline'
 import NodeEngineSettings from './NodeEngineSettings'
 import NodeInferenceMetricsSection from './NodeInferenceMetricsSection'
+import NodeSensors from './NodeSensors'
+import NodeSensorBadges from './NodeSensorBadges'
 
 const MAX_CHART_SIZE = 60
 
@@ -34,6 +36,8 @@ interface NodeCardDetailsProps {
 
 function NodeCardDetails({ node }: NodeCardDetailsProps) {
     const nodeMetrics = useMetricsStore(state => state.nodeMetrics.get(node.id))
+    const sensors = nodeMetrics?.sensors ?? null
+    const [isSensorsExpanded, setIsSensorsExpanded] = useState(false)
     const isLocal = useConnectionStore(state => state.selfId === node.id)
     const [isExpanded, setIsExpanded] = useState(false)
     const [isEngineSettingsExpanded, setIsEngineSettingsExpanded] = useState(false)
@@ -111,12 +115,15 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
 
     const jobCount = useNodeActiveJobCount(node.id)
 
-    // Performance chart and engine settings are mutually exclusive — opening one
-    // collapses the other so only a single section is ever expanded per card.
+    // Performance, sensors, and engine settings are mutually exclusive — only
+    // a single section is ever expanded per card.
     const togglePerformance = useCallback(() => {
         setIsExpanded(prev => {
             const next = !prev
-            if (next) setIsEngineSettingsExpanded(false)
+            if (next) {
+                setIsEngineSettingsExpanded(false)
+                setIsSensorsExpanded(false)
+            }
             return next
         })
     }, [])
@@ -127,6 +134,18 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
             if (next) {
                 setHasOpenedEngineSettings(true)
                 setIsExpanded(false)
+                setIsSensorsExpanded(false)
+            }
+            return next
+        })
+    }, [])
+
+    const toggleSensors = useCallback(() => {
+        setIsSensorsExpanded(prev => {
+            const next = !prev
+            if (next) {
+                setIsExpanded(false)
+                setIsEngineSettingsExpanded(false)
             }
             return next
         })
@@ -139,6 +158,7 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
         setIsEngineSettingsExpanded(true)
         setHasOpenedEngineSettings(true)
         setIsExpanded(false)
+        setIsSensorsExpanded(false)
         consumeFocusNode()
         requestAnimationFrame(() => {
             containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -201,6 +221,21 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                     <BarChartOutlined style={{ fontSize: 14 }} />
                 </Button>
             </DismissibleTooltip>
+            {sensors !== null && (
+                <DismissibleTooltip slotContent="Show sensors" placement={placement}>
+                    <Button
+                        kind={isSensorsExpanded ? 'primary' : 'tertiary'}
+                        color="neutral"
+                        size="tiny"
+                        className="px-2"
+                        onClick={toggleSensors}
+                        aria-label={isSensorsExpanded ? 'Collapse sensors' : 'Expand sensors'}
+                        aria-expanded={isSensorsExpanded}
+                    >
+                        <Thermometer style={{ fontSize: 14 }} />
+                    </Button>
+                </DismissibleTooltip>
+            )}
             <DismissibleTooltip slotContent="Show engine settings" placement={placement}>
                 <Button
                     kind={isEngineSettingsExpanded ? 'primary' : 'tertiary'}
@@ -277,6 +312,7 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                             className="shrink min-w-0 ml-1 -mt-1"
                         >
                             <NodeEnginesInline nodeId={node.id} />
+                            <NodeSensorBadges sensors={sensors} />
                         </Flex>
                         <NodeInferenceMetricsSection nodeId={node.id} />
                         {isNarrow && (
@@ -303,6 +339,20 @@ function NodeCardDetails({ node }: NodeCardDetailsProps) {
                         <NodePerformance node={node} className="mt-5" />
                     </div>
                 </div>
+                {sensors !== null && (
+                    <div
+                        style={{
+                            display: 'grid',
+                            gridTemplateRows: isSensorsExpanded ? '1fr' : '0fr',
+                            transition: 'grid-template-rows 0.25s ease'
+                        }}
+                        inert={!isSensorsExpanded}
+                    >
+                        <div className="overflow-hidden min-h-0">
+                            <NodeSensors node={node} sensors={sensors} isLocal={isLocal} />
+                        </div>
+                    </div>
+                )}
                 <div
                     style={{
                         display: 'grid',

@@ -20,10 +20,16 @@ import type {
     EngineNativeView,
     InferenceMetricsRates,
     InferenceMetricsTotals,
+    MacmonStatus,
+    MemoryPressure,
     NodeInferenceMetrics,
     NodeInferenceMetricsSnapshot,
     NodeItemMetrics,
-    NodeModelMetrics
+    NodeModelMetrics,
+    NodeSensors,
+    SensorFan,
+    SensorPower,
+    ThermalPressure
 } from '@/shared/types/metrics'
 import type { GpuMemoryKind } from '@/shared/types/hardware'
 import type { NodeItem } from '@/shared/types/nodes'
@@ -169,6 +175,7 @@ interface ModularNode {
     gpus: ModularGpu[]
     cpu: ModularCpu | null
     memory: ModularMemory | null
+    sensors: NodeSensors | null
     // Node-level list of inference-ready hardware ids from /v1/node-info, mapped
     // straight to SystemTopology.inferenceHardwareIds. undefined = the backend
     // does not report readiness yet (UI shows all GPUs). See the routing
@@ -975,6 +982,70 @@ function gpuArrayValue(value: JsonValue | undefined): ModularGpu[] {
     return gpus.sort((left, right) => nvidiaGpuRank(left) - nvidiaGpuRank(right))
 }
 
+function isMacmonStatus(value: string): value is MacmonStatus {
+    return value === 'available' || value === 'missing' || value === 'failed'
+}
+
+function isThermalPressure(value: string): value is ThermalPressure {
+    return (
+        value === 'nominal' ||
+        value === 'moderate' ||
+        value === 'heavy' ||
+        value === 'trapping' ||
+        value === 'sleeping'
+    )
+}
+
+function isMemoryPressure(value: string): value is MemoryPressure {
+    return value === 'normal' || value === 'warning' || value === 'critical'
+}
+
+function sensorFansValue(value: JsonValue | undefined): SensorFan[] | null {
+    if (!Array.isArray(value)) return null
+    const fans: SensorFan[] = []
+    for (const entry of value) {
+        const obj = objectValue(entry)
+        if (!obj) continue
+        const name = nullableStringValue(obj.name)
+        const rpm = nullableNumberValue(obj.rpm)
+        const maxRpm = nullableNumberValue(obj.maxRpm)
+        if (!name || rpm === null || maxRpm === null || rpm < 0 || maxRpm < 0) continue
+        fans.push({ name, rpm, maxRpm })
+    }
+    return value.length === 0 || fans.length > 0 ? fans : null
+}
+
+function sensorPowerValue(value: JsonValue | undefined): SensorPower | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const power = {
+        systemW: nullableNumberValue(obj.systemW),
+        cpuW: nullableNumberValue(obj.cpuW),
+        gpuW: nullableNumberValue(obj.gpuW),
+        aneW: nullableNumberValue(obj.aneW)
+    }
+    return Object.values(power).some(reading => reading !== null) ? power : null
+}
+
+function sensorsValue(value: JsonValue | undefined): NodeSensors | null {
+    const obj = objectValue(value)
+    if (!obj) return null
+    const macmon = stringValue(obj.macmon)
+    const thermalPressure = stringValue(obj.thermalPressure)
+    const memoryPressure = stringValue(obj.memoryPressure)
+    return {
+        macmon: isMacmonStatus(macmon) ? macmon : null,
+        thermalPressure: isThermalPressure(thermalPressure) ? thermalPressure : null,
+        memoryPressure: isMemoryPressure(memoryPressure) ? memoryPressure : null,
+        swapTotalBytes: nullableNumberValue(obj.swapTotalBytes),
+        swapUsedBytes: nullableNumberValue(obj.swapUsedBytes),
+        cpuTempC: nullableNumberValue(obj.cpuTempC),
+        gpuTempC: nullableNumberValue(obj.gpuTempC),
+        fans: sensorFansValue(obj.fans),
+        power: sensorPowerValue(obj.power)
+    }
+}
+
 function cpuValue(value: JsonValue | undefined): ModularCpu | null {
     const obj = objectValue(value)
     if (!obj) return null
@@ -1132,6 +1203,7 @@ function toMetrics(node: ModularNode): NodeItemMetrics {
     const current = {
         timestamp: Date.now(),
         cpuUtilization: node.cpu?.utilizationPercent ?? 0,
+        sensors: node.sensors,
         memoryUsage,
         gpuUtilization: node.gpus.map((gpu, index) => ({
             id: `${node.id}:gpu:${index}`,
@@ -1241,6 +1313,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         gpus: [],
         cpu: null,
         memory: null,
+        sensors: null,
         engines,
         lastSeen: Date.now()
     }
@@ -1283,6 +1356,7 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         gpus: [],
         cpu: null,
         memory: null,
+        sensors: null,
         // Broker `AvailableNode.models`: the node's model list, enriched by its
         // daemon from the peer's engine-manager `/v1/models` (models-http). This
         // is the remote-node model source now that the proxy `models=` TXT is
@@ -1783,8 +1857,13 @@ class ModularBridgeState {
         const cpu = cpuValue(obj.cpu)
         const memory = memoryValue(obj.memory)
         const inferenceHardwareIds = optionalStringArrayValue(obj.inference_hardware_ids)
+        const sensors = sensorsValue(obj.sensors)
         if (node.nodeInfoUp && sameTelemetry(node, gpus, cpu, memory, inferenceHardwareIds)) {
-            emitBridgePush('metrics:update', toMetrics(node))
+            // Sensors change on almost every poll. Keep them current without
+            // upserting the node and re-rendering its entire card.
+            const updated = { ...node, sensors }
+            this.nodes.set(nodeId, updated)
+            emitBridgePush('metrics:update', toMetrics(updated))
             return
         }
 
@@ -1793,6 +1872,7 @@ class ModularBridgeState {
             gpus,
             cpu,
             memory,
+            sensors,
             inferenceHardwareIds,
             nodeInfoUp: true
         })
@@ -3069,6 +3149,7 @@ class ModularBridgeState {
             gpus: [],
             cpu: null,
             memory: null,
+            sensors: null,
             lastSeen: Date.now()
         }
         this.nodes.set(next.id, next)
@@ -3248,6 +3329,7 @@ class ModularBridgeState {
                 gpus: existing.gpus,
                 cpu: existing.cpu,
                 memory: existing.memory,
+                sensors: existing.sensors,
                 inferenceHardwareIds: existing.inferenceHardwareIds,
                 engines: existing.engines
             }
@@ -3277,6 +3359,7 @@ class ModularBridgeState {
             gpus: existing.gpus,
             cpu: existing.cpu,
             memory: existing.memory,
+            sensors: existing.sensors,
             inferenceHardwareIds: existing.inferenceHardwareIds,
             // A proxy event carries no model list (models-http); keep the
             // broker-enriched `AvailableNode.models` (+ per-engine attribution and

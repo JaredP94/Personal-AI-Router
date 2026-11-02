@@ -1175,6 +1175,8 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'metrics:get-node-metrics': () => handleNodeMetricsGet(),
     'nodes:get-initial': () => getModularBridgeState().getNodesInitial(),
     'nodes:remove-member': payload => handleNodeRemoveMember(payload),
+    'nodes:install-macmon': payload =>
+        payload ? getModularSupervisor().installMacmon(payload.nodeId) : 'failed',
 
     'discovery:get-nodes': () => getModularBridgeState().getAvailableNodes(),
 

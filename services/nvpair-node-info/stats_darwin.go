@@ -37,6 +37,7 @@ type statsCollector struct {
 
 	policy  *SamplingPolicy
 	wakeGPU chan struct{}
+	sensors *sensorCollector
 
 	gpuWarning sync.Once
 	cancel     context.CancelFunc
@@ -45,12 +46,14 @@ type statsCollector struct {
 }
 
 func startStatsCollector() *statsCollector {
-	return newDarwinStatsCollector(
+	c := newDarwinStatsCollector(
 		readDarwinCPUTimes,
 		readDarwinMemoryUsed,
 		readDarwinGPUStats,
 		statsTickInterval,
 	)
+	c.sensors = startSensorCollector(c.policy)
+	return c
 }
 
 func newDarwinStatsCollector(
@@ -194,6 +197,7 @@ func (c *statsCollector) PeekSnapshot() statsSnapshot {
 		return statsSnapshot{}
 	}
 	snap := *p
+	snap.Sensors = c.sensors.state()
 	if gpu := c.latestGPU.Load(); gpu != nil {
 		snap.GPU = gpu.stats
 		snap.GPUInventory = gpu.inventory
@@ -225,6 +229,7 @@ func (c *statsCollector) SetLocalExecution(active bool) {
 
 func (c *statsCollector) Stop() {
 	c.stopOnce.Do(func() {
+		c.sensors.stop()
 		c.cancel()
 		c.done.Wait()
 	})

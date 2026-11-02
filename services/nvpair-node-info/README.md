@@ -156,6 +156,33 @@ and Windows cross-compilation checks, but actual DXGI/PDH runtime behavior is
 **untested on the macOS verification host**. These are source semantics, not
 release-artifact certification.
 
+### Sensors wire contract
+
+The optional top-level `sensors` object is for `darwin/arm64` nodes only.
+Absence means this node reports no sensors. Unknown readings are omitted,
+never fabricated as zero; measured zeros remain present.
+
+| Field | Presence and meaning |
+| --- | --- |
+| `macmon` | Always present: `available` (running and producing usable samples), `missing` (not found on the probed paths), or `failed` (found, but not producing usable samples). |
+| `thermalPressure` | `nominal`, `moderate`, `heavy`, `trapping`, or `sleeping`. Omitted when unknown. |
+| `memoryPressure` | `normal`, `warning`, or `critical`. Omitted when unknown. |
+| `swapTotalBytes`, `swapUsedBytes` | Measured bytes from `vm.swapusage`. A measured `0` is present; omitted when unknown. |
+| `cpuTempC`, `gpuTempC` | From macmon. Each is omitted independently when unknown. |
+| `fans` | From macmon. **A present empty array means macmon reported no fans** (fanless Mac). Absent means unknown. |
+| `power` | From macmon. Each sub-field is optional; the object is omitted when none was measured. |
+| `msSince` | Age in milliseconds of the macmon sample that supplied the temperature, fan, and power fields. Present only while those fields are present. |
+
+The fan fields are `name`, `rpm`, and `maxRpm`. Power sub-fields are
+`systemW`, `cpuW`, `gpuW`, and `aneW`. Sensor JSON names are camelCase;
+the existing GPU fields are unchanged.
+
+Macmon readings and their `msSince` are dropped when older than 3 × the
+interval at which that sample was collected. Direct thermal pressure,
+memory pressure, and swap readings remain present independently. A `macmon`
+status of `available` whose sample is missing or stale is reported as `failed`.
+A missing sample has no `msSince`.
+
 ## Discovery
 
 The service no longer advertises itself over mDNS. Its parent (the broker) registers the `ni` port with the `nvpair-node-scanner` discovery daemon, which carries it on this node's single `_nvpair-node` record; a peer's daemon then fetches `/v1/node-info` over plain HTTP to enrich the node. Transport is derived from the shared per-service policy (`nvpair-shared/noderec`): node-info is served plain on the broker path. The standalone BYO-TLS / `--cluster-dir` mTLS serving above is retained for running node-info on its own, but is unused under the broker.

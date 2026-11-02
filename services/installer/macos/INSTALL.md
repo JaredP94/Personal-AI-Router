@@ -59,6 +59,7 @@ rm -rf "$HOME/Library/Application Support/Nvidia Corporation/Personal AI Router"
   which: `x86_64` → amd64, `arm64` → arm64.
 - A working mDNS responder on UDP 5353. macOS's built-in `mDNSResponder` is
   fine; the discovery library coexists with it without configuration.
+- Optional: [macmon](https://github.com/vladkens/macmon) (MIT) for temperature, fan, and power readings on Apple Silicon. PAIR can install it through Homebrew from a node card; it is not bundled.
 
 ## Unsigned builds
 
