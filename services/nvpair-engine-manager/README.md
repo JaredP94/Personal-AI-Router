@@ -149,6 +149,7 @@ Requests (caller → service):
 | `engine:describe` | `{ engine }` | the engine's manifest |
 | `engine:status` | `{ engine }` | `EngineStatus` |
 | `engine:install` | `{ engine, start?, port?, bind? }` | `EngineStatus` (after install; also starts it if `start:true`) |
+| `engine:install-tool` | `{ tool }` | `{ tool, installed: true }`, or a typed error (see Tool installs) |
 | `engine:uninstall` | `{ engine }` | `EngineStatus` (after removal) |
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
@@ -165,6 +166,28 @@ Requests (caller → service):
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
+
+### Tool installs
+
+`engine:install-tool` installs only the fixed allowlist below. Tools are not
+engines: macmon never appears in engine lists, engine cards, or manifests.
+
+| Tool | Platforms | Detect (first executable regular file) | Install |
+|---|---|---|---|
+| `macmon` | `darwin/arm64` | `/opt/homebrew/bin/macmon`, `/usr/local/bin/macmon` | `<brew> install macmon` |
+
+Homebrew is found only at `/opt/homebrew/bin/brew`, then
+`/usr/local/bin/brew` (first executable regular file). PATH is never searched.
+The command runs as the engine-manager user, without `sudo` or
+`HOMEBREW_*` environment overrides. An already detected tool is a no-op;
+a successful command must leave the tool detectable.
+
+| JSON-RPC code | Meaning |
+|---|---|
+| `-32602` | Invalid params: missing, empty, or unknown tool. |
+| `-32010` | `homebrew-missing`: no executable Homebrew candidate was found. Install Homebrew, then run `brew install macmon`. |
+| `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
+| `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
 
 ### Effective capabilities
 

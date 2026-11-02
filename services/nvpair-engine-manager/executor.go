@@ -71,6 +71,7 @@ type engineState struct {
 // loop stays responsive.
 type Executor struct {
 	reg              *Registry
+	tools            toolEnv
 	reporter         *Reporter
 	emit             func(method string, params any)
 	client           *http.Client
@@ -117,6 +118,7 @@ type Executor struct {
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
 		reg:                 reg,
+		tools:               defaultToolEnv(),
 		reporter:            reporter,
 		emit:                emit,
 		client:              newEngineHTTPClient(engineResponseHeaderTimeout),

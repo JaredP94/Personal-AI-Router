@@ -328,6 +328,55 @@ func (e *Executor) runCommand(ctx context.Context, argv []string) error {
 	return nil
 }
 
+// commandTail keeps memory bounded even when a command writes a very long line.
+type commandTail struct {
+	data     []byte
+	maxBytes int
+}
+
+func (b *commandTail) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.maxBytes <= 0 {
+		return n, nil
+	}
+	if len(p) >= b.maxBytes {
+		b.data = append(b.data[:0], p[len(p)-b.maxBytes:]...)
+	} else {
+		if overflow := len(b.data) + len(p) - b.maxBytes; overflow > 0 {
+			b.data = b.data[:copy(b.data, b.data[overflow:])]
+		}
+		b.data = append(b.data, p...)
+	}
+	return n, nil
+}
+
+// runCommandTail discards stdout and returns only the last maxLines stderr
+// lines, capped to the last maxBytes bytes. Keeping at most maxBytes while
+// streaming is equivalent to applying the byte cap after selecting the lines.
+func (e *Executor) runCommandTail(ctx context.Context, argv []string, maxLines, maxBytes int) error {
+	if len(argv) == 0 {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	configureSysProcAttr(cmd) // hide the console window on Windows
+	tail := &commandTail{maxBytes: maxBytes}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = tail
+	if err := cmd.Run(); err != nil {
+		lines := strings.SplitAfter(string(tail.data), "\n")
+		if lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		if maxLines <= 0 {
+			lines = nil
+		} else if len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		return fmt.Errorf("%v: %s", err, strings.Join(lines, ""))
+	}
+	return nil
+}
+
 func (e *Executor) reportInstallFailed(engine string, err error) {
 	e.notify("engine:install-progress", map[string]any{"engine": engine, "stage": "failed", "percent": -1, "error": err.Error()})
 	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: "failed", Percent: -1, Message: err.Error()})

@@ -251,6 +251,9 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:install", "engine:uninstall", "engine:start", "engine:stop", "engine:restart":
 		go m.runOp(ctx, msg)
 
+	case "engine:install-tool":
+		go m.runInstallTool(ctx, msg)
+
 	case "engine:set-port":
 		go m.runSetPort(ctx, msg)
 
