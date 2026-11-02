@@ -50,6 +50,21 @@ jobs:
                   node-version: '25.5.0'
                   cache: npm
                   cache-dependency-path: desktop/package-lock.json
+            - uses: actions/setup-go@v6.0.0
+              with:
+                  go-version: '1.26.7'
+                  cache-dependency-path: services/**/go.sum
+            # The license checker is deliberately offline and enumerates every
+            # release target, including Windows-only dependencies. A native
+            # build alone would leave those dependencies out of the cache.
+            - name: Populate Go license dependency cache
+              working-directory: .
+              shell: bash
+              run: |
+                  for mod in services/*/go.mod; do
+                      (cd "$(dirname "$mod")" && go mod download)
+                  done
+                  git diff --exit-code -- services
             - run: npm ci --prefer-offline
             - run: npm run typecheck
             - run: npm run lint -- --max-warnings=0
@@ -60,13 +75,14 @@ jobs:
 
     services:
         name: Go modules (${{ matrix.os }})
-        # macos-latest is the standard arm64 hosted runner, not macos-*-intel.
+        # Pin the supported arm64 image: macos-latest failed runner acquisition
+        # during the macOS 26 rollout, before any test step could execute.
         runs-on: ${{ matrix.os }}
         timeout-minutes: 20
         strategy:
             fail-fast: false
             matrix:
-                os: [macos-latest, ubuntu-latest]
+                os: [macos-15, ubuntu-latest]
         steps:
             - uses: actions/checkout@v5.0.0
               with:
@@ -95,13 +111,13 @@ jobs:
                       # Cross-process tests run only on macOS in their own job.
                       if [ "$dir" = services/tests ]; then continue; fi
                       echo "==> $dir"
-                      (cd "$dir" && go vet ./... && go test -count=1 -timeout=5m ./...) || failed=1
+                      (cd "$dir" && go vet ./... && go test -count=1 -timeout=5m -v ./...) || failed=1
                   done
                   exit "$failed"
 
     cross-process:
         name: Cross-process tests (macOS arm64)
-        runs-on: macos-latest
+        runs-on: macos-15
         timeout-minutes: 20
         steps:
             - uses: actions/checkout@v5.0.0
@@ -118,4 +134,4 @@ jobs:
               run: go test -count=1 -run '^Test(ProcessHelpersRequireIsolation|CommandEnvironmentIsPerTest)$' .
             - name: Vet and run isolated cross-process suite
               working-directory: services/tests
-              run: go vet ./... && go test -count=1 -timeout=15m ./...
+              run: go vet ./... && go test -count=1 -timeout=15m -v ./...
