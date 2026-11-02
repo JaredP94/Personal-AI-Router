@@ -476,6 +476,15 @@ see the same idle node and pile onto it. To prevent that, each proxy adds the
 requests it has just dispatched itself to its own estimate and reserves its
 choice before forwarding, so a burst spreads without waiting for those reports.
 
+After those preferences, each proxy moves candidates that just spent a full
+silent response deadline behind their eligible peers, preserving relative order
+within both groups. This measured, process-local cooldown overrides pins,
+reservations, and prefix hints; it is not a liveness verdict. It never removes a
+candidate, so a lone node is still tried and a cooling node can serve after the
+others fail. It expires after one configured response-header duration, or clears
+early on a successful response. Fast errors and caller cancellation do not set
+or clear it. Nothing is persisted or shared between proxies.
+
 ### Models Do Not Need to Be on Every Node
 
 **You do not have to put the same models on every node.** A cluster where one
@@ -521,6 +530,17 @@ selection. If that owner answers inference with `404`, the proxy treats it as
 retryable and moves to the next advertised owner. It never fails over to an
 unknown or known-missing node. Genuine client errors such as `400` or `422` are
 not retried, because they would fail identically everywhere.
+
+Successful inference responses do not commit on headers alone. The proxy waits
+for initial body bytes (or a valid empty EOF), bounded by a separate wait equal
+to the configured response-header timeout. Silence or a body read failure before
+commit advances to the next existing candidate while retaining the same request
+and workload identity. It does not re-resolve candidates or add retry rounds.
+Once the response commits, errors only terminate that stream; it is never
+replayed after bytes have reached the client. A full silent header or first-body
+deadline also records the cooldown described above. The `120s` default and
+`--response-header-timeout` / `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` configuration
+remain unchanged; operators must allow for cold loads and long queues.
 
 #### Planning Model Placement
 

@@ -35,7 +35,7 @@ omlx-proxy [flags]
 | `--port` | `1234` | HTTP listen port for request forwarding |
 | `--ignore-persisted-port` | `false` | Use `--port` even when a prior runtime port was saved |
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
-| `--response-header-timeout` | `$NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, else `120s` | How long to wait for an upstream engine to start answering (Go duration, e.g. `10m`). An engine sends no headers until generation starts, so raise it when requests queue behind long jobs or wait on slow model loads. An invalid or non-positive value keeps the default |
+| `--response-header-timeout` | `$NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, else `120s` | Upstream response-header deadline and, for successful inference, a separate wait for initial body bytes (Go duration, e.g. `10m`). Raise it for long queues or cold model loads. An invalid or non-positive value keeps the default |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |
@@ -53,7 +53,8 @@ Node selection:
 - **Auto**: When no eligible node is explicitly selected, the proxy follows `node/set-priority` (see below), then discovered nodes in stable ID order.
 - **Priority (scheduler-driven)**: The Job Scheduler ranks the cluster least-loaded-first by pending workload plus smoothed GPU pressure and, via `nvpair-ui-broker`, pushes the ordered node list with those per-node counts to this proxy with `node/set-priority`. Auto routing sends the request to the listed node carrying the least estimated load. See [`nvpair-job-scheduler`](../nvpair-job-scheduler/README.md).
 - **Manual**: Use the `node/select` JSON-RPC method to pin traffic to a specific node. A manual pin **overrides the priority list only when that node is eligible** for the requested model.
-- **Failover**: If the selected node disappears from the discovery set, the proxy falls back to auto-select and emits a `node/selection-changed` notification. A transport error or retryable status, including a model `404` from an advertised owner with stale inventory, steps to the next eligible owner.
+- **Failover**: If the selected node disappears from the discovery set, the proxy falls back to auto-select and emits a `node/selection-changed` notification. A transport error or retryable status, including a model `404` from an advertised owner with stale inventory, steps to the next eligible owner. Successful inference responses wait for initial body bytes (or a valid empty EOF) before committing; a silent body times out using the configured response-header duration and fails over within the same candidate list. Once committed, a stream is never retried. Failover keeps one request/workload identity.
+- **Deadline cooldown**: A full response-header wait with no answer, or an inference first-body deadline with no content, moves that candidate behind its eligible peers for one configured deadline. This stable demotion overrides selection, reservations, and prefix affinity but never excludes a node: a sole candidate, or a candidate after its peers fail, is still tried. State is per proxy process, in memory only; time expiry or a successful response clears it. Fast errors and caller cancellation neither set nor clear it. The default deadline remains `120s`.
 
 ### IPC Transport
 
@@ -353,8 +354,9 @@ Semantics:
 - **Snapshot reset.** Each new snapshot replaces the pending and GPU-pressure
   baselines and clears the reservations. GPU pressure is clamped to the
   scheduler's 0–3 range.
-- **Eligible manual pin wins.** An active `node/select` pin takes precedence when
-  it is in the request's owner set. An ineligible pin is ignored for that request,
+- **Eligible manual pin wins unless cooling.** An active `node/select` pin
+  takes precedence when it is in the request's owner set and is not behind
+  peers in deadline cooldown. An ineligible pin is ignored for that request,
   so automatic reservations still apply among eligible owners. Clearing the pin
   (`node/select` with an empty `id`) activates the most-recently-set list. Setting
   a priority list does **not** emit `node/selection-changed` (the manual selection
@@ -362,8 +364,8 @@ Semantics:
 - **Unknown IDs are ignored.** IDs not currently in discovery are kept in the
   stored list (a node may appear later) but contribute nothing until discovered.
 - **Eligible unlisted nodes are a lowest-priority fallback.** An advertised owner
-  absent from the list stays routable, but only after every listed owner —
-  ordered among themselves by the default stable ID sort. This ensures an
+  absent from the list stays routable, but only after every listed owner in
+  the same cooldown group — ordered among themselves by the default stable ID sort. This ensures an
   eligible manually-added node the scheduler never saw is never stranded.
 - **Empty list reverts to default.** `{"nodes":[]}` clears the scheduler's
   influence and returns the proxy to its default auto ordering (eligible

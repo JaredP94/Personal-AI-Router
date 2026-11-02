@@ -398,6 +398,10 @@ type Proxy struct {
 	priorityGPUPressure  map[string]int
 	priorityReservations map[string]int
 
+	// coolMu guards process-local deadline measurements, never persisted.
+	coolMu    sync.Mutex
+	coolUntil map[string]time.Time
+
 	// targets remembers, per node, which of its published addresses accepted a
 	// connection, so a repeated forward costs no confirmation. An entry is
 	// re-confirmed when the node's candidate list changes and forgotten on an
@@ -1539,7 +1543,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			Director: p.forwardDirector(cand, reqID),
 			// A remote cluster peer is dialed over mTLS (per-peer pinned config);
 			// self/manual candidates use the plain transport. See candidateTransport.
-			Transport:  p.candidateTransport(cand),
+			Transport:  stallTransport{base: p.candidateTransport(cand), proxy: p, id: cand.id, timeout: proxyResponseTimeout},
 			BufferPool: p.bufPool,
 			// ModifyResponse fires when the upstream's status line + headers
 			// have arrived but before the body streams. That's both the retry
@@ -1550,6 +1554,21 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 					// calls ErrorHandler with our sentinel, then we try next.
 					retry = true
 					return retrySignal{}
+				}
+				// Only successful inference waits for content. All commit effects
+				// below still happen once, for the node that actually serves.
+				if isInf && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					body, err := awaitFirstBody(r.Context(), resp.Body, proxyResponseTimeout)
+					if err != nil {
+						if r.Context().Err() == nil && stderrors.Is(err, errFirstBodyTimeout) {
+							p.noteStalled(cand.id, time.Now())
+						}
+						return err
+					}
+					resp.Body = body
+				}
+				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					p.noteSuccess(cand.id)
 				}
 				// Prefer an engine-declared preflight policy so an exact origin plus
 				// Allow-Credentials can pass a credentialed browser fetch. Engines
@@ -1986,6 +2005,8 @@ func (p *Proxy) resolveCandidates(model string) []candidate {
 		}
 	}
 
+	out = demoteCooling(out, p.coolingSet(time.Now()))
+
 	slog.Debug("resolveCandidates resolved",
 		"selected", id, "priority", len(priority), "candidates", len(out),
 		"eligible", len(nodes), "known", known)
@@ -2010,6 +2031,15 @@ func (p *Proxy) reserveCandidateWithAffinity(candidates []candidate, warmNodeID 
 	if len(candidates) == 0 {
 		return candidates, false
 	}
+	cooling := p.coolingSet(time.Now())
+	candidates = demoteCooling(candidates, cooling)
+	hasReady := false
+	for _, cand := range candidates {
+		if !cooling[cand.id] {
+			hasReady = true
+			break
+		}
+	}
 	if selectedID := p.SelectedID(); selectedID != "" {
 		for _, cand := range candidates {
 			if cand.id == selectedID {
@@ -2032,6 +2062,7 @@ func (p *Proxy) reserveCandidateWithAffinity(candidates []candidate, warmNodeID 
 	// Check affinity under the same lock as optimistic reservations. An eligible
 	// manual pin was handled above. Missing or overloaded hints leave ordering alone.
 	if index, ok := candidateIndex[warmNodeID]; ok && warmNodeID != "" &&
+		(!hasReady || !cooling[warmNodeID]) &&
 		p.priorityPending[warmNodeID]+p.priorityReservations[warmNodeID] <= 1 &&
 		p.priorityGPUPressure[warmNodeID] < schedulerwire.MaxGPUPressure {
 		chosen := candidates[index]
@@ -2045,6 +2076,9 @@ func (p *Proxy) reserveCandidateWithAffinity(candidates []candidate, warmNodeID 
 	bestOrder := len(p.priority)
 	var bestLoad uint64
 	for order, id := range p.priority {
+		if hasReady && cooling[id] {
+			continue
+		}
 		index, ok := candidateIndex[id]
 		if !ok {
 			continue
