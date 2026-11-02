@@ -34,7 +34,11 @@ import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
-import type { NodeItemMetrics, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
+import type {
+    MacmonInstallOutcome,
+    NodeItemMetrics,
+    NodeInferenceMetricsSnapshot
+} from '@/shared/types/metrics'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type {
@@ -82,6 +86,11 @@ export interface WsInvokeChannelMap {
     'nodes:remove-member': {
         request: { nodeId: string }
         response: { nodeId: string; removed: boolean }
+    }
+
+    'nodes:install-macmon': {
+        request: { nodeId: string }
+        response: MacmonInstallOutcome
     }
 
     // Discovery

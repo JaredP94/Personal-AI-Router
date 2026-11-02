@@ -12,7 +12,11 @@ import type {
 import type { NodeItem } from '@/shared/types/nodes'
 import type { ServiceError } from '@/shared/types/errors'
 import type { RoutingMetrics } from '@/shared/types/routing-metrics'
-import type { NodeItemMetrics, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
+import type {
+    MacmonInstallOutcome,
+    NodeItemMetrics,
+    NodeInferenceMetricsSnapshot
+} from '@/shared/types/metrics'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
@@ -56,6 +60,8 @@ export interface INodesApi {
     }>
     /** Remove a node from the cluster (revokes membership + pinned trust). */
     removeMember(nodeId: string): Promise<{ nodeId: string; removed: boolean }>
+    /** Install the macmon sensor tool on this node or a remote peer. */
+    installMacmon(nodeId: string): Promise<MacmonInstallOutcome>
     /** A node was added or updated in the discovery/metrics list. */
     onUpsert(callback: (node: NodeItem) => void): () => void
     /** A node was removed from the discovery/metrics list. */
@@ -191,6 +197,7 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
                 }
             },
             removeMember: nodeId => transport.invoke('nodes:remove-member', { nodeId }),
+            installMacmon: nodeId => transport.invoke('nodes:install-macmon', { nodeId }),
             onUpsert: cb => transport.subscribePush('nodes:upsert', cb),
             onRemove: cb => transport.subscribePush('nodes:remove', cb),
             onMembersChanged: cb => transport.subscribePush('nodes:changed', cb)

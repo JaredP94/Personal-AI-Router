@@ -22,9 +22,7 @@
 - ⚠️ lmstudio-proxy → telemetry/status
 - ⚠️ nvpair-engine-manager → engine:describe
 - ⚠️ nvpair-engine-manager → engine:errors
-- ⚠️ nvpair-engine-manager → engine:install-tool
 - ⚠️ nvpair-engine-manager → engine:logs
-- ⚠️ nvpair-engine-manager → engine:remote-install-tool
 - ⚠️ nvpair-engine-manager → engine:restart
 - ⚠️ nvpair-engine-manager → internal:set-reserved-port
 - ⚠️ nvpair-job-scheduler → scheduler:get-interval
@@ -126,14 +124,14 @@
 | `engine:errors` | request (we call) | ⚠️ not called |
 | `engine:get-installed` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
-| `engine:install-tool` | request (we call) | ⚠️ not called |
+| `engine:install-tool` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-install` | request (we call) | ✅ yes |
-| `engine:remote-install-tool` | request (we call) | ⚠️ not called |
+| `engine:remote-install-tool` | request (we call) | ✅ yes |
 | `engine:remote-load-model` | request (we call) | ✅ yes |
 | `engine:remote-pull-model` | request (we call) | ✅ yes |
 | `engine:remote-start` | request (we call) | ✅ yes |

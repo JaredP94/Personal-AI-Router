@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+export type MacmonInstallOutcome =
+    | 'installed'
+    | 'homebrew-missing'
+    | 'unsupported-platform'
+    | 'failed'
+
 export type MacmonStatus = 'available' | 'missing' | 'failed'
 export type ThermalPressure = 'nominal' | 'moderate' | 'heavy' | 'trapping' | 'sleeping'
 export type MemoryPressure = 'normal' | 'warning' | 'critical'
