@@ -15,7 +15,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"eapnoob"
@@ -331,7 +333,7 @@ func postPairingBlob(client *http.Client, target, inviteID, phase string, blob [
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.Post("http://"+target+pairingPath, "application/json", bytes.NewReader(body))
+	resp, err := client.Post(peerURL("http", target, pairingPath), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +378,7 @@ func postPairingSignalScheme(client *http.Client, scheme, target, inviteID, phas
 	if err != nil {
 		return err
 	}
-	resp, err := client.Post(scheme+"://"+target+pairingPath, "application/json", bytes.NewReader(body))
+	resp, err := client.Post(peerURL(scheme, target, pairingPath), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -495,6 +497,10 @@ func newInviteID() (string, error) {
 // outboundIP returns the local IP that routes to target, so the inviter can tell
 // the joiner where to POST the Completion Exchange. Returns "" if it can't be
 // determined (the joiner then falls back to the source address).
+//
+// A link-local target (fe80::/10) is only dialable with its scope zone, so the
+// zone is preserved on the returned address: dropping it made the joiner's
+// return POST unroutable and pairing failed after the PIN step (#69).
 func outboundIP(target string) string {
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {
@@ -506,7 +512,47 @@ func outboundIP(target string) string {
 	}
 	defer conn.Close()
 	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-		return ua.IP.String()
+		return scopedHost(ua)
 	}
 	return ""
+}
+
+// scopedHost renders the IP of a UDP address, preserving the scope zone that
+// link-local addresses (fe80::/10) require to be dialable. net.IP.String()
+// drops the zone; without it the address has no route.
+func scopedHost(ua *net.UDPAddr) string {
+	if ua.Zone != "" {
+		return ua.IP.String() + "%" + ua.Zone
+	}
+	return ua.IP.String()
+}
+
+// localScope gives an advertised link-local address the scope zone it needs on
+// this machine. A zone names an interface of the machine that wrote it, so the
+// one a peer advertises (its own %en0) is meaningless here; the right one is
+// that of the connection the peer reached us on, as seen locally (via). Any
+// other address is returned unchanged.
+func localScope(advertised, via string) string {
+	host, port, err := net.SplitHostPort(advertised)
+	if err != nil {
+		return advertised
+	}
+	bare, _, _ := strings.Cut(host, "%")
+	ip := net.ParseIP(bare)
+	if ip == nil || !ip.IsLinkLocalUnicast() || ip.To4() != nil {
+		return advertised
+	}
+	_, zone, _ := strings.Cut(via, "%")
+	if zone == "" {
+		return net.JoinHostPort(bare, port)
+	}
+	return net.JoinHostPort(bare+"%"+zone, port)
+}
+
+// peerURL renders scheme://hostport + path for a peer address. The host may
+// carry an IPv6 scope zone (fe80::…%en0); net/url percent-encodes it (%25en0,
+// RFC 6874) because a raw % is rejected as an invalid URL escape and the peer
+// would otherwise be undialable (#69).
+func peerURL(scheme, hostport, path string) string {
+	return (&url.URL{Scheme: scheme, Host: hostport, Path: path}).String()
 }
