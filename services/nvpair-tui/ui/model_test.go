@@ -381,13 +381,52 @@ func TestRecoveryPreservesConcurrentSnapshotPushesAndWorkloadTombstones(t *testi
 	b.push(t, "A", 3, "workloads:upsert", map[string]any{"workloadInfo": workload{ID: "removed", OriginatedFrom: "x"}})
 	b.push(t, "A", 4, "workloads:remove", map[string]string{"workloadId": "removed", "originatedFrom": "x"})
 	b.push(t, "A", 5, "workloads:upsert", map[string]any{"workloadInfo": workload{ID: "live", OriginatedFrom: "x"}})
-	l.until(t, func() bool { return len(l.m.recoveryPushes) == 3 })
+	l.until(t, func() bool { return len(l.m.recoveryPushes) == 1 && len(l.m.recoveryWorkloads) == 3 })
 	b.unhold()
 	l.until(t, func() bool { return l.m.hydratedEpoch == "A" })
 	n := l.m.views[2].(*nodesView)
 	w := l.m.views[4].(*workloadsView)
-	if len(n.nodes) != 1 || n.nodes[0].HostUUID != "live" || len(w.byKey) != 1 || w.byKey[workloadKey("x", "live")].ID != "live" {
+	if len(n.nodes) != 1 || n.nodes[0].HostUUID != "live" || len(w.byKey) != 1 || w.byKey[workloadKey(workload{ID: "live", OriginatedFrom: "x"})].ID != "live" {
 		t.Fatalf("newer pushes overwritten: %v %v", n.nodes, w.byKey)
+	}
+}
+
+// Jobs that share a number on different engines are separate jobs, and a
+// removal names only (origin, id). Replayed in order, the journal keeps both
+// engines' upserts, and an upsert that follows a removal survives it while the
+// other engine's job stays removed.
+func TestRecoveryKeepsSameNumberedJobsAndReplaysInOrder(t *testing.T) {
+	b, l := newRecoverySession(t)
+	b.mu.Lock()
+	b.workloads = []workload{{ID: "3", Engine: "ollama", OriginatedFrom: "x"}, {ID: "3", Engine: "omlx", OriginatedFrom: "x"}}
+	b.mu.Unlock()
+	entry := b.hold("errors:get-initial")
+	b.push(t, "A", 1, "heartbeat", nil)
+	l.until(t, func() bool { return l.m.recoveryActive })
+	awaitEntry(t, entry)
+	b.push(t, "A", 2, "workloads:upsert", map[string]any{"workloadInfo": workload{ID: "7", Engine: "ollama", OriginatedFrom: "x"}})
+	b.push(t, "A", 3, "workloads:upsert", map[string]any{"workloadInfo": workload{ID: "7", Engine: "omlx", OriginatedFrom: "x"}})
+	b.push(t, "A", 4, "workloads:remove", map[string]string{"workloadId": "3", "originatedFrom": "x"})
+	b.push(t, "A", 5, "workloads:upsert", map[string]any{"workloadInfo": workload{ID: "3", Engine: "omlx", OriginatedFrom: "x", State: "running"}})
+	l.until(t, func() bool { return len(l.m.recoveryWorkloads) == 4 })
+	b.unhold()
+	l.until(t, func() bool { return l.m.hydratedEpoch == "A" })
+	w := l.m.views[4].(*workloadsView)
+	want := []workload{
+		{ID: "7", Engine: "ollama", OriginatedFrom: "x"},
+		{ID: "7", Engine: "omlx", OriginatedFrom: "x"},
+		{ID: "3", Engine: "omlx", OriginatedFrom: "x"},
+	}
+	if len(w.byKey) != len(want) {
+		t.Fatalf("rows = %v, want %d", w.byKey, len(want))
+	}
+	for _, j := range want {
+		if _, ok := w.byKey[workloadKey(j)]; !ok {
+			t.Fatalf("missing %s/%s in %v", j.Engine, j.ID, w.byKey)
+		}
+	}
+	if w.byKey[workloadKey(workload{ID: "3", Engine: "omlx", OriginatedFrom: "x"})].State != "running" {
+		t.Fatal("the upsert after the removal did not win")
 	}
 }
 

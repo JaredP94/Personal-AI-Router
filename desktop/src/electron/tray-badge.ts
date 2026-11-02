@@ -26,7 +26,7 @@ import {
     type TrayBadgeInk,
     type TrayBadgeMap
 } from '@/shared/utils/tray-badge-map'
-import { workloadKey } from '@/shared/utils/workloads'
+import { workloadKey, workloadMatchesRemoval } from '@/shared/utils/workloads'
 
 export interface TrayBadgeSink {
     setIcon: (map: TrayBadgeMap) => void
@@ -66,7 +66,7 @@ export function startTrayBadge(
 ): () => void {
     const catalog = new Map<string, Workload>()
     for (const workload of initial) {
-        catalog.set(workloadKey(workload.originatedFrom, workload.id), workload)
+        catalog.set(workloadKey(workload), workload)
     }
 
     let signature = ''
@@ -105,9 +105,11 @@ export function startTrayBadge(
 
     const unsubscribe = subscribePush(event => {
         if (event.channel === 'workloads:upsert') {
-            catalog.set(workloadKey(event.payload.originatedFrom, event.payload.id), event.payload)
+            catalog.set(workloadKey(event.payload), event.payload)
         } else if (event.channel === 'workloads:remove') {
-            catalog.delete(workloadKey(event.payload.originatedFrom, event.payload.workloadId))
+            for (const [key, workload] of catalog) {
+                if (workloadMatchesRemoval(workload, event.payload)) catalog.delete(key)
+            }
         } else {
             return
         }

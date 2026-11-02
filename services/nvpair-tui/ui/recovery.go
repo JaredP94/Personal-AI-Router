@@ -75,6 +75,7 @@ func (m *Model) beginRecovery() tea.Cmd {
 	m.recoveryActive = true
 	m.recoveryGeneration++
 	m.recoveryPushes = map[string]NotificationMsg{}
+	m.recoveryWorkloads = nil
 	generation, epoch := m.recoveryGeneration, m.epoch
 	client := m.client
 	reads := []recoveryRead{
@@ -187,22 +188,15 @@ func recoveryPushKey(msg NotificationMsg) string {
 		var e engineStatus
 		_ = decodeParams(msg.Msg.Params, &e)
 		return method + ":" + e.Engine
-	case "workloads:upsert":
-		var p struct {
-			WorkloadInfo workload `json:"workloadInfo"`
-		}
-		_ = decodeParams(msg.Msg.Params, &p)
-		return "workload:" + workloadKey(p.WorkloadInfo.OriginatedFrom, p.WorkloadInfo.ID)
-	case "workloads:remove":
-		var p struct {
-			WorkloadID     string `json:"workloadId"`
-			OriginatedFrom string `json:"originatedFrom"`
-		}
-		_ = decodeParams(msg.Msg.Params, &p)
-		return "workload:" + workloadKey(p.OriginatedFrom, p.WorkloadID)
 	}
 	if proxyPush(method) {
 		return method
 	}
 	return ""
+}
+
+// isWorkloadPush reports whether a notification changes the workload list.
+// Those are journaled in order during recovery rather than by identity.
+func isWorkloadPush(method string) bool {
+	return method == "workloads:upsert" || method == "workloads:remove"
 }

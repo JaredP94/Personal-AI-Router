@@ -137,8 +137,11 @@ const NOTIFY_LITERAL_RE =
     /(?:(?:notify|emit|publish|broadcast)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)"([^"]+)"/gi
 const NOTIFY_PREFIX_CONCAT_RE =
     /(?:(?:notify|emit|publish|broadcast)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)"([^"]+)"\s*\+/i
+// Broadcast(ctx, frame) is HTTP fan-out, not a JSON-RPC notification. Keep
+// literal Broadcast methods above, but do not treat an identifier argument to
+// Broadcast as an unresolved JSON-RPC method.
 const NOTIFY_IDENT_RE =
-    /(?:(?:notify|emit|publish|broadcast)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)([A-Za-z_]\w*)\s*,/gi
+    /(?:(?:notify|emit|publish)\(\s*|notifyWithShutdown\(\s*ctx\s*,\s*)([A-Za-z_]\w*)\s*,/gi
 
 /** A `| `nvpair-ui-broker` | 0.37.0 | … |` row — forbidden in hand-maintained docs. */
 const DOC_COMPONENT_ROW_RE = /^\|\s*`([a-z0-9-]+)`\s*\|\s*(\d+\.\d+\.\d+)\s*\|/gm

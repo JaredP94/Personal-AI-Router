@@ -13,11 +13,17 @@ export interface Workload {
     state: WorkloadState
     /**
      * Owner/origin node of the workload — the node whose proxy received the
-     * request. This is the identity half of the backend's `(originatedFrom, id)`
-     * global catalog key (workload ids are a per-node proxy counter, so they
-     * collide across nodes; `originatedFrom` disambiguates).
+     * request. Part of the backend's `(originatedFrom, engine, runId, id)`
+     * catalog key: workload ids are a per-proxy counter, so they collide across
+     * nodes and engines.
      */
     originatedFrom: string | null
+    /**
+     * The proxy run that numbered this job. A restarted proxy counts from 1
+     * again; the run id tells its jobs from the earlier run's. Absent from a
+     * producer that predates it.
+     */
+    runId?: string | null
     /**
      * Node the workload was routed to / scheduled on — where it actually ran,
      * as opposed to `originatedFrom` (where it came from). Optional/additive:
@@ -130,4 +136,12 @@ export interface WorkloadLiveProgress {
      * nothing.
      */
     engineProgress?: WorkloadLiveEngine | null
+}
+
+/** A `workloads:remove` push. The broker's carries no engine and no run id. */
+export interface WorkloadRemoval {
+    workloadId: string
+    originatedFrom: string | null
+    engine?: EngineType | null
+    runId?: string | null
 }

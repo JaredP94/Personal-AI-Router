@@ -1,24 +1,53 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
+import type { Workload, WorkloadLiveProgress, WorkloadRemoval } from '@/shared/types/workloads'
 import type { EngineType } from '@/shared/types/engines'
 
+/** The fields that identify one job. */
+interface WorkloadIdentity {
+    originatedFrom: string | null
+    engine: EngineType | null
+    runId?: string | null
+    id: string
+}
+
 /**
- * Stable catalog key for a workload.
+ * Stable catalog key for a workload: the backend's own identity,
+ * `(originatedFrom, engine, runId, id)`.
  *
- * The backend's catalog is keyed by `(originatedFrom, engine, runId, id)`, but
- * the `workloads:remove` push carries only `(workloadId, originatedFrom)` — and
- * the broker's own `Store.Remove` drops every record matching that pair — so
- * `(originatedFrom, id)` is the only key a subscribe client can maintain
- * consistently across upsert and remove. Each node's proxy assigns workload ids
- * from its own monotonic counter, so ids collide across nodes; `originatedFrom`
- * (the origin node) disambiguates. Mirror that here so a remote node's job never
- * overwrites a local one that happens to share an id. The `\u0000` separator
- * cannot appear in a host id or proxy counter, so the key is unambiguous.
+ * Every proxy numbers its jobs from 1, and numbers again from 1 when it
+ * restarts. The origin tells nodes apart, the engine tells an Ollama job "3"
+ * from an oMLX job "3" on one node, and the run id tells a job from the one a
+ * restarted proxy gave the same number. Keyed on fewer fields, one job's card
+ * would overwrite another's. The `\u0000` separator cannot appear in any of
+ * the fields, so the key is unambiguous.
  */
-export function workloadKey(originatedFrom: string | null, id: string): string {
-    return `${originatedFrom ?? ''}\u0000${id}`
+export function workloadKey(workload: WorkloadIdentity): string {
+    return [
+        workload.originatedFrom ?? '',
+        workload.engine ?? '',
+        workload.runId ?? '',
+        workload.id
+    ].join('\u0000')
+}
+
+/**
+ * Whether a removal names this workload. A removal from the broker carries
+ * only `(workloadId, originatedFrom)` and, like the broker's own store, drops
+ * every job matching that pair. One raised by the desktop itself names the
+ * engine and run too — `runId: null` meaning "the job with no run", not "any
+ * run" — so it drops exactly one job. Only an absent field is a wildcard.
+ */
+export function workloadMatchesRemoval(
+    workload: WorkloadIdentity,
+    removal: WorkloadRemoval
+): boolean {
+    if (workload.id !== removal.workloadId) return false
+    if ((workload.originatedFrom ?? '') !== (removal.originatedFrom ?? '')) return false
+    if (removal.engine !== undefined && workload.engine !== removal.engine) return false
+    if (removal.runId !== undefined && (workload.runId ?? null) !== removal.runId) return false
+    return true
 }
 
 /**

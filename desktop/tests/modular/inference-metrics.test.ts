@@ -24,7 +24,7 @@ import {
 } from '@/ui/utils/inference-metrics'
 import type { InferenceMetricsTotals, NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
-import { liveProgressKey, mergeWorkloadLiveProgress, workloadKey } from '@/shared/utils/workloads'
+import { liveProgressKey, mergeWorkloadLiveProgress } from '@/shared/utils/workloads'
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('@/electron/window', () => ({ createOverviewWindow: vi.fn() }))
@@ -1167,7 +1167,7 @@ describe('the workloads store keeps the live view of a running job', () => {
         )
         // A live frame is a snapshot of a running request, not a catalog
         // event: it never enters the catalog.
-        expect(state.workloads.has(workloadKey('node-a', 'w1'))).toBe(false)
+        expect(state.workloads.size).toBe(0)
     })
 
     it('keys the live view by the origin and the job id', async () => {

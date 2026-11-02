@@ -361,24 +361,26 @@ describe('broker epoch tracking and resync', () => {
         })
         await flushMicrotasks()
         const workloads = state.getWorkloads()
-        expect(workloads['origin\u0000terminal']).toMatchObject({
+        expect(workloads['origin\u0000ollama\u0000\u0000terminal']).toMatchObject({
             state: 'completed',
             model: 'snapshot'
         })
-        expect(workloads['origin\u0000absent']).toBeUndefined()
-        expect(workloads['origin\u0000upsert']).toMatchObject({
+        expect(workloads['origin\u0000ollama\u0000\u0000absent']).toBeUndefined()
+        expect(workloads['origin\u0000ollama\u0000\u0000upsert']).toMatchObject({
             state: 'running',
             model: 'new-push'
         })
-        expect(workloads['origin\u0000removed']).toBeUndefined()
+        expect(workloads['origin\u0000ollama\u0000\u0000removed']).toBeUndefined()
         expect(calls.filter(m => m === 'workloads:get-initial')).toHaveLength(1)
         delete responses['workloads:get-initial']
         responses['workloads:get-initial'] = () =>
             Promise.resolve({ workloads: [job('removed', 'completed')] })
         noteEpoch('workloads-next')
         await flushMicrotasks()
-        expect(state.getWorkloads()['origin\u0000removed']).toMatchObject({ state: 'completed' })
-        expect(state.getWorkloads()['origin\u0000upsert']).toBeUndefined()
+        expect(state.getWorkloads()['origin\u0000ollama\u0000\u0000removed']).toMatchObject({
+            state: 'completed'
+        })
+        expect(state.getWorkloads()['origin\u0000ollama\u0000\u0000upsert']).toBeUndefined()
     })
 
     it('updates bridgeEpoch and invokes broker:resync plus each snapshot getter once when the epoch changes', async () => {
