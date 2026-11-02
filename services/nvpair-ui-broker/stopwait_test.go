@@ -132,9 +132,8 @@ func TestWaitForStdinCloseKillsWorkerThatIgnoresShutdown(t *testing.T) {
 }
 
 // TestTeardownBudgetCapsAggregateWait is the guarantee that per-worker graces
-// cannot add up. The joins run sequentially, so eleven workers that each hang for
-// their own grace would take far longer than the parent waits before killing this
-// process — and being killed mid-teardown skips the rest of shutdown.
+// cannot add up past the shared budget even if called sequentially. Production
+// joins fan out; this exercises the deadline's worst-case accounting directly.
 func TestTeardownBudgetCapsAggregateWait(t *testing.T) {
 	resetTeardownClock()
 	beginTeardown()
@@ -154,8 +153,8 @@ func TestTeardownBudgetCapsAggregateWait(t *testing.T) {
 	if elapsed >= unbounded {
 		t.Fatalf("aggregate wait %v did not improve on the unbounded %v", elapsed, unbounded)
 	}
-	// Budget, plus the floor each worker keeps once it is spent, plus slack.
-	ceiling := teardownBudget + workers*minWorkerGrace + 2*time.Second
+	// No per-worker floor extends the deadline once the budget is spent.
+	ceiling := teardownBudget + time.Second
 	if elapsed > ceiling {
 		t.Fatalf("aggregate wait %v exceeded the budgeted ceiling %v", elapsed, ceiling)
 	}
@@ -189,22 +188,16 @@ func TestGraceForIgnoresBudgetOutsideTeardown(t *testing.T) {
 	}
 }
 
-// TestGraceForReservesEngineManagerAllowance covers join order: engine-manager is
-// joined eighth of eleven, so without a reservation the workers ahead of it decide
-// how long it gets to stop its engines.
-func TestGraceForReservesEngineManagerAllowance(t *testing.T) {
-	// Earlier joins have spent the budget down to just over engine-manager's
-	// reserve, so an ordinary worker is left with less than the floor.
-	setTeardownStart(time.Now().Add(-(teardownBudget - engineManagerStopGrace - 100*time.Millisecond)))
-
-	if got := graceFor("scanner"); got != minWorkerGrace {
-		t.Fatalf("ordinary worker grace = %v, want the %v floor once only the reserve is left",
-			got, minWorkerGrace)
+// Concurrent joins read the same budget, with no engine-manager reservation
+// starving ordinary workers while several seconds remain.
+func TestGraceForSharesRemainingBudget(t *testing.T) {
+	setTeardownStart(time.Now().Add(-teardownBudget / 2))
+	t.Cleanup(resetTeardownClock)
+	if got := graceFor("scanner"); got != workerStopGrace {
+		t.Fatalf("ordinary worker grace = %v, want %v", got, workerStopGrace)
 	}
-	// Its reserve survives what the others spent, give or take the clock ticking
-	// between these two calls.
-	if got := graceFor(engineManagerWorkerName); got < engineManagerStopGrace-50*time.Millisecond {
-		t.Fatalf("engine-manager grace = %v, want its reserved %v", got, engineManagerStopGrace)
+	if got := graceFor(engineManagerWorkerName); got < teardownBudget/2-100*time.Millisecond || got > teardownBudget/2 {
+		t.Fatalf("engine-manager grace = %v, want about half the budget", got)
 	}
 }
 
@@ -218,13 +211,13 @@ func TestEngineShutdownDeadlineDrawsOnTheBudget(t *testing.T) {
 
 	setTeardownStart(time.Now().Add(-(teardownBudget - time.Second)))
 	got := engineShutdownDeadline()
-	if got > time.Second || got < minWorkerGrace {
+	if got > time.Second || got < 250*time.Millisecond {
 		t.Fatalf("deadline with 1s of budget left = %v, want about 1s", got)
 	}
 
 	setTeardownStart(time.Now().Add(-2 * teardownBudget))
-	if got := engineShutdownDeadline(); got != minWorkerGrace {
-		t.Fatalf("deadline with a spent budget = %v, want the %v floor", got, minWorkerGrace)
+	if got := engineShutdownDeadline(); got != 0 {
+		t.Fatalf("deadline with a spent budget = %v, want zero", got)
 	}
 }
 
@@ -240,8 +233,8 @@ func TestGraceForClipsToRemainingBudget(t *testing.T) {
 
 	// Pretend teardown began long enough ago that the budget is gone.
 	setTeardownStart(time.Now().Add(-2 * teardownBudget))
-	if got := graceFor("scanner"); got != minWorkerGrace {
-		t.Fatalf("grace with a spent budget = %v, want the %v floor", got, minWorkerGrace)
+	if got := graceFor("scanner"); got != 0 {
+		t.Fatalf("grace with a spent budget = %v, want zero", got)
 	}
 
 	// Halfway through the budget a long grace is clipped, not refused.

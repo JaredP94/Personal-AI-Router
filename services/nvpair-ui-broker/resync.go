@@ -64,10 +64,10 @@ const brokerEpochMethod = "broker:epoch"
 const (
 	// heartbeatShutdownJoinTimeout bounds the broker's own heartbeat writer join
 	// when shutdown finds a client write blocked below the codec. It is kept to
-	// one minWorkerGrace (250ms), far inside the broker's 10s teardownBudget that
+	// 250ms, far inside the broker's 10s teardownBudget that
 	// the parent-side supervisor grace must cover, so stdio shutdown cannot spend
 	// the process's kill grace on a pipe Close cannot unblock.
-	heartbeatShutdownJoinTimeout = minWorkerGrace
+	heartbeatShutdownJoinTimeout = 250 * time.Millisecond
 )
 
 // runHeartbeat emits one "heartbeat" notification per interval until ctx is
@@ -92,7 +92,7 @@ func (b *Broker) startHeartbeat(ctx context.Context, cancel context.CancelFunc) 
 		b.closeClientTransport()
 		select {
 		case <-done:
-		case <-time.After(heartbeatShutdownJoinTimeout):
+		case <-time.After(teardownWait(heartbeatShutdownJoinTimeout)):
 			log.Printf("abandoning heartbeat shutdown join after %s because client transport could not be unblocked", heartbeatShutdownJoinTimeout)
 		}
 	}

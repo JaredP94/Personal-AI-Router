@@ -22,9 +22,7 @@ const (
 	// engineManagerStopGrace is longer because nvpair-engine-manager stops the
 	// engine processes it launched (StopAll) on its way out. Cutting that short is
 	// exactly what the old 2s-grace-then-kill did, and it orphaned engines.
-	// graceFor reserves this out of the shared budget so the workers joined ahead
-	// of it cannot spend it — it is joined eighth of eleven, so join order alone
-	// would otherwise decide how much it gets.
+	// Worker joins run concurrently, so no reservation by join order is needed.
 	engineManagerStopGrace = 6 * time.Second
 
 	// engineStopAllBudget bounds the broker's wait for engine-manager to stop the
@@ -38,10 +36,9 @@ const (
 	workerSignalGrace = 2 * time.Second
 
 	// teardownBudget bounds everything the broker does between being told to shut
-	// down and its last worker join. The joins run one after another, so
-	// per-worker graces alone add up: a tree where each of the eleven workers
-	// hangs for its own grace outlives the parent's shutdown grace several times
-	// over, and being killed from outside mid-teardown skips the rest of shutdown.
+	// down and its last worker join. Proxies join concurrently before the engine
+	// sweep, then the remaining workers join concurrently. Every wait, including
+	// terminate and kill escalation, is clipped to the same remaining budget.
 	//
 	// The accounting the parent's grace has to cover, in order:
 	//
@@ -49,16 +46,11 @@ const (
 	//	workload history shutdown flush    <= workloadHistoryFlushJoinTimeout (5s)
 	//
 	// which is the 15s the desktop parent and nvpair-tui both allow. Everything
-	// inside the first line — the two proxy joins, the engine StopAll wait, and
-	// all eleven joins — draws on this one budget, so no step can be lengthened
+	// inside the first line — the three proxy joins, the engine StopAll wait, and
+	// all twelve joins — draws on this one budget, so no step can be lengthened
 	// without the others giving way. It must also exceed the largest single worker
 	// grace, or that worker could never be granted it.
 	teardownBudget = 10 * time.Second
-
-	// minWorkerGrace is the floor every worker keeps even once the budget is
-	// spent, so a worker milliseconds away from exiting is not signalled purely
-	// because earlier workers were slow.
-	minWorkerGrace = 250 * time.Millisecond
 
 	// engineManagerWorkerName selects the longer grace above.
 	engineManagerWorkerName = "engine-manager"
@@ -114,46 +106,32 @@ func stopGraceFor(name string) time.Duration {
 	return workerStopGrace
 }
 
-// graceFor returns the named worker's own grace, clipped to what is left of the
-// shared teardown budget and floored at minWorkerGrace. One slow worker still
-// gets its full grace, while many cannot add up past the budget.
+// teardownWait clips each wait, including escalation, to the shared deadline.
+// Outside teardown (for example a runtime restart), the full duration applies.
+func teardownWait(d time.Duration) time.Duration {
+	if left, active := teardownRemaining(); active {
+		return max(0, min(d, left))
+	}
+	return d
+}
+
+// Concurrent joins share the remaining budget without reserving time by name.
 func graceFor(name string) time.Duration {
-	grace := stopGraceFor(name)
-	left, active := teardownRemaining()
-	if !active {
-		return grace
-	}
-	if name != engineManagerWorkerName {
-		left -= engineManagerStopGrace
-	}
-	if left < grace {
-		grace = left
-	}
-	if grace < minWorkerGrace {
-		grace = minWorkerGrace
-	}
-	return grace
+	return teardownWait(stopGraceFor(name))
 }
 
 // engineShutdownDeadline bounds the wait for engine-manager to stop its engines,
 // drawing on the same budget as the joins that follow it.
 func engineShutdownDeadline() time.Duration {
-	d := engineStopAllBudget
-	if left, active := teardownRemaining(); active && left < d {
-		d = left
-	}
-	if d < minWorkerGrace {
-		d = minWorkerGrace
-	}
-	return d
+	return teardownWait(engineStopAllBudget)
 }
 
 // waitForStdinClose signals a managed worker to shut down by closing its stdin
 // (which every worker observes as EOF and treats as its shutdown signal), then
 // waits for the process to actually exit (done is closed by the cmd.Wait
 // goroutine). The wait is bounded and escalates: grace, terminate, kill, give up.
-// The grace is also clipped to a teardown-wide budget (see graceFor), so the
-// sequential joins across the whole tree cannot add up past it.
+// Each wait is clipped to the teardown-wide budget, including signal escalation,
+// so the concurrent joins and the phases before them cannot extend the deadline.
 //
 // This join was previously unbounded, on the reasoning that each worker owns its
 // own bounded shutdown, so a worker that fails to exit on EOF is a worker bug to
@@ -206,7 +184,7 @@ func waitForStdinClose(name string, cmd *exec.Cmd, stdin io.Closer, done <-chan 
 	if err := signalTerminate(proc); err != nil {
 		slog.Warn("terminate signal failed", "worker", name, "err", err)
 	}
-	if waitClosed(done, workerSignalGrace) {
+	if waitClosed(done, teardownWait(workerSignalGrace)) {
 		slog.Info("worker exited after terminate",
 			"worker", name, "waitedMs", time.Since(started).Milliseconds())
 		return
@@ -216,7 +194,7 @@ func waitForStdinClose(name string, cmd *exec.Cmd, stdin io.Closer, done <-chan 
 	if err := proc.Kill(); err != nil {
 		slog.Warn("kill failed", "worker", name, "err", err)
 	}
-	if !waitClosed(done, workerSignalGrace) {
+	if !waitClosed(done, teardownWait(workerSignalGrace)) {
 		slog.Error("worker did not exit after kill; abandoning the join",
 			"worker", name, "waitedMs", time.Since(started).Milliseconds())
 		return

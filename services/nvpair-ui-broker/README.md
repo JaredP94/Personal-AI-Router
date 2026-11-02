@@ -169,7 +169,7 @@ Shared lifecycle for all workers:
 - Path resolution: the explicit `--scanner-path` / `--node-info-path` / `--proxy-path` / `--workload-manager-path` / `--cluster-manager-path` (and the analogous flags for lmstudio-proxy / errors / engine-manager / manual-nodes / settings) if set, otherwise the same-named `./<binary>` (with `.exe` on Windows) in the broker's current working directory. No PATH fallback — a clear "not found" beats a surprising stale binary. A missing scanner is fatal (it's the broker's core job); every other worker is optional.
 - Log level: the broker's currently resolved level is forwarded at spawn time via `--log-level <lvl>`. Runtime `log/set-level` requests are fanned out to every running child over its stdin (see `log/set-level` below).
 - Hidden console window on Windows (`CREATE_NO_WINDOW`).
-- Shutdown: on signal, peer EOF, or `shutdown`, the broker requests `engine:prepare-shutdown` within its teardown budget, then closes worker stdin and waits with bounded grace/terminate/kill escalation. Bounded process teardown is not proof of orphan-free engine cleanup; engine-manager remains ineligible for automatic hang restart.
+- Shutdown: on signal, peer EOF, or `shutdown`, the broker joins all three proxies concurrently to close ingress, requests `engine:prepare-shutdown`, then closes worker stdin and joins started workers concurrently with bounded grace/terminate/kill escalation. Bounded process teardown is not proof of orphan-free engine cleanup; engine-manager remains ineligible for automatic hang restart.
 - **Auto-restart with crash surfacing** for every supervised worker (see [Supervision & recovery](#supervision--recovery)): a crash is reported as `supervisor:subprocess-crashed:<name>` and the worker is restarted with backoff, clearing the entry once it's healthy again and leaving it up if the restart budget is exhausted.
 
 ## JSON-RPC Surface
@@ -820,7 +820,7 @@ If no cluster-manager is being supervised (or it has exited), the broker replies
 
 #### `shutdown`
 
-Acknowledges, then terminates the broker. Engine-manager is asked to stop its engines first (`engine:prepare-shutdown`), then every running worker subprocess is torn down by closing its stdin and waiting for it to exit — no grace timer, no force-kill (each worker bounds its own shutdown).
+Acknowledges, then terminates the broker. All started proxies close ingress concurrently before engine-manager is asked to stop engines (`engine:prepare-shutdown`, at most 5 s). Started worker subprocesses then join concurrently, not one at a time. Stdin closure allows 3 s for ordinary workers or 6 s for engine-manager, followed by terminate and kill waits of at most 2 s each. Every wait, including the heartbeat join and escalation, is clipped to a shared 10 s teardown deadline; no per-worker floor extends an exhausted deadline. Workload-history flushing has a separate 5 s join allowance, within the 15 s desktop/TUI shutdown window. Runtime worker restarts do not arm the teardown deadline. On Windows, engine-manager is not forcibly terminated mid-cleanup; its join is abandoned instead. Bounded joins are not proof of orphan-free engine cleanup.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"shutdown"}
