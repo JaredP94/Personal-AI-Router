@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"eapnoob"
 )
 
 // The joiner's Completion Exchange POST targets the inviter address carried in
@@ -100,5 +102,55 @@ func TestPairingSignalReachesAScopedTarget(t *testing.T) {
 	want := []string{"http://[fe80::1%25en0]:14321/v1/cluster/pairing", "https://[fe80::1%25en0]:14321/v1/cluster/pairing"}
 	if len(rt.urls) != 2 || rt.urls[0] != want[0] || rt.urls[1] != want[1] {
 		t.Fatalf("urls = %v, want %v", rt.urls, want)
+	}
+}
+
+// The joiner dials, and records as the member's address, the inviter's
+// advertised link-local address with the zone of its own receiving interface,
+// not the inviter's.
+func TestJoinerRecordsTheInviterWithItsOwnZone(t *testing.T) {
+	inviter := testManagerAt(t, t.TempDir(), 15221)
+	joiner := testManagerAt(t, t.TempDir(), 15222)
+	inviterEpoch, err := inviter.reserveAdmissionEpoch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinerEpoch, err := joiner.reserveAdmissionEpoch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverInfo, err := inviter.localPairingInfo("[fe80::1%en0]:15221", inviterEpoch).toMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerInfo, err := joiner.localPairingInfo("[fe80::2%eth0]:15222", joinerEpoch).toMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newPairingServer(serverInfo)
+	peer := newPairingPeer(peerInfo)
+	msg, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for peerTurn := true; len(msg) > 0; peerTurn = !peerTurn {
+		var out eapnoob.Outcome
+		if peerTurn {
+			out, err = peer.Receive(msg)
+		} else {
+			out, err = server.Receive(msg)
+		}
+		if err != nil || out.Err != nil {
+			t.Fatalf("initial exchange: %v %v", err, out.Err)
+		}
+		msg = out.Send
+	}
+	sess := &pairingSession{inviteID: "inv-ll", role: roleJoiner, peer: peer}
+	if joiner.prepareJoinerInitialComplete("inv-ll", sess, "fe80::1%eth0") == nil {
+		t.Fatal("no invite prepared")
+	}
+	want := "[fe80::1%eth0]:15221"
+	if sess.addr != want || sess.peerPairing.Addr != want {
+		t.Fatalf("dial %q, recorded %q, want %q for both", sess.addr, sess.peerPairing.Addr, want)
 	}
 }
