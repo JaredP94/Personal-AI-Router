@@ -36,7 +36,8 @@ export function workloadKey(workload: WorkloadIdentity): string {
  * Whether a removal names this workload. A removal from the broker carries
  * only `(workloadId, originatedFrom)` and, like the broker's own store, drops
  * every job matching that pair. One raised by the desktop itself names the
- * engine and run too, so it drops exactly one job.
+ * engine and run too — `runId: null` meaning "the job with no run", not "any
+ * run" — so it drops exactly one job. Only an absent field is a wildcard.
  */
 export function workloadMatchesRemoval(
     workload: WorkloadIdentity,
@@ -44,8 +45,8 @@ export function workloadMatchesRemoval(
 ): boolean {
     if (workload.id !== removal.workloadId) return false
     if ((workload.originatedFrom ?? '') !== (removal.originatedFrom ?? '')) return false
-    if (removal.engine != null && workload.engine !== removal.engine) return false
-    if (removal.runId != null && (workload.runId ?? null) !== removal.runId) return false
+    if (removal.engine !== undefined && workload.engine !== removal.engine) return false
+    if (removal.runId !== undefined && (workload.runId ?? null) !== removal.runId) return false
     return true
 }
 

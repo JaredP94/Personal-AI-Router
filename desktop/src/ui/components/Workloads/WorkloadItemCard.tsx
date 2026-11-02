@@ -4,7 +4,7 @@
 import { useMemo, memo } from 'react'
 import { Card, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { Workload } from '@/shared/types/workloads'
-import { workloadExecutionNodeId } from '@/shared/utils/workloads'
+import { workloadExecutionNodeId, workloadKey } from '@/shared/utils/workloads'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useWorkloadLiveProgress } from '@/ui/stores/workloads.store'
 import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
@@ -148,8 +148,7 @@ function WorkloadItemCard({ workload }: { workload: Workload }) {
             className={className}
             density="compact"
             style={{ direction: 'ltr' }}
-            data-workload-id={workload.id}
-            data-workload-origin={workload.originatedFrom ?? ''}
+            data-workload-key={workloadKey(workload)}
             attributes={{ CardContent: { className: 'workload-card-content' } }}
         >
             <div className="workload-badge hidden" style={{ backgroundColor: barColor }}></div>

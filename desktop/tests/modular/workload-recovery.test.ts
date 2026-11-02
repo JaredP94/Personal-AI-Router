@@ -7,6 +7,7 @@ import {
     parseWorkloadsInitial
 } from '@/electron/service-bridge/modular-state'
 import { emitBridgePush } from '@/electron/service-bridge/broadcaster'
+import { workloadMatchesRemoval } from '@/shared/utils/workloads'
 
 vi.mock('@/electron/service-bridge/broadcaster', () => ({ emitBridgePush: vi.fn() }))
 
@@ -146,5 +147,49 @@ describe('job identity', () => {
             })
         )
         expect(Object.keys(state.getWorkloads())).toEqual([key('origin', 'omlx', '4')])
+    })
+})
+
+describe('exact removals', () => {
+    // A removal the desktop raises names the job's run, and "no run" is a run
+    // of its own: it must not take a same-numbered job from another run.
+    it('treats runId null as the job with no run, not any run', () => {
+        upsert('3', 'omlx')
+        upsert('3', 'omlx', 'run-2')
+        const snapshot = state.beginWorkloadRecovery()
+        state.endWorkloadRecovery(
+            snapshot,
+            parseWorkloadsInitial({
+                workloads: [
+                    {
+                        id: '3',
+                        engine: 'omlx',
+                        runId: 'run-2',
+                        state: 'running',
+                        model: 'm',
+                        originatedFrom: 'origin',
+                        createdAt: 1
+                    }
+                ]
+            })
+        )
+        expect(emitBridgePush).toHaveBeenCalledWith('workloads:remove', {
+            workloadId: '3',
+            originatedFrom: 'origin',
+            engine: 'omlx',
+            runId: null
+        })
+        expect(
+            workloadMatchesRemoval(
+                { id: '3', originatedFrom: 'origin', engine: 'omlx', runId: 'run-2' },
+                {
+                    workloadId: '3',
+                    originatedFrom: 'origin',
+                    engine: 'omlx',
+                    runId: null
+                }
+            )
+        ).toBe(false)
+        expect(Object.keys(state.getWorkloads())).toEqual([key('origin', 'omlx', '3', 'run-2')])
     })
 })

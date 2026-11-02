@@ -54,6 +54,12 @@ type Model struct {
 	recoveryGeneration uint64
 	recoveryActive     bool
 	recoveryPushes     map[string]NotificationMsg
+	// recoveryWorkloads holds workload upserts and removals seen during
+	// recovery, in arrival order. They cannot share recoveryPushes: a removal
+	// names only (origin, id) and drops every matching job, so the order of a
+	// removal and a later upsert decides the outcome, and a map replays in no
+	// particular order.
+	recoveryWorkloads []NotificationMsg
 }
 
 // New builds the root model over a connected broker client, the broker's
@@ -157,7 +163,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.brokerVersion = readyVersion(msg.Msg)
 		}
 		if m.recoveryActive {
-			if key := recoveryPushKey(msg); key != "" {
+			if isWorkloadPush(msg.Msg.Method) {
+				m.recoveryWorkloads = append(m.recoveryWorkloads, msg)
+			} else if key := recoveryPushKey(msg); key != "" {
 				m.recoveryPushes[key] = msg
 			}
 		}
@@ -201,7 +209,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, m.broadcast(push)...)
 		}
+		for _, push := range m.recoveryWorkloads {
+			cmds = append(cmds, m.broadcast(push)...)
+		}
 		m.recoveryPushes = nil
+		m.recoveryWorkloads = nil
 		// Hydrated even if optional getters errored: their views received the
 		// error result, and healthy same-epoch traffic must not re-burst (§4).
 		m.hydratedEpoch = msg.epoch

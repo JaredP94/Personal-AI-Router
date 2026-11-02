@@ -50,14 +50,6 @@ function connectionsEqual(a: readonly Connection[], b: readonly Connection[]): b
     return true
 }
 
-// Build a key that uniquely identifies a workload's DOM anchor. Workload ids are
-// a per-node proxy counter and collide across nodes, so we key on the
-// (origin, id) pair the same way `workloadKey` does. The null byte can't appear
-// in either value, so it is a safe separator.
-function anchorKey(origin: string, id: string): string {
-    return `${origin}\u0000${id}`
-}
-
 function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]): Connection[] {
     const svgRect = svg.getBoundingClientRect()
     const result: Connection[] = []
@@ -66,10 +58,9 @@ function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]):
     // frame. With N running jobs the old path issued 2 * N selector queries every
     // animation frame; this issues two querySelectorAll calls total.
     const workloadElByKey = new Map<string, Element>()
-    for (const el of document.querySelectorAll('[data-workload-id]')) {
-        const id = el.getAttribute('data-workload-id')
-        if (id === null) continue
-        workloadElByKey.set(anchorKey(el.getAttribute('data-workload-origin') ?? '', id), el)
+    for (const el of document.querySelectorAll('[data-workload-key]')) {
+        const key = el.getAttribute('data-workload-key')
+        if (key !== null) workloadElByKey.set(key, el)
     }
     const nodeElById = new Map<string, Element>()
     for (const el of document.querySelectorAll('[data-node-id]')) {
@@ -81,9 +72,7 @@ function computeConnections(svg: SVGSVGElement, workloads: readonly Workload[]):
         const executionNodeId = workloadExecutionNodeId(workload)
         if (!executionNodeId) continue
 
-        const workloadEl = workloadElByKey.get(
-            anchorKey(workload.originatedFrom ?? '', workload.id)
-        )
+        const workloadEl = workloadElByKey.get(workloadKey(workload))
         const nodeEl = nodeElById.get(executionNodeId)
         if (!workloadEl || !nodeEl) continue
 
