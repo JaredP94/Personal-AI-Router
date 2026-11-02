@@ -7,6 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 
 A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
 
+Node-info JSON decoding reads at most 1 MiB, and model-list decoding at most
+16 MiB. A JSON value that extends past its limit follows the existing probe or
+model-parse failure path.
+
 ## Worker control health
 
 An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
