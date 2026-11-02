@@ -242,6 +242,19 @@ a successful command must leave the tool detectable.
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
 
+### Passive status and model deadlines
+
+Status and get-installed share bounded presence probes without holding the
+lifecycle lock. A normal status read during an operation returns its current
+snapshot; explicit port checks and model sweeps wait within their caller's
+budget. Observations are discarded if a lifecycle operation or a newer state
+change intervened, so a delayed readiness reply cannot undo stop or set-port.
+
+The five-second model sweep budget includes status probes and operation waits.
+`GET /v1/models` returns HTTP 503 if the sweep cannot complete in time, rather
+than a successful partial or empty list; peers retain their last-good inventory.
+The local `engine:models` result remains best-effort with the same payload.
+
 ### Effective capabilities
 
 `EngineStatus` = `{ engine, display_name, installed, running, healthy, port?, capabilities }`.
