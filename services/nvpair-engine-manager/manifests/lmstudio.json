@@ -82,6 +82,7 @@
       "cmd": ["{cli}", "ls"]
     },
     "chat": {
+      "timeout_s": 600,
       "description": "OpenAI-compatible chat completion (params: {\"model\": \"<name>\", \"messages\": [...]}).",
       "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
     },

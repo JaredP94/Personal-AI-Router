@@ -37,10 +37,12 @@
       "result": { "array": "models", "field": "id", "match": { "field": "loaded", "true": true } }
     },
     "chat": {
+      "timeout_s": 600,
       "description": "OpenAI-compatible chat completions.",
       "http": { "method": "POST", "path": "/v1/chat/completions", "body_schema": { "model": "string", "messages": "array" } }
     },
     "load_model": {
+      "timeout_s": 600,
       "description": "Load a downloaded model into memory (params: {\"model\": \"<name>\"}).",
       "http": { "method": "POST", "path": "/v1/models/{model}/load" }
     },
