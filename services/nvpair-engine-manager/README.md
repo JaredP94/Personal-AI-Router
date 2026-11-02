@@ -286,17 +286,23 @@ Notifications (service → caller): `engine:ready{version}`,
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
-`engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
+`engine:install-progress{engine, stage, percent?, error?}`,
+`engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
 UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent, message}`
+`engine:remote-progress{opId, node, engine, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
+
+Progress `percent` is optional: unmeasured stages omit it (zero internally),
+positive values report measured download progress or terminal completion, and
+negative values are failure sentinels. Verification, vendor install commands,
+and disk-image copies report stages without invented percentages. Clients must
+replace the previous install percentage with an indeterminate stage when absent.
 
 For `engine:action` with `action: "pull_model"`, a streaming engine-level
 failure (including an HTTP 200 NDJSON `{"error":"…"}` frame) returns a

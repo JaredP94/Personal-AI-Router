@@ -406,6 +406,9 @@ ServiceError = { id, message, timestamp, nodeId?, severity?, action?, engineType
 
 **Opt-in** (`engine:subscribe`). The notifications `nvpair-engine-manager` emits — `engine:ready`, `engine:state-changed` (full `EngineStatus`), `engine:models-changed` (`{engine, models}`, pushed when an engine's set of models loaded in memory changes), `engine:install-progress`, `engine:pull-progress` (live progress for a local model pull), `engine:remote-progress` (live progress for a remote install/pull) — re-emitted verbatim (their method names are already `engine:`-prefixed). Off by default.
 
+Install progress is relayed without filling absent fields: an omitted `percent`
+means an unmeasured stage, not zero percent or the previous download percentage.
+
 #### `connection/cluster-identity` / `connection/cluster-auto-sync`
 
 The change-only cluster signals `nvpair-node-settings` pushes when `cluster_id` / `cluster_auto_sync` change. Relayed verbatim and unconditionally — the same way the UI receives them from the settings subprocess directly.

@@ -280,9 +280,15 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 				Engine  string `json:"engine"`
 				Stage   string `json:"stage"`
 				Percent int    `json:"percent"`
+				Error   string `json:"error"`
 			}
 			_ = decodeParams(msg.Msg.Params, &p)
-			v.status = fmt.Sprintf("install %s: %s (%d%%)", p.Engine, p.Stage, p.Percent)
+			v.status = fmt.Sprintf("install %s: %s", p.Engine, p.Stage)
+			if p.Stage == "failed" && p.Error != "" {
+				v.status = fmt.Sprintf("install %s failed: %s", p.Engine, p.Error)
+			} else if p.Percent > 0 {
+				v.status += fmt.Sprintf(" (%d%%)", p.Percent)
+			}
 		case "engine:pull-progress":
 			var p struct {
 				Engine  string `json:"engine"`
