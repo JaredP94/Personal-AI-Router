@@ -35,6 +35,7 @@ omlx-proxy [flags]
 | `--port` | `1234` | HTTP listen port for request forwarding |
 | `--ignore-persisted-port` | `false` | Use `--port` even when a prior runtime port was saved |
 | `--ipc` | *(empty — use stdio)* | Path to a Unix domain socket or Windows named pipe for IPC |
+| `--response-header-timeout` | `$NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT`, else `120s` | How long to wait for an upstream engine to start answering (Go duration, e.g. `10m`). An engine sends no headers until generation starts, so raise it when requests queue behind long jobs or wait on slow model loads. An invalid or non-positive value keeps the default |
 | `--cluster-dir` | *(empty)* | Cluster trust directory (`node.crt`/`node.key` plus trusted pins). Enables the LAN mTLS inference ingress while this node is a cluster member; empty means no ingress and no peer candidates. |
 | `--log-level` | *(`$NVPAIR_LOG_LEVEL`, else `info`)* | Initial log level: `debug`, `info`, `warn`, or `error`. Changeable at runtime with `log/set-level`. |
 | `--version` | | Print version and exit |

@@ -36,11 +36,13 @@ func main() {
 	var aliasAddresses aliasAddressFlags
 	flag.Var(&aliasAddresses, "alias-address", "optional loopback-only HTTP alias address (repeat for another loopback family)")
 	ignorePersistedPort := flag.Bool("ignore-persisted-port", false, "use --port even when a persisted port exists")
+	responseHeaderTimeout := flag.String("response-header-timeout", "", "upstream response-header timeout (Go duration, e.g. 10m); default: $NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT or 120s")
 	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
 	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
+	proxyResponseTimeout = resolveResponseHeaderTimeout(*responseHeaderTimeout)
 
 	if *showVersion {
 		fmt.Println(Version)

@@ -150,6 +150,21 @@ Routing confirmation happens on **Overview**:
 Send several independent requests to observe multi-node routing. One request
 runs on one selected node.
 
+## Requests Fail After Two Minutes
+
+A request that fails with `502` and `upstream error: net/http: timeout awaiting
+response headers` after about 120 seconds waited longer than PAIR allows for an
+engine to start answering. An engine sends nothing until generation starts, so a
+request queued behind other work, or waiting for a large model to load, can hit
+this while the engine is healthy.
+
+Raise the limit with the `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` environment
+variable, a Go duration such as `10m`, and restart PAIR. On macOS, set it for
+apps opened from the Finder with
+`launchctl setenv NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT 10m`. Every node that
+serves requests applies its own limit, so raise it on each. A longer limit also
+means a node that has stopped responding is given up on later.
+
 ## Where the Logs Are
 
 Everything you need is on **Settings > Service**:
