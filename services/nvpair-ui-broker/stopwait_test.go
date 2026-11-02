@@ -209,10 +209,15 @@ func TestEngineShutdownDeadlineDrawsOnTheBudget(t *testing.T) {
 		t.Fatalf("deadline outside teardown = %v, want %v", got, engineStopAllBudget)
 	}
 
-	setTeardownStart(time.Now().Add(-(teardownBudget - time.Second)))
+	setTeardownStart(time.Now().Add(-(teardownBudget - workerCleanupReserve - time.Second)))
 	got := engineShutdownDeadline()
 	if got > time.Second || got < 250*time.Millisecond {
-		t.Fatalf("deadline with 1s of budget left = %v, want about 1s", got)
+		t.Fatalf("deadline with 1s before the cleanup reserve = %v, want about 1s", got)
+	}
+
+	setTeardownStart(time.Now().Add(-(teardownBudget - workerCleanupReserve)))
+	if got := engineShutdownDeadline(); got != 0 {
+		t.Fatalf("engine preparation consumed the final worker reserve: %v", got)
 	}
 
 	setTeardownStart(time.Now().Add(-2 * teardownBudget))

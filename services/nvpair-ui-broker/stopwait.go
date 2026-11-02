@@ -22,7 +22,8 @@ const (
 	// engineManagerStopGrace is longer because nvpair-engine-manager stops the
 	// engine processes it launched (StopAll) on its way out. Cutting that short is
 	// exactly what the old 2s-grace-then-kill did, and it orphaned engines.
-	// Worker joins run concurrently, so no reservation by join order is needed.
+	// Worker joins run concurrently; the preceding phases reserve this allowance
+	// so even engine-manager receives its full EOF cleanup grace.
 	engineManagerStopGrace = 6 * time.Second
 
 	// engineStopAllBudget bounds the broker's wait for engine-manager to stop the
@@ -34,6 +35,15 @@ const (
 	// workerSignalGrace is how long a signalled worker gets before it is killed,
 	// and how long a killed worker gets before the join gives up on it.
 	workerSignalGrace = 2 * time.Second
+
+	// Keep six seconds for the final concurrent worker joins and at least two
+	// for engine preparation. Ingress (including the heartbeat join) can spend
+	// only the first two seconds of the ten-second budget. Its shorter EOF and
+	// escalation waits fit inside that phase without stealing later cleanup.
+	workerCleanupReserve     = engineManagerStopGrace
+	enginePreparationReserve = 2 * time.Second
+	proxyStopGrace           = time.Second
+	proxySignalGrace         = 500 * time.Millisecond
 
 	// teardownBudget bounds everything the broker does between being told to shut
 	// down and its last worker join. Proxies join concurrently before the engine
@@ -63,7 +73,7 @@ const (
 // spawning a replacement, which LM Studio port reconciliation does on a rebind.
 // Arming the clock there would leave the budget permanently spent for the life of
 // the process, so every later join — including engine-manager's at the real
-// shutdown — would fall to minWorkerGrace and be signalled almost immediately.
+// shutdown — would lose its cleanup grace and be signalled almost immediately.
 var teardownClock struct {
 	mu    sync.Mutex
 	start time.Time
@@ -109,21 +119,40 @@ func stopGraceFor(name string) time.Duration {
 // teardownWait clips each wait, including escalation, to the shared deadline.
 // Outside teardown (for example a runtime restart), the full duration applies.
 func teardownWait(d time.Duration) time.Duration {
+	return teardownWaitReserving(d, 0)
+}
+
+// Earlier phases may use only the time left after later phases' allowances.
+// Reservations are subtracted from the existing deadline, never added to it.
+func teardownWaitReserving(d, reserve time.Duration) time.Duration {
 	if left, active := teardownRemaining(); active {
-		return max(0, min(d, left))
+		return max(0, min(d, left-reserve))
 	}
 	return d
 }
 
-// Concurrent joins share the remaining budget without reserving time by name.
+func isInferenceProxy(name string) bool {
+	return name == "proxy" || name == "lmstudio-proxy" || name == "omlx-proxy"
+}
+
 func graceFor(name string) time.Duration {
+	if _, active := teardownRemaining(); active && isInferenceProxy(name) {
+		return teardownWaitReserving(proxyStopGrace, enginePreparationReserve+workerCleanupReserve)
+	}
 	return teardownWait(stopGraceFor(name))
 }
 
+func signalWaitFor(name string) time.Duration {
+	if _, active := teardownRemaining(); active && isInferenceProxy(name) {
+		return teardownWaitReserving(proxySignalGrace, enginePreparationReserve+workerCleanupReserve)
+	}
+	return teardownWait(workerSignalGrace)
+}
+
 // engineShutdownDeadline bounds the wait for engine-manager to stop its engines,
-// drawing on the same budget as the joins that follow it.
+// preserving the full EOF cleanup allowance for the joins that follow it.
 func engineShutdownDeadline() time.Duration {
-	return teardownWait(engineStopAllBudget)
+	return teardownWaitReserving(engineStopAllBudget, workerCleanupReserve)
 }
 
 // waitForStdinClose signals a managed worker to shut down by closing its stdin
@@ -184,7 +213,7 @@ func waitForStdinClose(name string, cmd *exec.Cmd, stdin io.Closer, done <-chan 
 	if err := signalTerminate(proc); err != nil {
 		slog.Warn("terminate signal failed", "worker", name, "err", err)
 	}
-	if waitClosed(done, teardownWait(workerSignalGrace)) {
+	if waitClosed(done, signalWaitFor(name)) {
 		slog.Info("worker exited after terminate",
 			"worker", name, "waitedMs", time.Since(started).Milliseconds())
 		return
@@ -194,7 +223,7 @@ func waitForStdinClose(name string, cmd *exec.Cmd, stdin io.Closer, done <-chan 
 	if err := proc.Kill(); err != nil {
 		slog.Warn("kill failed", "worker", name, "err", err)
 	}
-	if !waitClosed(done, teardownWait(workerSignalGrace)) {
+	if !waitClosed(done, signalWaitFor(name)) {
 		slog.Error("worker did not exit after kill; abandoning the join",
 			"worker", name, "waitedMs", time.Since(started).Milliseconds())
 		return
