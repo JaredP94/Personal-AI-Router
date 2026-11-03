@@ -4,6 +4,7 @@
 import type { WsInvokeChannel, WsInvokeRequest, WsInvokeResponse } from '@/shared/types/ws-channels'
 import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
+import type { ManualNodeKind, ManualNodeStatus } from '@/shared/types/manual-nodes'
 import type { EngineType } from '@/shared/types/engines'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
@@ -989,10 +990,7 @@ async function handleNodeRemoveMember(
     const selfId = state.getSelfId()
     const isSelfLeave = selfId !== null && payload.nodeId === selfId
 
-    // The broker owns manual-node persistence and resolves a stable node UUID
-    // back to the manual alias expected by nvpair-manual-nodes. For a purely
-    // discovered peer this remains a harmless no-op.
-    supervisor.callProcess('broker', 'node/remove', { id: payload.nodeId }).catch(() => {})
+    // The broker forgets associated manual addresses only after successful unpair.
 
     if (isSelfLeave) {
         // Self-departure is `cluster:leave`, not `nodes:remove` (the cluster-manager
@@ -1012,6 +1010,115 @@ async function handleNodeRemoveMember(
     return {
         nodeId: stringValue(result?.nodeId) || payload.nodeId,
         removed: booleanValue(result?.removed)
+    }
+}
+
+function parseStringArray(value: JsonValue | undefined): string[] {
+    if (!Array.isArray(value)) return []
+    const result: string[] = []
+    for (const item of value) {
+        if (typeof item === 'string') {
+            result.push(item)
+        }
+    }
+    return result
+}
+
+function parseManualNodeStatus(raw: JsonValue | undefined): ManualNodeStatus | null {
+    const obj = objectValue(raw)
+    if (!obj) return null
+    const id = stringValue(obj.id)
+    const address = stringValue(obj.address)
+    if (!id || !address) return null
+
+    if (obj.kind !== 'engine' && obj.kind !== 'pair') return null
+    const kind: ManualNodeKind = obj.kind
+    const name = stringValue(obj.name)
+    const identityVerification = stringValue(obj.identityVerification)
+    const peerRecordId = stringValue(obj.peerRecordId)
+    const hostUuid = stringValue(obj.hostUuid)
+    const clusterUuid = stringValue(obj.clusterUuid)
+
+    const status: ManualNodeStatus = {
+        id,
+        address,
+        kind,
+        ...(name ? { name } : {}),
+        ...(identityVerification ? { identityVerification } : {}),
+        ...(peerRecordId ? { peerRecordId } : {}),
+        ...(hostUuid ? { hostUuid } : {}),
+        ...(clusterUuid ? { clusterUuid } : {}),
+        ollama_up: booleanValue(obj.ollama_up),
+        ollama_port: numberValue(obj.ollama_port),
+        lmstudio_up: booleanValue(obj.lmstudio_up),
+        lmstudio_port: numberValue(obj.lmstudio_port),
+        omlx_up: booleanValue(obj.omlx_up),
+        omlx_port: numberValue(obj.omlx_port),
+        node_info_up: booleanValue(obj.node_info_up),
+        node_info_port: numberValue(obj.node_info_port),
+        tls_enabled: booleanValue(obj.tls_enabled),
+        mtls_required: booleanValue(obj.mtls_required),
+        models: parseStringArray(obj.models)
+    }
+    return status
+}
+
+function parseManualNodeList(raw: JsonValue | undefined): ManualNodeStatus[] {
+    const obj = objectValue(raw)
+    if (!obj) return []
+    const rawNodes = Array.isArray(obj.nodes) ? obj.nodes : []
+    const result: ManualNodeStatus[] = []
+    for (const item of rawNodes) {
+        if (objectValue(item)?.from_cluster === true) continue
+        const parsed = parseManualNodeStatus(item)
+        if (parsed) {
+            result.push(parsed)
+        }
+    }
+    return result
+}
+
+async function handleManualNodesList(): Promise<ManualNodeStatus[]> {
+    const supervisor = getModularSupervisor()
+    if (!supervisor.hasProcess('broker')) {
+        return []
+    }
+    const result = await supervisor.callProcess('broker', 'nodes/list')
+    return parseManualNodeList(result)
+}
+
+async function handleManualNodesAdd(
+    payload?: WsInvokeRequest<'nodes:manual-add'>
+): Promise<ManualNodeStatus> {
+    if (!payload?.address) {
+        throw new Error('Address is required')
+    }
+    const supervisor = getModularSupervisor()
+    const result = await supervisor.callProcess('broker', 'node/add', {
+        address: payload.address,
+        ...(payload.name ? { name: payload.name } : {}),
+        kind: payload.kind,
+        ...(payload.tls_port ? { tls_port: payload.tls_port } : {}),
+        ...(payload.mtls !== undefined ? { mtls: payload.mtls } : {})
+    })
+    const status = parseManualNodeStatus(result)
+    if (!status) {
+        throw new Error('Invalid response from node/add')
+    }
+    return status
+}
+
+async function handleManualNodesRemove(
+    payload?: WsInvokeRequest<'nodes:manual-remove'>
+): Promise<{ removed: boolean }> {
+    if (!payload?.id) {
+        throw new Error('Node ID is required')
+    }
+    const supervisor = getModularSupervisor()
+    const result = await supervisor.callProcess('broker', 'node/remove', { id: payload.id })
+    const obj = objectValue(result)
+    return {
+        removed: booleanValue(obj?.removed)
     }
 }
 
@@ -1166,6 +1273,9 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'nodes:remove-member': payload => handleNodeRemoveMember(payload),
     'nodes:install-macmon': payload =>
         payload ? getModularSupervisor().installMacmon(payload.nodeId) : 'failed',
+    'nodes:manual-list': () => handleManualNodesList(),
+    'nodes:manual-add': payload => handleManualNodesAdd(payload),
+    'nodes:manual-remove': payload => handleManualNodesRemove(payload),
 
     'discovery:get-nodes': () => getModularBridgeState().getAvailableNodes(),
 

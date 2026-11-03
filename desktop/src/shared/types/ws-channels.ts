@@ -49,6 +49,11 @@ import type {
     Invite
 } from '@/shared/types/cluster'
 import type {
+    ManualNodeAddRequest,
+    ManualNodeRemoveRequest,
+    ManualNodeStatus
+} from '@/shared/types/manual-nodes'
+import type {
     TelemetryConfig,
     TelemetryConfigRequest,
     TelemetryPurgeRequest,
@@ -93,6 +98,11 @@ export interface WsInvokeChannelMap {
         request: { nodeId: string }
         response: MacmonInstallOutcome
     }
+
+    // Manual nodes (relayed to nvpair-manual-nodes via the broker)
+    'nodes:manual-list': { request: void; response: ManualNodeStatus[] }
+    'nodes:manual-add': { request: ManualNodeAddRequest; response: ManualNodeStatus }
+    'nodes:manual-remove': { request: ManualNodeRemoveRequest; response: { removed: boolean } }
 
     // Discovery
     'discovery:get-nodes': { request: void; response: AvailableNode[] }

@@ -117,8 +117,9 @@ Two limitations follow from the current discovery and node-info contract:
   to a placeholder until the backend reports OS on discovery or node-info.
 
 Manual nodes use the broker's `node/add`, `node/remove`, and `nodes/list`
-surface. Electron persists user entries and replays them after broker startup so
-they survive worker restarts.
+surface. The Go broker canonically persists entries with explicit kind ('pair'
+vs 'engine') across restarts, while desktop exposes manual-node bridge channels
+and settings UI.
 
 ## Routing and inference
 
