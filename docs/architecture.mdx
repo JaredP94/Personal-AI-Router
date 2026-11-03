@@ -772,7 +772,7 @@ scanner mints one and persists it.
 ### Sharing UDP 5353
 
 PAIR runs its own mDNS responder rather than depending on a system one, because
-Windows ships none. Its receive socket and short-lived per-interface send
+Windows ships none. Its receive sockets and reusable per-interface send
 sockets bind UDP 5353, as RFC 6762 requires for mDNS queries and responses.
 Binding each sender to the selected interface address also preserves reliable
 egress on multi-homed Windows hosts.
@@ -780,9 +780,26 @@ egress on multi-homed Windows hosts.
 Those sockets set `SO_REUSEADDR` so they coexist with Bonjour, Avahi, and other
 PAIR processes. A Darwin sender also sets `SO_REUSEPORT`, matching the BSD
 multicast sharing behavior needed to coexist with the system mDNS responder.
-Linux deliberately omits `SO_REUSEPORT`: there it can load-balance incoming
-unicast datagrams into a short-lived send socket and steal replies from the
-long-lived receiver.
+Linux deliberately omits `SO_REUSEPORT` to avoid load-balancing incoming
+unicast datagrams between sockets. Source-bound senders also read packets and
+forward them to their owning browser or responder, rather than swallowing
+unicast replies or questions.
+
+A running browser retains its IPv4/IPv6 receive sockets and per-interface IPv4
+senders between scans. Each scan still sends queries and collects fresh answers:
+reuse does not turn an old observation into fresh liveness evidence. Interface
+metadata is cached from `netmon`; interface-change notifications refresh multicast
+memberships and retire removed or re-addressed senders. The responder reuses its
+senders for announcements and replies too. Shutdown closes the sockets after the
+responder's goodbye. A standalone `Browser.Poll` owns a one-shot transport; use
+`Run` for periodic discovery. The scan cadence and per-interface send-failure
+feedback used by address selection are unchanged.
+
+This reduces measured socket and interface-query churn. It does **not** establish
+that discovery caused the macOS kernel panics or WLAN failures reported in
+[NVIDIA/Personal-AI-Router#19](https://github.com/NVIDIA/Personal-AI-Router/issues/19)
+and [NVIDIA/Personal-AI-Router#59](https://github.com/NVIDIA/Personal-AI-Router/issues/59),
+or prove that these failures are prevented.
 
 ### Node Enrichment
 

@@ -70,7 +70,7 @@ func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 	writer := &recordingPacketWriter{}
 	options := &recordingMulticastOptions{}
 
-	if err := writePacket(payload, ifi, source, target, writer, options); err != nil {
+	if err := writePacket(payload, ifi, source, target, writer, options, new(bool)); err != nil {
 		t.Fatalf("writePacket: %v", err)
 	}
 	if len(options.interfaces) != 1 || options.interfaces[0] != ifi {
@@ -90,13 +90,28 @@ func TestWritePacketConfiguresMulticastAndWritesOnce(t *testing.T) {
 	}
 }
 
+func TestWritePacketConfiguresReusedSocketOnlyOnce(t *testing.T) {
+	ifi := &net.Interface{Index: 7, Name: "eth0"}
+	writer := &recordingPacketWriter{}
+	options := &recordingMulticastOptions{}
+	configured := false
+	for i := 0; i < 3; i++ {
+		if err := writePacket([]byte("query"), ifi, net.IPv4(192, 0, 2, 1), mdnsTargetV4, writer, options, &configured); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if writer.writes != 3 || len(options.interfaces) != 1 || len(options.ttls) != 1 {
+		t.Fatalf("reused socket writes=%d interface selections=%d TTL settings=%d", writer.writes, len(options.interfaces), len(options.ttls))
+	}
+}
+
 func TestWritePacketSkipsMulticastOptionsForUnicast(t *testing.T) {
 	source := net.IPv4(127, 0, 0, 1)
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 	writer := &recordingPacketWriter{}
 	options := &recordingMulticastOptions{}
 
-	if err := writePacket([]byte("unicast payload"), nil, source, target, writer, options); err != nil {
+	if err := writePacket([]byte("unicast payload"), nil, source, target, writer, options, new(bool)); err != nil {
 		t.Fatalf("writePacket: %v", err)
 	}
 	if len(options.interfaces) != 0 || len(options.ttls) != 0 {
@@ -113,7 +128,7 @@ func TestWritePacketReturnsWriteFailure(t *testing.T) {
 	source := net.IPv4(127, 0, 0, 1)
 	target := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 14318}
 
-	err := writePacket([]byte("unicast payload"), nil, source, target, writer, &recordingMulticastOptions{})
+	err := writePacket([]byte("unicast payload"), nil, source, target, writer, &recordingMulticastOptions{}, new(bool))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, wantErr)
 	}
@@ -172,7 +187,7 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 				fallbackTTLErr: tc.fallbackTTLErr,
 			}
 
-			if err := writePacket([]byte("multicast payload"), ifi, source, target, writer, options); err != nil {
+			if err := writePacket([]byte("multicast payload"), ifi, source, target, writer, options, new(bool)); err != nil {
 				t.Fatalf("writePacket: %v", err)
 			}
 			if len(options.interfaces) != 1 {
@@ -200,15 +215,16 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 	}
 }
 
-func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
+func TestResponderSendUsesRequestedSourcePortAlongsideReceiver(t *testing.T) {
 	ifi, source := loopbackIPv4(t)
 
 	lc := net.ListenConfig{Control: setReuseAddr}
-	receiveSocket, err := lc.ListenPacket(context.Background(), "udp4", mdnsTargetV4.String())
+	receiveSocket, err := lc.ListenPacket(context.Background(), "udp4", (&net.UDPAddr{IP: mdnsGroupV4}).String())
 	if err != nil {
 		t.Fatalf("open reusable mDNS receive socket: %v", err)
 	}
 	defer receiveSocket.Close()
+	sourcePort := receiveSocket.LocalAddr().(*net.UDPAddr).Port
 
 	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source, Port: 0})
 	if err != nil {
@@ -224,10 +240,15 @@ func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 		t.Fatalf("sink address has type %T, want *net.UDPAddr", sink.LocalAddr())
 	}
 	responder := &Responder{
+		ifaceInfo: map[int]net.Interface{ifi.Index: *ifi},
 		ifaceAddrs: map[int][]net.IP{
 			ifi.Index: {source},
 		},
 	}
+	// The hook checks that Send requests 5353 before substituting this test's
+	// receive port, so the source-port contract needs no bind on real 5353.
+	responder.sender.listenPacket = testSenderListener(sourcePort)
+	defer responder.sender.Close()
 	payload := []byte("mDNS source-port regression")
 	if err := responder.sendOnInterface(payload, ifi.Index, target); err != nil {
 		t.Fatalf("sendOnInterface: %v", err)
@@ -244,8 +265,8 @@ func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 	if !from.IP.Equal(source) {
 		t.Errorf("source IP = %s, want %s", from.IP, source)
 	}
-	if from.Port != mdnsPort {
-		t.Errorf("source port = %d, want %d", from.Port, mdnsPort)
+	if from.Port != sourcePort {
+		t.Errorf("source port = %d, want %d", from.Port, sourcePort)
 	}
 }
 

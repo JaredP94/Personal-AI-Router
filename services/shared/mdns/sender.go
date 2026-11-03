@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
+
+	"nvpair-shared/netmon"
 
 	"golang.org/x/net/ipv4"
 )
@@ -28,14 +31,39 @@ type multicastOptions interface {
 	SetMulticastTTL(int) error
 }
 
-// SendFromInterface transmits one IPv4 mDNS packet from the selected address
-// and the RFC 6762 source port. A fresh source-bound socket preserves reliable
-// per-interface egress on Windows while the reuse controls let it coexist with
-// the long-lived mDNS receive sockets on every supported platform. Multicast
-// interface selection is advisory, and TTL setup falls back explicitly from
-// RFC 6762's preferred 255 to link-local 1. Failures are logged but never
-// suppress the packet write.
-func SendFromInterface(buf []byte, ifi *net.Interface, src net.IP, target *net.UDPAddr) error {
+// Sender owns reusable, source-bound UDP 5353 sockets. Its zero value is ready
+// to use. The owner must call Refresh on interface changes and Close at shutdown.
+// Source binding preserves the Windows multicast-send workaround on every send.
+// Methods are safe to call concurrently.
+type Sender struct {
+	// listenPacket overrides binding in package tests; nil uses the production
+	// listener with setSenderReuse. Set before the first Send.
+	listenPacket func(context.Context, string, string) (net.PacketConn, error)
+
+	mu        sync.Mutex
+	sockets   map[senderKey]*senderSocket
+	closed    bool
+	readers   sync.WaitGroup
+	callbacks sync.WaitGroup
+}
+
+type senderKey struct {
+	index int
+	name  string
+	ip    string
+}
+
+type senderSocket struct {
+	conn                net.PacketConn
+	options             *ipv4.PacketConn
+	multicastConfigured bool
+}
+
+// Send transmits one packet and returns the actual bind/write outcome, including
+// on a reused socket. receive handles packets delivered to the source-bound
+// socket (notably unicast replies/questions); it must not block. The callback
+// is fixed by the first send on that socket and must not call Close.
+func (s *Sender) Send(buf []byte, ifi *net.Interface, src net.IP, target *net.UDPAddr, receive func([]byte, int, net.Addr)) error {
 	source := src.To4()
 	if source == nil {
 		return errors.New("mDNS source is not IPv4")
@@ -44,18 +72,96 @@ func SendFromInterface(buf []byte, ifi *net.Interface, src net.IP, target *net.U
 		return errors.New("mDNS target is not a valid IPv4 endpoint")
 	}
 
-	lc := net.ListenConfig{Control: setSenderReuse}
-	conn, err := lc.ListenPacket(
-		context.Background(),
-		"udp4",
-		(&net.UDPAddr{IP: source, Port: mdnsPort}).String(),
-	)
-	if err != nil {
-		return fmt.Errorf("bind mDNS sender: %w", err)
+	if ifi == nil {
+		return errors.New("mDNS sender requires an interface")
 	}
-	defer conn.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return net.ErrClosed
+	}
+	key := senderKey{index: ifi.Index, name: ifi.Name, ip: source.String()}
+	socket := s.sockets[key]
+	if socket == nil {
+		lc := net.ListenConfig{Control: setSenderReuse}
+		listen := s.listenPacket
+		if listen == nil {
+			listen = lc.ListenPacket
+		}
+		conn, err := listen(context.Background(), "udp4", (&net.UDPAddr{IP: source, Port: mdnsPort}).String())
+		if err != nil {
+			return fmt.Errorf("bind mDNS sender: %w", err)
+		}
+		socket = &senderSocket{conn: conn, options: ipv4.NewPacketConn(conn)}
+		if s.sockets == nil {
+			s.sockets = make(map[senderKey]*senderSocket)
+		}
+		s.sockets[key] = socket
+		s.registerReceiver(key, receive)
+		s.readers.Add(1)
+		go func() {
+			defer s.readers.Done()
+			// A terminal read error must not leave a bound, unreadable socket
+			// swallowing traffic. The next write reports closure and retires it.
+			defer conn.Close()
+			buf := make([]byte, 65536)
+			for {
+				n, from, err := conn.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				dispatchSenderPacket(key, buf[:n], from)
+			}
+		}()
+	}
+	err := writePacket(buf, ifi, source, target, socket.conn, socket.options, &socket.multicastConfigured)
+	if err != nil {
+		socket.multicastConfigured = false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		_ = socket.conn.Close()
+		s.unregisterReceiver(key)
+		delete(s.sockets, key)
+	}
+	return err
+}
 
-	return writePacket(buf, ifi, source, target, conn, ipv4.NewPacketConn(conn))
+// Refresh retires sockets whose selected interface/address disappeared or
+// changed. Unchanged sockets survive; new ones are bound lazily by Send so bind
+// failures continue to be reported and retried on each scan.
+func (s *Sender) Refresh(snapshot netmon.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, socket := range s.sockets {
+		ifi, ok := snapshot.Interfaces[key.index]
+		ips := snapshot.IfaceV4[key.index]
+		if ok && ifi.Name == key.name && len(ips) > 0 && ips[0].String() == key.ip {
+			continue
+		}
+		_ = socket.conn.Close()
+		s.unregisterReceiver(key)
+		delete(s.sockets, key)
+	}
+}
+
+// Close releases all sockets and waits for their receive loops to exit.
+func (s *Sender) Close() {
+	s.mu.Lock()
+	s.closed = true
+	for key, socket := range s.sockets {
+		_ = socket.conn.Close()
+		s.unregisterReceiver(key)
+		delete(s.sockets, key)
+	}
+	s.mu.Unlock()
+	s.readers.Wait()
+	s.callbacks.Wait()
+}
+
+// ListenPacket opens a shared mDNS receive socket on UDP 5353.
+func ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
+	lc := net.ListenConfig{Control: setReuseAddr}
+	return lc.ListenPacket(ctx, network, address)
 }
 
 func writePacket(
@@ -65,12 +171,15 @@ func writePacket(
 	target *net.UDPAddr,
 	conn packetWriter,
 	options multicastOptions,
+	multicastConfigured *bool,
 ) error {
-	if target.IP.IsMulticast() {
+	if target.IP.IsMulticast() && !*multicastConfigured {
+		configured := true
 		if ifi == nil {
 			return errors.New("mDNS multicast target requires an interface")
 		}
 		if err := options.SetMulticastInterface(ifi); err != nil {
+			configured = false
 			slog.Debug("mdns: set multicast interface failed; sending with socket route",
 				"iface", ifi.Name,
 				"ip", source.String(),
@@ -78,6 +187,7 @@ func writePacket(
 				"err", err)
 		}
 		if err := options.SetMulticastTTL(preferredMulticastTTL); err != nil {
+			configured = false
 			slog.Debug("mdns: set multicast TTL failed; retrying with TTL 1",
 				"iface", ifi.Name,
 				"ip", source.String(),
@@ -93,6 +203,10 @@ func writePacket(
 					"err", fallbackErr)
 			}
 		}
+		// Multicast interface selection may query addresses inside x/net.
+		// Cache successful configuration too, not just the bound descriptor.
+		// Advisory failures are retried on the next send, as before.
+		*multicastConfigured = configured
 	}
 
 	if _, err := conn.WriteTo(buf, target); err != nil {

@@ -59,6 +59,9 @@ func poll(ctx context.Context, onEvent func()) {
 
 // Snapshot is an immutable view of the host's addressing at a point in time.
 type Snapshot struct {
+	// Interfaces caches interface metadata so consumers never need a kernel
+	// interface lookup on their periodic send path.
+	Interfaces map[int]net.Interface
 	// LocalIPs is the set of every unicast IP (v4 and v6) bound to any
 	// interface, keyed by its String() form. Used to answer "is this
 	// address one of mine?".
@@ -71,8 +74,13 @@ type Snapshot struct {
 
 func (s Snapshot) clone() Snapshot {
 	out := Snapshot{
-		LocalIPs: make(map[string]bool, len(s.LocalIPs)),
-		IfaceV4:  make(map[int][]net.IP, len(s.IfaceV4)),
+		Interfaces: make(map[int]net.Interface, len(s.Interfaces)),
+		LocalIPs:   make(map[string]bool, len(s.LocalIPs)),
+		IfaceV4:    make(map[int][]net.IP, len(s.IfaceV4)),
+	}
+	for idx, ifi := range s.Interfaces {
+		ifi.HardwareAddr = append(net.HardwareAddr(nil), ifi.HardwareAddr...)
+		out.Interfaces[idx] = ifi
 	}
 	for ip := range s.LocalIPs {
 		out.LocalIPs[ip] = true
@@ -89,12 +97,13 @@ func (s Snapshot) clone() Snapshot {
 // failure to list interfaces it returns empty maps, which callers treat as
 // "nothing local right now".
 func Enumerate() Snapshot {
-	s := Snapshot{LocalIPs: map[string]bool{}, IfaceV4: map[int][]net.IP{}}
+	s := Snapshot{Interfaces: map[int]net.Interface{}, LocalIPs: map[string]bool{}, IfaceV4: map[int][]net.IP{}}
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return s
 	}
 	for _, ifi := range ifaces {
+		s.Interfaces[ifi.Index] = ifi
 		addrs, err := ifi.Addrs()
 		if err != nil {
 			continue
@@ -131,7 +140,10 @@ func Enumerate() Snapshot {
 // fingerprint reduces a Snapshot to a stable string so two snapshots can be
 // compared without caring about map iteration order.
 func fingerprint(s Snapshot) string {
-	parts := make([]string, 0, len(s.LocalIPs)+len(s.IfaceV4))
+	parts := make([]string, 0, len(s.LocalIPs)+len(s.IfaceV4)+len(s.Interfaces))
+	for idx, ifi := range s.Interfaces {
+		parts = append(parts, fmt.Sprintf("iface:%d:%s:%d:%d:%s", idx, ifi.Name, ifi.Flags, ifi.MTU, ifi.HardwareAddr))
+	}
 	for ip := range s.LocalIPs {
 		parts = append(parts, "ip:"+ip)
 	}
@@ -157,10 +169,11 @@ func fingerprint(s Snapshot) string {
 type Monitor struct {
 	debounce time.Duration
 
-	mu   sync.RWMutex
-	snap Snapshot
-	fp   string
-	subs []chan struct{}
+	mu     sync.RWMutex
+	snap   Snapshot
+	fp     string
+	subs   []chan struct{}
+	closed bool
 }
 
 // Watch starts a Monitor that runs until ctx is cancelled. The platform
@@ -244,6 +257,7 @@ func (m *Monitor) refresh() {
 
 func (m *Monitor) closeSubs() {
 	m.mu.Lock()
+	m.closed = true
 	for _, ch := range m.subs {
 		close(ch)
 	}
@@ -258,7 +272,11 @@ func (m *Monitor) closeSubs() {
 func (m *Monitor) Subscribe() <-chan struct{} {
 	ch := make(chan struct{}, 1)
 	m.mu.Lock()
-	m.subs = append(m.subs, ch)
+	if m.closed {
+		close(ch)
+	} else {
+		m.subs = append(m.subs, ch)
+	}
 	m.mu.Unlock()
 	return ch
 }
