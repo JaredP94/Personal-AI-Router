@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -17,9 +16,9 @@ func TestManualGPUInventoryCarriesWireFields(t *testing.T) {
 		{"legacy", `[{"name":"Old","vram_bytes":8589934592}]`, `[{"name":"Old","memory_kind":"unavailable","vram_bytes":8589934592}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, rw, rt := newTestManager()
-			entry := ManualEntry{Name: "gpu-node", Address: "node.local"}
-			m.nodes[entry.Name] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: entry.Name, Address: entry.Address}}
+			m, rw, rt := newTestManager(t)
+			peer := newInventoryPeer(t, m, rt, "node.local", "gpu-peer")
+			entry := peer.track(m, "gpu-node")
 			rt.set(http.MethodGet, "node.local:14318", "/v1/node-info", func(*http.Request) (*http.Response, error) {
 				return httpJSON(http.StatusOK, `{"GPUs":`+tc.gpus+`}`)
 			})
@@ -57,9 +56,9 @@ func TestManualTelemetryMixedMeasuredGPUReadings(t *testing.T) {
 		{"unknown", `[{"name":"Unknown"}]`, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, rw, rt := newTestManager()
-			entry := ManualEntry{Name: "gpu-node", Address: "node.local"}
-			m.nodes[entry.Name] = &trackedNode{entry: entry, status: ManualNodeStatus{ID: entry.Name, Address: entry.Address}}
+			m, rw, rt := newTestManager(t)
+			peer := newInventoryPeer(t, m, rt, "node.local", "gpu-peer")
+			entry := peer.track(m, "gpu-node")
 			rt.set(http.MethodGet, "node.local:14318", "/v1/node-info", func(*http.Request) (*http.Response, error) {
 				data, err := json.Marshal(struct {
 					GPUs  json.RawMessage `json:"GPUs"`
@@ -70,7 +69,7 @@ func TestManualTelemetryMixedMeasuredGPUReadings(t *testing.T) {
 				}
 				return httpJSON(http.StatusOK, string(data))
 			})
-			m.probeNodeTelemetry(context.Background(), entry.Name, entry)
+			m.probeNodeTelemetry(m.ctx, entry.Name, entry)
 			msg := readCaptureUntil(t, rw, methodIs("node/telemetry"))
 			got := decodeParams[NodeTelemetryNotification](t, msg)
 			if got.GPUUtilizationPct != tc.want || got.TelemetryValid != tc.valid {

@@ -3,9 +3,8 @@
 
 // Cross-process tests for the two broker-management hotfix legs:
 //
-//	A. the broker bridges a reachable supervised manual node into
-//	   ollama-proxy (node/add-manual), so inference can route to a node
-//	   that never appears over mDNS; and
+//	A. the broker bridges explicitly configured bare engines into the proxies,
+//	   but keeps unverified PAIR nodes as non-routable previews; and
 //	B. the broker accepts a client-originated errors:report and forwards it
 //	   into nvpair-errors, reflected in the next errors:update.
 //
@@ -25,6 +24,8 @@ import (
 	"time"
 
 	"nvpair-shared/appdir"
+	"nvpair-shared/jsonrpc"
+	"nvpair-shared/noderec"
 )
 
 // fakeOllama stands up a minimal Ollama-looking HTTP server on the fixed
@@ -91,10 +92,11 @@ func persistLMStudioProxyPort(t *testing.T, port int) string {
 }
 
 // fakeNodeInfo stands up a minimal node-info server on the fixed port the
-// manual prober hits (14318): GET /v1/node-info returns 200 with the given
-// hostUuid, so a manual node pointed at it learns its stable UUID. Skips the
-// test if the port can't be bound.
-func fakeNodeInfo(t *testing.T, hostUUID string) func() {
+// manual prober hits (14318). A non-nil hostUUID serves an unclustered PAIR
+// preview, never an identity proof. Nil returns 404 while still holding the
+// port, so a real local PAIR cannot answer for a bare-engine fixture.
+// Skips the test if the port can't be bound.
+func fakeNodeInfo(t *testing.T, hostUUID *string) func() {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:14318")
 	if err != nil {
@@ -102,8 +104,12 @@ func fakeNodeInfo(t *testing.T, hostUUID string) func() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
+		if hostUUID == nil {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, fmt.Sprintf(`{"GPUs":[],"hostUuid":%q}`, hostUUID))
+		_, _ = io.WriteString(w, fmt.Sprintf(`{"GPUs":[],"hostUuid":%q}`, *hostUUID))
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -127,7 +133,7 @@ func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 	t.Helper()
 	var res proxyNodesResult
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return false
+		t.Fatalf("decode proxy nodes/list: %v", err)
 	}
 	for _, n := range res.Nodes {
 		if n.ID == id {
@@ -137,21 +143,60 @@ func proxyNodesHas(t *testing.T, raw json.RawMessage, id string) bool {
 	return false
 }
 
-// TestBrokerBridgesManualNodeIntoProxy is the leg-A repro: with the broker
-// supervising both nvpair-manual-nodes and ollama-proxy, a manual node whose
-// Ollama is reachable must be bridged into the proxy (node/add-manual) so it
-// shows up in proxy:nodes/list and can be routed to — even though it never
-// appears over mDNS.
-func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
+type manualInventoryNode struct {
+	ID                   string   `json:"id"`
+	HostUUID             string   `json:"hostUuid"`
+	PeerRecordID         string   `json:"peerRecordId"`
+	IdentityVerification string   `json:"identityVerification"`
+	Trusted              bool     `json:"trusted"`
+	Models               []string `json:"models"`
+}
+
+func brokerNodesResult(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, method string) json.RawMessage {
+	t.Helper()
+	msg := callRPC(t, stdin, msgs, method, nil, 5*time.Second)
+	if msg.Error != nil {
+		t.Fatalf("%s failed: %+v", method, msg.Error)
+	}
+	return msg.Result
+}
+
+func manualInventory(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, nodeName string) (manualInventoryNode, bool) {
+	t.Helper()
+	var res struct {
+		Nodes []manualInventoryNode `json:"nodes"`
+	}
+	if err := json.Unmarshal(brokerNodesResult(t, stdin, msgs, "discovery:get-nodes"), &res); err != nil {
+		t.Fatalf("decode discovery:get-nodes: %v", err)
+	}
+	for _, n := range res.Nodes {
+		if n.ID == nodeName {
+			return n, true
+		}
+	}
+	return manualInventoryNode{}, false
+}
+
+func assertManualInventory(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, nodeName, verification string) {
+	t.Helper()
+	n, ok := manualInventory(t, stdin, msgs, nodeName)
+	if !ok || n.IdentityVerification != verification || n.PeerRecordID != noderec.ManualRecordID(nodeName) || n.Trusted {
+		t.Fatalf("manual inventory = %+v (present=%v), want independent %s record without peer trust", n, ok, verification)
+	}
+}
+
+// An explicitly configured bare Ollama remains a labelled manual routing bypass,
+// even though it never appears over mDNS and supplies no PAIR identity proof.
+func TestBrokerBridgesBareManualOllamaIntoProxy(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
 	stopOllama := fakeOllama(t) // skips if 11434 unavailable
 	t.Cleanup(stopOllama)
 
-	// Own node-info as well as the engine: a running local PAIR must not
-	// supply its cluster principal/UUID to this deliberately unclustered node.
-	t.Cleanup(fakeNodeInfo(t, ""))
+	// Hold node-info without answering as PAIR, preventing a real local PAIR
+	// from turning this bare engine into an unverified peer preview.
+	t.Cleanup(fakeNodeInfo(t, nil))
 
 	stdin, msgs, _, cleanup := startBrokerWith(t,
 		"--manual-nodes-path", manualNodesBin,
@@ -181,9 +226,15 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 			if !ok {
 				t.Fatal("broker stream closed before the manual node bridged into the proxy")
 			}
-			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
-				t.Logf("manual node %q bridged into proxy nodes/list", nodeName)
-				return
+			if msg.Method == "" && msg.ID != nil {
+				if msg.Error != nil {
+					t.Fatalf("broker request failed: %+v", msg.Error)
+				}
+				if proxyNodesHas(t, msg.Result, noderec.ManualRecordID(nodeName)) {
+					assertManualInventory(t, stdin, msgs, nodeName, "manual")
+					t.Logf("bare manual Ollama %q bridged into proxy nodes/list", nodeName)
+					return
+				}
 			}
 		case <-ticker.C:
 			reqID++
@@ -194,74 +245,92 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 	}
 }
 
-// TestBrokerBridgesManualNodeUnderLearnedUUID: once a
-// manual node's node-info reports its stable hostUuid, the proxy candidate must
-// be keyed by that UUID — the same operational key the discovery store and
-// scheduler use — so scheduler priority (node/set-priority) and scheduledOn
-// resolve to it. The candidate must therefore appear in proxy:nodes/list under
-// the learned hostUuid, not the user-supplied manual name.
-func TestBrokerBridgesManualNodeUnderLearnedUUID(t *testing.T) {
+// Public PAIR presence denies the bare-engine bypass, with or without a claimed
+// UUID. Neither the manual alias, preview record nor claimed UUID may route.
+// Verified UUID keying is covered by TestManualToEnrichedHostUUID and
+// TestManualNodeBridgesToRelayDir in nvpair-ui-broker; this unclustered fixture
+// deliberately cannot supply a pinned mTLS proof or authenticated metadata.
+func TestBrokerKeepsUnclusteredManualPAIRAsUnverifiedPreview(t *testing.T) {
 	if portBusy(11435) {
 		t.Skip("ollama-proxy port 11435 already in use; skipping")
 	}
-	stopOllama := fakeOllama(t) // skips if 11434 unavailable
-	t.Cleanup(stopOllama)
-	stopNodeInfo := fakeNodeInfo(t, "learned-host-uuid") // skips if 14318 unavailable
-	t.Cleanup(stopNodeInfo)
+	t.Cleanup(fakeOllama(t))
+	t.Cleanup(fakeLMStudio(t))
 
-	stdin, msgs, _, cleanup := startBrokerWith(t,
-		"--manual-nodes-path", manualNodesBin,
-		"--proxy-path", proxyBin,
-	)
-	t.Cleanup(cleanup)
+	for _, tc := range []struct {
+		name     string
+		hostUUID string
+	}{
+		{name: "no-uuid"},
+		{name: "claimed-uuid", hostUUID: "unverified-claimed-host-uuid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir := persistLMStudioProxyPort(t, freePort(t))
+			t.Cleanup(fakeNodeInfo(t, &tc.hostUUID))
+			stdin, msgs, _, cleanup := startBrokerWithConfigDir(t, configDir,
+				"--manual-nodes-path", manualNodesBin,
+				"--proxy-path", proxyBin,
+				"--lmstudio-proxy-path", lmstudioProxyBin,
+			)
+			t.Cleanup(cleanup)
+			waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
-	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-
-	const nodeName = "xproc-manual-learned-uuid"
-	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":940,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
-	if _, err := stdin.Write([]byte(addReq)); err != nil {
-		t.Fatalf("write node/add: %v", err)
-	}
-
-	deadline := time.After(25 * time.Second)
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	reqID := 941
-	sendReq(t, stdin, reqID, "proxy:nodes/list")
-	for {
-		select {
-		case msg, ok := <-msgs:
-			if !ok {
-				t.Fatal("broker stream closed before the manual node bridged under its learned UUID")
+			nodeName := "xproc-manual-pair-" + tc.name
+			added := callRPC(t, stdin, msgs, "node/add", map[string]string{"address": "127.0.0.1", "name": nodeName}, 5*time.Second)
+			if added.Error != nil {
+				t.Fatalf("node/add failed: %+v", added.Error)
 			}
-			if msg.Method == "" && msg.ID != nil {
-				if proxyNodesHas(t, msg.Result, "learned-host-uuid") {
-					t.Logf("manual node bridged into proxy under learned hostUuid")
+
+			deadline := time.NewTimer(30 * time.Second)
+			defer deadline.Stop()
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			var previewSince time.Time
+			for {
+				n, ok := manualInventory(t, stdin, msgs, nodeName)
+				if ok && n.IdentityVerification == "unverified" {
+					if n.PeerRecordID != noderec.ManualRecordID(nodeName) || n.Trusted || len(n.Models) != 0 {
+						t.Fatalf("PAIR preview acquired peer trust or routing inventory: %+v", n)
+					}
+					if tc.hostUUID != "" && (n.HostUUID == tc.hostUUID || n.PeerRecordID == tc.hostUUID) {
+						t.Fatalf("unverified UUID became the preview identity: %+v", n)
+					}
+					if previewSince.IsZero() {
+						previewSince = time.Now()
+					}
+				} else if !previewSince.IsZero() {
+					t.Fatalf("unverified preview disappeared or changed kind: %+v (present=%v)", n, ok)
+				}
+
+				for _, method := range []string{"proxy:nodes/list", "lmstudio-proxy:nodes/list"} {
+					raw := brokerNodesResult(t, stdin, msgs, method)
+					for _, key := range []string{nodeName, noderec.ManualRecordID(nodeName), tc.hostUUID} {
+						if key != "" && proxyNodesHas(t, raw, key) {
+							t.Fatalf("unverified PAIR node routed as %q in %s", key, method)
+						}
+					}
+				}
+				// Observe a full 10s manual-worker re-probe after the preview
+				// appears, rather than passing on an empty startup snapshot.
+				if !previewSince.IsZero() && time.Since(previewSince) >= 12*time.Second {
 					return
 				}
-				if proxyNodesHas(t, msg.Result, nodeName) {
-					t.Fatalf("proxy candidate keyed by manual name %q, not the learned hostUuid (scheduler would not match)", nodeName)
+				select {
+				case <-ticker.C:
+				case <-deadline.C:
+					t.Fatal("timed out waiting for a stable unverified PAIR preview")
 				}
 			}
-		case <-ticker.C:
-			reqID++
-			sendReq(t, stdin, reqID, "proxy:nodes/list")
-		case <-deadline:
-			t.Fatalf("timed out waiting for manual node under learned hostUuid in proxy:nodes/list")
-		}
+		})
 	}
 }
 
-// TestBrokerBridgesManualNodeIntoLMStudioProxy is the LM Studio counterpart of
-// the Ollama bridge test: with the broker supervising both nvpair-manual-nodes and
-// lmstudio-proxy, a manual node whose LM Studio is reachable must be bridged
-// into lmstudio-proxy (node/add-manual) so it shows up in
-// lmstudio-proxy:nodes/list — even though it never appears over mDNS.
-func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
+// Bare LM Studio has the same explicit manual bypass as bare Ollama.
+func TestBrokerBridgesBareManualLMStudioIntoProxy(t *testing.T) {
 	configDir := persistLMStudioProxyPort(t, freePort(t))
 	stopLM := fakeLMStudio(t) // skips if 1234 unavailable
 	t.Cleanup(stopLM)
-	t.Cleanup(fakeNodeInfo(t, ""))
+	t.Cleanup(fakeNodeInfo(t, nil))
 
 	stdin, msgs, _, cleanup := startBrokerWithConfigDir(t, configDir,
 		"--manual-nodes-path", manualNodesBin,
@@ -288,9 +357,15 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 			if !ok {
 				t.Fatal("broker stream closed before the manual node bridged into lmstudio-proxy")
 			}
-			if msg.Method == "" && msg.ID != nil && proxyNodesHas(t, msg.Result, nodeName) {
-				t.Logf("manual node %q bridged into lmstudio-proxy nodes/list", nodeName)
-				return
+			if msg.Method == "" && msg.ID != nil {
+				if msg.Error != nil {
+					t.Fatalf("broker request failed: %+v", msg.Error)
+				}
+				if proxyNodesHas(t, msg.Result, noderec.ManualRecordID(nodeName)) {
+					assertManualInventory(t, stdin, msgs, nodeName, "manual")
+					t.Logf("bare manual LM Studio %q bridged into proxy nodes/list", nodeName)
+					return
+				}
 			}
 		case <-ticker.C:
 			reqID++

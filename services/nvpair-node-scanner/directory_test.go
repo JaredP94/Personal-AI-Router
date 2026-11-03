@@ -16,7 +16,7 @@ func TestToDirectoryNode(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.10"},
 		TXT:       []string{"v=1", "uuid=host-uuid", "cluster-uuid=clu", "ip=192.168.1.10", "ni=14318", "ol=11434", "otel=4317"},
 	}
-	n, ok := toDirectoryNode(raw, true)
+	n, ok := toDirectoryNode(raw)
 	if !ok {
 		t.Fatal("a record with uuid= should project")
 	}
@@ -29,8 +29,8 @@ func TestToDirectoryNode(t *testing.T) {
 	if n.IP != "192.168.1.10" {
 		t.Errorf("IP = %q, want the ip= TXT value", n.IP)
 	}
-	if !n.Trusted {
-		t.Error("Trusted should reflect the caller-supplied flag")
+	if n.Trusted || n.IdentityVerification != "unverified" || n.RecordKey() == n.HostUUID || n.PeerRecordID == "" {
+		t.Error("mDNS claim must have a separate unverified preview key")
 	}
 	if !n.HasService(noderec.ServiceNodeInfo) || !n.HasService(noderec.ServiceOllama) {
 		t.Errorf("services wrong: %+v", n.Services)
@@ -56,7 +56,7 @@ func TestToDirectoryNodeIgnoresSRVPort(t *testing.T) {
 		Addresses: []string{"192.168.1.30"},
 		TXT:       []string{"v=1", "uuid=host-c", "ip=192.168.1.30", "ni=14318", "ol=11434"},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	if !ok {
 		t.Fatal("a record with uuid= should project")
 	}
@@ -82,7 +82,7 @@ func TestToDirectoryNodeSkipsWithoutUUID(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
 		TXT:       []string{"v=1", "er=14319"},
 	}
-	if _, ok := toDirectoryNode(raw, false); ok {
+	if _, ok := toDirectoryNode(raw); ok {
 		t.Error("a record without uuid= must be skipped, not projected")
 	}
 }
@@ -100,7 +100,7 @@ func TestToDirectoryNodeIPFallback(t *testing.T) {
 		Addresses: []string{"10.221.0.9", "192.168.1.20"},
 		TXT:       []string{"v=1", "uuid=host-b", "er=14319"},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	if !ok {
 		t.Fatal("a record with uuid= should project")
 	}
@@ -128,7 +128,7 @@ func TestToDirectoryNodePreservesPublishedOrder(t *testing.T) {
 			"ips=10.172.54.70,192.168.240.2", "ni=14318",
 		},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	if !ok {
 		t.Fatal("a record with uuid= should project")
 	}
@@ -148,7 +148,7 @@ func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
 		Addresses: []string{"10.0.9.9"},
 		TXT:       []string{"v=1", "uuid=host-c", "ip=10.0.0.5", "ips=10.0.0.5"},
 	}
-	n, ok := toDirectoryNode(raw, false)
+	n, ok := toDirectoryNode(raw)
 	if !ok {
 		t.Fatal("a record with uuid= should project")
 	}
@@ -160,8 +160,8 @@ func TestToDirectoryNodeUnionsUnpublishedAddresses(t *testing.T) {
 
 func TestDirectoryUpsertRemoveSnapshot(t *testing.T) {
 	d := newDirectory()
-	a := noderec.DirectoryNode{HostUUID: "a", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
-	b := noderec.DirectoryNode{HostUUID: "b", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
+	a := noderec.DirectoryNode{IdentityVerification: "local", HostUUID: "a", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
+	b := noderec.DirectoryNode{IdentityVerification: "local", HostUUID: "b", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
 
 	if !d.upsert(a) {
 		t.Error("first upsert should be new")

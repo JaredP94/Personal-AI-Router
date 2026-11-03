@@ -28,7 +28,8 @@ func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
 		_ = schedulerSide.Close()
 	})
 	worker := &rpcWorker{peer: NewPeer(NewCodec(brokerSide))}
-	b := &Broker{workloads: workloadstore.New(), telemetry: newTelemetryCache()}
+	b := &Broker{nodeID: "a", store: newDiscoveryStore(), workloads: workloadstore.New(), telemetry: newTelemetryCache()}
+	b.store.Upsert(EnrichedNode{HostUUID: "a", IdentityVerification: "local"}, sourceScanner)
 	b.workloads.Apply(storeIncoming("active", "host", "ollama", "run", "running", "a"))
 	b.workloads.Apply(storeIncoming("historic", "host", "ollama", "run", "completed", "a"))
 	b.telemetry.Upsert(sourceScanner, noderec.NodeTelemetry{
@@ -48,7 +49,7 @@ func TestSchedulerFeedBaselinePrecedesConcurrentLiveWorkload(t *testing.T) {
 		close(feedLocked)
 		replayed := b.replayActiveWorkloadsToScheduler(worker)
 		b.replayTelemetryToScheduler(worker)
-		_ = worker.Notify("discovery:nodes-changed", []AvailableNode{{HostUUID: "a"}})
+		_ = worker.Notify("discovery:nodes-changed", b.schedulerNodes())
 		b.schedulerFeedMu.Unlock()
 		b.workloadEmitMu.Unlock()
 		initDone <- replayed

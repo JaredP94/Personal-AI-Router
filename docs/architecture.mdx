@@ -241,17 +241,18 @@ Not every surface is gated, and the exceptions are deliberate:
 | Workload replication, error synchronization | Mutual TLS |
 | Cluster membership | Mutual TLS, after pairing |
 | Pairing itself | Plaintext, authenticated by the PIN |
-| Host and GPU telemetry | Plaintext HTTP, **not** authenticated |
+| Service inventory and scheduling telemetry | Pinned cluster mutual TLS |
+| Public hardware preview | Plaintext HTTP, **not** authenticated; display-only |
 
 Pairing is plaintext because no trust exists yet at that point. The six-digit PIN
 is what authenticates the exchange that establishes the pinned certificates.
 
-Node telemetry is a considered trade-off, not an oversight. It is treated as the
-lowest-sensitivity inter-node surface and is read by consumers that are not
-cluster members, so it stays plaintext even on a clustered node. The practical
-consequence is that hostname, hardware inventory, and utilization for a node
-running PAIR are readable by anything on the same subnet that asks. Do not run
-PAIR on a network where that is unacceptable.
+Public hardware previews remain readable by nonmembers over plaintext HTTP,
+including after pairing. They are explicitly unverified and never authorize
+routing, scheduling, or peer trust. Services separately authenticate node-info
+and its broker-owned service metadata over pinned cluster mTLS on the same port.
+The public preview still exposes hostname, hardware inventory, and utilization
+to devices on the subnet; do not run PAIR where that disclosure is unacceptable.
 
 ### Two Personalities on One Port
 
@@ -756,8 +757,11 @@ of being crammed into TXT.
 PAIR identifies every node by a stable UUID, never by its hostname.
 
 An mDNS instance name defaults to the hostname, so two machines that share one
-would silently merge into a single node. Every service therefore advertises a
-per-host UUID, and the directory is keyed by it.
+must not merge. Verified peers use their authenticated host UUID as the directory
+key. Unverified discovery previews use a separate opaque `peerRecordId` and
+`identityVerification: "unverified"`; their claimed host UUID is never a storage
+key and cannot overwrite or remove a verified peer. Explicit manual engine
+configurations occupy their own namespace too.
 
 That UUID is the correlation key across the entire system: discovery entries,
 cluster membership, workload attribution, error reports, telemetry, and proxy
@@ -803,60 +807,62 @@ or prove that these failures are prevented.
 
 ### Node Enrichment
 
-Announcements establish that a node exists and which ports it serves. PAIR
-fetches the interesting facts afterwards, for each node, over HTTP:
+Announcements supply candidate endpoints, not identity proofs or authoritative
+service ports. Before granting `trusted`, the scanner fetches node-info over
+pinned cluster mTLS, checks the exact current server certificate, and requires
+matching certificate, response, and broker-owned metadata identities. Only that
+metadata supplies service ports. The endpoint which completed authentication is
+promoted; other advertised addresses remain hints for subsequent authentication.
 
-- GPU, CPU, and memory inventory from its node-info port
-- Its model list from its engine-manager port, as a flat union, a per-engine
-  breakdown, and the per-engine set of models currently loaded in memory
+The scanner then reads models, per-engine attribution, loaded models, engine
+self-reports and compact scheduling telemetry over pinned mTLS. Completed reads
+recheck their authorization after decoding, reject redirects, and enforce body
+limits. Each proof is bound to the local admission, local leaf and exact peer pin
+record, so pin rotation, readmission or membership loss cannot revive old cached
+inventory. Public hardware previews remain separately keyed and untrusted.
 
-Each enrichment keeps a last-good value, so one failed fetch dims nothing. A
-node's card does not blank out because a single poll timed out.
-
-With a cluster directory configured, a browsed peer whose `cluster-uuid=` matches
-a pin this node holds is annotated as trusted, which is how the interface can
-distinguish a paired node from a stranger it can merely see.
+Older peers without authenticated service metadata stay visible as previews but
+cannot contribute service inventory until upgraded. Desktop adoption of the
+additive record-key/provenance fields is a follow-up; routing and scheduling are
+already enforced in the Go services.
 
 ### Node Eviction
 
-The scanner scans every five seconds and tolerates three consecutive misses
-before it treats a node as gone. Even then it does not drop the node right away.
-It runs these checks and keeps the node if any of them answers:
+Public candidates retain the browser's missed-announcement and reachability
+policy. Their disappearance removes only their preview record, never a peer
+whose UUID they claim. Verified peers have an independent lifetime: a 15-second
+refresh authenticates their inventory again, and failed authentication expires
+the record after 45 seconds without a successful inventory read. Recent pinned
+inference activity can keep a busy peer present while its control plane is
+saturated. Pin or admission changes withdraw the proof immediately rather than
+waiting for that liveness deadline.
 
-- Inference the node served in the last minute, which the proxies report
-- Recent telemetry from that node
-- A direct request to the node's node-info endpoint
-- A probe of the engine-manager port
-
-The activity check comes first because a node under load is the one most likely
-to miss an announcement, and evicting it would pull a working machine out of the
-routing pool at its busiest.
-
-The remaining checks deliberately avoid the inference proxy ports. Those ports
-exist to serve requests, and using them as a liveness test would put connection
-attempts on the serving path every time multicast dropped a packet.
-
-Multicast is lossy, and Wi-Fi, VPN adapters, and sleeping network interfaces all
-produce gaps that have nothing to do with a node's health. Without that probe a
-momentary gap would evict a perfectly healthy node and take its models out of the
-routing pool.
-
-Discovery holds record replacement to the same standard. A node can reappear with
-a new identity, for example after a reset. The old entry then looks superseded,
-and leaving both in place would list the machine twice. But a matching address
-and hostname arrive in an unauthenticated announcement that anything on the
-network can send, so those signals only mark the old record as a suspect.
-Discovery confirms the node's identity before dropping that record. A stale
-duplicate therefore cannot linger, and nothing can displace a peer by claiming
-its address.
+The broker also rechecks proof bindings when publishing service targets,
+initializing the scheduler, and accepting or replaying telemetry. Retired worker
+callbacks cannot restore the old worker's records, and scanner retirement clears
+its sources without deleting a still-authenticated manual source. Withdrawal
+removes the verified record with its original proof token; it does not turn that
+record into a preview under the same host key.
 
 ### Manual Nodes
 
 Some networks block or filter multicast, so discovery is not the only path in.
 `nvpair-manual-nodes` takes an address you enter directly and probes it on a
-fixed interval, and a manual node that answers is folded into the same directory
-as a discovered one. It is initially keyed by the address you typed, and re-keyed
-to the peer's real UUID as soon as that node reports it.
+fixed interval. A PAIR peer enters the verified directory only after pinned
+cluster mTLS proves its current identity and service metadata; public HTTP or
+operator CA trust cannot substitute for that proof. Its configuration keeps an
+independent manual record key until authentication succeeds. There is no
+plaintext downgrade for peer hardware, models, engine state or scheduling data.
+Explicitly user-added bare engines keep the separate manual routing bypass and
+never establish a PAIR peer identity or provide scheduling telemetry. Recognizing
+a PAIR endpoint prevents a bare-engine downgrade for that configuration's lifetime
+in the manual-nodes worker, but this kind is not persisted. After that worker
+restarts, a previously added PAIR address can become an unauthenticated plaintext
+bare-engine route if no PAIR endpoint answers there, including if another machine
+answers instead. Persisting each entry's PAIR-vs-bare-engine kind in
+`manual-nodes.json` is a follow-up, alongside desktop handling of the additive
+`peerRecordId` and `identityVerification` fields without keying previews by a
+claimed `hostUuid`.
 
 ## Observability and Distributed Tracing
 

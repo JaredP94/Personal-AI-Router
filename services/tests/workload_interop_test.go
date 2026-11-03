@@ -35,8 +35,6 @@ import (
 	"time"
 
 	"nvpair-shared/jsonrpc"
-
-	"github.com/grandcat/zeroconf"
 )
 
 const workloadMgrService = "_nvpair-workload-manager._tcp"
@@ -81,7 +79,7 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 	t.Helper()
 	for _, arg := range args {
 		if arg == "--workload-manager-path" && portBusy(14320) {
-			t.Skip("workload-manager inter-node port 14320 already in use; skipping")
+			t.Fatalf("workload-manager inter-node port 14320 already in use; cannot exercise the requested worker")
 		}
 	}
 	args = append([]string{"--cluster-dir", clusterDir}, args...)
@@ -290,7 +288,8 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	const peerNode = "nodeloss-peer"
 	const peerUUID = "nodeloss-peer-uuid"
 
-	fx := newInterNodeCluster(t)
+	fx := newInterNodeClusterWithPeer(t, peerUUID)
+	stopPeer := fx.startVerifiedPeer(t, peerNode, nil, nil)
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,
 		"--workload-manager-path", workloadMgrBin,
@@ -309,27 +308,11 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	}
 	t.Log("subscribed to workloads stream")
 
-	// Advertise the peer as an identity-only _nvpair-node record (no service
-	// ports), so once its advertisement is withdrawn the scanner's liveness
-	// probe has nothing to dial and evicts it cleanly. A distinct uuid keeps
-	// it from colliding with this host's own record.
-	peerTXT := []string{"v=1", "uuid=" + peerUUID, "ip=127.0.0.1"}
-	peerAdv, err := zeroconf.Register(peerNode, nodeRecordService, testDomain, 14999, peerTXT, nil)
-	if err != nil {
-		t.Fatalf("register peer node: %v", err)
-	}
-	stopAdv := func() {
-		if peerAdv != nil {
-			peerAdv.Shutdown()
-			peerAdv = nil
-		}
-	}
-	t.Cleanup(stopAdv)
-	t.Logf("advertising peer %q as %s", peerNode, nodeRecordService)
-
-	// The peer must be in the broker's directory before its removal can
-	// trigger a sweep, so wait until discovery has folded it in.
-	pollNodeListed(t, stdin, msgs, peerNode, 1000, 30*time.Second, nil)
+	// Require the authenticated peer, not merely its mDNS preview, before
+	// admitting a workload against it. Its pin and answering leaf agree.
+	pollForNode(t, stdin, msgs, peerNode, 30*time.Second, func(n availableNode) bool {
+		return n.IdentityVerification == "verified" && n.Trusted && n.HostUUID == peerUUID
+	})
 	t.Logf("peer %q discovered", peerNode)
 
 	// A peer-origin running workload (scheduled on that same peer) POSTed to
@@ -345,15 +328,11 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 	}
 	t.Log("peer workload tracked as running")
 
-	// Pull the peer off the network. The scanner holds a node through
-	// shared/discovery's full miss threshold (12 scans at 5s, a full minute) with
-	// a failed liveness probe on every scan from ~15s in, and only then evicts it,
-	// at which point the broker marks the workload it can no longer hear about.
-	// The window is deliberately long enough to outlast a node saturated by its
-	// own inference load, so this deadline has to clear it with room for the
-	// probes and scan jitter.
-	stopAdv()
-	t.Log("peer advertisement withdrawn; awaiting node eviction + workload failure")
+	// Pull the advertisement AND authenticated endpoint off the network.
+	// A verified peer has its own proof-refresh lifetime, independent of the
+	// preview. Its withdrawal must still fail the tracked workload.
+	stopPeer()
+	t.Log("peer withdrawn; awaiting verified inventory eviction + workload failure")
 
 	failed := waitForWorkloadEvent(t, msgs, "workloads:upsert", "wl-nodeloss-1", 2*time.Minute)
 	if failed.WorkloadInfo.State != "failed" {
@@ -390,7 +369,7 @@ func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
 	// _nvpair-node record and pushes it to the subscribed workload-manager's relay
 	// peer source, which is the path that replaced the per-service browse.
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "stub-wm-peer", "stub-wm-peer-uuid")
+	received := fx.startStubClusterPeer(t, "stub-wm-peer")
 
 	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir,
 		"--scanner-path", scannerBin,

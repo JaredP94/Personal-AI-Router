@@ -16,8 +16,6 @@ import (
 	"nvpair-shared/appdir"
 	"nvpair-shared/enginenative"
 	"nvpair-shared/noderec"
-
-	"nvpair-ui-broker/relay"
 )
 
 // manualNodeStatus is the subset of nvpair-manual-nodes' ManualNodeStatus the
@@ -28,25 +26,28 @@ import (
 // (bridgeManualNode); the rest project into the discovery store via
 // manualToEnriched.
 type manualNodeStatus struct {
-	ID             string      `json:"id"`
-	Address        string      `json:"address"`
-	OllamaUp       bool        `json:"ollama_up"`
-	OllamaPort     int         `json:"ollama_port"`
-	OllamaModels   []string    `json:"ollama_models,omitempty"`
-	LMStudioUp     bool        `json:"lmstudio_up"`
-	LMStudioPort   int         `json:"lmstudio_port"`
-	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
-	OMLXUp         bool        `json:"omlx_up"`
-	OMLXPort       int         `json:"omlx_port"`
-	OMLXModels     []string    `json:"omlx_models,omitempty"`
-	NodeInfoUp     bool        `json:"node_info_up"`
-	NodeInfoPort   int         `json:"node_info_port"`
-	GPUs           []GPUInfo   `json:"gpus"`
-	CPU            *CPUInfo    `json:"cpu"`
-	Memory         *MemoryInfo `json:"memory"`
-	TelemetryValid bool        `json:"telemetryValid"`
-	MSSince        int64       `json:"msSince"`
-	SampleSeq      uint64      `json:"sampleSeq,omitempty"`
+	IdentityVerification string                      `json:"identityVerification,omitempty"`
+	PeerRecordID         string                      `json:"peerRecordId,omitempty"`
+	PeerMetadata         *noderec.PeerMetadataParams `json:"peerMetadata,omitempty"`
+	ID                   string                      `json:"id"`
+	Address              string                      `json:"address"`
+	OllamaUp             bool                        `json:"ollama_up"`
+	OllamaPort           int                         `json:"ollama_port"`
+	OllamaModels         []string                    `json:"ollama_models,omitempty"`
+	LMStudioUp           bool                        `json:"lmstudio_up"`
+	LMStudioPort         int                         `json:"lmstudio_port"`
+	LMStudioModels       []string                    `json:"lmstudio_models,omitempty"`
+	OMLXUp               bool                        `json:"omlx_up"`
+	OMLXPort             int                         `json:"omlx_port"`
+	OMLXModels           []string                    `json:"omlx_models,omitempty"`
+	NodeInfoUp           bool                        `json:"node_info_up"`
+	NodeInfoPort         int                         `json:"node_info_port"`
+	GPUs                 []GPUInfo                   `json:"gpus"`
+	CPU                  *CPUInfo                    `json:"cpu"`
+	Memory               *MemoryInfo                 `json:"memory"`
+	TelemetryValid       bool                        `json:"telemetryValid"`
+	MSSince              int64                       `json:"msSince"`
+	SampleSeq            uint64                      `json:"sampleSeq,omitempty"`
 	// HostUUID is the remote's stable per-host identity, learned from its
 	// node-info /v1/node-info. It lets a manual node key by the same permanent
 	// identity as mDNS-discovered nodes (and dedup with itself when the same
@@ -65,11 +66,13 @@ type manualNodeStatus struct {
 }
 
 type manualNodeStatusEntry struct {
+	generation uint64
 	status     manualNodeStatus
 	receivedAt time.Time
 }
 
 type manualNodeTelemetryParams struct {
+	PeerRecordID      string `json:"peerRecordId,omitempty"`
 	ID                string `json:"id"`
 	HostUUID          string `json:"hostUuid,omitempty"`
 	GPUUtilizationPct uint32 `json:"gpuUtilizationPct"`
@@ -238,6 +241,7 @@ func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeT
 	}
 	return noderec.NodeTelemetry{
 		HostUUID:          hostUUID,
+		PeerRecordID:      status.PeerRecordID,
 		GPUUtilizationPct: utilization,
 		TelemetryValid:    status.TelemetryValid,
 		MSSince:           status.MSSince,
@@ -259,6 +263,7 @@ func (b *Broker) ingestManualNodeTelemetry(t manualNodeTelemetryParams) {
 	}
 	b.ingestTelemetryAt(sourceManual, noderec.NodeTelemetry{
 		HostUUID:          key,
+		PeerRecordID:      t.PeerRecordID,
 		GPUUtilizationPct: t.GPUUtilizationPct,
 		TelemetryValid:    t.TelemetryValid,
 		MSSince:           t.MSSince,
@@ -281,8 +286,17 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	// fallback. Once the real UUID is learned, a manually-added machine
 	// that's also discovered over mDNS collapses to the one hostUuid-keyed entry.
 	hostUUID := s.HostUUID
-	if hostUUID == "" {
+	if hostUUID == "" || s.PeerRecordID == "" {
 		hostUUID = s.ID
+	}
+	recordID := s.PeerRecordID
+	verification := "verified"
+	if recordID == "" {
+		recordID = noderec.ManualRecordID(s.ID)
+		verification = "unverified"
+		if s.HostUUID == "" && s.ClusterUUID == "" && s.IdentityVerification != "unverified" {
+			verification = "manual"
+		}
 	}
 	models := s.Models
 	if len(models) == 0 {
@@ -293,18 +307,22 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		modelsByEngine = manualModelsByEngine(s)
 	}
 	en := EnrichedNode{
-		ID:             s.ID,
-		HostUUID:       hostUUID,
-		Host:           s.Address,
-		Port:           s.NodeInfoPort,
-		GPUs:           s.GPUs,
-		CPU:            s.CPU,
-		Memory:         s.Memory,
-		Models:         models,
-		ModelsByEngine: modelsByEngine,
-		LoadedByEngine: s.LoadedByEngine,
-		EngineNative:   s.EngineNative,
-		Clustered:      s.ClusterUUID != "",
+		ID:                   s.ID,
+		HostUUID:             hostUUID,
+		Host:                 s.Address,
+		Port:                 s.NodeInfoPort,
+		GPUs:                 s.GPUs,
+		CPU:                  s.CPU,
+		Memory:               s.Memory,
+		Models:               models,
+		ModelsByEngine:       modelsByEngine,
+		LoadedByEngine:       s.LoadedByEngine,
+		EngineNative:         s.EngineNative,
+		Clustered:            s.ClusterUUID != "",
+		PeerRecordID:         recordID,
+		IdentityVerification: verification,
+		ClusterUUID:          s.ClusterUUID,
+		ManualEngine:         verification == "manual",
 	}
 	if s.Address != "" {
 		en.Addresses = []string{s.Address}
@@ -328,31 +346,32 @@ func (b *Broker) annotateManualTrust(en *EnrichedNode, s manualNodeStatus) {
 		return
 	}
 	b.mesh.Refresh()
-	if (s.ClusterUUID != "" && b.mesh.HasPin(s.ClusterUUID)) ||
-		(en.HostUUID != "" && b.mesh.HasPin(en.HostUUID)) {
-		en.Trusted = true
+	en.Trusted = s.HostUUID == s.ClusterUUID && s.PeerMetadata != nil && s.PeerMetadata.HostUUID == s.HostUUID && b.currentPeerProof(s.ClusterUUID, s.PeerRecordID)
+	if !en.Trusted && en.IdentityVerification == "verified" {
+		en.IdentityVerification = "unverified"
+		en.PeerRecordID = noderec.ManualRecordID(s.ID)
+	}
+	if en.Trusted {
 		en.Clustered = true
+		en.IdentityVerification = "verified"
 	}
 }
 
 func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.DirectoryNode {
+	if s.PeerRecordID != "" && s.PeerMetadata != nil && s.HostUUID == s.ClusterUUID && b.currentPeerProof(s.ClusterUUID, s.PeerRecordID) {
+		services := make(map[noderec.ServiceKey]noderec.ServiceStatus, len(s.PeerMetadata.Services))
+		for service, port := range s.PeerMetadata.Services {
+			services[service] = noderec.ServiceStatus{Port: port}
+		}
+		return noderec.DirectoryNode{HostUUID: s.HostUUID, Name: s.PeerMetadata.Name, IP: s.Address, IPs: []string{s.Address}, ClusterUUID: s.ClusterUUID, Trusted: true, IdentityVerification: "verified", PeerRecordID: s.PeerRecordID, Services: services, GPUs: s.GPUs, CPU: s.CPU, Memory: s.Memory, Models: s.Models, ModelsByEngine: s.ModelsByEngine, LoadedByEngine: s.LoadedByEngine, EngineNative: s.EngineNative, LastSeen: time.Now().Unix()}
+	}
 	hostUUID := s.HostUUID
 	if hostUUID == "" {
 		hostUUID = key
 	}
 	trusted := false
 	clusterUUID := s.ClusterUUID
-	if b.mesh != nil {
-		b.mesh.Refresh()
-		if clusterUUID != "" && b.mesh.HasPin(clusterUUID) {
-			trusted = true
-		} else if hostUUID != "" && b.mesh.HasPin(hostUUID) {
-			trusted = true
-			if clusterUUID == "" {
-				clusterUUID = hostUUID
-			}
-		}
-	}
+	// Public/manual IDs never become peer proofs merely because a pin exists.
 	services := make(map[noderec.ServiceKey]noderec.ServiceStatus)
 	if s.NodeInfoUp {
 		port := s.NodeInfoPort
@@ -420,26 +439,37 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels)
 	}
 
+	verification := "unverified"
+	if s.HostUUID == "" && s.ClusterUUID == "" && s.IdentityVerification != "unverified" {
+		verification = "manual"
+	}
 	return noderec.DirectoryNode{
-		HostUUID:       hostUUID,
-		Name:           s.ID,
-		IP:             s.Address,
-		IPs:            ips,
-		ClusterUUID:    clusterUUID,
-		Trusted:        trusted,
-		Services:       services,
-		GPUs:           s.GPUs,
-		CPU:            s.CPU,
-		Memory:         s.Memory,
-		Models:         models,
-		ModelsByEngine: modelsByEngine,
-		LoadedByEngine: s.LoadedByEngine,
-		EngineNative:   s.EngineNative,
-		LastSeen:       time.Now().Unix(),
+		PeerRecordID:         noderec.ManualRecordID(s.ID),
+		IdentityVerification: verification,
+		HostUUID:             hostUUID,
+		Name:                 s.ID,
+		IP:                   s.Address,
+		IPs:                  ips,
+		ClusterUUID:          clusterUUID,
+		Trusted:              trusted,
+		Services:             services,
+		GPUs:                 s.GPUs,
+		CPU:                  s.CPU,
+		Memory:               s.Memory,
+		Models:               models,
+		ModelsByEngine:       modelsByEngine,
+		LoadedByEngine:       s.LoadedByEngine,
+		EngineNative:         s.EngineNative,
+		LastSeen:             time.Now().Unix(),
 	}
 }
 
 func (b *Broker) refreshManualNodesTrust() {
+	// Snapshot and replay are one operation relative to worker callbacks and
+	// retirement. Never let a copied status outlive its worker generation.
+	b.manualCallbackMu.Lock()
+	defer b.manualCallbackMu.Unlock()
+	generation := b.manualInventoryGeneration.Load()
 	b.manualMu.Lock()
 	seenKeys := make(map[string]struct{}, len(b.manualNodeKeys))
 	entries := make([]manualNodeStatusEntry, 0, len(b.manualNodeKeys))
@@ -451,20 +481,14 @@ func (b *Broker) refreshManualNodesTrust() {
 			continue
 		}
 		seenKeys[key] = struct{}{}
-		if canonical, ok := b.survivingAliasLocked(key); ok {
+		if canonical, ok := b.survivingAliasLocked(key); ok && canonical.generation == generation {
 			entries = append(entries, canonical)
 		}
 	}
 	b.manualMu.Unlock()
 
 	for _, entry := range entries {
-		en := manualToEnriched(entry.status)
-		key := en.storeKey()
-		b.annotateManualTrust(&en, entry.status)
-		b.store.Upsert(en, sourceManual)
-		if b.relayDir != nil {
-			b.relayDir.ApplySource(relay.SourceManual, noderec.NotifyNodeUpdated, b.manualToDirectoryNode(entry.status, key))
-		}
+		b.upsertManualNode(entry.status)
 	}
 }
 
@@ -582,7 +606,9 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 	if p == nil {
 		return
 	}
-	if up && s.Address != "" && port > 0 {
+	// Proven PAIR peers travel exclusively through the authenticated relay.
+	// Only independent, explicitly configured bare engines use this bypass.
+	if up && s.IdentityVerification != "unverified" && s.HostUUID == "" && s.ClusterUUID == "" && s.PeerRecordID == "" && s.Address != "" && port > 0 {
 		node := proxyManualNode{
 			ID:        key,
 			Host:      s.Address,

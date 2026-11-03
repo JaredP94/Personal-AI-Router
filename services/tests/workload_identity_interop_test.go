@@ -160,7 +160,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	requireMulticast(t)
 	if portBusy(11435) || portBusy(14320) {
-		t.Skip("ollama-proxy (11435) or workload-manager (14320) port already in use; skipping")
+		t.Fatalf("ollama-proxy (11435) or workload-manager (14320) port already in use after requireMulticast succeeded")
 	}
 
 	// Fake Ollama that accepts the request then blocks, keeping the proxied
@@ -190,7 +190,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	// manager fans out to it. The inter-node interface is cluster mTLS only, so the
 	// stub must hold a cluster identity the node under test pins.
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer", "rehydrate-peer-uuid")
+	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
 		"--proxy-path", proxyBin,
@@ -277,7 +277,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	requireMulticast(t)
 	if portBusy(11435) || portBusy(14320) {
-		t.Skip("ollama-proxy (11435) or workload-manager (14320) port already in use; skipping")
+		t.Fatalf("ollama-proxy (11435) or workload-manager (14320) port already in use after requireMulticast succeeded")
 	}
 
 	// Fake Ollama that completes immediately, so the workload reaches a terminal
@@ -292,7 +292,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	ollamaPort := portOfURL(t, ollama.URL)
 
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "rehydrate-term-peer", "rehydrate-term-peer-uuid")
+	received := fx.startStubClusterPeer(t, "rehydrate-term-peer")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
 		"--proxy-path", proxyBin,

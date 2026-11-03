@@ -18,12 +18,14 @@ import (
 // availableNode mirrors the broker's discovery boundary shape (the
 // discovery:get-nodes element and discovery:nodes-changed payload entry).
 type availableNode struct {
-	ID        string `json:"id"`
-	HostUUID  string `json:"hostUuid"`
-	Name      string `json:"name"`
-	IPAddress string `json:"ipAddress"`
-	Port      int    `json:"port"`
-	LastSeen  int64  `json:"lastSeen"` // Unix seconds
+	PeerRecordID         string `json:"peerRecordId,omitempty"`
+	IdentityVerification string `json:"identityVerification,omitempty"`
+	ID                   string `json:"id"`
+	HostUUID             string `json:"hostUuid"`
+	Name                 string `json:"name"`
+	IPAddress            string `json:"ipAddress"`
+	Port                 int    `json:"port"`
+	LastSeen             int64  `json:"lastSeen"` // Unix seconds
 	// Trusted: this node is a paired cluster peer of ours. Clustered: it belongs
 	// to some cluster (advertises a cluster-uuid), whether or not we're paired
 	// with it. Either one makes it non-invitable — an already-clustered peer
@@ -203,6 +205,10 @@ func (v *nodesView) setNodes(nodes []availableNode) {
 // empty for an invitable standalone node.
 func nodeStatus(n availableNode) string {
 	switch {
+	case n.IdentityVerification == "unverified":
+		return "Unverified"
+	case n.IdentityVerification == "manual":
+		return "Manual engine"
 	case n.Trusted:
 		return "Connected"
 	case n.Clustered:

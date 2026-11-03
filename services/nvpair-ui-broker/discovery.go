@@ -36,7 +36,11 @@ type (
 )
 
 type EnrichedNode struct {
-	ID string `json:"id"`
+	PeerRecordID         string `json:"peerRecordId,omitempty"`
+	IdentityVerification string `json:"identityVerification,omitempty"`
+	ClusterUUID          string `json:"-"`
+	ManualEngine         bool   `json:"-"`
+	ID                   string `json:"id"`
 	// HostUUID is the node's stable per-host identity (the daemon's uuid= TXT).
 	// It's the discovery-store key, so a PC rename — which changes the hostname
 	// (ID) but not the UUID — updates the existing entry in place instead of
@@ -108,21 +112,24 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		port = ni.Port
 	}
 	return EnrichedNode{
-		ID:             n.Name,
-		HostUUID:       n.HostUUID,
-		Host:           n.Name,
-		Port:           port,
-		Addresses:      addrs,
-		TXT:            txt,
-		GPUs:           n.GPUs,
-		CPU:            n.CPU,
-		Memory:         n.Memory,
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered(),
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
-		EngineNative:   n.EngineNative,
+		ID:                   n.Name,
+		HostUUID:             n.HostUUID,
+		Host:                 n.Name,
+		Port:                 port,
+		Addresses:            addrs,
+		TXT:                  txt,
+		GPUs:                 n.GPUs,
+		CPU:                  n.CPU,
+		Memory:               n.Memory,
+		Trusted:              n.Trusted,
+		PeerRecordID:         n.PeerRecordID,
+		IdentityVerification: n.IdentityVerification,
+		ClusterUUID:          n.ClusterUUID,
+		Clustered:            n.Clustered(),
+		Models:               n.Models,
+		ModelsByEngine:       n.ModelsByEngine,
+		LoadedByEngine:       n.LoadedByEngine,
+		EngineNative:         n.EngineNative,
 	}
 }
 
@@ -133,7 +140,7 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 // change never duplicates or splits an entry. No id fallback: an empty
 // key is rejected by Upsert rather than silently keyed by name.
 func (n EnrichedNode) storeKey() string {
-	return n.HostUUID
+	return (noderec.DirectoryNode{HostUUID: n.HostUUID, PeerRecordID: n.PeerRecordID, IdentityVerification: n.IdentityVerification}).RecordKey()
 }
 
 // nodeSource identifies which feed contributed a store record. The same node
@@ -321,7 +328,7 @@ func (s *discoveryStore) Remove(key string, source nodeSource) bool {
 
 func enrichedNodeEqual(a, b EnrichedNode) bool {
 	if a.ID != b.ID || a.HostUUID != b.HostUUID || a.Host != b.Host || a.Port != b.Port ||
-		a.Trusted != b.Trusted || a.Clustered != b.Clustered {
+		a.PeerRecordID != b.PeerRecordID || a.IdentityVerification != b.IdentityVerification || a.ManualEngine != b.ManualEngine || a.Trusted != b.Trusted || a.Clustered != b.Clustered {
 		return false
 	}
 	if !slices.Equal(a.Addresses, b.Addresses) || !slices.Equal(a.TXT, b.TXT) || !slices.Equal(a.Models, b.Models) {
@@ -401,20 +408,26 @@ func (sn storedNode) toAvailable() AvailableNode {
 	if len(candidates) < 2 {
 		candidates = nil
 	}
+	hostUUID := n.HostUUID
+	if n.IdentityVerification == "manual" {
+		hostUUID = n.storeKey()
+	}
 	return AvailableNode{
-		ID:             n.ID,
-		Name:           n.ID,
-		HostUUID:       n.HostUUID,
-		IPAddress:      primary,
-		IPAddresses:    candidates,
-		Port:           n.Port,
-		LastSeen:       sn.lastSeen.Unix(),
-		Trusted:        n.Trusted,
-		Clustered:      n.Clustered,
-		Models:         n.Models,
-		ModelsByEngine: n.ModelsByEngine,
-		LoadedByEngine: n.LoadedByEngine,
-		EngineNative:   n.EngineNative,
+		PeerRecordID:         n.PeerRecordID,
+		IdentityVerification: n.IdentityVerification,
+		ID:                   n.ID,
+		Name:                 n.ID,
+		HostUUID:             hostUUID,
+		IPAddress:            primary,
+		IPAddresses:          candidates,
+		Port:                 n.Port,
+		LastSeen:             sn.lastSeen.Unix(),
+		Trusted:              n.Trusted,
+		Clustered:            n.Clustered,
+		Models:               n.Models,
+		ModelsByEngine:       n.ModelsByEngine,
+		LoadedByEngine:       n.LoadedByEngine,
+		EngineNative:         n.EngineNative,
 	}
 }
 
@@ -440,6 +453,9 @@ type scannerProcess struct {
 	onNodeLost         func(uuid, name string)
 	onTelemetry        func(noderec.NodeTelemetry)
 	onTelemetryRemoved func(hostUUID string)
+	authorize          func(noderec.DirectoryNode) bool
+	accept             func() bool
+	notifyMu           sync.Mutex
 	// activity queues peer liveness reports for the scanner. It exists so the
 	// proxy-reader goroutine that receives them never waits on the scanner's
 	// pipe: reports arrive while inference is streaming, and a wedged scanner
@@ -490,6 +506,8 @@ func startScanner(
 	onNodeLost func(uuid, name string),
 	onTelemetry func(noderec.NodeTelemetry),
 	onTelemetryRemoved func(hostUUID string),
+	authorize func(noderec.DirectoryNode) bool,
+	accept func() bool,
 	extraArgs ...string,
 ) (*scannerProcess, error) {
 	cmd := exec.Command(binaryPath, append([]string{"--log-level", logLevel}, extraArgs...)...)
@@ -520,6 +538,8 @@ func startScanner(
 		onNodeLost:         onNodeLost,
 		onTelemetry:        onTelemetry,
 		onTelemetryRemoved: onTelemetryRemoved,
+		authorize:          authorize,
+		accept:             accept,
 		activity:           make(chan nodeActivityReport, activityQueueDepth),
 		done:               make(chan struct{}),
 	}
@@ -674,6 +694,11 @@ func (s *scannerProcess) pushUnregister(svc noderec.ServiceKey) {
 // is logged. Responses to broker-issued Calls are demuxed by the peer itself and
 // never reach here; any other notification is ignored.
 func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	if s.accept != nil && !s.accept() {
+		return
+	}
 	switch method {
 	case noderec.NotifyNodeDiscovered, noderec.NotifyNodeUpdated, noderec.NotifyNodeRemoved:
 		var ev noderec.NodeEvent
@@ -681,13 +706,38 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 			slog.Warn("daemon emitted invalid node event", "method", method, "err", err)
 			return
 		}
+		if s.authorize != nil && !s.authorize(ev.Node) {
+			if s.store != nil {
+				s.store.mu.RLock()
+				prior := s.store.nodes[ev.Node.RecordKey()].scanner
+				s.store.mu.RUnlock()
+				if prior != nil && s.authorize(noderec.DirectoryNode{HostUUID: prior.HostUUID, ClusterUUID: prior.ClusterUUID, Trusted: prior.Trusted, PeerRecordID: prior.PeerRecordID, IdentityVerification: prior.IdentityVerification}) {
+					return
+				}
+			}
+			ev.Node.Trusted = false
+			if method != noderec.NotifyNodeRemoved {
+				ev.Node.PeerRecordID = noderec.PreviewRecordID(ev.Node.Name, ev.Node.HostUUID)
+				ev.Node.IdentityVerification = "unverified"
+			}
+			ev.Node.Models, ev.Node.ModelsByEngine, ev.Node.LoadedByEngine = nil, nil, nil
+			ev.Node.EngineNative = nil
+		}
+		if s.store != nil && method != noderec.NotifyNodeRemoved && ev.Node.ServicePeer() {
+			s.store.mu.RLock()
+			prior := s.store.nodes[ev.Node.HostUUID].scanner
+			s.store.mu.RUnlock()
+			if prior != nil && prior.PeerRecordID != ev.Node.PeerRecordID && s.onTelemetryRemoved != nil {
+				s.onTelemetryRemoved(ev.Node.HostUUID)
+			}
+		}
 		// Fold into the relay directory (internal subscribers: proxies, mesh
 		// services) and the client-facing store (discovery:get-nodes /
 		// nodes-changed, merging manual nodes), carrying the trusted annotation.
 		if s.relayDir != nil {
 			s.relayDir.ApplySource(relay.SourceScanner, method, ev.Node)
 		}
-		if method == noderec.NotifyNodeRemoved && s.onTelemetryRemoved != nil {
+		if method == noderec.NotifyNodeRemoved && ev.Node.IdentityVerification != "unverified" && ev.Node.IdentityVerification != "manual" && s.onTelemetryRemoved != nil {
 			s.onTelemetryRemoved(ev.Node.HostUUID)
 		}
 		if s.store != nil {
@@ -701,7 +751,8 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 				// present, so we must not fail its jobs. Identify the departed
 				// node by HostUUID, the value workloads are stamped/keyed with,
 				// not the display hostname.
-				if s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner) && s.onNodeLost != nil {
+				gone := s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner)
+				if (gone || (ev.Node.ServicePeer() && s.authorize != nil)) && s.onNodeLost != nil {
 					s.onNodeLost(ev.Node.HostUUID, ev.Node.Name)
 				}
 			} else {

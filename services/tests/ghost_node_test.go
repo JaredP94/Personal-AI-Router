@@ -23,7 +23,70 @@ import (
 )
 
 // TestScannerEvictsRecordSupersededAtItsAddress is the cross-process regression
-// test for the duplicate ("ghost") node a reset machine leaves behind.
+// test for the duplicate ("ghost") verified node a reset machine leaves behind.
+// Pinned mTLS inventory refresh, not the public browser's TCP guard, owns this
+// record's lifetime. A wiped machine loses the old key and cluster admission,
+// but still answers public node-info under its fresh identity on the same port.
+func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
+	requireMulticast(t)
+	const (
+		originalUUID = "11111111-aaaa-4aaa-8aaa-000000000001"
+		wipedUUID    = "22222222-bbbb-4bbb-8bbb-000000000002"
+	)
+	fx := newInterNodeClusterWithPeer(t, originalUUID)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	stop := fx.startVerifiedPeerOn(t, "ghost-verified-peer", nil, nil, ln)
+	events := startScannerForGhostTest(t, fx.nodeDir)
+	original, ok := awaitNodeEvent(events, noderec.NotifyNodeUpdated, originalUUID, 30*time.Second)
+	if !ok {
+		t.Fatalf("verified peer record was never discovered after requireMulticast succeeded")
+	}
+	if !original.ServicePeer() || original.IdentityVerification != "verified" || original.PeerRecordID == "" {
+		t.Fatalf("fixture did not prove the original peer: %+v", original)
+	}
+
+	// Drop the old advertisement and key-bearing listener, then bring up the
+	// wiped, unclustered machine at the identical address. A live public HTTP
+	// response proves this test cannot pass merely because a TCP port closed.
+	stop()
+	replacement, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("rebind wiped peer at %s: %v", addr, err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"hostUuid": wipedUUID, "clusterUuid": "", "GPUs": []any{}})
+	})}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(replacement) }()
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Get("http://" + addr + "/v1/node-info")
+	if err != nil {
+		t.Fatalf("wiped peer must still answer at the original endpoint: %v", err)
+	}
+	var info struct {
+		HostUUID string `json:"hostUuid"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	_ = resp.Body.Close()
+	if err != nil || info.HostUUID != wipedUUID {
+		t.Fatalf("wiped identity = %q, decode error = %v", info.HostUUID, err)
+	}
+	removed, ok := awaitNodeEvent(events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute)
+	if !ok {
+		t.Fatalf("scanner kept %s after a fresh identity answered at its address", originalUUID)
+	}
+	if removed.PeerRecordID != original.PeerRecordID || removed.IdentityVerification != "verified" {
+		t.Fatalf("withdrawal did not identify the original verified record: %+v", removed)
+	}
+}
+
+// TestScannerEvictsPreviewSupersededAtItsAddress covers the separate public
+// candidate lifetime. Unlike a verified peer, it uses the browser miss threshold
+// and identity-confirming public liveness probe.
 //
 // A machine whose appdata is wiped mints a fresh hostUuid but keeps its LAN
 // address and re-binds the same fixed service ports. The scanner's
@@ -37,7 +100,7 @@ import (
 // responder publishes the record, and a local HTTP server plays its node-info.
 // Flipping that server's reported hostUuid is exactly the signal a wipe
 // produces, and is what the probe must notice.
-func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
+func TestScannerEvictsPreviewSupersededAtItsAddress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("multicast + miss-threshold timing; skipped under -short")
 	}
@@ -92,12 +155,17 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 		}
 	}()
 
-	events := startScannerForGhostTest(t)
+	events := startScannerForGhostTest(t, t.TempDir())
 
-	// The scanner must see the peer before there is anything to evict. A slow
-	// or lossy multicast environment is an inconclusive run, not a failure.
-	if !awaitNodeEvent(events, noderec.NotifyNodeDiscovered, originalUUID, 30*time.Second) {
-		t.Skip("peer record was never discovered; multicast is unavailable in this environment")
+	// requireMulticast already made the environment decision. Discovery failure
+	// here is a regression, not grounds for an inconclusive self-skip.
+	key := noderec.PreviewRecordID(peerInstance, originalUUID)
+	preview, ok := awaitNodeEvent(events, noderec.NotifyNodeUpdated, key, 30*time.Second)
+	if !ok {
+		t.Fatalf("preview record was never discovered after requireMulticast succeeded")
+	}
+	if preview.IdentityVerification != "unverified" || preview.Trusted || preview.PeerRecordID != key {
+		t.Fatalf("plaintext fixture unexpectedly proved an identity: %+v", preview)
 	}
 
 	// The wipe: the record stops being advertised under the old identity, and
@@ -111,7 +179,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	// inference load — so this deadline is generous by design. The identity probe
 	// runs on every scan from ~15s in, so the mismatch is detected long before the
 	// eviction it eventually authorizes.
-	if !awaitNodeEvent(events, noderec.NotifyNodeRemoved, originalUUID, 2*time.Minute) {
+	if _, ok := awaitNodeEvent(events, noderec.NotifyNodeRemoved, key, 2*time.Minute); !ok {
 		t.Fatalf("scanner never evicted %s after its address began answering as %s; "+
 			"a record whose machine was re-identified must not be kept alive by a TCP probe",
 			originalUUID, wipedUUID)
@@ -123,13 +191,14 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 // no subscription is needed. stdin is held open for the process lifetime —
 // closing it ends the scanner's read loop.
 //
-// --cluster-dir is a throwaway temp dir, as everywhere else in this package.
+// --cluster-dir is a throwaway identity (empty or synthetically admitted), as
+// everywhere else in this package.
 // Without it the scanner resolves the real per-user app dir: it would read (and
 // mint into) the developer's own identity files and advertise their machine's
 // real cluster identity on the LAN while the test runs.
-func startScannerForGhostTest(t *testing.T) <-chan jsonrpc.Message {
+func startScannerForGhostTest(t *testing.T, clusterDir string) <-chan jsonrpc.Message {
 	t.Helper()
-	cmd := testCommand(t, scannerBin, "--cluster-dir", t.TempDir())
+	cmd := testCommand(t, scannerBin, "--cluster-dir", clusterDir)
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
@@ -151,16 +220,15 @@ func startScannerForGhostTest(t *testing.T) <-chan jsonrpc.Message {
 	return startMsgReader(stdout)
 }
 
-// awaitNodeEvent reports whether the named discovery:node-* event for hostUUID
-// arrives before the deadline. Other events (this node's own record, the peer's
-// enrichment updates) are ignored.
-func awaitNodeEvent(events <-chan jsonrpc.Message, method, hostUUID string, timeout time.Duration) bool {
+// awaitNodeEvent matches the independent record key, never a preview's claimed
+// host UUID. Other events (self, enrichment, other candidates) are ignored.
+func awaitNodeEvent(events <-chan jsonrpc.Message, method, recordKey string, timeout time.Duration) (noderec.DirectoryNode, bool) {
 	deadline := time.After(timeout)
 	for {
 		select {
 		case msg, ok := <-events:
 			if !ok {
-				return false
+				return noderec.DirectoryNode{}, false
 			}
 			if msg.Method != method {
 				continue
@@ -169,11 +237,11 @@ func awaitNodeEvent(events <-chan jsonrpc.Message, method, hostUUID string, time
 			if err := json.Unmarshal(msg.Params, &ev); err != nil {
 				continue
 			}
-			if ev.Node.HostUUID == hostUUID {
-				return true
+			if ev.Node.RecordKey() == recordKey {
+				return ev.Node, true
 			}
 		case <-deadline:
-			return false
+			return noderec.DirectoryNode{}, false
 		}
 	}
 }

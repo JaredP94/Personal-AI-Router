@@ -38,7 +38,7 @@ func (b *Broker) initWorkerRegistry() {
 		spawn        func() (supervisedHandle, error)
 		clear        func()
 	}{
-		{"scanner", "nvpair-node-scanner", &b.scannerPath, &b.scannerSup, b.spawnScanner, func() { b.setScanner(nil) }},
+		{"scanner", "nvpair-node-scanner", &b.scannerPath, &b.scannerSup, b.spawnScanner, b.clearScannerInventory},
 		{"errors", "nvpair-errors", &b.errorsPath, &b.errorsSup, b.spawnErrors, func() { b.setErrors(nil) }},
 		{"settings", "nvpair-node-settings", &b.settingsPath, &b.settingsSup, b.spawnSettings, func() { b.setSettings(nil) }},
 		{"engine-manager", "nvpair-engine-manager", &b.engineMgrPath, &b.engineMgrSup, b.spawnEngineMgr, func() { b.setEngineMgr(nil); b.clearEngineRelaySub() }},

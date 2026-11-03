@@ -29,6 +29,7 @@
 package noderec
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -322,18 +323,11 @@ const (
 	// MethodSetClusterIdentity tells nvpair-node-info the cluster principal this
 	// node currently holds, so it can report it on /v1/node-info.
 	//
-	// node-info is spawned with no cluster dir on purpose — it is the one
-	// inter-node surface kept plain so any LAN peer can read this host's
-	// inventory (see the broker's spawnNodeInfo) — which also leaves it unable to
-	// read membership for itself. The broker owns that fact and pushes it here on
-	// startup and on every change, so node-info reports one live value rather
-	// than deriving a second one.
-	//
-	// The value is a peer's only mDNS-independent way to learn that this node has
-	// left a cluster: cluster membership otherwise reaches the fleet solely as the
-	// cluster-uuid= TXT key, and a consumer that stops receiving this node's mDNS
-	// record keeps its last observed value indefinitely.
+	// With a cluster directory node-info reads membership from its live mesh.
+	// Standalone launches without one can receive it from their owning parent.
 	MethodSetClusterIdentity = "nodeinfo:set-cluster-identity"
+	// MethodSetPeerMetadata supplies service inventory over the owned stdio pipe.
+	MethodSetPeerMetadata = "nodeinfo:set-peer-metadata"
 
 	// MethodSetDemand tells nvpair-node-info whether local workload execution is active.
 	MethodSetDemand = "stats/set-demand"
@@ -419,6 +413,15 @@ type UnregisterParams struct {
 // MethodSetClusterIdentity. Empty means this node belongs to no cluster, which is
 // a meaningful value rather than an absent one — it is how a departure is
 // announced — so the field is always sent.
+// PeerMetadataParams is broker-owned metadata authenticated with node-info.
+// Public HTTP copies are display-only and cannot authorize service decisions.
+type PeerMetadataParams struct {
+	HostUUID string             `json:"hostUuid"`
+	Name     string             `json:"name"`
+	IPs      []string           `json:"ips,omitempty"`
+	Services map[ServiceKey]int `json:"services"`
+}
+
 type ClusterIdentityParams struct {
 	ClusterUUID string `json:"clusterUuid"`
 }
@@ -575,14 +578,16 @@ type DirectoryNode struct {
 	// direct-connect link is reachable only from the machine on its far end — so
 	// a consumer that must connect walks this list instead of treating IP as the
 	// only answer. Empty for a node that published one address.
-	IPs         []string                     `json:"ips,omitempty"`
-	ClusterUUID string                       `json:"clusterUuid,omitempty"`
-	Trusted     bool                         `json:"trusted"` // we hold a cluster pin for it
-	Services    map[ServiceKey]ServiceStatus `json:"services"`
-	GPUs        []GPUInfo                    `json:"gpus,omitempty"`
-	CPU         *CPUInfo                     `json:"cpu,omitempty"`
-	Memory      *MemoryInfo                  `json:"memory,omitempty"`
-	Models      []string                     `json:"models,omitempty"` // enriched from engine-manager's em /v1/models
+	IPs                  []string                     `json:"ips,omitempty"`
+	ClusterUUID          string                       `json:"clusterUuid,omitempty"`
+	Trusted              bool                         `json:"trusted"` // identity proven over current pinned cluster mTLS
+	PeerRecordID         string                       `json:"peerRecordId,omitempty"`
+	IdentityVerification string                       `json:"identityVerification,omitempty"` // local, verified, or unverified
+	Services             map[ServiceKey]ServiceStatus `json:"services"`
+	GPUs                 []GPUInfo                    `json:"gpus,omitempty"`
+	CPU                  *CPUInfo                     `json:"cpu,omitempty"`
+	Memory               *MemoryInfo                  `json:"memory,omitempty"`
+	Models               []string                     `json:"models,omitempty"` // enriched from engine-manager's em /v1/models
 	// ModelsByEngine attributes the enriched model list to the engine that
 	// serves each model, keyed by engine-manager engine name (e.g. "ollama",
 	// "lmstudio"). Models is the flat de-duplicated union of these lists and is
@@ -621,6 +626,47 @@ type DirectoryNode struct {
 	// and never merged into them.
 	EngineNative *enginenative.Stats `json:"engineNative,omitempty"`
 	LastSeen     int64               `json:"lastSeen"` // Unix seconds
+}
+
+// PreviewRecordID namespaces unauthenticated claims independently of host IDs.
+// Addresses and ports are deliberately excluded so a changed hint updates the
+// same preview rather than leaving an orphaned row.
+func PreviewRecordID(name, claimedHostUUID string) string {
+	return fmt.Sprintf("preview:%x", sha256.Sum256([]byte(name+"\x00"+claimedHostUUID)))
+}
+
+// ManualRecordID keeps explicit user configurations outside the peer namespace.
+func ManualRecordID(id string) string { return fmt.Sprintf("manual:%x", sha256.Sum256([]byte(id))) }
+
+// RecordKey is the directory identity, never an unverified claimed host UUID.
+func (n DirectoryNode) RecordKey() string {
+	if n.IdentityVerification == "local" || n.IdentityVerification == "verified" {
+		// Reserve preview/configuration namespaces even for a malformed peer
+		// principal; arbitrary certificate strings cannot collide with them.
+		if strings.HasPrefix(n.HostUUID, "preview:") || strings.HasPrefix(n.HostUUID, "manual:") {
+			return ""
+		}
+		return n.HostUUID
+	}
+	if strings.HasPrefix(n.PeerRecordID, "preview:") || strings.HasPrefix(n.PeerRecordID, "manual:") {
+		return n.PeerRecordID
+	}
+	return ""
+}
+
+// RecordSelector targets an existing internal record without interpreting an
+// opaque preview/configuration key as a peer host UUID. It grants no authority.
+func RecordSelector(key string) DirectoryNode {
+	if strings.HasPrefix(key, "preview:") || strings.HasPrefix(key, "manual:") {
+		return DirectoryNode{PeerRecordID: key, IdentityVerification: "unverified"}
+	}
+	return DirectoryNode{HostUUID: key, IdentityVerification: "verified"}
+}
+
+// ServicePeer distinguishes owned local inventory and authenticated peers from
+// public discovery previews. A pin without an mTLS proof never qualifies.
+func (n DirectoryNode) ServicePeer() bool {
+	return n.RecordKey() != "" && (n.IdentityVerification == "local" || (n.IdentityVerification == "verified" && n.Trusted && n.PeerRecordID != ""))
 }
 
 // Clustered reports whether the node advertises a cluster identity.
@@ -723,6 +769,7 @@ type NodeEvent struct {
 // scanner emits it independently of directory changes so scheduling telemetry
 // stays current even when discovery identity and inventory are stable.
 type NodeTelemetry struct {
+	PeerRecordID      string `json:"peerRecordId,omitempty"`
 	HostUUID          string `json:"hostUuid"`
 	GPUUtilizationPct uint32 `json:"gpuUtilizationPercent"`
 	TelemetryValid    bool   `json:"telemetryValid"`

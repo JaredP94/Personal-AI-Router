@@ -204,7 +204,7 @@
 | `ready` | notification (we consume) | ✅ yes |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (daemon.go, 3 sites)`
+- `method (var)  (daemon.go, 2 sites)`
 
 ## nvpair-node-settings
 

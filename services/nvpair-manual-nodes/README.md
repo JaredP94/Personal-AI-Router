@@ -30,7 +30,7 @@ Uses bidirectional newline-delimited JSON-RPC 2.0. By default, communication is 
 | `--client-cert <path>` | _(none)_ | PEM client certificate to present when probing TLS-enabled manual nodes (requires `--client-key`) |
 | `--client-key <path>` | _(none)_ | PEM client private key matching `--client-cert` |
 | `--ca-bundle <path>` | _(none)_ | PEM bundle of CAs to trust when verifying server certificates (additive to the system trust store) |
-| `--cluster-dir <path>` | _(none)_ | Cluster config dir; when set, a TLS manual node's node-info is probed over cluster mTLS, presenting this node's leaf and accepting any currently-pinned server cert |
+| `--cluster-dir <path>` | _(none)_ | Cluster config dir for pinned mTLS peer inventory. A manual peer is discovered through a pinned certificate, then re-read against that exact principal before publishing its proof |
 | `--log-level <level>` | `info` | `error` / `warn` / `info` / `debug`; falls back to `$NVPAIR_LOG_LEVEL`. Also changeable at runtime via the `log/set-level` method |
 | `--version` | | Print version and exit |
 
@@ -82,7 +82,9 @@ Emitted when a manually added node has been probed and its initial status determ
 }
 ```
 
-Each node is probed for inference engines: Ollama on its default `:11434` (`GET /` + `/api/tags`), LM Studio on its default `:1234` (`GET /v1/models`), and oMLX on its default `:1236` (OpenAI-compatible `/v1/models` or loopback-only 403 proxy identification). Nodes running `nvpair-engine-manager` on `:14322` are also probed for authoritative multi-engine inventory. `lmstudio_*` and `omlx_*` mirror the `ollama_*` fields and let a supervising broker bridge the node into `lmstudio-proxy` and `omlx-proxy` the same way it bridges Ollama into `ollama-proxy`. A node can run any engine combination.
+PAIR peers must first prove identity through pinned cluster mTLS node-info on `:14318` (or the configured `tls_port`). Matching certificate, response and broker-owned `peerMetadata` identities are required. Only authenticated metadata supplies service ports; models and engine state are then read over pinned mTLS with no HTTP or operator-CA downgrade. Completed reads recheck the exact current pin and admission-bound `peerRecordId`.
+
+Explicitly user-added bare engines retain independent manual routes: Ollama on `:11434`, LM Studio on `:1234`, and oMLX on `:1236`. They remain labelled `identityVerification: "manual"`, never acquire peer trust, and provide no hardware scheduling telemetry. Recognized PAIR configurations that cannot authenticate are labelled `unverified`, not silently downgraded into this bypass. The broker namespaces manual configurations separately from authenticated host UUIDs. Recognition lasts only for the configuration's lifetime in this worker: kind is not yet persisted in `manual-nodes.json`. After a worker restart, an address previously added for a PAIR peer can be routed as an unauthenticated plaintext bare engine if no PAIR endpoint answers there (including if another machine answers instead). Persisting PAIR-vs-bare-engine intent is follow-up work.
 
 `engineNative` is the remote engine's own report of itself — the counters, the rates and the active models the node's engine-manager publishes at `GET /v1/engine-stats`. It is read over the same transport as the model list beside it, because it is the same kind of data: a peer's engine counters are cluster data, so a clustered peer is read over cluster mTLS pinned to the principal the node advertises, and there is no weaker fallback for a peer. The field is absent when the node publishes no view — an engine with no admin API, an engine that could not be reached, or a node this one cannot read. A node whose view could not be re-read keeps the view it had (the last-good rule the node-scanner follows for a discovered node). It is read on a slower cadence than the probe (once a minute), because the engine's counters move slowly and every reading is a fresh observation.
 
@@ -142,7 +144,7 @@ A hostname is preferred over an IP literal: probe clients disable keep-alives sp
 |---|---|---|
 | `address` | Yes | IP address or hostname of the node, with no port |
 | `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
-| `tls_port` | No | Probe node-info over HTTPS on this port instead of plain HTTP on `14318`. Echoed back as `tls_enabled` |
+| `tls_port` | No | Probe pinned cluster mTLS node-info on this port instead of the primary `14318`. Echoed back as `tls_enabled`; no plaintext downgrade |
 | `mtls` | No | Stored and echoed back as `mtls_required`. The probe transport itself is chosen by `tls_port` and live cluster membership, so this field records intent rather than driving it |
 
 Response: the initial node status object.
@@ -200,7 +202,7 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 
 - **Ollama** on port 11434: health check (`GET /`) and model list (`GET /api/tags`)
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
-- **Node Info** on port 14318, or `tls_port` over HTTPS: hardware inventory and identity (`GET /v1/node-info`)
+- **Node Info** on port 14318, or `tls_port`: pinned cluster mTLS hardware inventory, matching identity and authenticated service metadata (`GET /v1/node-info`). Public responses cannot establish identity or scheduling measurements.
 
 A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 

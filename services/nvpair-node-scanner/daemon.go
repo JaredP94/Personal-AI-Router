@@ -62,6 +62,13 @@ type daemon struct {
 	// modelsClients is the long-lived per-peer mTLS pool for LAN /v1/models
 	// fetches. A throwaway Transport every 15s paid a full handshake each time.
 	modelsClients *clustertrust.PeerClientPool
+	peerInfoOnce  sync.Once
+	// inventoryMu orders verified publication, conditional removal, cache cleanup
+	// and their notifications. Network probes run outside this lock.
+	inventoryMu     sync.Mutex
+	candidateMu     sync.Mutex
+	candidates      map[string]noderec.DirectoryNode
+	peerInfoClients *clustertrust.PeerClientPool
 	// tlsHTTP, when non-nil (the operator passed --client-cert/--client-key/
 	// --ca-bundle), fetches node-info over HTTPS on the ni port instead of plain
 	// HTTP. Dormant by default (nil): node-info is plain per the transport policy,
@@ -473,6 +480,8 @@ func (d *daemon) run(ctx context.Context) {
 			if d.modelsClients != nil {
 				d.modelsClients.CloseIdle()
 			}
+			d.peerInfoOnce.Do(func() { d.peerInfoClients = clustertrust.NewPeerClientPool(d.mesh, nodeInfoFetchTimeout) })
+			d.peerInfoClients.CloseIdle()
 			return
 		case ev, ok := <-events:
 			if !ok {
@@ -483,8 +492,8 @@ func (d *daemon) run(ctx context.Context) {
 	}
 }
 
-// onBrowse folds one _nvpair-node browse event into the directory (annotating
-// trust from the cluster pin set) and emits the matching discovery:node-* event.
+// onBrowse treats mDNS records as independently keyed candidates. Only a
+// completed pinned mTLS inventory read promotes one to a verified peer.
 func (d *daemon) onBrowse(ev DiscoveryEvent) {
 	// Never let a browse event touch our own entry. Self is registry-driven
 	// (publishSelf); folding self browse events in here is exactly what evicted
@@ -494,34 +503,40 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		return
 	}
 
-	trusted := false
-	if cu := clustertrust.ClusterUUIDFromTXT(ev.Node.TXT); cu != "" {
-		d.mesh.Refresh()
-		trusted = d.mesh.HasPin(cu)
-	}
-	node, ok := toDirectoryNode(ev.Node, trusted)
+	d.mesh.Refresh()
+	node, ok := toDirectoryNode(ev.Node)
 	if !ok {
 		// Record without a uuid= — toDirectoryNode already warned. Nothing to
 		// store, and a removed event for it is a no-op since it was never added.
 		return
 	}
 
-	var method string
-	switch ev.Type {
-	case "removed":
-		d.dir.remove(node.HostUUID)
-		d.forget(node.HostUUID)
-		method = noderec.NotifyNodeRemoved
-	case "updated":
-		d.enrich(&node)
-		d.supersedingUpsert(node)
-		method = noderec.NotifyNodeUpdated
-	default: // discovered
-		d.enrich(&node)
-		d.supersedingUpsert(node)
-		method = noderec.NotifyNodeDiscovered
+	key := node.RecordKey()
+	if ev.Type == "removed" {
+		d.candidateMu.Lock()
+		delete(d.candidates, key)
+		d.candidateMu.Unlock()
+		if prior, exists := d.dir.get(key); exists {
+			d.dir.remove(key)
+			d.emit(noderec.NotifyNodeRemoved, prior)
+		}
+		// A candidate's disappearance says nothing about the independently
+		// authenticated peer. Its own mTLS refresh/expiry owns that lifetime.
+		return
 	}
-	d.emit(method, d.storedOr(node))
+	d.candidateMu.Lock()
+	if d.candidates == nil {
+		d.candidates = make(map[string]noderec.DirectoryNode)
+	}
+	d.candidates[key] = node
+	d.candidateMu.Unlock()
+	d.enrich(&node)
+	if node.ServicePeer() {
+		d.publishVerified(node, key)
+		return
+	}
+	d.dir.upsert(node)
+	d.emit(noderec.NotifyNodeUpdated, node)
 }
 
 // storedOr returns the record the directory holds for a node, falling back to
@@ -533,97 +548,10 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 // the rebuilt one would show the client the view disappearing on every
 // advertisement, and reappearing at the next sweep.
 func (d *daemon) storedOr(node noderec.DirectoryNode) noderec.DirectoryNode {
-	if stored, ok := d.dir.get(node.HostUUID); ok {
+	if stored, ok := d.dir.get(node.RecordKey()); ok {
 		return stored
 	}
 	return node
-}
-
-// supersedingUpsert folds a browsed peer into the directory, evicting any record
-// it is PROVEN to have replaced and emitting the removals BEFORE the caller emits
-// the node's own event — so no consumer ever observes the machine under two
-// identities at once.
-//
-// The directory can only nominate (directory.supersedeCandidates). Its signals
-// are the arriving record's instance name — an unauthenticated mDNS field
-// anything on the LAN can claim — plus a LastSeen gap that a healthy peer's
-// frozen timestamp satisfies exactly as readily as a ghost's. Deleting on that
-// alone would make mDNS a removal primitive: a record claiming a live peer's
-// hostname would evict it, the browser re-reports a node only when its record
-// CHANGES so it might never come back, and the loss would carry through to the
-// broker's onNodeLost and to workload routing.
-//
-// So each candidate is confirmed the way the eviction path confirms a
-// threshold-missed node: ask the machines involved who they are, and delete only
-// on a definite mismatch. A candidate that cannot be confirmed stays, and is not
-// left uncovered — when it stops being advertised the ordinary miss-threshold
-// path (reachable) puts the same question to it.
-func (d *daemon) supersedingUpsert(node noderec.DirectoryNode) {
-	var proven []noderec.DirectoryNode
-	for _, old := range d.dir.supersedeCandidates(node, d.reg.record().HostUUID) {
-		if d.identityReplaced(old, node) {
-			proven = append(proven, old)
-		}
-	}
-	for _, old := range d.dir.upsertEvicting(node, proven) {
-		slog.Warn("dropping node record proven superseded by a newer identity on the same host",
-			"ip", old.IP, "droppedUuid", old.HostUUID, "droppedName", old.Name,
-			"keptUuid", node.HostUUID, "keptName", node.Name,
-			"ageSeconds", node.LastSeen-old.LastSeen)
-		d.forget(old.HostUUID)
-		d.emit(noderec.NotifyNodeRemoved, old)
-	}
-}
-
-// identityReplaced reports whether old is PROVEN to be a pre-wipe ghost of the
-// machine now arriving as replacement — the confirmation supersedingUpsert
-// requires before it deletes anything.
-//
-// It takes two answers, both from node-info, and both are required:
-//
-//   - old must not still be answering for itself. Every address old published is
-//     asked, at old's own ni port, and any of them naming old keeps it. This is
-//     what tells a wipe apart from two hosts that merely share a hostname, and it
-//     is why a record with no ni port to ask is never evicted here: a candidate
-//     that cannot answer cannot be distinguished from a live namesake, and the
-//     miss-threshold path will reach it on its own when it stops advertising.
-//   - the machine at replacement's address must name someone other than old.
-//     That is the arriving record's own port, which is where the machine is
-//     answering now.
-//
-// Anything short of both — no ni port, no answer within the probe budget, a
-// response without a hostUuid, or the 403 a clustered peer returns to a plaintext
-// caller — leaves the record in place.
-func (d *daemon) identityReplaced(old, replacement noderec.DirectoryNode) bool {
-	oldNI, ok := old.Services[noderec.ServiceNodeInfo]
-	if !ok || oldNI.Port == 0 {
-		return false
-	}
-	stillItself, _ := d.identityAlive(noderec.NodeRecord{
-		HostUUID: old.HostUUID,
-		IP:       old.IP,
-		Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: oldNI.Port},
-	}, old.CandidateIPs())
-	if stillItself {
-		return false
-	}
-	ni, ok := replacement.Services[noderec.ServiceNodeInfo]
-	if !ok || ni.Port == 0 {
-		return false
-	}
-	// Ask the arriving machine at every address it ranked, not just its canonical
-	// one. Any of them naming old keeps the record, so a wider question can only
-	// spare a live node; asking one address that this host happens not to reach
-	// yields no answer at all, and a record with only ips= has no canonical
-	// address to ask.
-	replacementIPs := replacement.CandidateIPs()
-	rec := noderec.NodeRecord{
-		HostUUID: old.HostUUID,
-		IP:       replacement.IP,
-		Services: map[noderec.ServiceKey]int{noderec.ServiceNodeInfo: ni.Port},
-	}
-	alive, conclusive := d.identityAlive(rec, replacementIPs)
-	return conclusive && !alive
 }
 
 // reloadTrust re-derives everything this daemon caches from the cluster pin set,
@@ -688,16 +616,10 @@ func (d *daemon) reconcileIdentity() {
 // known node and emits nothing.
 func (d *daemon) reconcileTrust() {
 	for _, n := range d.dir.snapshot("") {
-		// nil principal: this pass knows the pin set, not what each peer
-		// advertises, so it re-derives trust from whatever principal is stored
-		// when the write lands rather than from the snapshot it is iterating.
-		node, changed := d.dir.applyClusterIdentity(n.HostUUID, nil, d.mesh.HasPin)
-		if !changed {
+		if d.localNode(n.HostUUID) || !n.Trusted || d.currentPeer(n) {
 			continue
 		}
-		slog.Info("node trust changed", "host_uuid", n.HostUUID,
-			"cluster_uuid", n.ClusterUUID, "trusted", node.Trusted)
-		d.emit(noderec.NotifyNodeUpdated, node)
+		d.expireVerified(n)
 	}
 }
 
@@ -944,14 +866,15 @@ func (d *daemon) publishSelfLockedIf(shouldEmit func(noderec.DirectoryNode) bool
 		svcs[k] = noderec.ServiceStatus{Port: port}
 	}
 	node := noderec.DirectoryNode{
-		HostUUID:    rec.HostUUID,
-		Name:        d.instance,
-		IP:          ip,
-		IPs:         ips,
-		ClusterUUID: rec.ClusterUUID,
-		Trusted:     trusted,
-		Services:    svcs,
-		LastSeen:    time.Now().Unix(),
+		HostUUID:             rec.HostUUID,
+		Name:                 d.instance,
+		IP:                   ip,
+		IPs:                  ips,
+		ClusterUUID:          rec.ClusterUUID,
+		Trusted:              trusted,
+		IdentityVerification: "local",
+		Services:             svcs,
+		LastSeen:             time.Now().Unix(),
 	}
 	// Enrich over loopback, never the advertised LAN ip=: a first-run Windows
 	// firewall block on inbound to our own LAN address must not blank the local
@@ -1279,6 +1202,30 @@ func (d *daemon) enrichInfoAt(node *noderec.DirectoryNode, host string) {
 // Which address is asked, and in what order, is askRemembered's business: the one
 // that answered last sweep by itself, and the rest together only if it stopped.
 func (d *daemon) enrichInfoCandidates(node *noderec.DirectoryNode, hosts []string) {
+	if !d.localNode(node.HostUUID) {
+		node.Trusted = false
+		node.IdentityVerification = "unverified"
+		if ni, ok := node.Services[noderec.ServiceNodeInfo]; ok {
+			if info, host, verified := d.authenticatedInfo(context.Background(), *node, hosts, ni.Port); verified {
+				applyAuthenticatedInfo(node, info, host)
+				return
+			}
+		}
+		// A public preview is never cached under an authenticated identity.
+		if d.mesh.HasPin(node.ClusterUUID) {
+			return
+		}
+		for _, host := range hosts {
+			if ni, ok := node.Services[noderec.ServiceNodeInfo]; ok {
+				if info, ok := d.fetchNodeInfo(host, ni.Port); ok {
+					node.GPUs, node.CPU, node.Memory = info.GPUs, info.CPU, info.Memory
+					break
+				}
+			}
+		}
+		return
+	}
+	node.IdentityVerification = "local"
 	ni, ok := node.Services[noderec.ServiceNodeInfo]
 	if !ok || len(hosts) == 0 {
 		return
@@ -1463,6 +1410,12 @@ func (d *daemon) enrichModelsAt(node *noderec.DirectoryNode, host string) {
 // fetchModels performs the pinned mTLS handshake, so a shared address belonging
 // to another machine is rejected and the next published address is tried.
 func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []string) {
+	if !d.currentPeer(*node) {
+		return
+	}
+	if !d.localNode(node.HostUUID) {
+		hosts = node.CandidateIPs()
+	}
 	em, ok := node.Services[noderec.ServiceEngineManager]
 	if !ok || len(hosts) == 0 {
 		return
@@ -1475,6 +1428,13 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
 	}
 	key := hostKey{hostUUID: node.HostUUID, service: noderec.ServiceEngineManager}
+	if !d.localNode(node.HostUUID) {
+		_, inventory, ok := askRemembered(&d.enrichHosts, key, hosts, ask)
+		if ok && d.currentPeer(*node) {
+			node.Models, node.ModelsByEngine, node.LoadedByEngine = inventory.models, inventory.byEngine, inventory.loadedByEngine
+		}
+		return
+	}
 	if _, inventory, ok := askRemembered(&d.enrichHosts, key, hosts, ask); ok {
 		d.infoMu.Lock()
 		if d.lastModels == nil {
@@ -1529,6 +1489,15 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string,
 		return nil, nil, nil, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/models"
+	if scheme == "https" {
+		var body struct {
+			Models         []string            `json:"models"`
+			ModelsByEngine map[string][]string `json:"modelsByEngine"`
+			LoadedByEngine map[string][]string `json:"loadedByEngine"`
+		}
+		_, _, ok := clustertrust.ReadPeerInventory(context.Background(), d.mesh, client, clusterUUID, url, "", modelsResponseLimit, &body)
+		return body.Models, body.ModelsByEngine, body.LoadedByEngine, ok
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		slog.Debug("model enrichment failed", "ip", ip, "url", url, "err", err)
@@ -1555,8 +1524,8 @@ func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string,
 // false when a peer holds no pin here, which is the client-side cluster gate —
 // there is deliberately no plaintext fallback for a peer.
 func (d *daemon) modelsClient(ip, clusterUUID string) (*http.Client, string, bool) {
-	if isLoopbackHost(ip) {
-		return d.modelsHTTP, "http", true
+	if isLoopbackHost(ip) && (clusterUUID == "" || (d.reg != nil && clusterUUID == d.reg.record().ClusterUUID)) {
+		return d.modelsHTTP, "http", d.modelsHTTP != nil
 	}
 	d.mesh.Refresh()
 	if d.modelsClients == nil {
@@ -1603,6 +1572,17 @@ func (d *daemon) fetchEngineStats(ctx context.Context, ip string, port int, clus
 		return nil, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/engine-stats"
+	if scheme == "https" {
+		var stats enginenative.Stats
+		_, _, ok := clustertrust.ReadPeerInventory(ctx, d.mesh, client, clusterUUID, url, "", engineNativeResponseLimit, &stats)
+		if !ok || !stats.Supported {
+			return nil, false
+		}
+		if stats.ObservedAt == 0 {
+			stats.ObservedAt = time.Now().UnixMilli()
+		}
+		return &stats, true
+	}
 	ctx, cancel := context.WithTimeout(ctx, engineNativeFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -1747,6 +1727,9 @@ func (d *daemon) dispatchTelemetry(
 		self = d.reg.record().HostUUID
 	}
 	for _, n := range d.dir.snapshot(noderec.ServiceNodeInfo) {
+		if !n.ServicePeer() {
+			continue
+		}
 		ni, ok := n.Services[noderec.ServiceNodeInfo]
 		if !ok {
 			continue
@@ -1811,9 +1794,23 @@ type telemetrySample struct {
 // a link this host cannot reach reported no telemetry at all, and the scheduler
 // then assigned it neutral pressure and scheduled it blind.
 func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID string, hosts []string, niPort int) bool {
+	var node noderec.DirectoryNode
+	exists := false
+	if d.dir != nil {
+		node, exists = d.dir.get(hostUUID)
+	}
+	if !d.localNode(hostUUID) && (!exists || !d.currentPeer(node)) {
+		return false
+	}
 	ask := func(host string) (telemetrySample, bool) {
 		startedAt := time.Now()
-		candidate, ok := d.fetchNodeInfoWithin(ctx, host, niPort)
+		var candidate NodeInfoResponse
+		var ok bool
+		if d.localNode(hostUUID) {
+			candidate, ok = d.fetchNodeInfoWithin(ctx, host, niPort)
+		} else {
+			candidate, _, ok = d.authenticatedInfo(ctx, node, []string{host}, niPort)
+		}
 		if !ok {
 			return telemetrySample{}, false
 		}
@@ -1830,6 +1827,12 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 		return false
 	}
 	info, startedAt := sample.info, sample.startedAt
+	if !d.localNode(hostUUID) {
+		current, exists := d.dir.get(hostUUID)
+		if !exists || current.PeerRecordID != info.PeerRecordID || !d.currentPeer(current) {
+			return false
+		}
+	}
 
 	age := int64(0)
 	if info.TelemetryValid {
@@ -1852,6 +1855,7 @@ func (d *daemon) refreshNodeTelemetryCandidates(ctx context.Context, hostUUID st
 	}
 	d.emitTelemetry(noderec.NodeTelemetry{
 		HostUUID:          hostUUID,
+		PeerRecordID:      info.PeerRecordID,
 		GPUUtilizationPct: utilization,
 		TelemetryValid:    info.TelemetryValid,
 		MSSince:           age,
@@ -1888,7 +1892,14 @@ func (d *daemon) refreshClusterIdentityOnce() {
 	d.mesh.Refresh()
 	sem := make(chan struct{}, modelsRefreshConcurrency)
 	var wg sync.WaitGroup
-	for _, n := range d.dir.snapshot(noderec.ServiceNodeInfo) {
+	nodes := d.dir.snapshot(noderec.ServiceNodeInfo)
+	nodes = append(nodes, d.candidateSnapshot()...)
+	seen := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if seen[n.RecordKey()] {
+			continue
+		}
+		seen[n.RecordKey()] = true
 		ni, ok := n.Services[noderec.ServiceNodeInfo]
 		if !ok || n.IP == "" || n.HostUUID == self {
 			continue
@@ -1900,7 +1911,7 @@ func (d *daemon) refreshClusterIdentityOnce() {
 			defer wg.Done()
 			defer func() { <-sem }()
 			d.refreshNodeClusterIdentityCandidates(hostUUID, hosts, port)
-		}(n.HostUUID, hosts, ni.Port)
+		}(n.RecordKey(), hosts, ni.Port)
 	}
 	wg.Wait()
 }
@@ -1932,33 +1943,34 @@ func (d *daemon) refreshNodeClusterIdentity(hostUUID, ip string, niPort int) boo
 // this entry, but it is also not the end of the candidate list: shared
 // direct-connect addresses can legitimately resolve to a different machine.
 func (d *daemon) refreshNodeClusterIdentityCandidates(hostUUID string, hosts []string, niPort int) bool {
-	ask := func(host string) (NodeInfoResponse, bool) {
-		candidate, ok := d.fetchNodeInfo(host, niPort)
-		if !ok {
-			return NodeInfoResponse{}, false
-		}
-		if candidate.HostUUID != "" && candidate.HostUUID != hostUUID {
-			slog.Debug("skipping cluster membership reported by a different host at this address; trying next",
-				"expected_host_uuid", hostUUID, "reported_host_uuid", candidate.HostUUID, "ip", host)
-			return NodeInfoResponse{}, false
-		}
-		return candidate, true
+	old, exists := d.dir.get(hostUUID)
+	if !exists {
+		d.candidateMu.Lock()
+		old, exists = d.candidates[hostUUID]
+		d.candidateMu.Unlock()
 	}
-	// Shares the node-info memory with the enrichment sweep, so the two node-info
-	// callers converge on one address per peer rather than each finding it again.
-	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceNodeInfo}
-	_, info, _ := askRemembered(&d.enrichHosts, key, hosts, ask)
-	if info.ClusterUUID == nil {
+	if !exists || d.localNode(old.HostUUID) {
 		return false
 	}
-	node, changed := d.dir.applyClusterIdentity(hostUUID, info.ClusterUUID, d.mesh.HasPin)
-	if !changed {
+	info, host, verified := d.authenticatedInfo(context.Background(), old, hosts, niPort)
+	if !verified {
+		if old.ServicePeer() && time.Since(time.Unix(old.LastSeen, 0)) > 45*time.Second {
+			if age, active := d.activitySince(old.HostUUID); !active || age > activityFreshness {
+				d.expireVerified(old)
+			}
+		}
 		return false
 	}
-	slog.Info("peer cluster membership changed", "host_uuid", hostUUID,
-		"clustered", node.Clustered(), "trusted", node.Trusted)
-	d.emit(noderec.NotifyNodeUpdated, node)
-	return true
+	node := old
+	if node.PeerRecordID != info.PeerRecordID {
+		withdrawPeer(&node)
+	}
+	applyAuthenticatedInfo(&node, info, host)
+	candidateKey := ""
+	if old.IdentityVerification == "unverified" {
+		candidateKey = old.RecordKey()
+	}
+	return d.publishVerified(node, candidateKey)
 }
 
 // refreshModelsOnce snapshots every directory node advertising engine-manager
@@ -1972,6 +1984,9 @@ func (d *daemon) refreshModelsOnce() {
 	sem := make(chan struct{}, modelsRefreshConcurrency)
 	var wg sync.WaitGroup
 	for _, n := range d.dir.snapshot(noderec.ServiceEngineManager) {
+		if !n.ServicePeer() {
+			continue
+		}
 		em, ok := n.Services[noderec.ServiceEngineManager]
 		if !ok || n.IP == "" {
 			continue
@@ -2016,6 +2031,10 @@ func (d *daemon) refreshNodeModels(hostUUID, ip string, emPort int, clusterUUID 
 // sweep, alone — and it shares that memory with the enrichment path, so both
 // converge on one address per peer instead of each rediscovering it.
 func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
+	before, exists := d.dir.get(hostUUID)
+	if !d.localNode(hostUUID) && (!exists || !d.currentPeer(before)) {
+		return false
+	}
 	if d.reg != nil && hostUUID == d.reg.record().HostUUID {
 		hosts = []string{loopbackHost}
 	}
@@ -2032,6 +2051,14 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 		return false
 	}
 	models, byEngine, loadedByEngine := inventory.models, inventory.byEngine, inventory.loadedByEngine
+	d.inventoryMu.Lock()
+	defer d.inventoryMu.Unlock()
+	if !d.localNode(hostUUID) {
+		after, exists := d.dir.get(hostUUID)
+		if !exists || before.PeerRecordID != after.PeerRecordID || !d.currentPeer(after) {
+			return false
+		}
+	}
 	// Refresh the enrichment cache BEFORE touching the directory: the caches
 	// (infoMu) and the directory (dir.mu) are guarded by different locks, so if
 	// the directory were updated first, a concurrent onBrowse->enrichModelsAt whose
@@ -2113,6 +2140,9 @@ func (d *daemon) refreshEngineNativeOnce(ctx context.Context) {
 	sem := make(chan struct{}, engineNativeRefreshConcurrency)
 	var wg sync.WaitGroup
 	for _, n := range d.dir.snapshot(noderec.ServiceEngineManager) {
+		if !n.ServicePeer() {
+			continue
+		}
 		em, ok := n.Services[noderec.ServiceEngineManager]
 		if !ok || n.IP == "" {
 			continue
@@ -2149,6 +2179,10 @@ func (d *daemon) refreshEngineNativeOnce(ctx context.Context) {
 // node. Peers are dialed at their published addresses, over the pinned mTLS
 // client (see fetchEngineStats).
 func (d *daemon) refreshNodeEngineNative(ctx context.Context, hostUUID, guardIP string, hosts []string, emPort int, clusterUUID string) bool {
+	before, exists := d.dir.get(hostUUID)
+	if !d.localNode(hostUUID) && (!exists || !d.currentPeer(before)) {
+		return false
+	}
 	if d.reg != nil && hostUUID == d.reg.record().HostUUID {
 		hosts = []string{loopbackHost}
 	}
@@ -2162,6 +2196,14 @@ func (d *daemon) refreshNodeEngineNative(ctx context.Context, hostUUID, guardIP 
 	_, stats, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
 	if !fetched {
 		return false
+	}
+	d.inventoryMu.Lock()
+	defer d.inventoryMu.Unlock()
+	if !d.localNode(hostUUID) {
+		after, exists := d.dir.get(hostUUID)
+		if !exists || before.PeerRecordID != after.PeerRecordID || !d.currentPeer(after) {
+			return false
+		}
 	}
 	node, changed, valid := d.dir.applyEngineNative(hostUUID, guardIP, emPort, stats)
 	if !valid {

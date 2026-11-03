@@ -70,7 +70,7 @@ func TestReloadIdentityAdoptsClusterPrincipal(t *testing.T) {
 		// codec/responder nil: emit is nil-safe; reloadIdentity skips re-advertise.
 	}
 	// Simulate this node already having been browsed under its scanner-minted uuid.
-	d.dir.upsert(noderec.DirectoryNode{HostUUID: "scanner-minted-X", Name: "host", IP: "127.0.0.1"})
+	d.dir.upsert(noderec.DirectoryNode{IdentityVerification: "local", HostUUID: "scanner-minted-X", Name: "host", IP: "127.0.0.1"})
 
 	// cluster-manager writes its principal under <base>/cluster/identity.json.
 	idPath := filepath.Join(base, "cluster", "identity.json")
@@ -310,11 +310,11 @@ func TestPeerStillAgesOut(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	peerTXT := []string{"v=1", "uuid=peer-uuid", "ip=192.168.1.99"}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	if _, ok := d.dir.get("peer-uuid"); !ok {
+	if _, ok := d.dir.get(noderec.PreviewRecordID("peer", "peer-uuid")); !ok {
 		t.Fatal("a discovered peer should be added to the directory")
 	}
 	d.onBrowse(DiscoveryEvent{Type: "removed", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	if _, ok := d.dir.get("peer-uuid"); ok {
+	if _, ok := d.dir.get(noderec.PreviewRecordID("peer", "peer-uuid")); ok {
 		t.Error("a genuine remote peer must still age out when it leaves")
 	}
 }

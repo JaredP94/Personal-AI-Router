@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -364,25 +365,25 @@ func TestEngineNativeModelOrderIsNotAChange(t *testing.T) {
 // next sweep brings it back, and the client watches the field appear and
 // disappear.
 func TestEngineNativeViewSurvivesARecordReplacement(t *testing.T) {
-	d := newEngineNativeTestDaemon()
+	d, server, _ := secureInventoryFixture(t, "uuid-peer")
+	port := portFromURL(t, server.URL)
+	raw := RawNode{ID: "peer-A", Addresses: []string{"127.0.0.1"}, TXT: []string{
+		"v=1", "uuid=uuid-peer", "cluster-uuid=uuid-peer", "ip=127.0.0.1", "ni=" + strconv.Itoa(port),
+	}}
+	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: raw})
+	if !d.refreshNodeEngineNative(t.Context(), "uuid-peer", "127.0.0.1", []string{"127.0.0.1"}, port, "uuid-peer") {
+		t.Fatal("the authenticated engine-native view was not applied")
+	}
+	prior, _ := d.dir.get("uuid-peer")
+	// Make the next genuine browse enrichment change inventory, so this test
+	// cannot pass by looking at an old event after a local-self early return.
+	prior.Models = []string{"stale-model"}
+	d.dir.upsert(prior)
 	capture := &notifyCapture{}
 	d.codec = NewCodec(capture)
-	stub := &engineStatsStub{status: http.StatusOK, body: engineNativeBody(), observedAt: 1000}
-	port := startEngineStatsStubServer(t, stub)
-	seedEMNode(d, "peer-A", "127.0.0.1", port)
+	d.onBrowse(DiscoveryEvent{Type: "updated", Node: raw})
 
-	if !d.refreshNodeEngineNative(context.Background(), "peer-A", "127.0.0.1", []string{"127.0.0.1"}, port, "") {
-		t.Fatal("the engine-native view was not applied to the directory node")
-	}
-
-	// The peer advertises again: the record is rebuilt from the mDNS TXT,
-	// which carries no engine-native view.
-	d.onBrowse(DiscoveryEvent{Type: "updated", Node: RawNode{
-		ID:  "peer-A",
-		TXT: []string{"v=1", "uuid=peer-A", "ip=127.0.0.1"},
-	}})
-
-	stored, ok := d.dir.get("peer-A")
+	stored, ok := d.dir.get("uuid-peer")
 	if !ok {
 		t.Fatal("the advertisement dropped the node from the directory")
 	}

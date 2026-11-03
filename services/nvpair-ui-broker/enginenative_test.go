@@ -40,7 +40,7 @@ func TestBrokerCarriesTheEngineNativeView(t *testing.T) {
 		},
 		ObservedAt: 1716998400000,
 	}
-	node := noderec.DirectoryNode{
+	node := noderec.DirectoryNode{IdentityVerification: "local",
 		HostUUID:     "uuid-a",
 		Name:         "host-a",
 		IP:           "192.0.2.10",
@@ -104,7 +104,7 @@ func TestEngineNativeViewChangeIsAnnounced(t *testing.T) {
 		Totals:     enginenative.Totals{Requests: 2},
 		ObservedAt: 1000,
 	}
-	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: view}, sourceScanner)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host-a", HostUUID: "uuid-a", EngineNative: view}, sourceScanner)
 	if changes != 1 {
 		t.Fatalf("the first sighting reported %d changes, want 1", changes)
 	}
@@ -113,7 +113,7 @@ func TestEngineNativeViewChangeIsAnnounced(t *testing.T) {
 	// The observation is still newer, so it is still a change.
 	same := *view
 	same.ObservedAt = 2000
-	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: &same}, sourceScanner)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host-a", HostUUID: "uuid-a", EngineNative: &same}, sourceScanner)
 	if changes != 2 {
 		t.Fatalf("a newer observation reported %d changes, want 2", changes)
 	}
@@ -121,14 +121,14 @@ func TestEngineNativeViewChangeIsAnnounced(t *testing.T) {
 	// The engine's own counters moved: that is a change too.
 	moved := same
 	moved.Totals.Requests = 3
-	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: &moved}, sourceScanner)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host-a", HostUUID: "uuid-a", EngineNative: &moved}, sourceScanner)
 	if changes != 3 {
 		t.Fatalf("a changed engine-native view reported %d changes, want 3", changes)
 	}
 
 	// The same reading again — same numbers, same stamp — is not a change:
 	// nothing about it moved.
-	store.Upsert(EnrichedNode{ID: "host-a", HostUUID: "uuid-a", EngineNative: &moved}, sourceScanner)
+	store.Upsert(EnrichedNode{IdentityVerification: "local", ID: "host-a", HostUUID: "uuid-a", EngineNative: &moved}, sourceScanner)
 	if changes != 3 {
 		t.Fatalf("an unchanged engine-native view reported %d changes, want 3", changes)
 	}

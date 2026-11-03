@@ -12,17 +12,11 @@ package tests
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/grandcat/zeroconf"
 
 	"nvpair-shared/jsonrpc"
 )
@@ -59,34 +53,18 @@ func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
 	// Start with an empty inventory (engine present but serving no models yet).
 	stub := &swapModels{}
 	stub.set(map[string]any{"models": []string{}})
-	srv := httptest.NewServer(stub.handler())
-	t.Cleanup(srv.Close)
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse stub url: %v", err)
-	}
-	emPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("stub port: %v", err)
-	}
-
 	const instance = "xproc-models-refresh-1"
-	// Advertise em=<port> + ip=127.0.0.1 once and never touch the record again,
-	// so the only thing that changes during the test is the /v1/models body.
-	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
-	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
-	}
-	t.Cleanup(zsrv.Shutdown)
-	t.Logf("advertising %s @ %s (em=%d), models initially empty", instance, nodeRecordService, emPort)
+	fx := newInterNodeClusterWithPeer(t, instance+"-uuid")
+	// Keep mDNS, identity and authenticated service metadata fixed; only the
+	// pinned mTLS /v1/models response changes during all three phases.
+	fx.startVerifiedPeer(t, instance, stub.handler(), nil)
 
-	stdin, msgs, cleanup := startBroker(t)
+	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir, "--scanner-path", scannerBin)
 	t.Cleanup(cleanup)
 
 	// Phase 1: the node is discovered and enriched, but with no models.
 	pollForNode(t, stdin, msgs, instance, 30*time.Second, func(n availableNode) bool {
-		return len(n.Models) == 0
+		return n.IdentityVerification == "verified" && n.Trusted && n.HostUUID == fx.peerUUID && len(n.Models) == 0
 	})
 	t.Log("node discovered with an empty inventory; now serving models without an mDNS change")
 

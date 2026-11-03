@@ -12,7 +12,7 @@ A Go service that exposes this machine's hardware inventory (GPUs, CPU, physical
 Two surfaces:
 
 - **HTTP(S)** — serves the node inventory at `/v1/node-info`. Plaintext HTTP on `:14318` by default; optional HTTPS (with optional mTLS) on `:14319` when a cert/key pair is supplied.
-- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `worker/health`, `nodeinfo:set-cluster-identity`, `stats/set-demand`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
+- **stdio JSON-RPC 2.0** — newline-delimited, used for lifecycle/control (`log/set-level`, `worker/health`, `nodeinfo:set-cluster-identity`, `nodeinfo:set-peer-metadata`, `stats/set-demand`) and shutdown via stdin EOF. The service is normally launched as a subprocess by the broker.
 
 | Control request | Params | Result |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ An id-bearing `worker/health` request returns `{"ok":true}` through the shared
 stdin control loop. This checks control-loop responsiveness, not HTTP listener
 or telemetry readiness. Notifications receive no response.
 
-It does **not** advertise itself over mDNS. Discovery is centralized in the `nvpair-node-scanner` daemon: the broker registers this service's `ni` port with the daemon, which carries it on the node's one `_nvpair-node` record and fetches `/v1/node-info` over plain HTTP to enrich each node.
+It does **not** advertise itself over mDNS. Discovery is centralized in the `nvpair-node-scanner` daemon: the broker registers this service's `ni` port with the daemon, which carries it on the node's one `_nvpair-node` record. Services authenticate remote inventory over pinned cluster mTLS; public HTTP copies are display-only.
 
 ## CLI Flags
 
@@ -34,7 +34,7 @@ It does **not** advertise itself over mDNS. Discovery is centralized in the `nvp
 | `--key <path>` | _(none)_ | TLS server private key (PEM); enables HTTPS when set together with `--cert` |
 | `--client-ca <path>` | _(none)_ | PEM bundle of CAs trusted to sign client certificates; enables mTLS when set |
 | `--accept-http` | `false` | Keep the plaintext HTTP listener alive even when TLS is enabled (default: HTTPS-only once `--cert` is set) |
-| `--cluster-dir <path>` | _(none)_ | Cluster config dir (`node.crt`/`node.key` + `trusted/`); when set, the primary port carries one cluster-gated listener. While this node is a cluster member, `/v1/node-info` is served **only** over cluster-scoped pin-based mTLS, to pinned cluster peers — or this node itself via self-trust — and a plaintext caller is refused with `403`; while it is not a member the plaintext inventory is served as usual. Membership is re-read per request. Takes precedence over the `--cert` path |
+| `--cluster-dir <path>` | _(none)_ | Cluster config dir (`node.crt`/`node.key` + `trusted/`). The primary port serves pinned cluster mTLS inventory and a public plaintext hardware preview. TLS callers must be current pinned members; public responses confer no trust or service authority. Membership is refreshed per request and handshake. Takes precedence over `--cert` |
 | `--version` | | Print version and exit |
 
 `--log-level` is also accepted (registered by `nvpair-shared/applog`).
@@ -89,8 +89,8 @@ Field notes:
 - Dynamic fields (`vram_used_bytes`, `shared_used_bytes`, `utilization_percent`, `cpu.utilization_percent`, `memory.used_bytes`) are populated by the Windows, Linux, and macOS per-tick stats collectors.
 - `telemetryValid` and `msSince` describe the node-wide GPU utilization snapshot. `telemetryValid` is `true` after the collector has produced a usable GPU sample; `msSince` is that sample's age in milliseconds at response time. A failed collection retains the last usable sample and lets its age increase. Before the first usable sample, and on platforms without dynamic GPU telemetry, the response reports `telemetryValid:false` and `msSince:0`; consumers must ignore the age while validity is false.
 - `clusterUuid` is the cluster principal this node currently holds. It has three distinct states on the wire: **absent** means unknown, **present and empty** means this node belongs to no cluster, and a value is that principal. A consumer must not read absent as unclustered — that is how a node too old to report the field answers, and also how this node answers before its parent has told it anything, so acting on it would clear a correct annotation elsewhere in the fleet.
-- Under the broker, `clusterUuid` is pushed in over stdin (`nodeinfo:set-cluster-identity`) because node-info is spawned with no cluster dir and so cannot read membership itself; the field stays absent until the first push arrives. Standalone with `--cluster-dir`, it reads membership from the trust store per request instead and is therefore always known. The two sources are mutually exclusive by deployment, not a fallback chain.
-- `clusterUuid` exists so a peer can learn this node's membership without its mDNS record. Membership otherwise travels only as the `cluster-uuid=` TXT key, which a consumer reads once per record *change*; a consumer that misses that change keeps the previous value indefinitely, and one still holding a departed node's principal will suppress the invite that would bring it back.
+- With `--cluster-dir` (including under the broker), `clusterUuid` comes from the live trust store. Standalone without a directory can receive it over owned stdin via `nodeinfo:set-cluster-identity`; it is absent until that first update.
+- `peerMetadata` contains the broker-owned `{hostUuid, name, ips?, services}` snapshot supplied by `nodeinfo:set-peer-metadata` over stdin. The service rejects metadata for a different local host UUID. Service consumers require matching pinned certificate, response identity and metadata identity; a public HTTP copy cannot establish trust or membership.
 - GPU field presence and per-platform memory sources are defined in the [GPU wire contract](#gpu-wire-contract) below. `DedicatedSystemMemory` is never reported as video memory; macOS system allocation is never substituted for dedicated VRAM usage.
 - CPU / memory fields retain their existing `omitempty` semantics; a genuinely idle CPU is still omitted.
 - Telemetry sampling cadence is lease-driven via the `X-NVPAIR-Poll` request header:
@@ -185,7 +185,7 @@ A missing sample has no `msSince`.
 
 ## Discovery
 
-The service no longer advertises itself over mDNS. Its parent (the broker) registers the `ni` port with the `nvpair-node-scanner` discovery daemon, which carries it on this node's single `_nvpair-node` record; a peer's daemon then fetches `/v1/node-info` over plain HTTP to enrich the node. Transport is derived from the shared per-service policy (`nvpair-shared/noderec`): node-info is served plain on the broker path. The standalone BYO-TLS / `--cluster-dir` mTLS serving above is retained for running node-info on its own, but is unused under the broker.
+The service no longer advertises itself over mDNS. Its parent (the broker) registers the `ni` port with the `nvpair-node-scanner` discovery daemon, which carries it on this node's single `_nvpair-node` record; a peer's daemon authenticates `/v1/node-info` over pinned cluster mTLS before using it for service decisions. The broker passes `--cluster-dir`, enabling pinned mTLS inventory alongside public HTTP previews on the primary port. Services never authorize measurements from the public transport. The standalone BYO-TLS serving mode remains available for display clients; it does not establish pinned PAIR peer identity.
 
 ## Platform Notes
 

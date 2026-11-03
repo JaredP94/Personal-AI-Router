@@ -143,7 +143,7 @@ func (e directoryEntry) projected() (noderec.DirectoryNode, bool) {
 }
 
 func directoryNodeEqual(a, b noderec.DirectoryNode) bool {
-	if a.HostUUID != b.HostUUID || a.Name != b.Name || a.IP != b.IP || a.ClusterUUID != b.ClusterUUID || a.Trusted != b.Trusted {
+	if a.PeerRecordID != b.PeerRecordID || a.IdentityVerification != b.IdentityVerification || a.HostUUID != b.HostUUID || a.Name != b.Name || a.IP != b.IP || a.ClusterUUID != b.ClusterUUID || a.Trusted != b.Trusted {
 		return false
 	}
 	if !slices.Equal(a.IPs, b.IPs) || !slices.Equal(a.Models, b.Models) {
@@ -199,11 +199,13 @@ func directoryNodeEqual(a, b noderec.DirectoryNode) bool {
 // subscriber set. It's fed by the daemon's node-* events via Apply and queried
 // by discovery:get-nodes via Snapshot.
 type Directory struct {
-	mu      sync.Mutex
-	entries map[string]directoryEntry
-	nodes   map[string]noderec.DirectoryNode
-	subs    map[int]*Subscriber
-	nextID  int
+	// Authorize rechecks proof bindings at delivery, including after pin changes.
+	Authorize func(noderec.DirectoryNode) bool
+	mu        sync.Mutex
+	entries   map[string]directoryEntry
+	nodes     map[string]noderec.DirectoryNode
+	subs      map[int]*Subscriber
+	nextID    int
 }
 
 func NewDirectory() *Directory {
@@ -247,12 +249,45 @@ func (d *Directory) Deliver(sub *Subscriber) {
 func (d *Directory) filteredLocked(f noderec.SubscribeParams) []noderec.DirectoryNode {
 	out := make([]noderec.DirectoryNode, 0, len(d.nodes))
 	for _, n := range d.nodes {
+		if n.IdentityVerification == "verified" && d.Authorize != nil && !d.Authorize(n) {
+			continue
+		}
+		n = d.serviceView(n)
 		if f.Matches(n) {
 			out = append(out, n)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].HostUUID < out[j].HostUUID })
 	return out
+}
+
+// serviceView retains public preview/invitation hints but never lets their
+// advertised engines, model inventories or service ports become service targets.
+func (d *Directory) serviceView(n noderec.DirectoryNode) noderec.DirectoryNode {
+	allowed := n.ServicePeer()
+	if d.Authorize != nil {
+		allowed = d.Authorize(n)
+	}
+	if allowed {
+		return n
+	}
+	n.Trusted = false
+	if n.PeerRecordID == "" {
+		n.PeerRecordID = noderec.PreviewRecordID(n.Name, n.HostUUID)
+	}
+	if n.IdentityVerification != "manual" {
+		n.IdentityVerification = "unverified"
+	}
+	services := make(map[noderec.ServiceKey]noderec.ServiceStatus)
+	for _, key := range []noderec.ServiceKey{noderec.ServiceNodeInfo, noderec.ServiceCluster} {
+		if service, ok := n.Services[key]; ok {
+			services[key] = service
+		}
+	}
+	n.Services = services
+	n.Models, n.ModelsByEngine, n.LoadedByEngine = nil, nil, nil
+	n.EngineNative = nil
+	return n
 }
 
 // Unsubscribe removes a subscriber.
@@ -274,14 +309,23 @@ func (d *Directory) Apply(method string, node noderec.DirectoryNode) {
 // fallbacks, preventing oscillation. Deliveries to subscribers are only made when
 // the projected node state actually changes.
 func (d *Directory) ApplySource(source Source, method string, node noderec.DirectoryNode) {
-	if node.HostUUID == "" {
+	key := node.RecordKey()
+	if key == "" {
 		return
 	}
 	d.mu.Lock()
-	entry := d.entries[node.HostUUID]
-	prevNode, hadPrev := d.nodes[node.HostUUID]
+	entry := d.entries[key]
+	prevNode, hadPrev := d.nodes[key]
 
 	if method == noderec.NotifyNodeRemoved {
+		prior := entry.scanner
+		if source == SourceManual {
+			prior = entry.manual
+		}
+		if node.PeerRecordID != "" && prior != nil && prior.PeerRecordID != node.PeerRecordID {
+			d.mu.Unlock()
+			return
+		}
 		if source == SourceScanner {
 			entry.scanner = nil
 		} else {
@@ -299,12 +343,12 @@ func (d *Directory) ApplySource(source Source, method string, node noderec.Direc
 	proj, exists := entry.projected()
 	var changed bool
 	if exists {
-		d.entries[node.HostUUID] = entry
-		d.nodes[node.HostUUID] = proj
+		d.entries[key] = entry
+		d.nodes[key] = proj
 		changed = !hadPrev || !directoryNodeEqual(prevNode, proj)
 	} else {
-		delete(d.entries, node.HostUUID)
-		delete(d.nodes, node.HostUUID)
+		delete(d.entries, key)
+		delete(d.nodes, key)
 		changed = hadPrev
 	}
 
@@ -333,6 +377,10 @@ func (d *Directory) Snapshot(filter noderec.ServiceKey) []noderec.DirectoryNode 
 	d.mu.Lock()
 	out := make([]noderec.DirectoryNode, 0, len(d.nodes))
 	for _, n := range d.nodes {
+		if n.IdentityVerification == "verified" && d.Authorize != nil && !d.Authorize(n) {
+			continue
+		}
+		n = d.serviceView(n)
 		if filter != "" && !n.HasService(filter) {
 			continue
 		}

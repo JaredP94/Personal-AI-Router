@@ -77,10 +77,10 @@ func ids(nodes []noderec.DirectoryNode) []string {
 }
 
 func olNode(id string) noderec.DirectoryNode {
-	return noderec.DirectoryNode{HostUUID: id, Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
+	return noderec.DirectoryNode{HostUUID: id, IdentityVerification: "local", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}}}
 }
 func erNode(id string) noderec.DirectoryNode {
-	return noderec.DirectoryNode{HostUUID: id, Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
+	return noderec.DirectoryNode{HostUUID: id, IdentityVerification: "local", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceErrors: {Port: 14319}}}
 }
 
 func TestDirectorySubscribeInitialSnapshot(t *testing.T) {
@@ -207,11 +207,12 @@ func TestDirectoryScannerPrecedenceOverManual(t *testing.T) {
 	d.Subscribe(&Subscriber{Filter: noderec.SubscribeParams{}, Send: sub.send})
 
 	scannerNode := noderec.DirectoryNode{
-		HostUUID: "uuid-1",
-		Name:     "workstation.local",
-		IP:       "192.168.1.50",
-		IPs:      []string{"192.168.1.50"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+		HostUUID:             "uuid-1",
+		IdentityVerification: "local",
+		Name:                 "workstation.local",
+		IP:                   "192.168.1.50",
+		IPs:                  []string{"192.168.1.50"},
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
 	}
 	d.ApplySource(SourceScanner, noderec.NotifyNodeDiscovered, scannerNode)
 	if len(sub.snaps) != 1 {
@@ -223,11 +224,12 @@ func TestDirectoryScannerPrecedenceOverManual(t *testing.T) {
 
 	// Manual update for the same hostUuid should NOT overwrite scanner's name, but should merge manual IP.
 	manualNode := noderec.DirectoryNode{
-		HostUUID: "uuid-1",
-		Name:     "100.100.100.1",
-		IP:       "100.100.100.1",
-		IPs:      []string{"100.100.100.1"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
+		HostUUID:             "uuid-1",
+		IdentityVerification: "local",
+		Name:                 "100.100.100.1",
+		IP:                   "100.100.100.1",
+		IPs:                  []string{"100.100.100.1"},
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceOllama: {Port: 11434}},
 	}
 	d.ApplySource(SourceManual, noderec.NotifyNodeDiscovered, manualNode)
 	if len(sub.snaps) != 2 {
@@ -258,11 +260,12 @@ func TestDirectoryScannerPrecedenceOverManual(t *testing.T) {
 // engineNativeNode is a directory node carrying the engine's own view.
 func engineNativeNode(view *enginenative.Stats) noderec.DirectoryNode {
 	return noderec.DirectoryNode{
-		HostUUID:     "uuid-a",
-		Name:         "host-a",
-		IP:           "192.0.2.10",
-		Services:     map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14320}},
-		EngineNative: view,
+		HostUUID:             "uuid-a",
+		IdentityVerification: "local",
+		Name:                 "host-a",
+		IP:                   "192.0.2.10",
+		Services:             map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineManager: {Port: 14320}},
+		EngineNative:         view,
 	}
 }
 

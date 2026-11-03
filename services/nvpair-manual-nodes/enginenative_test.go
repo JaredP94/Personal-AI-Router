@@ -18,6 +18,7 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/clustertrusttest"
 	"nvpair-shared/enginenative"
+	"nvpair-shared/noderec"
 )
 
 // The engine-native half of a manual node: the engine's own report of itself,
@@ -147,8 +148,9 @@ func startPeerEngineManager(t *testing.T, selfDir string, body map[string]any) (
 	})
 	ts := httptest.NewUnstartedServer(mux)
 	ts.TLS = peerMesh.ServerTLSConfig()
-	ts.StartTLS()
-	t.Cleanup(ts.Close)
+	ts.Config.ReadTimeout = 2 * time.Second
+	ts.Config.WriteTimeout = 2 * time.Second
+	t.Cleanup(func() { ts.CloseClientConnections(); ts.Close() })
 
 	_, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
 	if err != nil {
@@ -158,6 +160,20 @@ func startPeerEngineManager(t *testing.T, selfDir string, body map[string]any) (
 	if err != nil {
 		t.Fatalf("parse listener port: %v", err)
 	}
+	mux.HandleFunc("/v1/node-info", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := peerMesh.VerifyClientPin(r); !ok {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		principal := "uuid-peer"
+		_ = json.NewEncoder(w).Encode(NodeInfoResponse{
+			HostUUID: principal, ClusterUUID: &principal,
+			PeerMetadata: &noderec.PeerMetadataParams{HostUUID: principal, Services: map[noderec.ServiceKey]int{
+				noderec.ServiceNodeInfo: port, noderec.ServiceEngineManager: port, noderec.ServiceOMLX: 1236,
+			}},
+		})
+	})
+	ts.StartTLS()
 	// "localhost" is not a loopback IP literal, so the read is a peer's read
 	// and not this node's own engine-manager.
 	return "localhost", port, stub
@@ -173,6 +189,7 @@ func newClusteredTestManager(t *testing.T, selfDir string, emPort int) *Manager 
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	bindTestManager(t, m)
 	m.emPort = emPort
 	// The plain-HTTP and operator-TLS fallbacks must not answer: a peer is
 	// read over cluster mTLS, and a weaker transport is not a view.
@@ -237,7 +254,7 @@ func TestManualNodeCarriesThePeerEngineNativeView(t *testing.T) {
 	host, port, stub := startPeerEngineManager(t, selfDir, engineNativeBody())
 
 	m := newClusteredTestManager(t, selfDir, port)
-	entry := ManualEntry{Address: host, Name: "peer"}
+	entry := ManualEntry{Address: host, Name: "peer", TLSPort: port, MTLS: true}
 	m.addNode(entry)
 
 	status := waitForProbedNode(t, m, nodeID(entry))
@@ -281,7 +298,7 @@ func TestManualNodeWithNoEngineViewCarriesNone(t *testing.T) {
 	host, port, _ := startPeerEngineManager(t, selfDir, map[string]any{"engine": "omlx", "supported": false})
 
 	m := newClusteredTestManager(t, selfDir, port)
-	entry := ManualEntry{Address: host, Name: "peer"}
+	entry := ManualEntry{Address: host, Name: "peer", TLSPort: port, MTLS: true}
 	m.addNode(entry)
 
 	status := waitForProbedNode(t, m, nodeID(entry))
@@ -298,7 +315,7 @@ func TestManualNodeKeepsTheLastGoodEngineView(t *testing.T) {
 	host, port, stub := startPeerEngineManager(t, selfDir, engineNativeBody())
 
 	m := newClusteredTestManager(t, selfDir, port)
-	entry := ManualEntry{Address: host, Name: "peer"}
+	entry := ManualEntry{Address: host, Name: "peer", TLSPort: port, MTLS: true}
 	m.addNode(entry)
 
 	status := waitForProbedNode(t, m, nodeID(entry))

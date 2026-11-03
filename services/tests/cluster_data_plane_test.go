@@ -15,7 +15,6 @@
 package tests
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,8 +29,6 @@ import (
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/jsonrpc"
 	"nvpair-shared/netpick"
-
-	"github.com/grandcat/zeroconf"
 )
 
 const (
@@ -53,8 +50,13 @@ type interNodeCluster struct {
 
 func newInterNodeCluster(t *testing.T) *interNodeCluster {
 	t.Helper()
+	return newInterNodeClusterWithPeer(t, "data-plane-peer")
+}
+
+func newInterNodeClusterWithPeer(t *testing.T, peerUUID string) *interNodeCluster {
+	t.Helper()
 	nodeDir, peerDir := t.TempDir(), t.TempDir()
-	const nodeUUID, peerUUID = "data-plane-node", "data-plane-peer"
+	const nodeUUID = "data-plane-node"
 	nodeCert := mintClusterIdentity(t, nodeDir, nodeUUID)
 	peerCert := mintClusterIdentity(t, peerDir, peerUUID)
 	writePin(t, nodeDir, peerUUID, peerCert) // the node under test trusts the peer
@@ -81,25 +83,13 @@ func (c *interNodeCluster) clientAsPeer(t *testing.T) *http.Client {
 }
 
 // startStubClusterPeer runs a stub inter-node peer for this cluster over cluster
-// mTLS and advertises it as a single _nvpair-node record carrying wl=<port> and
-// its cluster principal. The principal is what lets the node under test resolve
-// its pin for the stub: the scanner annotates the browsed record as trusted and
-// the workload-manager keys its pinned client on it. Without mTLS and that TXT
-// key, the stub is simply not a routable cluster target and is never dialed.
-//
-// It returns the channel of frames the stub received. instance/hostUUID keep the
-// record distinct from the node under test's own.
-func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID string) <-chan jsonrpc.Message {
+// mTLS. Authenticated node-info proves the exact pinned principal and publishes
+// its workload service port; mDNS alone never grants service eligibility.
+// It returns the channel of frames the stub received.
+func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance string) <-chan jsonrpc.Message {
 	t.Helper()
 	received := make(chan jsonrpc.Message, 128)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/workloads/events", func(w http.ResponseWriter, r *http.Request) {
-		// The sender must present the leaf this peer pins — the outbound half of
-		// the gate, so a broadcast is authenticated in both directions.
-		if _, ok := c.peer.VerifyClientPin(r); !ok {
-			http.Error(w, "forbidden: not a pinned cluster peer", http.StatusForbidden)
-			return
-		}
+	c.startVerifiedPeer(t, instance, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var msg jsonrpc.Message
 		if json.Unmarshal(body, &msg) == nil {
@@ -109,27 +99,7 @@ func (c *interNodeCluster) startStubClusterPeer(t *testing.T, instance, hostUUID
 			}
 		}
 		w.WriteHeader(http.StatusOK)
-	})
-
-	// Listen on all interfaces: zeroconf advertises the host's real interface
-	// IP(s), so the manager dials the peer there, not at 127.0.0.1.
-	ln, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatalf("stub peer listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	srv := &http.Server{Handler: mux}
-	go srv.Serve(tls.NewListener(ln, c.peer.ServerTLSConfig()))
-	t.Cleanup(func() { _ = srv.Close() })
-
-	txt := []string{"v=1", "uuid=" + hostUUID, fmt.Sprintf("wl=%d", port),
-		clustertrust.ClusterUUIDTXTKey + "=" + c.peerUUID}
-	adv, err := zeroconf.Register(instance, nodeRecordService, testDomain, port, txt, nil)
-	if err != nil {
-		t.Fatalf("register stub peer: %v", err)
-	}
-	t.Cleanup(adv.Shutdown)
-	t.Logf("stub cluster peer advertising %s (wl=%d, cluster-uuid=%s)", nodeRecordService, port, c.peerUUID)
+	}))
 	return received
 }
 
