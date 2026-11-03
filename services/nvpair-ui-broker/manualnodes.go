@@ -66,6 +66,7 @@ type manualNodeStatus struct {
 }
 
 type manualNodeStatusEntry struct {
+	generation uint64
 	status     manualNodeStatus
 	receivedAt time.Time
 }
@@ -464,6 +465,11 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 }
 
 func (b *Broker) refreshManualNodesTrust() {
+	// Snapshot and replay are one operation relative to worker callbacks and
+	// retirement. Never let a copied status outlive its worker generation.
+	b.manualCallbackMu.Lock()
+	defer b.manualCallbackMu.Unlock()
+	generation := b.manualInventoryGeneration.Load()
 	b.manualMu.Lock()
 	seenKeys := make(map[string]struct{}, len(b.manualNodeKeys))
 	entries := make([]manualNodeStatusEntry, 0, len(b.manualNodeKeys))
@@ -475,7 +481,7 @@ func (b *Broker) refreshManualNodesTrust() {
 			continue
 		}
 		seenKeys[key] = struct{}{}
-		if canonical, ok := b.survivingAliasLocked(key); ok {
+		if canonical, ok := b.survivingAliasLocked(key); ok && canonical.generation == generation {
 			entries = append(entries, canonical)
 		}
 	}

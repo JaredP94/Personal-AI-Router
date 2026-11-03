@@ -13,6 +13,7 @@ import (
 	"nvpair-ui-broker/workloadstore"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -178,6 +179,102 @@ func TestUnprovenScannerClaimCannotReplaceVerifiedPeer(t *testing.T) {
 	got := b.schedulerNodes()
 	if len(got) != 1 || len(got[0].Models) != 1 || got[0].Models[0] != "model" {
 		t.Fatalf("public claim displaced verified peer: %+v", got)
+	}
+}
+
+// Pause replay after its first publication, then race retirement or worker
+// callbacks against the still-copied second entry. The newest operation wins.
+func TestManualTrustRefreshSerializesWithWorkerChanges(t *testing.T) {
+	for _, operation := range []string{"retire", "remove", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			b := inventoryTestBroker(t)
+			for _, id := range []string{"a", "b"} {
+				clustertrusttest.WritePeerPin(t, b.clusterDir, id)
+			}
+			b.mesh.Refresh()
+			statusFor := func(id, model string) manualNodeStatus {
+				return manualNodeStatus{ID: id, HostUUID: id, ClusterUUID: id, PeerRecordID: b.mesh.PeerRecordID(id), Address: "192.0.2.2", OMLXUp: true, OMLXModels: []string{model}, PeerMetadata: &noderec.PeerMetadataParams{HostUUID: id, Name: id, Services: map[noderec.ServiceKey]int{noderec.ServiceOMLX: 1236}}}
+			}
+			for _, id := range []string{"a", "b"} {
+				b.upsertManualNode(statusFor(id, "old"))
+			}
+			// Force replay to publish changes while preserving its status inputs.
+			for _, key := range b.manualNodeKeys {
+				b.store.Remove(key, sourceManual)
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var publications atomic.Int32
+			b.store.onChange = func() {
+				if publications.Add(1) == 1 {
+					close(entered)
+					<-release
+				}
+			}
+			refreshed := make(chan struct{})
+			go func() { b.refreshManualNodesTrust(); close(refreshed) }()
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("trust replay did not publish")
+			}
+			changed := make(chan struct{})
+			go func() {
+				defer close(changed)
+				if operation == "retire" {
+					b.clearManualNodesState()
+					return
+				}
+				b.manualCallbackMu.Lock()
+				defer b.manualCallbackMu.Unlock()
+				for _, id := range []string{"a", "b"} {
+					method := "node/removed"
+					status := statusFor(id, "new")
+					if operation == "update" {
+						method = "node/updated"
+					}
+					data, _ := json.Marshal(status)
+					b.forwardManualNodesNotification(method, data)
+				}
+			}()
+			select {
+			case <-changed:
+				t.Error("worker change overtook paused trust replay")
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(release)
+			<-refreshed
+			<-changed
+			got := b.schedulerNodes()
+			if operation != "update" {
+				if len(got) != 0 || len(b.relayDir.Snapshot(noderec.ServiceOMLX)) != 0 {
+					t.Fatalf("withdrawn manual inventory resurrected: %+v", got)
+				}
+			} else {
+				if len(got) != 2 {
+					t.Fatalf("updated nodes: %+v", got)
+				}
+				for _, n := range got {
+					if len(n.Models) != 1 || n.Models[0] != "new" {
+						t.Errorf("old snapshot replaced worker update: %+v", n)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestManualTrustRefreshRejectsRetiredGeneration(t *testing.T) {
+	b := inventoryTestBroker(t)
+	b.upsertManualNode(manualNodeStatus{ID: "old", Address: "192.0.2.2", OMLXUp: true, OMLXModels: []string{"old"}})
+	// Simulate an old snapshot retained across the generation boundary. It must
+	// not publish into the replacement generation even if its pins remain valid.
+	for _, key := range b.manualNodeKeys {
+		b.store.Remove(key, sourceManual)
+	}
+	b.manualInventoryGeneration.Add(1)
+	b.refreshManualNodesTrust()
+	if len(b.schedulerNodes()) != 0 {
+		t.Fatal("retired generation snapshot republished")
 	}
 }
 

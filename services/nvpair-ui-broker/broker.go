@@ -733,7 +733,9 @@ var (
 		)
 	}
 	launchManualNodesProcess = func(b *Broker) (*rpcWorker, error) {
+		b.manualCallbackMu.Lock()
 		generation := b.manualInventoryGeneration.Add(1)
+		b.manualCallbackMu.Unlock()
 		return startRPCWorker("manual-nodes", b.manualNodesPath, append(b.logLevelArgs(), b.clusterDirArgs()...), func(method string, params json.RawMessage) {
 			b.manualCallbackMu.Lock()
 			defer b.manualCallbackMu.Unlock()
@@ -1535,11 +1537,11 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	oldKey, existed := b.manualNodeKeys[s.ID]
 	priorProof := b.manualNodeStatuses[s.ID].status.PeerRecordID
 	b.manualNodeKeys[s.ID] = key
-	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
+	b.manualNodeStatuses[s.ID] = manualNodeStatusEntry{generation: b.manualInventoryGeneration.Load(), status: s, receivedAt: receivedAt}
 	canonical, ok := b.survivingAliasLocked(key)
 	b.manualMu.Unlock()
 	if !ok {
-		canonical = manualNodeStatusEntry{status: s, receivedAt: receivedAt}
+		canonical = manualNodeStatusEntry{generation: b.manualInventoryGeneration.Load(), status: s, receivedAt: receivedAt}
 	}
 
 	if existed && oldKey == key && priorProof != canonical.status.PeerRecordID {
