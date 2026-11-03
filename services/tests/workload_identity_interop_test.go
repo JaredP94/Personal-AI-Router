@@ -158,6 +158,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 // hear the running workload AGAIN from the restarted manager — which only
 // happens if the broker rehydrated the fresh process's active set.
 func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
+	requireMulticast(t)
 	if portBusy(11435) || portBusy(14320) {
 		t.Skip("ollama-proxy (11435) or workload-manager (14320) port already in use; skipping")
 	}
@@ -274,6 +275,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 // state — otherwise a peer's wrongly-inferred "failed" (or a missed terminal)
 // can never be repaired after a restart.
 func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
+	requireMulticast(t)
 	if portBusy(11435) || portBusy(14320) {
 		t.Skip("ollama-proxy (11435) or workload-manager (14320) port already in use; skipping")
 	}

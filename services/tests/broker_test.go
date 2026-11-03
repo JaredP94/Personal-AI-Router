@@ -191,6 +191,7 @@ func waitForPushContaining(t *testing.T, msgs <-chan jsonrpc.Message, instance s
 }
 
 func TestCrossProcessBrokerSubscription(t *testing.T) {
+	requireMulticast(t)
 	const (
 		inst1 = "xproc-broker-1"
 		inst2 = "xproc-broker-2"

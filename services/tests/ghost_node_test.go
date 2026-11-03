@@ -41,6 +41,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("multicast + miss-threshold timing; skipped under -short")
 	}
+	requireMulticast(t)
 
 	const (
 		peerInstance = "ghost-peer-host"

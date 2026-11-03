@@ -15,6 +15,7 @@ import (
 const testDomain = "local."
 
 func TestInProcessDiscovery(t *testing.T) {
+	requireMulticast(t)
 	const (
 		service  = "_test-disc._tcp"
 		instance = "in-proc-test"
@@ -71,6 +72,7 @@ func TestInProcessDiscovery(t *testing.T) {
 }
 
 func TestInProcessMultipleInstances(t *testing.T) {
+	requireMulticast(t)
 	const service = "_test-multi._tcp"
 	instances := []string{"node-alpha", "node-beta", "node-gamma"}
 
@@ -121,6 +123,7 @@ func TestInProcessMultipleInstances(t *testing.T) {
 }
 
 func TestInProcessRemoval(t *testing.T) {
+	requireMulticast(t)
 	const (
 		service  = "_test-rmv._tcp"
 		instance = "removable-node"

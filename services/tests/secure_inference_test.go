@@ -237,6 +237,7 @@ func startFakeOllama(t *testing.T) (host string, port int, generates *int32) {
 }
 
 func TestSecureInferenceClusterMTLS(t *testing.T) {
+	requireMulticast(t)
 	baseA, baseB, baseC := t.TempDir(), t.TempDir(), t.TempDir()
 	clusterA := filepath.Join(baseA, "cluster")
 	clusterB := filepath.Join(baseB, "cluster")

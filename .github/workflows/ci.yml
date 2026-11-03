@@ -116,9 +116,17 @@ jobs:
                   exit "$failed"
 
     cross-process:
-        name: Cross-process tests (macOS arm64)
-        runs-on: macos-15
+        name: Cross-process tests (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
         timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            # Linux runners can send mDNS multicast, so discovery is exercised
+            # there. Hosted macOS VMs cannot (every send to 224.0.0.251 fails
+            # with "no route to host"); on macOS the discovery tests skip with
+            # that reason named, and everything else runs.
+            matrix:
+                os: [ubuntu-latest, macos-15]
         steps:
             - uses: actions/checkout@v5.0.0
               with:
@@ -127,13 +135,9 @@ jobs:
               with:
                   go-version: '1.26.7'
                   cache-dependency-path: services/**/go.sum
-            # Hosted macOS VMs need an explicit on-link multicast route for
-            # real mDNS discovery; otherwise sends fail with no route to host.
-            - name: Configure runner multicast route
-              run: |
-                  interface=$(route -n get default | awk '/interface:/{print $2}')
-                  sudo route -n add -net 224.0.0.0/4 -interface "$interface"
-                  route -n get 224.0.0.251
+            - name: Install port-owner tools
+              if: runner.os == 'Linux'
+              run: sudo apt-get update -qq && sudo apt-get install -y -qq lsof iproute2
             # Run the source guard before executing any application binary.
             # All runtime helpers must use per-test disposable app-data roots.
             - name: Check process isolation
@@ -156,6 +160,6 @@ jobs:
               if: always()
               uses: actions/upload-artifact@v4.6.2
               with:
-                  name: cross-process-macos-arm64
+                  name: cross-process-${{ matrix.os }}
                   path: ${{ runner.temp }}/cross-process.jsonl
                   if-no-files-found: warn
