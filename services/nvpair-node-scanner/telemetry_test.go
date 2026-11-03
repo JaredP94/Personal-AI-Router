@@ -104,11 +104,35 @@ func TestRefreshNodeTelemetryRejectsMismatchedIdentity(t *testing.T) {
 }
 func TestRefreshTelemetryFailsOverToAnAnsweringAddress(t *testing.T) {
 	h := newTelemetryHarness(t)
-	host, port := h.peer("node-a", func(*http.Request) NodeInfoResponse {
-		return NodeInfoResponse{HostUUID: "node-a", TelemetryValid: true}
+	host, _ := h.peer("node-a", func(*http.Request) NodeInfoResponse {
+		return NodeInfoResponse{HostUUID: "node-a", TelemetryValid: true, GPUs: []GPUInfo{{Name: "GPU 0", UtilizationPercent: gpuReading(uint32(61))}}}
 	})
-	if !h.d.refreshNodeTelemetryCandidates(t.Context(), "node-a", []string{"127.0.0.2", host}, port) {
-		t.Fatal("answering second address ignored")
+	node, _ := h.d.dir.get("node-a")
+	// This loopback address has no listener; only the second address can answer
+	// with the pinned peer certificate. Exercise the whole sweep, not a helper.
+	node.IP = "127.0.0.2"
+	node.IPs = []string{"127.0.0.2", host}
+	h.d.dir.upsert(node)
+	capture := &notifyCapture{}
+	h.d.codec = NewCodec(capture)
+	h.d.refreshTelemetryOnce(t.Context())
+	capture.mu.Lock()
+	data := append([]byte(nil), capture.frames...)
+	capture.mu.Unlock()
+	var message Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatalf("decode notification: %v (output %q)", err, data)
+	}
+	var got noderec.NodeTelemetry
+	if err := json.Unmarshal(message.Params, &got); err != nil {
+		t.Fatal(err)
+	}
+	if message.Method != noderec.NotifyNodeTelemetry || got.HostUUID != "node-a" || got.GPUUtilizationPct != 61 || !got.TelemetryValid || got.PeerRecordID != node.PeerRecordID {
+		t.Fatalf("telemetry = %+v, want authenticated node-a at 61%% from its second address", got)
+	}
+	key := hostKey{hostUUID: "node-a", service: noderec.ServiceNodeInfo}
+	if remembered := h.d.enrichHosts.get(key); remembered != host {
+		t.Fatalf("remembered address = %q, want %q", remembered, host)
 	}
 }
 func TestTelemetryIntervalForNodeIsStableAndBounded(t *testing.T) {
