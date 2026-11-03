@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // testSenderListener checks the production source-port contract before binding
@@ -40,13 +43,24 @@ func testSenderListener(port int) func(context.Context, string, string) (net.Pac
 
 func TestSenderReportsOccupiedSourcePortAndRetries(t *testing.T) {
 	ifi, source := loopbackIPv4(t)
-	blocker, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source})
+	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer blocker.Close()
-	target := blocker.LocalAddr().(*net.UDPAddr)
-	s := Sender{listenPacket: testSenderListener(target.Port)}
+	defer sink.Close()
+	target := sink.LocalAddr().(*net.UDPAddr)
+	// Whether a held port refuses a second bind is platform-specific (Windows
+	// SO_REUSEADDR binds over a non-exclusive owner), so the occupied port is
+	// injected at the bind hook. The retry binds a real socket.
+	var occupied atomic.Bool
+	occupied.Store(true)
+	bind := testSenderListener(0)
+	s := Sender{listenPacket: func(ctx context.Context, network, address string) (net.PacketConn, error) {
+		if occupied.Load() {
+			return nil, &net.OpError{Op: "listen", Net: network, Err: os.NewSyscallError("bind", syscall.EADDRINUSE)}
+		}
+		return bind(ctx, network, address)
+	}}
 	defer s.Close()
 	if err := s.Send([]byte("blocked"), ifi, source, target, nil); !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("occupied source port: %v, want EADDRINUSE", err)
@@ -54,15 +68,16 @@ func TestSenderReportsOccupiedSourcePortAndRetries(t *testing.T) {
 	if len(s.sockets) != 0 {
 		t.Fatal("failed bind cached as a working socket")
 	}
-	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sink.Close()
-	if err := blocker.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Send([]byte("retry"), ifi, source, sink.LocalAddr().(*net.UDPAddr), nil); err != nil {
+	occupied.Store(false)
+	if err := s.Send([]byte("retry"), ifi, source, target, nil); err != nil {
 		t.Fatalf("retry after source port released: %v", err)
+	}
+	buf := make([]byte, 64)
+	if err := sink.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := sink.ReadFromUDP(buf)
+	if err != nil || string(buf[:n]) != "retry" {
+		t.Fatalf("retried packet: %q, %v", buf[:n], err)
 	}
 }
