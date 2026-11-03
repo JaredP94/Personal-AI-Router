@@ -73,6 +73,10 @@ type Settings struct {
 	// enough.
 	ClusterFriendlyName string `json:"cluster_friendly_name"`
 
+	// EngineAllowLANBind explicitly permits non-loopback local start overrides.
+	// Engine-manager reads it live; absent or unreadable settings deny access.
+	EngineAllowLANBind bool `json:"engine_allow_lan_bind"`
+
 	// TelemetryEnabled controls whether proxies emit OpenTelemetry spans.
 	TelemetryEnabled bool `json:"telemetry_enabled"`
 
@@ -591,6 +595,32 @@ func (m *Manager) handleMessage(msg *Message) {
 		if err := m.codec.Notify("settings/telemetry-changed", config); err != nil {
 			slog.Warn("failed to emit telemetry-changed notification after set", "err", err)
 		}
+
+	case "settings/get-engine-allow-lan-bind":
+		m.mu.RLock()
+		v := m.settings.EngineAllowLANBind
+		m.mu.RUnlock()
+		m.codec.Respond(msg.ID, map[string]bool{"value": v})
+
+	case "settings/set-engine-allow-lan-bind":
+		var p boolValueParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil || p.Value == nil {
+			m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"value": <bool>}`)
+			return
+		}
+		m.mu.RLock()
+		newSettings := m.settings
+		m.mu.RUnlock()
+		newSettings.EngineAllowLANBind = *p.Value
+		if err := m.saveSettings(newSettings); err != nil {
+			slog.Error("failed to persist engine-allow-lan-bind", "err", err)
+			m.codec.RespondError(msg.ID, -32603, "failed to persist setting: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.settings = newSettings
+		m.mu.Unlock()
+		m.codec.Respond(msg.ID, map[string]bool{"ok": true})
 
 	case "shutdown":
 		if err := m.codec.Respond(msg.ID, nil); err != nil {

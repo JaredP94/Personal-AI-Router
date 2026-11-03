@@ -47,14 +47,17 @@ type engineState struct {
 	// none, in which case uninstall has nothing to preserve.
 	modelsDir string
 
-	// opMu serializes lifecycle operations (install / start / stop /
-	// restart / uninstall) for this engine, so concurrent calls can't
-	// double-spawn or interleave. Lock order is opMu → mu; the per-op
-	// st.mu is released around probes, and the background health loop
-	// never takes opMu.
+	// opMu serializes lifecycle operations. Passive status probes never take
+	// it; lockOperation invalidates their observations before state can change.
+	// Lock order is opMu → mu; background health only takes mu.
 	opMu sync.Mutex
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// revision changes at both ends of a lifecycle operation and on passive
+	// state changes. A probe may only commit against its captured revision.
+	revision   uint64
+	opDone     chan struct{}
+	statusRuns map[statusProbeKey]*statusProbeRun
 	installed  bool
 	running    bool
 	healthy    bool
@@ -67,6 +70,24 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
+}
+
+// lockOperation marks the entire serialized operation, including external I/O.
+func (st *engineState) lockOperation() {
+	st.opMu.Lock()
+	st.mu.Lock()
+	st.opDone = make(chan struct{})
+	st.revision++
+	st.mu.Unlock()
+}
+
+func (st *engineState) unlockOperation() {
+	st.mu.Lock()
+	st.revision++
+	close(st.opDone)
+	st.opDone = nil
+	st.mu.Unlock()
+	st.opMu.Unlock()
 }
 
 // Executor owns engine lifecycle for every engine known on this host.
@@ -120,8 +141,13 @@ type Executor struct {
 	reservedPort atomic.Int32
 	// StopAll is terminal for an Executor; the gate closes its start/snapshot race.
 	shuttingDown atomic.Bool
-	mu           sync.Mutex
-	engines      map[string]*engineState
+	// All shutdown entry points join one concurrent sweep. Only actionable
+	// process/command stop failures are retained for a later retry.
+	stopAllOnce sync.Once
+	retryMu     sync.Mutex
+	failedStops []string
+	mu          sync.Mutex
+	engines     map[string]*engineState
 }
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
@@ -243,16 +269,26 @@ func (st *engineState) pathVars() map[string]string {
 	return vars
 }
 
-func progress(engine, stage string, pct int) map[string]any {
-	return map[string]any{"engine": engine, "stage": stage, "percent": pct}
-}
-
 // emitInstallProgress reports one install-progress step to both consumers: the
 // local engine:install-progress notification (this node's UI) and the progress
-// hub (so an ec streaming handler can relay it to a remote initiator).
+// hub (so an ec streaming handler can relay it to a remote initiator). A pct of
+// 0 marks a step with no measurable progress and is omitted from the wire.
 func (e *Executor) emitInstallProgress(engine, stage string, pct int) {
-	e.notify("engine:install-progress", progress(engine, stage, pct))
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct})
+	e.emitInstallFrame(engine, stage, pct, "")
+}
+
+// emitInstallFrame is emitInstallProgress with an optional failure reason,
+// carried as "error" on the notification and Message on the hub event.
+func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string) {
+	params := map[string]any{"engine": engine, "stage": stage}
+	if wirePercentIncluded(pct) {
+		params["percent"] = pct
+	}
+	if errMsg != "" {
+		params["error"] = errMsg
+	}
+	e.notify("engine:install-progress", params)
+	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: stage, Percent: pct, Message: errMsg})
 }
 
 // emitPullProgress reports one model-pull step to both consumers: the local

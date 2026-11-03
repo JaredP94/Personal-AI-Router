@@ -27,8 +27,8 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if ok, _ := e.Detect(engine); ok {
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
@@ -82,7 +82,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 		// Escape hatch: vendor-script install with no checksum. Logged
 		// loudly so the weaker guarantee is never silent.
 		slog.Warn("running UNPINNED script install (no checksum verification)", "engine", engine)
-		e.emitInstallProgress(engine, "installing", 50)
+		e.emitInstallProgress(engine, "installing", 0)
 		argv, err := resolveArgs(inst.Script, vars)
 		if err != nil {
 			e.reportInstallFailed(engine, err)
@@ -112,10 +112,10 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			}
 			defer os.Remove(dp)
 			vars["download"] = dp
-			e.emitInstallProgress(engine, "verified", 50)
+			e.emitInstallProgress(engine, "verified", 0)
 		}
 		if inst.DiskImage != nil {
-			e.emitInstallProgress(engine, "installing", 75)
+			e.emitInstallProgress(engine, "installing", 0)
 			id, err := installAppFromDiskImage(ctx, vars["download"], inst.DiskImage)
 			if err != nil {
 				werr := fmt.Errorf("install from disk image failed: %w", err)
@@ -127,7 +127,7 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 			createdID = id
 		}
 		if len(inst.Run) > 0 {
-			e.emitInstallProgress(engine, "installing", 75)
+			e.emitInstallProgress(engine, "installing", 0)
 			args, err := resolveArgs(inst.Run, vars)
 			if err != nil {
 				e.reportInstallFailed(engine, err)
@@ -184,8 +184,8 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if ok, _ := e.Detect(engine); !ok {
 		// Already gone — by its own uninstaller, or by hand. Drop our ownership
 		// claim with it: left behind, it would authorise removing a copy the
@@ -414,7 +414,7 @@ func (e *Executor) runCommand(ctx context.Context, argv []string) error {
 	configureSysProcAttr(cmd) // hide the console window on Windows
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -469,8 +469,7 @@ func (e *Executor) runCommandTail(ctx context.Context, argv []string, maxLines, 
 }
 
 func (e *Executor) reportInstallFailed(engine string, err error) {
-	e.notify("engine:install-progress", map[string]any{"engine": engine, "stage": "failed", "percent": -1, "error": err.Error()})
-	e.progress.publish(ProgressEvent{Engine: engine, Op: "install", Stage: "failed", Percent: -1, Message: err.Error()})
+	e.emitInstallFrame(engine, "failed", -1, err.Error())
 	e.reporter.report(serviceError{
 		ID: installFailedID(engine), Message: err.Error(),
 		Severity: "error", Action: "retry", EngineType: engine, Operation: "install",

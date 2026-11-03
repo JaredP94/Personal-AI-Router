@@ -406,6 +406,9 @@ ServiceError = { id, message, timestamp, nodeId?, severity?, action?, engineType
 
 **Opt-in** (`engine:subscribe`). The notifications `nvpair-engine-manager` emits — `engine:ready`, `engine:state-changed` (full `EngineStatus`), `engine:models-changed` (`{engine, models}`, pushed when an engine's set of models loaded in memory changes), `engine:install-progress`, `engine:pull-progress` (live progress for a local model pull), `engine:remote-progress` (live progress for a remote install/pull) — re-emitted verbatim (their method names are already `engine:`-prefixed). Off by default.
 
+Install progress is relayed without filling absent fields: an omitted `percent`
+means an unmeasured stage, not zero percent or the previous download percentage.
+
 #### `connection/cluster-identity` / `connection/cluster-auto-sync`
 
 The change-only cluster signals `nvpair-node-settings` pushes when `cluster_id` / `cluster_auto_sync` change. Relayed verbatim and unconditionally — the same way the UI receives them from the settings subprocess directly.
@@ -699,6 +702,17 @@ Opt into / out of the `engine:<event>` stream (off by default). Acks `{ subscrib
 #### `engine:<method>` (generic relay)
 
 Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim and its response relayed straight back. This covers the whole engine control plane: `engine:get-installed`, `engine:describe`, `engine:status`, `engine:install`, `engine:uninstall`, `engine:start`, `engine:stop`, `engine:restart`, `engine:set-port`, `engine:action`, `engine:logs`, `engine:errors`, `engine:models`. (`engine:set-port` persists the engine's server port as a manifest override that survives a restart — see the `nvpair-engine-manager` README.) Lifecycle ops run for minutes (reporting progress via the `engine:install-progress` / `engine:state-changed` push events), so the relay imposes **no broker-side timeout** — fire the request and watch the event stream for the outcome. Error `-32000 "engine-manager not available"` when no engine-manager is supervised.
+
+The broker's prepare-shutdown request and subsequent stdin close join the same
+engine-manager shutdown sweep; the EOF backstop remains, without re-probing
+foreign listeners a second time. Failed actionable stops can still be retried.
+
+Engine-manager's internal `engine:settings-request{id, method}` is handled
+separately from subscriptions. Only `settings/get-engine-allow-lan-bind` is
+forwarded to node-settings, with a two-second bound, and the correlated
+`engine:settings-reply{id, result, error?}` goes directly to the captured worker.
+It is read-only and is never broadcast to desktop or TUI clients. Missing workers
+and failed reads deny the non-loopback override.
 
 #### `settings/<method>` (generic relay)
 

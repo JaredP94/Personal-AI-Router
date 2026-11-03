@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -90,8 +91,8 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
 		return err
 	}
@@ -305,6 +306,13 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 			argv[i] = expandPath(argv[i])
 		}
 		if err := e.runCommand(ctx, argv); err != nil {
+			// The CLI may have detached a daemon before exiting nonzero or
+			// being canceled. An ExitError proves it actually ran; clean up
+			// its possible side effects, but not a command that failed to spawn.
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				started = true
+			}
 			werr := fmt.Errorf("start command failed: %w", err)
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 			return cleanup(werr)
@@ -334,6 +342,7 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 			st.proc = nil
 			st.running = false
 			st.healthy = false
+			st.revision++
 			if st.healthStop != nil {
 				st.healthStop()
 				st.healthStop = nil
@@ -358,8 +367,8 @@ func (e *Executor) Stop(engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	stopErr := e.doStop(st, engine)
 	// A user-initiated Stop is explicit OFF intent. Persist it even when
 	// doStop declines a genuinely-foreign listener we can't terminate, so the
@@ -376,6 +385,8 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 	mode := rt.modeOrDefault()
 	st.mu.Lock()
 	if !st.running {
+		// Invalidate passive adoption and preserve explicit OFF intent.
+		st.stopping = true
 		st.mu.Unlock()
 		return nil
 	}
@@ -541,7 +552,11 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 // live listener returning 503 is unhealthy, not stopped. A successful control
 // command is likewise not proof that its daemon actually exited.
 func (e *Executor) waitUnavailable(p *Probe, port int, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return e.waitUnavailableContext(context.Background(), p, port, timeout)
+}
+
+func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port int, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	misses := 0
 	for {
@@ -681,8 +696,8 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
-	st.opMu.Lock()
-	defer st.opMu.Unlock()
+	st.lockOperation()
+	defer st.unlockOperation()
 	if err := e.doStop(st, engine); err != nil {
 		return err
 	}
@@ -694,7 +709,36 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 
 // StopAll rejects new starts and terminates every running engine during
 // shutdown without changing the user's saved ON/OFF intent.
+//
+// Two entry points ask for it on an ordinary quit — the
+// engine:prepare-shutdown handler, which the broker calls from its own
+// teardown, and the stdin-EOF path in Run, which follows when the broker then
+// closes stdin — because each is the right trigger for a different way of
+// being shut down: a broker ordering its teardown, and a parent that simply
+// severed the pipe.
+//
+// One sweep runs per process, and every caller returns only once it has
+// finished. A caller that returned while the sweep was still running would
+// report engines stopped before they were: the broker would close stdin,
+// engine-manager would exit, and the engines it launched would be orphaned.
+// Repeating the sweep would re-pay doStop's readiness probe for every adopted
+// engine whose stop it declines, each time.
+//
+// A later caller does retry the engines whose stop failed through a process
+// handle or a stop command, such as an `lms server stop` that errored, because
+// another attempt can succeed where a declined stop cannot.
 func (e *Executor) StopAll() {
+	swept := false
+	e.stopAllOnce.Do(func() {
+		swept = true
+		e.stopAllNow()
+	})
+	if !swept {
+		e.retryFailedStops()
+	}
+}
+
+func (e *Executor) stopAllNow() {
 	e.shuttingDown.Store(true)
 	e.mu.Lock()
 	names := make([]string, 0, len(e.engines))
@@ -702,36 +746,67 @@ func (e *Executor) StopAll() {
 		names = append(names, n)
 	}
 	e.mu.Unlock()
-	// Stop engines concurrently. Each doStop can wait up to the manifest grace
-	// (default 5s) for its engine to exit, so a sequential sweep would take
-	// sum(grace) across engines and let a slow first engine delay — or, if the
-	// parent severs us mid-sweep, entirely prevent — every later engine from
-	// even being signaled. Running them in parallel bounds the whole sweep to
-	// ~one grace and guarantees every engine gets its stop signal immediately.
-	// Each engine still serializes on its own opMu, so this is safe.
+	e.failedStops = e.stopEngines(names)
+}
+
+// retryFailedStops tries again to stop the engines whose stop failed in the
+// sweep. Callers take turns, so two retries never stop one engine at once.
+func (e *Executor) retryFailedStops() {
+	e.retryMu.Lock()
+	defer e.retryMu.Unlock()
+	if len(e.failedStops) == 0 {
+		return
+	}
+	e.failedStops = e.stopEngines(e.failedStops)
+}
+
+// stopEngines stops the named engines and returns those whose stop failed
+// through a process handle or a stop command, the failures a later attempt can
+// fix. Without either, doStop declines a foreign listener or has already
+// escalated against PAIR's own orphan, and a retry would only repeat that.
+//
+// Engines stop concurrently. Each doStop can wait up to the manifest grace
+// (default 5s) for its engine to exit, so a sequential sweep would take
+// sum(grace) across engines and let a slow first engine delay — or, if the
+// parent severs us mid-sweep, entirely prevent — every later engine from even
+// being signaled. Running them in parallel bounds the whole sweep to ~one grace
+// and guarantees every engine gets its stop signal immediately. Each engine
+// still serializes on its own opMu, so this is safe.
+func (e *Executor) stopEngines(names []string) []string {
 	var wg sync.WaitGroup
-	for _, n := range names {
+	// Each goroutine writes only its own index, so no lock is needed.
+	retry := make([]bool, len(names))
+	for i, n := range names {
 		st, err := e.state(n)
 		if err != nil {
 			continue
 		}
 		wg.Add(1)
-		go func(st *engineState, n string) {
+		go func(i int, st *engineState, n string) {
 			defer wg.Done()
 			st.mu.Lock()
 			cancel := st.startCancel
+			retryable := st.plat.Runtime.modeOrDefault() == "command" || st.proc != nil
 			st.mu.Unlock()
 			if cancel != nil {
 				cancel()
 			}
-			st.opMu.Lock()
-			defer st.opMu.Unlock()
+			st.lockOperation()
+			defer st.unlockOperation()
 			if err := e.doStop(st, n); err != nil {
 				slog.Warn("engine stop during shutdown failed", "engine", n, "err", err)
+				retry[i] = retryable
 			}
-		}(st, n)
+		}(i, st, n)
 	}
 	wg.Wait()
+	var failed []string
+	for i, n := range names {
+		if retry[i] {
+			failed = append(failed, n)
+		}
+	}
+	return failed
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {
@@ -757,6 +832,9 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 			}
 			was := st.healthy
 			st.healthy = ok
+			if was != ok {
+				st.revision++
+			}
 			st.mu.Unlock()
 			switch {
 			case was && !ok:

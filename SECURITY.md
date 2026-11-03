@@ -130,6 +130,12 @@ with identity and trust material. It does not automatically protect loopback
 HTTP, discovery, broker-managed node-info HTTP, OTLP export, Electron IPC,
 third-party engine APIs, or traffic outside PAIR.
 
+Local engine `bind` overrides require loopback by default. The explicit node
+setting `engine_allow_lan_bind` permits non-loopback overrides and is read live,
+failing closed if unavailable. It does not authenticate the engine API; remote
+starts stay loopback-only. Disabling it does not rebind existing listeners, and
+user-authored manifest commands remain the operator's responsibility.
+
 Engine installation executes downloaded vendor software; checksum verification
 depends on the engine manifest and is not universally required. Catalogs,
 updates, model downloads, Docker image pulls, engines, and applications can

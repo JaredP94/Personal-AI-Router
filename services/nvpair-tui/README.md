@@ -62,6 +62,10 @@ See [broker supervision](../nvpair-ui-broker/README.md#supervision--recovery).
 
 ## Engine operations and workload attribution
 
+Install progress shows the current stage alone when no percentage is measured
+(for example verification or a disk-image copy), real download percentages when
+available, and the failure reason rather than a negative percentage.
+
 Engine-manager owns support policy. The TUI decodes all seven
 [`EngineStatus.capabilities`](../nvpair-engine-manager/README.md#effective-capabilities)
 flags from the target host; missing flags are false. Install, uninstall, pull,

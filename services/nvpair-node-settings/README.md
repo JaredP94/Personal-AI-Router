@@ -201,6 +201,17 @@ configuration returns the existing snapshot without saving, incrementing its
 revision, or notifying. Save failures return `-32603` without changing the
 in-memory configuration or revision.
 
+### Engine LAN-bind opt-in
+
+`settings/get-engine-allow-lan-bind` returns `{"value": false}` by default.
+`settings/set-engine-allow-lan-bind {"value": true|false}` persists
+`engine_allow_lan_bind` and returns `{"ok": true}` only after a successful save.
+Engine-manager reads this setting live for non-loopback local `bind` overrides;
+read failures deny permission. This deliberately exposes an unauthenticated
+third-party engine API when enabled; use only on networks you control. Remote
+starts remain loopback-only. No desktop toggle is provided; operators can use
+these JSON-RPC methods. Disabling does not rebind an already-running listener.
+
 `settings/get-cluster-id` returns the raw stored `cluster_id`
 string — the same shape the other non-telemetry getters use
 (`{"value": <stored value>}`) — so the getter round-trips with

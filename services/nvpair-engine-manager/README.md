@@ -213,7 +213,7 @@ Requests (caller → service):
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-install-tool` | `{ node, tool }` | `{ opId, result: { tool, installed: true } }`, or the remote tool's typed error |
 | `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after a successful remote pull (live progress via `engine:remote-progress`); engine-level failures, including HTTP 200 streams containing `error`, return a JSON-RPC error |
-| `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always the manifest's `runtime.bind`; no per-call bind override on the remote path) |
+| `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always loopback `127.0.0.1`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
@@ -241,6 +241,51 @@ a successful command must leave the tool detectable.
 | `-32010` | `homebrew-missing`: no executable Homebrew candidate was found. Install Homebrew, then run `brew install macmon`. |
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
+
+### Startup cancellation
+
+A command-mode control CLI can launch its daemon before the CLI exits. Failed
+or canceled starts run the bounded official stop command if a CLI actually ran,
+including nonzero exits, before releasing the lifecycle lock. A command that
+could not spawn does not authorize cleanup. Shutdown cancellation therefore
+cannot skip cleanup merely because readiness had not begun.
+
+### Shutdown sweep
+
+`engine:prepare-shutdown` and the EOF/transport-exit path join one concurrent
+engine sweep per executor. Every caller waits for it to finish. Later calls
+retry only process-handle or command-stop failures that can still be resolved;
+a declined foreign listener is not repeatedly probed. Shutdown rejects new starts
+and never changes saved ON/OFF intent. Engines still stop concurrently.
+
+### Local bind permission
+
+A local `bind` override must be an IP address on loopback unless the operator
+explicitly enables the persisted node setting `engine_allow_lan_bind` (default
+false). Engine-manager reads it live through the broker on each non-loopback
+override; absent settings workers, read errors, invalid replies and a two-second
+timeout all deny permission. Revoking it affects subsequent starts, not listeners
+already running. Remote starts always use `127.0.0.1`, regardless of this setting.
+This opt-in does not add authentication to third-party engine APIs. It governs
+per-call overrides, not user-authored manifest launch commands.
+
+Internal notifications `engine:settings-request{id, method}` (only
+`settings/get-engine-allow-lan-bind`) and
+`engine:settings-reply{id, result, error?}` carry the correlated read between
+worker and broker; neither is a client subscription event.
+
+### Passive status and model deadlines
+
+Status and get-installed share bounded presence probes without holding the
+lifecycle lock. A normal status read during an operation returns its current
+snapshot; explicit port checks and model sweeps wait within their caller's
+budget. Observations are discarded if a lifecycle operation or a newer state
+change intervened, so a delayed readiness reply cannot undo stop or set-port.
+
+The five-second model sweep budget includes status probes and operation waits.
+`GET /v1/models` returns HTTP 503 if the sweep cannot complete in time, rather
+than a successful partial or empty list; peers retain their last-good inventory.
+The local `engine:models` result remains best-effort with the same payload.
 
 ### Effective capabilities
 
@@ -273,17 +318,23 @@ Notifications (service → caller): `engine:ready{version}`,
 loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
-`engine:install-progress{engine, stage, percent}`,
-`engine:pull-progress{engine, op, stage, percent, message}` (live progress for a
+`engine:install-progress{engine, stage, percent?, error?}`,
+`engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
 stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
 UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent, message}`
+`engine:remote-progress{opId, node, engine, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
+
+Progress `percent` is optional: unmeasured stages omit it (zero internally),
+positive values report measured download progress or terminal completion, and
+negative values are failure sentinels. Verification, vendor install commands,
+and disk-image copies report stages without invented percentages. Clients must
+replace the previous install percentage with an indeterminate stage when absent.
 
 For `engine:action` with `action: "pull_model"`, a streaming engine-level
 failure (including an HTTP 200 NDJSON `{"error":"…"}` frame) returns a

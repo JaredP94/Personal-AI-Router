@@ -1383,6 +1383,10 @@ func (b *Broker) pushSchedulingDemand(active bool) {
 // pipeline; the rest of each worker's notification stream is logged and
 // dropped until its control-plane relay is wired in.
 func (b *Broker) forwardEngineNotification(method string, params json.RawMessage) {
+	if method == "engine:settings-request" {
+		b.handleEngineSettingsRead(params)
+		return
+	}
 	if b.dispatchErrorsNotif("engine-manager", method, params) {
 		return
 	}
