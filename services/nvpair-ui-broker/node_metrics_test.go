@@ -81,7 +81,7 @@ func nodeMetricsWorkloadEvent(id, state, scheduledOn string) json.RawMessage {
 // totals and into the per-model breakdown.
 func TestNodeMetricsAccumulateFromAcceptedWorkload(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), workloadRemote, noSightingGuard)
 	snap := b.getNodeMetrics()
 	if len(snap.Nodes) != 1 {
 		t.Fatalf("nodes: %+v", snap)
@@ -140,7 +140,7 @@ const omlxWorkloadInfoLiteral = `{"id":"17","model":"omlx-fixture-model","engine
 func TestNodeMetricsAcceptsTheProxyWorkloadFrame(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
 	event := json.RawMessage(`{"workloadInfo":` + omlxWorkloadInfoLiteral + `}`)
-	if !b.applyWorkloadEvent("workloads:upsert", event, false, noSightingGuard) {
+	if !b.applyWorkloadEvent("workloads:upsert", event, workloadRemote, noSightingGuard) {
 		t.Fatal("the workload event must be accepted")
 	}
 
@@ -186,8 +186,8 @@ func TestNodeMetricsAcceptsTheProxyWorkloadFrame(t *testing.T) {
 func TestDuplicateWorkloadDoesNotDoubleCount(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
 	event := nodeMetricsWorkloadEvent("1", "completed", "node-b")
-	b.applyWorkloadEvent("workloads:upsert", event, false, noSightingGuard)
-	b.applyWorkloadEvent("workloads:upsert", event, false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", event, workloadRemote, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", event, workloadRemote, noSightingGuard)
 	snap := b.getNodeMetrics()
 	if len(snap.Nodes) != 1 {
 		t.Fatalf("nodes: %+v", snap)
@@ -205,7 +205,7 @@ func TestDuplicateWorkloadDoesNotDoubleCount(t *testing.T) {
 // reach the accumulator.
 func TestInferredWorkloadDoesNotCount(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), true, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), workloadInferred, noSightingGuard)
 	snap := b.getNodeMetrics()
 	if len(snap.Nodes) != 0 {
 		t.Fatalf("an inferred event must not be counted: %+v", snap)
@@ -217,7 +217,7 @@ func TestInferredWorkloadDoesNotCount(t *testing.T) {
 // came from is the only attribution available.
 func TestNodeMetricsAttributesToOriginWhenNotScheduled(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", ""), false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", ""), workloadRemote, noSightingGuard)
 	snap := b.getNodeMetrics()
 	if len(snap.Nodes) != 1 {
 		t.Fatalf("nodes: %+v", snap)
@@ -233,11 +233,11 @@ func TestNodeMetricsAttributesToOriginWhenNotScheduled(t *testing.T) {
 // carries the measurement.
 func TestNodeMetricsCountsTerminalWorkloadsOnly(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "running", "node-b"), false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "running", "node-b"), workloadRemote, noSightingGuard)
 	if snap := b.getNodeMetrics(); len(snap.Nodes) != 0 {
 		t.Fatalf("a running workload is not a served request: %+v", snap)
 	}
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), workloadRemote, noSightingGuard)
 	snap := b.getNodeMetrics()
 	if len(snap.Nodes) != 1 {
 		t.Fatalf("nodes: %+v", snap)
@@ -255,7 +255,7 @@ func TestNodeMetricsCountsTerminalWorkloadsOnly(t *testing.T) {
 func TestNodeMetricsRPCSurface(t *testing.T) {
 	var out syncBuffer
 	b := NewBroker(NewCodec(writeOnlyReadWriter{&out}), workerPaths{})
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), workloadRemote, noSightingGuard)
 
 	id := json.RawMessage(`1`)
 	b.handleMessage(&Message{JSONRPC: "2.0", ID: &id, Method: "metrics:get-node-metrics"})
@@ -330,7 +330,7 @@ func TestNodeMetricsToleratesAMissingStore(t *testing.T) {
 func TestNodeMetricsPushIsGatedOnSubscription(t *testing.T) {
 	var out syncBuffer
 	b := NewBroker(NewCodec(writeOnlyReadWriter{&out}), workerPaths{})
-	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), false, noSightingGuard)
+	b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent("1", "completed", "node-b"), workloadRemote, noSightingGuard)
 
 	b.flushNodeMetrics()
 	if len(out.Frames()) != 0 {
@@ -368,7 +368,7 @@ func TestNodeMetricsPushIsCoalesced(t *testing.T) {
 	setMetricsSubscribed(b, true)
 
 	for i := 0; i < 5; i++ {
-		b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent(string(rune('a'+i)), "completed", "node-b"), false, noSightingGuard)
+		b.applyWorkloadEvent("workloads:upsert", nodeMetricsWorkloadEvent(string(rune('a'+i)), "completed", "node-b"), workloadRemote, noSightingGuard)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

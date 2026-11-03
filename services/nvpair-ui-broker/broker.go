@@ -2316,9 +2316,9 @@ func (b *Broker) routeProxyWorkload(method string, params json.RawMessage) {
 	// same translation the manager applies to peer-origin lifecycle events, spec
 	// 7.0); a removal stays a removal.
 	if method == "workloads:remove" {
-		b.emitWorkloadEvent("workloads:remove", stamped)
+		b.emitWorkloadEventProvenance("workloads:remove", stamped, workloadLocalProxy, noSightingGuard)
 	} else {
-		b.emitWorkloadEvent("workloads:upsert", stamped)
+		b.emitWorkloadEventProvenance("workloads:upsert", stamped, workloadLocalProxy, noSightingGuard)
 	}
 	if wm := b.getWorkloadMgr(); wm != nil {
 		if err := wm.Forward(method, stamped); err != nil {
@@ -2700,9 +2700,9 @@ func (b *Broker) ingestProgress(frame inferencemetrics.ProgressFrame) {
 
 // emitWorkloadEvent applies a workloads:* notification to the authoritative
 // store and, only when it is a real forward change, fans it to the scheduler
-// and re-emits it to a subscribed client. Both the inbound relay (peer-origin
-// events off the manager's stdout) and the local echo (local-origin proxy
-// workloads) funnel through here. Dropping stale/regressive upserts at the
+// and re-emits it to a subscribed client. This entry point handles remote
+// claims; local proxy reports enter the same provenance-aware emitter with
+// local authority instead. Dropping stale/regressive upserts at the
 // store is what stops an out-of-order "running" (arriving after a workload's
 // terminal event) from resurrecting it on the client stream and in the
 // scheduler's view. The stream is off by default, so an unsubscribed client
@@ -2712,7 +2712,7 @@ func (b *Broker) ingestProgress(frame inferencemetrics.ProgressFrame) {
 // client-visible order matches the applied order even when the node-loss sweep
 // (a separate goroutine) races a relayed event for the same workload.
 func (b *Broker) emitWorkloadEvent(method string, params json.RawMessage) {
-	b.emitWorkloadEventProvenance(method, params, false, noSightingGuard)
+	b.emitWorkloadEventProvenance(method, params, workloadRemote, noSightingGuard)
 }
 
 // emitWorkloadEventInferred is emitWorkloadEvent for a locally-inferred
@@ -2720,7 +2720,7 @@ func (b *Broker) emitWorkloadEvent(method string, params json.RawMessage) {
 // records the state as inferred so a later authoritative event from the origin
 // (e.g. the node was only briefly unreachable) reconciles it away.
 func (b *Broker) emitWorkloadEventInferred(method string, params json.RawMessage) {
-	b.emitWorkloadEventProvenance(method, params, true, noSightingGuard)
+	b.emitWorkloadEventProvenance(method, params, workloadInferred, noSightingGuard)
 }
 
 // emitWorkloadEventStale is emitWorkloadEventInferred for the staleness sweep,
@@ -2729,7 +2729,7 @@ func (b *Broker) emitWorkloadEventInferred(method string, params json.RawMessage
 // guess is already known to be wrong and is dropped rather than briefly showing
 // running work as failed.
 func (b *Broker) emitWorkloadEventStale(method string, params json.RawMessage, seenAt time.Time) {
-	b.emitWorkloadEventProvenance(method, params, true, seenAt)
+	b.emitWorkloadEventProvenance(method, params, workloadInferred, seenAt)
 }
 
 // noSightingGuard means "apply unconditionally" — every caller except the
@@ -2737,11 +2737,23 @@ func (b *Broker) emitWorkloadEventStale(method string, params json.RawMessage, s
 // always carries a real sighting.
 var noSightingGuard time.Time
 
-func (b *Broker) emitWorkloadEventProvenance(method string, params json.RawMessage, inferred bool, unchangedSince time.Time) {
+// Provenance comes from the supervised worker path, never a payload's origin
+// field. Local proxies report what they actually routed; discovery proof refresh
+// is asynchronous and must not suppress those reports or change participant IDs.
+// These jobs remain subject to the same node-loss and withdrawal sweeps.
+type workloadProvenance uint8
+
+const (
+	workloadRemote workloadProvenance = iota
+	workloadLocalProxy
+	workloadInferred
+)
+
+func (b *Broker) emitWorkloadEventProvenance(method string, params json.RawMessage, source workloadProvenance, unchangedSince time.Time) {
 	b.workloadEmitMu.Lock()
 	defer b.workloadEmitMu.Unlock()
 
-	if !b.applyWorkloadEvent(method, params, inferred, unchangedSince) {
+	if !b.applyWorkloadEvent(method, params, source, unchangedSince) {
 		return
 	}
 	b.recomputeDemand()
@@ -2791,7 +2803,7 @@ type workloadsInitialResult struct {
 // or duplicate events return false, so they're neither fanned nor forwarded);
 // a workloads:remove drops the entry and always propagates. Malformed or
 // id-less params are ignored (false). Callers hold workloadEmitMu.
-func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, inferred bool, unchangedSince time.Time) bool {
+func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, source workloadProvenance, unchangedSince time.Time) bool {
 	switch method {
 	case "workloads:upsert":
 		var env struct {
@@ -2804,13 +2816,13 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		if !ok {
 			return false
 		}
-		// A peer may relay jobs whose other participants we have not yet
-		// discovered, but a known preview is not a workload participant.
-		// Still accept terminal events so existing state can be retired.
-		if !inferred && !workloadstore.IsTerminal(in.State) && (b.onlyUnprovenWorkloadInventory(in.Origin) || b.onlyUnprovenWorkloadInventory(in.ScheduledOn)) {
+		// Remote claims cannot establish active state against known previews.
+		// Local proxy reports are authoritative even during a proof refresh;
+		// terminal events from either source can still retire existing state.
+		if source == workloadRemote && !workloadstore.IsTerminal(in.State) && (b.onlyUnprovenWorkloadInventory(in.Origin) || b.onlyUnprovenWorkloadInventory(in.ScheduledOn)) {
 			return false
 		}
-		if inferred {
+		if source == workloadInferred {
 			if !unchangedSince.IsZero() {
 				return b.workloads.ApplyInferredUnchangedSince(in, unchangedSince)
 			}
