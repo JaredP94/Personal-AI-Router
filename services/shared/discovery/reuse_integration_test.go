@@ -16,6 +16,7 @@ import (
 )
 
 func TestRepeatedScansSeeUpdatesAndThenMisses(t *testing.T) {
+	requireMulticast(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	responderCtx, stopResponder := context.WithCancel(ctx)
