@@ -2591,6 +2591,12 @@ func (b *Broker) forwardLogLevel(level string) {
 // errors:clear are routed into the nvpair-errors pipeline (the broker now
 // supervises it) rather than dropped.
 func (b *Broker) forwardClusterManagerNotification(method string, params json.RawMessage) {
+	if method == "cluster:pairing-completed" {
+		if err := b.associatePairedManualNodes(params); err != nil {
+			slog.Warn("failed to persist pairing cleanup association", "err", err)
+		}
+		return // broker-internal lifecycle metadata, not renderer peer identity
+	}
 	if b.dispatchErrorsNotif("cluster-manager", method, params) {
 		return
 	}
@@ -3743,6 +3749,7 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 		return
 	}
 	var manualAliases []string
+	removedPeerID := ""
 	if msg.Method == "nodes:remove" {
 		// Resolve and forget the same aliases even if another client has an
 		// in-flight manual add/remove when unpair begins.
@@ -3757,6 +3764,7 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 		if id == "" {
 			id = params.NodeID
 		}
+		removedPeerID = id
 		var err error
 		manualAliases, err = b.manualAliasesForPeer(id)
 		if err != nil {
@@ -3765,11 +3773,28 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 		}
 	}
 	result, rpcErr, err := cm.Call(context.Background(), msg.Method, msg.Params)
-	if err == nil && rpcErr == nil && len(manualAliases) > 0 {
+	if err == nil && rpcErr == nil && msg.Method == "nodes:remove" {
 		var removed struct {
 			Removed bool `json:"removed"`
 		}
 		if json.Unmarshal(result, &removed) == nil && removed.Removed {
+			// A pairing completion may have arrived while removal was in flight.
+			// Its cleanup-only association precedes this response on the worker
+			// stream, so include it even if no inventory proof was ever published.
+			latest, lookupErr := b.manualAliasesForPeer(removedPeerID)
+			if lookupErr != nil {
+				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but manual-node lookup failed: %v", lookupErr))
+				return
+			}
+			seen := make(map[string]bool, len(manualAliases))
+			for _, alias := range manualAliases {
+				seen[alias] = true
+			}
+			for _, alias := range latest {
+				if !seen[alias] {
+					manualAliases = append(manualAliases, alias)
+				}
+			}
 			if err := b.forgetManualAliases(manualAliases); err != nil {
 				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but forgetting manual entries failed: %v", err))
 				return

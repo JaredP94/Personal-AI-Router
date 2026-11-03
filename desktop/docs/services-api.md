@@ -94,6 +94,7 @@
 | `cluster:invite-canceled` | notification (we consume) | ✅ yes |
 | `cluster:invite-expired` | notification (we consume) | ✅ yes |
 | `cluster:invite-received` | notification (we consume) | ✅ yes |
+| `cluster:pairing-completed` | notification (we consume) | ➖ ignored |
 | `cluster:trust-changed` | notification (we consume) | ➖ ignored |
 | `nodes:changed` | notification (we consume) | ✅ yes |
 | `cluster:cancel-invite` | request (we call) | ✅ yes |

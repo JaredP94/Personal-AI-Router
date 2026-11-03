@@ -272,6 +272,40 @@ func (b *Broker) manualAliasForKey(id string) string {
 	return id
 }
 
+// associatePairedManualNodes consumes only the supervised cluster-manager's
+// post-authentication completion. The original dial name connects a manual alias
+// to its peer even when the roster records an observed numeric source address.
+// This durable association is only for cleanup, never service authorization.
+func (b *Broker) associatePairedManualNodes(params json.RawMessage) error {
+	var paired struct {
+		Address  string `json:"address"`
+		PeerUUID string `json:"peerUuid"`
+	}
+	if err := json.Unmarshal(params, &paired); err != nil {
+		return err
+	}
+	if paired.Address == "" || paired.PeerUUID == "" {
+		return fmt.Errorf("invalid pairing cleanup association")
+	}
+	b.manualPersistMu.Lock()
+	defer b.manualPersistMu.Unlock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range entries {
+		if entries[i].Kind == "pair" && entries[i].Address == paired.Address && entries[i].PeerUUID != paired.PeerUUID {
+			entries[i].PeerUUID = paired.PeerUUID
+			changed = true
+		}
+	}
+	if changed {
+		return writePersistedManualNodes(b.manualNodesConfigPath, entries)
+	}
+	return nil
+}
+
 // rememberManualPeer records only a current, authenticated association. The
 // association helps lifecycle removal when the peer is later offline; it never
 // authorizes transport or inventory.

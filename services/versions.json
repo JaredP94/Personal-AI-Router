@@ -13,7 +13,7 @@
     "nvpair-node-settings": "3.2.0",
     "nvpair-ui-broker": "2.5.0",
     "nvpair-engine-manager": "1.4.0",
-    "nvpair-cluster-manager": "2.1.1",
+    "nvpair-cluster-manager": "2.2.0",
     "nvpair-job-scheduler": "1.1.0",
     "nvpair-tui": "1.3.0",
     "omlx-proxy": "1.4.2"

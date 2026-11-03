@@ -100,9 +100,14 @@ from address, optional TLS flags or a network response. Thus former bare engines
 stop direct routing until the user removes/re-adds them as **Engine only**. Unknown
 stored kinds or failed migration writes prevent replay rather than guessing.
 
-`peer_uuid` records a previously verified association solely for lifecycle cleanup
-while a peer is offline; it is not a transport proof. Clients cannot supply it as
-an authenticated association. After successful `nodes:remove`, the broker forgets
+`peer_uuid` records a cleanup-only association from authenticated pairing
+completion (or a later pinned inventory proof). Cluster-manager emits internal
+`cluster:pairing-completed` with the original dial hostname and authenticated peer
+UUID after committing the pin/member, before publishing paired state. The broker
+associates matching manual PAIR aliases durably, even though the roster records
+an observed numeric source address and no node-info proof exists yet. This field
+is not an identity, inventory or transport proof; clients cannot supply it as an
+authenticated association. After successful `nodes:remove`, the broker forgets
 all associated manual PAIR aliases and their live projections. Failed unpair keeps
 them. A cleanup failure is returned to the client, not silently swallowed. This
 adapts the behavior of NVIDIA/Personal-AI-Router@692950c

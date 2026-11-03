@@ -689,6 +689,18 @@ func (m *Manager) finalizePairing(inviteID string, sess *pairingSession, pi *Pai
 		m.deleteSession(inviteID)
 		return errPairingCommitStale
 	}
+	// Preserve the entered dial name for manual-address lifecycle cleanup. The
+	// roster deliberately records the observed numeric source instead. Emit
+	// only after the authenticated pin/member commit, before publishing paired
+	// state; this association is not an inventory or routing proof.
+	if address := hostOnly(sess.joinerAddr); address != "" {
+		if err := m.codec.Notify("cluster:pairing-completed", struct {
+			Address  string `json:"address"`
+			PeerUUID string `json:"peerUuid"`
+		}{Address: address, PeerUUID: pi.NodeUUID}); err != nil {
+			log.Printf("pairing cleanup association notification failed: %v", err)
+		}
+	}
 	if inv, ok := m.getInvite(inviteID); ok {
 		inv.State = inviteStatePaired
 		inv.RespondedAt = &now

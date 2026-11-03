@@ -103,7 +103,10 @@ The broker persists each manual entry's `pair` or `engine` kind in the canonical
 including after worker/broker restarts or address reassignment. Entries without a
 historical kind migrate conservatively on disk to `pair`; resuming a bare-engine
 route requires an explicit **Engine only** choice. An `engine` entry trusts no
-PAIR claims even if a PAIR endpoint answers at that address.
+PAIR claims even if a PAIR endpoint answers at that address. An authenticated
+pairing completion can associate a manual hostname with the pinned peer solely
+for later cleanup. This saved association does not mark the entry verified or
+supply routing, identity, inventory or telemetry authority.
 
 PAIR can advertise/rank Tailscale CGNAT addresses (`100.64.0.0/10`) and use known
 peer address fallbacks. This is not arbitrary tailnet peer enumeration, and
