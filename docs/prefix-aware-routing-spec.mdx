@@ -26,7 +26,8 @@ design below is refined by these implementation decisions:
   KV-cache residence. Failover records the serving node.
 - Affinity load includes local optimistic reservations. The eligibility check,
   promotion, and reservation use the existing scheduler lock and retain manual
-  pin precedence and failover order.
+  pin precedence and failover order within each deadline-cooldown group. A warm
+  node in cooldown cannot be promoted over a non-cooling eligible peer.
 - Plain completions require at least 1,024 bytes before prefix affinity applies.
   Ollama supplied context arrays can identify repeated context only; updated
   response token arrays are not parsed or retained.

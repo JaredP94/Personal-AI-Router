@@ -154,16 +154,53 @@ runs on one selected node.
 
 A request that fails with `502` and `upstream error: net/http: timeout awaiting
 response headers` after about 120 seconds waited longer than PAIR allows for an
-engine to start answering. An engine sends nothing until generation starts, so a
-request queued behind other work, or waiting for a large model to load, can hit
-this while the engine is healthy.
+engine to send response headers. An engine such as Ollama can withhold headers
+until generation starts, so a request queued behind other work, or waiting for
+a large model to load, can hit this while the engine is healthy. This is the
+response-header deadline only, not a limit on generation or prefill after
+headers arrive.
 
 Raise the limit with the `NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT` environment
 variable, a Go duration such as `10m`, and restart PAIR. On macOS, set it for
 apps opened from the Finder with
 `launchctl setenv NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT 10m`. Every node that
 serves requests applies its own limit, so raise it on each. A longer limit also
-means a node that has stopped responding is given up on later.
+means a node that has stopped responding is given up on later. Standalone proxies
+also accept `--response-header-timeout 10m`. Header-stall cooldown remains on by
+default: a node that spent that full silent deadline is tried behind its peers
+for one header-timeout duration, never excluded.
+
+## Requests Are Silent After Headers
+
+**By default there is no first-body deadline.** LM Studio can send headers
+immediately and then spend several minutes on long-context prefill. Large MLX
+models in oMLX on Macs can also legitimately remain silent before their first
+body bytes. The `120s` response-header timeout does not cut off this wait.
+Pre-commit connection/body read failures still retry on another candidate by
+default, but silence after headers alone does not.
+
+An optional, separate first-body limit is available in all three proxies:
+`--first-body-timeout 10m` for standalone use, or
+`NVPAIR_PROXY_FIRST_BODY_TIMEOUT=10m` in PAIR's inherited environment, followed
+by a restart. On macOS, an app opened from the Finder can inherit it via
+`launchctl setenv NVPAIR_PROXY_FIRST_BODY_TIMEOUT 10m`. The flag overrides the
+environment. `0` disables it explicitly; invalid or negative values also leave
+it disabled. It does not change `--response-header-timeout` or its environment
+variable.
+
+Only enable this if you accept the trade-off: a legitimate prefill longer than
+the chosen first-body budget will be abandoned and retried, potentially
+duplicating work on another engine. An enabled first-body deadline also records
+cooldown for one configured response-header duration. Once any response body is
+committed, the stream is never retried and this first-body timer no longer
+applies.
+
+If the error says `upstream timed out before first response body byte`, this
+optional limit was enabled. Increase it or disable it rather than raising the
+unrelated response-header timeout. For a Finder-launched app, remove the opt-in
+with `launchctl unsetenv NVPAIR_PROXY_FIRST_BODY_TIMEOUT` and restart PAIR;
+standalone proxies can use `--first-body-timeout 0` even if the environment sets
+a positive value. Each node applies its own settings.
 
 ## Where the Logs Are
 
