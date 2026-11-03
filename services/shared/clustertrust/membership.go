@@ -15,14 +15,15 @@ const admissionFileName = "admission.json"
 
 // admissionRecord mirrors the subset of admission.json that answers "does this
 // node currently belong to a cluster". nvpair-cluster-manager owns the full
-// schema (a monotonic counter, retirement marker, etc.); the read side only
-// needs the active pair. A live admission carries both a clusterId and a nonzero
+// schema (a monotonic counter, etc.); the read side needs the active pair and
+// retirement marker. A live admission carries both a clusterId and a nonzero
 // epoch; teardown (leave/removal) clears both while deliberately keeping the
 // counter, so absence of an active pair is the authoritative "no longer a
 // member" signal — even though the node.key/node.crt keypair persists.
 type admissionRecord struct {
 	ClusterID string `json:"clusterId"`
 	Epoch     uint64 `json:"epoch"`
+	Retired   bool   `json:"retired,omitempty"`
 }
 
 // readAdmission returns the durable membership and epoch, or an empty record

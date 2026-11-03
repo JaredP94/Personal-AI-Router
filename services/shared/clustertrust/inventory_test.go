@@ -126,6 +126,71 @@ func TestReadPeerInventoryRejectsRedirectsAndOversizedJSON(t *testing.T) {
 		t.Fatal("authenticated read followed plaintext redirect")
 	}
 }
+
+// Retained pins are not admission: teardown can clear admission before pin cleanup.
+func TestInventoryProofRequiresActiveNonRetiredAdmission(t *testing.T) {
+	for _, state := range []string{"absent", "cleared", "retired"} {
+		for _, transport := range []string{"fresh", "pooled", "inflight"} {
+			t.Run(state+"/"+transport, func(t *testing.T) {
+				dir, self, peer := inventoryPair(t)
+				withdraw := func() {
+					path := filepath.Join(dir, "admission.json")
+					if state == "absent" {
+						if err := os.Remove(path); err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					body := `{"counter":1,"retired":true}`
+					if state == "retired" {
+						body = `{"counter":1,"clusterId":"test-cluster","epoch":1,"retired":true}`
+					}
+					if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var requests int
+				srv := inventoryServer(t, peer, func(w http.ResponseWriter, _ *http.Request) {
+					requests++
+					if transport == "inflight" && requests == 2 {
+						withdraw()
+					}
+					_, _ = w.Write([]byte(`{"value":42}`))
+				})
+				pool := NewPeerClientPool(self, time.Second)
+				defer pool.CloseIdle()
+				client, _ := pool.Client("peer")
+				read := func() bool {
+					var value struct{ Value int }
+					_, _, ok := ReadPeerInventory(t.Context(), self, client, "peer", srv.URL, "", 1024, &value)
+					return ok
+				}
+				if !read() {
+					t.Fatal("initial authorized read failed")
+				}
+				if transport == "fresh" {
+					pool.CloseIdle()
+				}
+				if transport != "inflight" {
+					withdraw()
+				}
+				if read() {
+					t.Error("withdrawn admission issued a fresh inventory proof")
+				}
+				self.Refresh()
+				for _, principal := range []string{"self", "peer"} {
+					if self.PeerRecordID(principal) != "" {
+						t.Errorf("withdrawn admission still authorizes cached %s proof", principal)
+					}
+				}
+				if self.PeerCount() != 1 {
+					t.Fatal("test must retain peer pin after withdrawal")
+				}
+			})
+		}
+	}
+}
+
 func TestPeerRecordIDRetainsAdmissionOnReadFailureButNotClear(t *testing.T) {
 	dir := t.TempDir()
 	clustertrusttest.Join(t, dir, "test-cluster", "self")

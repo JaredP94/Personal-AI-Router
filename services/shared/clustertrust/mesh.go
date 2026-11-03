@@ -253,7 +253,7 @@ func (m *Mesh) PeerRecordID(uuid string) string {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if !m.clustered || m.id == nil {
+	if !m.clustered || m.id == nil || m.admission.ClusterID == "" || m.admission.Epoch == 0 || m.admission.Retired {
 		return ""
 	}
 	peer := selfLeafDER(m.id)
