@@ -108,7 +108,7 @@ jobs:
                   failed=0
                   for mod in services/*/go.mod; do
                       dir=$(dirname "$mod")
-                      # Cross-process tests run only on macOS in their own job.
+                      # Cross-process tests run in their own job (Linux and macOS).
                       if [ "$dir" = services/tests ]; then continue; fi
                       echo "==> $dir"
                       (cd "$dir" && go vet ./... && go test -count=1 -timeout=5m -v ./...) || failed=1
