@@ -79,7 +79,7 @@ func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (
 	t.Helper()
 	for _, arg := range args {
 		if arg == "--workload-manager-path" && portBusy(14320) {
-			t.Skip("workload-manager inter-node port 14320 already in use; skipping")
+			t.Fatalf("workload-manager inter-node port 14320 already in use; cannot exercise the requested worker")
 		}
 	}
 	args = append([]string{"--cluster-dir", clusterDir}, args...)

@@ -160,7 +160,7 @@ func TestWorkloadCrossEngineIdentityDistinct(t *testing.T) {
 func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	requireMulticast(t)
 	if portBusy(11435) || portBusy(14320) {
-		t.Skip("ollama-proxy (11435) or workload-manager (14320) port already in use; skipping")
+		t.Fatalf("ollama-proxy (11435) or workload-manager (14320) port already in use after requireMulticast succeeded")
 	}
 
 	// Fake Ollama that accepts the request then blocks, keeping the proxied
@@ -277,7 +277,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	requireMulticast(t)
 	if portBusy(11435) || portBusy(14320) {
-		t.Skip("ollama-proxy (11435) or workload-manager (14320) port already in use; skipping")
+		t.Fatalf("ollama-proxy (11435) or workload-manager (14320) port already in use after requireMulticast succeeded")
 	}
 
 	// Fake Ollama that completes immediately, so the workload reaches a terminal
