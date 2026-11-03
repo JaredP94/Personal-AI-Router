@@ -1,13 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Cross-process test for the models-http path: a node advertises an
-// engine-manager (em) service on its _nvpair-node record, and the promoted
-// discovery daemon enriches the node's model list by fetching /v1/models over
-// plain HTTP from that em port — replacing the retired models= TXT key. We stand
-// in for engine-manager with a tiny HTTP server, advertise em=<port> + ip so the
-// daemon dials it over loopback, and assert the enriched list surfaces on the
-// broker's discovery:get-nodes response.
+// Cross-process model enrichment through pinned cluster mTLS: discovery first
+// proves the peer's node-info identity and service map, then fetches /v1/models
+// from that authenticated engine-manager port. An unauthenticated lookalike
+// remains a preview without service inventory.
 package tests
 
 import (
@@ -17,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,8 +23,8 @@ import (
 
 func TestModelsHTTPEnrichment(t *testing.T) {
 	requireMulticast(t)
-	// Stand-in engine-manager HTTP surface serving the model list.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Stand-in engine-manager inventory, served only after pinned mTLS proof.
+	models := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
@@ -44,6 +42,18 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 				"lmstudio": {},
 			},
 		})
+	})
+	const instance = "xproc-models-1"
+	fx := newInterNodeClusterWithPeer(t, instance+"-uuid")
+	fx.startVerifiedPeer(t, instance, models, nil)
+
+	// This lookalike has only public HTTP and a claimed principal, not the key.
+	var unprovenModelReads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			unprovenModelReads.Add(1)
+		}
+		models.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
@@ -55,20 +65,22 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 		t.Fatalf("stub port: %v", err)
 	}
 
-	const instance = "xproc-models-1"
-	// Advertise a _nvpair-node with em=<port> and ip=127.0.0.1 so the daemon
-	// fetches the model list from the stub over loopback (ip= wins over the mDNS
-	// address in the daemon's enrichment target selection).
-	txt := []string{"v=1", "uuid=" + instance + "-uuid", "ip=127.0.0.1", fmt.Sprintf("em=%d", emPort)}
-	zsrv, err := zeroconf.Register(instance, nodeRecordService, testDomain, emPort, txt, nil)
+	const preview = "xproc-models-preview"
+	txt := []string{"v=1", "uuid=" + fx.peerUUID, "cluster-uuid=" + fx.peerUUID, "ip=127.0.0.1", fmt.Sprintf("ni=%d", emPort), fmt.Sprintf("em=%d", emPort)}
+	zsrv, err := zeroconf.Register(preview, nodeRecordService, testDomain, emPort, txt, nil)
 	if err != nil {
-		t.Fatalf("register %s: %v", instance, err)
+		t.Fatalf("register %s: %v", preview, err)
 	}
 	t.Cleanup(zsrv.Shutdown)
-	t.Logf("advertising %s @ %s (em=%d)", instance, nodeRecordService, emPort)
-
-	stdin, msgs, cleanup := startBroker(t)
+	stdin, msgs, cleanup := startBrokerProcInCluster(t, fx.nodeDir, "--scanner-path", scannerBin)
 	t.Cleanup(cleanup)
+
+	pollForNode(t, stdin, msgs, preview, 30*time.Second, func(n availableNode) bool {
+		if n.IdentityVerification != "unverified" || n.Trusted || len(n.Models) != 0 || unprovenModelReads.Load() != 0 {
+			t.Fatalf("unauthenticated stub supplied service inventory: %+v, model reads=%d", n, unprovenModelReads.Load())
+		}
+		return true
+	})
 
 	// Poll get-nodes until the node appears carrying the enriched model list.
 	deadline := time.After(30 * time.Second)
@@ -86,8 +98,12 @@ func TestModelsHTTPEnrichment(t *testing.T) {
 				var res availableNodesResult
 				if json.Unmarshal(msg.Result, &res) == nil {
 					if n, found := findNode(res.Nodes, instance); found &&
+						n.IdentityVerification == "verified" && n.Trusted && n.HostUUID == fx.peerUUID &&
 						modelsMatch(n.Models) && modelsByEngineMatch(n.ModelsByEngine) &&
 						loadedByEngineMatch(n.LoadedByEngine) {
+						if unprovenModelReads.Load() != 0 {
+							t.Fatal("discovery fetched model inventory from the unauthenticated stub")
+						}
 						return // enriched flat + per-engine + loaded lists surfaced
 					}
 				}

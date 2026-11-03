@@ -190,7 +190,7 @@ func TestWorkloadManagerRehydratesActiveWorkloadOnRestart(t *testing.T) {
 	// manager fans out to it. The inter-node interface is cluster mTLS only, so the
 	// stub must hold a cluster identity the node under test pins.
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer", "rehydrate-peer-uuid")
+	received := fx.startStubClusterPeer(t, "rehydrate-wm-peer")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
 		"--proxy-path", proxyBin,
@@ -292,7 +292,7 @@ func TestWorkloadManagerRehydratesRecentTerminalOnRestart(t *testing.T) {
 	ollamaPort := portOfURL(t, ollama.URL)
 
 	fx := newInterNodeCluster(t)
-	received := fx.startStubClusterPeer(t, "rehydrate-term-peer", "rehydrate-term-peer-uuid")
+	received := fx.startStubClusterPeer(t, "rehydrate-term-peer")
 
 	stdin, msgs, stderr, cleanup := startBrokerWithDirs(t, t.TempDir(), fx.nodeDir,
 		"--proxy-path", proxyBin,
