@@ -24,14 +24,14 @@ func (m *Manager) authenticatedNodeInfo(ctx context.Context, entry ManualEntry, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if m.mesh == nil {
-		return NodeInfoResponse{}, 0, false
-	}
-	m.mesh.Refresh()
 	port := 14318
 	if entry.TLSPort > 0 {
 		port = entry.TLSPort
 	}
+	if m.mesh == nil {
+		return NodeInfoResponse{}, port, false
+	}
+	m.mesh.Refresh()
 	url := "https://" + net.JoinHostPort(entry.Address, strconv.Itoa(port)) + "/v1/node-info"
 	if expected == "" {
 		cfg, ok := m.mesh.ClientTLSConfigAny()

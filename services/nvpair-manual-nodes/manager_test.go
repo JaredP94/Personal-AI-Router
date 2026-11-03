@@ -643,7 +643,7 @@ func TestAddThenRemoveBeforeInitialProbeDoesNotRediscover(t *testing.T) {
 		return httpJSON(http.StatusOK, `{"models":[]}`)
 	})
 
-	status := m.addNode(ManualEntry{Address: "node.local", Name: "lab"})
+	status := m.addNode(ManualEntry{Kind: "engine", Address: "node.local", Name: "lab"})
 	if status.ID != "lab" {
 		t.Fatalf("add status = %+v", status)
 	}

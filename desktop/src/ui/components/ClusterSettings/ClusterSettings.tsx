@@ -11,6 +11,7 @@ import { useClusterInvitationsStore } from '@/ui/stores/cluster-invitations.stor
 import { useInvitablePeers } from '@/ui/hooks/useInvitablePeers'
 import ActiveNode from './ActiveNode'
 import AvailableNode from './AvailableNode'
+import ManualEntriesSection from './ManualEntriesSection'
 import PendingInviteCard from './PendingInviteCard'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 
@@ -154,6 +155,8 @@ export default function ClusterSettings() {
                     ))}
                 </Stack>
             )}
+
+            <ManualEntriesSection />
         </Stack>
     )
 }

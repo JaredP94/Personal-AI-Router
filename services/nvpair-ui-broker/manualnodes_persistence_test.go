@@ -6,23 +6,100 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestPersistManualNodeRoundTripsAndRemoves(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
-	b := &Broker{manualNodesConfigPath: path}
+func TestVerifiedAssociationSurvivesOfflineReplayWithoutGrantingTrust(t *testing.T) {
+	b := newManualTestBroker(t, "peer")
+	b.manualNodesConfigPath = filepath.Join(t.TempDir(), "manual-nodes.json")
+	entry := persistedManualNode{Kind: "pair", ID: "overlay", Address: "MagicDNS.example", Name: "overlay"}
+	if err := b.persistManualNode(entry); err != nil {
+		t.Fatal(err)
+	}
+	status := ownedManualStatus(t, b, manualNodeStatus{Kind: "pair", ID: "overlay", Address: entry.Address, HostUUID: "peer", IdentityVerification: "verified"})
+	b.upsertManualNode(status)
+	stored, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil || len(stored) != 1 || stored[0].PeerUUID != "peer" {
+		t.Fatalf("proven association: %+v %v", stored, err)
+	}
+	b.manualNodeStatuses = map[string]manualNodeStatusEntry{}
+	if err := b.persistManualNode(entry); err != nil {
+		t.Fatal(err)
+	}
+	aliases, err := b.manualAliasesForPeer("peer")
+	if err != nil || len(aliases) != 1 || aliases[0] != "overlay" {
+		t.Fatalf("offline aliases: %v %v", aliases, err)
+	}
+	b.upsertManualNode(manualNodeStatus{Kind: "pair", ID: "overlay", Address: entry.Address, IdentityVerification: "unverified"})
+	if got := b.schedulerNodes(); len(got) != 0 {
+		t.Fatalf("stored association authorized routing: %+v", got)
+	}
+}
 
-	if err := b.persistManualNode(persistedManualNode{ID: "lab", Address: "node.local", Name: "lab", TLSPort: 14319, MTLS: true}); err != nil {
+func TestUnpairMatchesRosterAddressBeforeInventoryProof(t *testing.T) {
+	dir := t.TempDir()
+	b := &Broker{clusterDir: dir, manualNodesConfigPath: filepath.Join(dir, "manual-nodes.json")}
+	if err := os.WriteFile(filepath.Join(dir, "members.json"), []byte(`[{"id":"workstation","nodeUuid":"peer","ipAddress":"MagicDNS.example"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePersistedManualNodes(b.manualNodesConfigPath, []persistedManualNode{{ID: "overlay", Address: "MagicDNS.example", Kind: "pair"}, {ID: "bare", Address: "MagicDNS.example", Kind: "engine"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"peer", "workstation"} {
+		aliases, err := b.manualAliasesForPeer(id)
+		if err != nil || len(aliases) != 1 || aliases[0] != "overlay" {
+			t.Fatalf("roster-only aliases for %q: %v %v", id, aliases, err)
+		}
+	}
+}
+
+func TestLegacyManualIntentMigratesToPairOnDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manual-nodes.json")
+	if err := os.WriteFile(path, []byte(`[{"id":"old","address":"MagicDNS.example","name":"old"}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := loadPersistedManualNodes(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].ID != "lab" || entries[0].TLSPort != 14319 || !entries[0].MTLS {
+	if len(entries) != 1 || entries[0].Kind != "pair" || entries[0].Address != "MagicDNS.example" {
+		t.Fatalf("migration = %+v", entries)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored []persistedManualNode
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].Kind != "pair" {
+		t.Fatalf("migration was not durable: %s", data)
+	}
+	if err := (&Broker{manualNodesConfigPath: path}).persistManualNode(persistedManualNode{ID: "engine", Address: "engine.example", Kind: "engine"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = loadPersistedManualNodes(path)
+	if err != nil || len(entries) != 2 || entries[0].Kind != "engine" || entries[1].Kind != "pair" {
+		t.Fatalf("explicit engine persistence: %+v, %v", entries, err)
+	}
+}
+
+func TestPersistManualNodeRoundTripsAndRemoves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "configs", "manual-nodes.json")
+	b := &Broker{manualNodesConfigPath: path}
+
+	if err := b.persistManualNode(persistedManualNode{Kind: "pair", ID: "lab", Address: "node.local", Name: "lab", TLSPort: 14319, MTLS: true}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := loadPersistedManualNodes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Kind != "pair" || entries[0].ID != "lab" || entries[0].TLSPort != 14319 || !entries[0].MTLS {
 		t.Fatalf("persisted entries = %+v", entries)
 	}
 
@@ -69,7 +146,7 @@ func TestReplayPersistedManualNodesIntoWorker(t *testing.T) {
 
 	select {
 	case entry := <-got:
-		if entry.Address != "node.local" || entry.Name != "lab" {
+		if entry.Kind != "pair" || entry.Address != "node.local" || entry.Name != "lab" {
 			t.Fatalf("replayed entry = %+v", entry)
 		}
 	case <-time.After(2 * time.Second):

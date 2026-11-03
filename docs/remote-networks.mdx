@@ -1,0 +1,77 @@
+{/*
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/}
+
+# PAIR across routed networks
+
+mDNS is link-local. Tailscale, WireGuard and other routed links can carry PAIR
+without multicast discovery, but PAIR does not enumerate their peers for you.
+
+## Add an address
+
+In **Add node**, enter a hostname (for example a MagicDNS name) or IP address,
+without a scheme or port, and choose:
+
+- **PAIR machine**: saves a persistent PAIR entry, then starts the existing PIN
+  pairing exchange at that address. Read the PIN to the joining machine. Failed
+  or cancelled pairing leaves an unverified entry, not a routable engine. Retry
+  pairing from **Settings → Cluster → Manual entries**. Pairing by address keeps
+  the overlay address after trust is established.
+- **Engine only**: explicitly enables a labelled manual bypass for a bare Ollama,
+  LM Studio or oMLX engine. PAIR trusts no PAIR identity or telemetry it reports.
+  A PAIR machine's engine is reachable this way only if its owner enabled LAN
+  engine binding. Do not use this as a substitute for pairing a PAIR machine.
+
+Hostnames are stored as entered, not replaced with the first resolved IP. Fresh
+dials re-resolve names; live pinned connections may be reused. DNS changes can
+recover without re-adding an entry.
+An IP address cannot recover from renumbering by itself. Service callers can set
+`tls_port` in `node/add` when pinned node-info is not on its default port.
+
+Manual entries can be listed/refreshed and removed in Cluster settings. Forgetting
+an address alone does not revoke cluster membership. Successfully removing a peer
+from the cluster also forgets its associated manual PAIR entries. Engine-only
+entries are independent. The TUI **Manual** tab provides the same two choices
+(`a` PAIR, `e` engine), `p` to retry pairing, and `r` to forget an address.
+
+## Persistence and migration
+
+The broker is the only writer/replayer of `configs/manual-nodes.json` under the
+PAIR user-data directory, including for headless and TUI use. Each entry stores
+`kind: "pair"` or `kind: "engine"`. Worker/broker restarts do not discard intent.
+
+Historical entries without kind are rewritten conservatively as `pair`. There
+is no reliable historical evidence of consent to bypass peer authentication.
+A previously configured bare engine therefore stops direct routing until the
+user removes and re-adds it as **Engine only**. An offline PAIR entry never becomes
+a bare-engine route, even if some other engine now answers at the same address.
+
+## Reachability and troubleshooting
+
+Allow only the participating machines through your overlay/network policy. The
+usual service ports are:
+
+| Port | Purpose |
+| --- | --- |
+| `14321` | PIN pairing / cluster management |
+| `14318` | Pinned mTLS node-info proof and telemetry |
+| `14322` / `14323` | Pinned engine inventory / engine control |
+| `14319` / `14320` | Cluster errors / workload relay |
+| `11434` / `1234` / `1236` | Ollama / LM Studio / oMLX inference, as advertised |
+
+PAIR service ports may be moved by configuration/port negotiation. After proof,
+use the peer's authenticated service map, not this table as a fixed promise.
+Bare-engine entries support the fixed engine ports only. Both PAIR machines need
+the authenticated service metadata contract; older peers remain unverified until
+upgraded. Operator-CA trust is not a substitute for the cluster certificate pin.
+
+If an entry stays **Unverified**, check DNS resolution, overlay reachability,
+node-info and pairing ports, the PIN exchange, and whether both machines are
+upgraded. Healthy plaintext engine ports do not prove a PAIR peer. Verified
+manual peers already use the same pinned-mTLS inventory and routing path as
+verified discovered peers; no weaker overlay transport is introduced.
+
+Local unit tests are not a live multi-machine deployment check. Neither an
+unverified preview nor an entry's stored prior peer association can authorize
+routing, identity, scheduling inventory or telemetry.

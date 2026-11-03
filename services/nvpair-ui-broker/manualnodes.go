@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ import (
 // (bridgeManualNode); the rest project into the discovery store via
 // manualToEnriched.
 type manualNodeStatus struct {
+	Kind                 string                      `json:"kind"`
+	FromCluster          bool                        `json:"from_cluster,omitempty"`
 	IdentityVerification string                      `json:"identityVerification,omitempty"`
 	PeerRecordID         string                      `json:"peerRecordId,omitempty"`
 	PeerMetadata         *noderec.PeerMetadataParams `json:"peerMetadata,omitempty"`
@@ -82,11 +85,15 @@ type manualNodeTelemetryParams struct {
 }
 
 type persistedManualNode struct {
-	ID      string `json:"id,omitempty"`
-	Address string `json:"address"`
-	Name    string `json:"name,omitempty"`
-	TLSPort int    `json:"tls_port,omitempty"`
-	MTLS    bool   `json:"mtls,omitempty"`
+	Kind string `json:"kind"`
+	// PeerUUID is a previously proven association used only to forget this
+	// address on unpair. It is never used as inventory or a routing proof.
+	PeerUUID string `json:"peer_uuid,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Address  string `json:"address"`
+	Name     string `json:"name,omitempty"`
+	TLSPort  int    `json:"tls_port,omitempty"`
+	MTLS     bool   `json:"mtls,omitempty"`
 }
 
 func (e persistedManualNode) key() string {
@@ -122,9 +129,24 @@ func loadPersistedManualNodes(path string) ([]persistedManualNode, error) {
 		return nil, err
 	}
 	valid := entries[:0]
+	migrated := false
 	for _, entry := range entries {
-		if entry.Address != "" {
-			valid = append(valid, entry)
+		if entry.Address == "" {
+			continue
+		}
+		if entry.Kind == "" {
+			// Historical files cannot prove user consent to the engine bypass.
+			entry.Kind = "pair"
+			migrated = true
+		}
+		if entry.Kind != "pair" && entry.Kind != "engine" {
+			return nil, fmt.Errorf("invalid persisted manual node kind %q", entry.Kind)
+		}
+		valid = append(valid, entry)
+	}
+	if migrated {
+		if err := writePersistedManualNodes(path, valid); err != nil {
+			return nil, err
 		}
 	}
 	return valid, nil
@@ -152,6 +174,20 @@ func writePersistedManualNodes(path string, entries []persistedManualNode) error
 }
 
 func (b *Broker) persistManualNode(entry persistedManualNode) error {
+	if entry.Kind == "" {
+		entry.Kind = "pair"
+	}
+	if entry.Kind != "pair" && entry.Kind != "engine" {
+		return fmt.Errorf("invalid manual node kind")
+	}
+	// The client cannot choose a proven peer association.
+	entry.PeerUUID = ""
+	b.manualMu.Lock()
+	status := b.manualNodeStatuses[entry.key()].status
+	b.manualMu.Unlock()
+	if entry.Kind == "pair" && status.Address == entry.Address && status.IdentityVerification == "verified" {
+		entry.PeerUUID = status.HostUUID
+	}
 	if entry.ID == "" {
 		entry.ID = entry.key()
 	}
@@ -164,6 +200,9 @@ func (b *Broker) persistManualNode(entry persistedManualNode) error {
 	replaced := false
 	for i := range entries {
 		if entries[i].key() == entry.key() {
+			if entry.Kind == "pair" && entries[i].Kind == "pair" && entries[i].Address == entry.Address && entries[i].PeerUUID != "" {
+				entry.PeerUUID = entries[i].PeerUUID
+			}
 			entries[i] = entry
 			replaced = true
 			break
@@ -222,7 +261,8 @@ func (b *Broker) manualAliasForKey(id string) string {
 	}
 	best := ""
 	for alias, key := range b.manualNodeKeys {
-		if key == id && (best == "" || alias < best) {
+		status := b.manualNodeStatuses[alias].status
+		if (key == id || status.HostUUID == id || status.ClusterUUID == id) && (best == "" || alias < best) {
 			best = alias
 		}
 	}
@@ -230,6 +270,156 @@ func (b *Broker) manualAliasForKey(id string) string {
 		return best
 	}
 	return id
+}
+
+// rememberManualPeer records only a current, authenticated association. The
+// association helps lifecycle removal when the peer is later offline; it never
+// authorizes transport or inventory.
+func (b *Broker) rememberManualPeer(s manualNodeStatus) {
+	if b.manualNodesConfigPath == "" || s.Kind == "engine" || s.IdentityVerification != "verified" || s.HostUUID == "" {
+		return
+	}
+	b.manualPersistMu.Lock()
+	defer b.manualPersistMu.Unlock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil {
+		slog.Warn("failed to load manual peer association", "err", err)
+		return
+	}
+	for i := range entries {
+		if entries[i].key() == s.ID && entries[i].Address == s.Address && entries[i].Kind == "pair" && entries[i].PeerUUID == "" {
+			entries[i].PeerUUID = s.HostUUID
+			if err := writePersistedManualNodes(b.manualNodesConfigPath, entries); err != nil {
+				slog.Warn("failed to persist manual peer association", "err", err)
+			}
+			return
+		}
+	}
+}
+
+func (b *Broker) manualAliasesForPeer(id string, addressHints ...string) ([]string, error) {
+	if id == "" {
+		return nil, nil
+	}
+	member, err := b.manualMemberForID(id)
+	if err != nil {
+		return nil, err
+	}
+	peerID := member.NodeUUID
+	addresses := make(map[string]bool, len(addressHints)+1)
+	if member.Address != "" {
+		addresses[member.Address] = true
+	}
+	for _, hint := range addressHints {
+		if hint != "" {
+			addresses[hint] = true
+		}
+	}
+	aliases := map[string]bool{}
+	b.manualMu.Lock()
+	statuses := make(map[string]manualNodeStatus, len(b.manualNodeStatuses))
+	for alias, entry := range b.manualNodeStatuses {
+		statuses[alias] = entry.status
+	}
+	b.manualMu.Unlock()
+	b.manualPersistMu.Lock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	b.manualPersistMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	configured := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		alias := entry.key()
+		configured[alias] = true
+		if entry.Kind != "pair" {
+			continue
+		}
+		// A current durable association wins over every cached identity,
+		// reused address, or transient hint. Only unassociated entries need
+		// the reachability/observation fallbacks.
+		if entry.PeerUUID != "" {
+			if entry.PeerUUID == peerID {
+				aliases[alias] = true
+			}
+			continue
+		}
+		s := statuses[alias]
+		if alias == id || addresses[entry.Address] || s.Address == entry.Address && s.Kind != "engine" && (s.HostUUID == peerID || s.ClusterUUID == peerID) {
+			aliases[alias] = true
+		}
+	}
+	// Automatically tracked cluster rows do not have durable configurations.
+	for alias, s := range statuses {
+		if configured[alias] || s.Kind == "engine" {
+			continue
+		}
+		if s.HostUUID == peerID || s.ClusterUUID == peerID || alias == id || addresses[s.Address] {
+			aliases[alias] = true
+		}
+	}
+	out := make([]string, 0, len(aliases))
+	for alias := range aliases {
+		out = append(out, alias)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// Recheck the current association atomically with the durable deletion: a
+// pairing completion can reassociate an alias while the removal RPC is pending,
+// after either snapshot was collected.
+func (b *Broker) forgetPersistedManualPeerAlias(alias, peerID string) (bool, error) {
+	b.manualPersistMu.Lock()
+	defer b.manualPersistMu.Unlock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil {
+		return false, err
+	}
+	out := entries[:0]
+	found := false
+	for _, entry := range entries {
+		if entry.key() != alias {
+			out = append(out, entry)
+			continue
+		}
+		if entry.Kind != "pair" || entry.PeerUUID != "" && entry.PeerUUID != peerID {
+			return false, nil
+		}
+		found = true
+	}
+	if !found {
+		return true, nil
+	} // an automatically tracked, non-durable row
+	if err := writePersistedManualNodes(b.manualNodesConfigPath, out); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Caller serializes this transaction with manual-node mutations.
+func (b *Broker) forgetManualAliases(aliases []string, peerID string) error {
+	for _, alias := range aliases {
+		removed, err := b.forgetPersistedManualPeerAlias(alias, peerID)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			continue
+		}
+		if worker := b.getManualNodes(); worker != nil {
+			params, _ := json.Marshal(map[string]string{"id": alias})
+			_, rpcErr, err := worker.Call(context.Background(), "node/remove", params)
+			if err != nil {
+				return err
+			}
+			if rpcErr != nil {
+				return fmt.Errorf("forget manual entry: %s", rpcErr.Message)
+			}
+		}
+		b.removeManualNode(alias)
+	}
+	return nil
 }
 
 func manualNodeTelemetry(status manualNodeStatus, hostUUID string) noderec.NodeTelemetry {
@@ -292,10 +482,11 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	recordID := s.PeerRecordID
 	verification := "verified"
 	if recordID == "" {
-		recordID = noderec.ManualRecordID(s.ID)
+		recordID = noderec.PreviewRecordID(s.ID, "")
 		verification = "unverified"
-		if s.HostUUID == "" && s.ClusterUUID == "" && s.IdentityVerification != "unverified" {
+		if s.Kind == "engine" && s.IdentityVerification == "manual" {
 			verification = "manual"
+			recordID = noderec.ManualRecordID(s.ID)
 		}
 	}
 	models := s.Models
@@ -349,7 +540,7 @@ func (b *Broker) annotateManualTrust(en *EnrichedNode, s manualNodeStatus) {
 	en.Trusted = s.HostUUID == s.ClusterUUID && s.PeerMetadata != nil && s.PeerMetadata.HostUUID == s.HostUUID && b.currentPeerProof(s.ClusterUUID, s.PeerRecordID)
 	if !en.Trusted && en.IdentityVerification == "verified" {
 		en.IdentityVerification = "unverified"
-		en.PeerRecordID = noderec.ManualRecordID(s.ID)
+		en.PeerRecordID = noderec.PreviewRecordID(s.ID, "")
 	}
 	if en.Trusted {
 		en.Clustered = true
@@ -440,11 +631,13 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 	}
 
 	verification := "unverified"
-	if s.HostUUID == "" && s.ClusterUUID == "" && s.IdentityVerification != "unverified" {
+	recordID := noderec.PreviewRecordID(s.ID, "")
+	if s.Kind == "engine" && s.IdentityVerification == "manual" {
 		verification = "manual"
+		recordID = noderec.ManualRecordID(s.ID)
 	}
 	return noderec.DirectoryNode{
-		PeerRecordID:         noderec.ManualRecordID(s.ID),
+		PeerRecordID:         recordID,
 		IdentityVerification: verification,
 		HostUUID:             hostUUID,
 		Name:                 s.ID,
@@ -608,7 +801,7 @@ func (b *Broker) bridgeToProxy(p *proxyProcess, engine string, s manualNodeStatu
 	}
 	// Proven PAIR peers travel exclusively through the authenticated relay.
 	// Only independent, explicitly configured bare engines use this bypass.
-	if up && s.IdentityVerification != "unverified" && s.HostUUID == "" && s.ClusterUUID == "" && s.PeerRecordID == "" && s.Address != "" && port > 0 {
+	if up && s.Kind == "engine" && s.IdentityVerification == "manual" && s.HostUUID == "" && s.ClusterUUID == "" && s.PeerRecordID == "" && s.Address != "" && port > 0 {
 		node := proxyManualNode{
 			ID:        key,
 			Host:      s.Address,

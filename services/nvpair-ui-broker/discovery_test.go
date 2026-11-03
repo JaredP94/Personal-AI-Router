@@ -57,13 +57,13 @@ func TestManualToEnrichedHostUUID(t *testing.T) {
 		t.Fatalf("store key = %q, want the real hostUuid", withUUID.storeKey())
 	}
 	claimedUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9", HostUUID: "real-uuid"})
-	wantManualKey := noderec.ManualRecordID("manual:10.0.0.9")
+	wantManualKey := noderec.PreviewRecordID("manual:10.0.0.9", "")
 	if claimedUUID.storeKey() != wantManualKey {
-		t.Fatalf("unproven hostUuid must use the manual config namespace: got %q, want %q", claimedUUID.storeKey(), wantManualKey)
+		t.Fatalf("unproven hostUuid must use the preview namespace: got %q, want %q", claimedUUID.storeKey(), wantManualKey)
 	}
 	noUUID := manualToEnriched(manualNodeStatus{ID: "manual:10.0.0.9"})
 	if noUUID.storeKey() != wantManualKey {
-		t.Fatalf("store key = %q, want namespaced manual config key %q", noUUID.storeKey(), wantManualKey)
+		t.Fatalf("store key = %q, want namespaced preview key %q", noUUID.storeKey(), wantManualKey)
 	}
 }
 

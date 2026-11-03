@@ -164,7 +164,7 @@ Tab switching and `q` do not work until you do.
 | 5 | **Workloads** | Live inference workloads: ID, model, engine, origin, destination, state, and age |
 | 6 | **Engines** | Selected node's engines: installed, running, healthy, port, and model inventory |
 | 7 | **Cluster** | This node's identity, cluster membership, and pairing |
-| 8 | **Manual** | Nodes you added by address, with reachability |
+| 8 | **Manual** | Persistent addresses, PAIR/engine kind, verification and reachability |
 | 9 | **Settings** | Node settings: force ports, cluster auto-sync, and cluster ID and name |
 | 10 | **Logs** | Service log output, with live log-level control |
 
@@ -229,8 +229,15 @@ Press `d` instead to decline. After pairing, the peer appears under **Members**.
 | `i` | Invite by address | Cluster |
 | `a` | Accept an inbound invitation | Cluster |
 | `d` | Decline an inbound invitation | Cluster |
-| `r` | Confirm removal of the selected member | Cluster |
+| `r` | Confirm removal of the selected member; successful unpair also forgets its manual PAIR addresses | Cluster |
 | `L` | Confirm leaving the cluster (capital L) | Cluster |
+
+On **Manual**, `a` adds a **PAIR machine** by hostname or IP and persists its
+address before starting PIN pairing; `p` retries pairing the selected PAIR entry.
+Unverified PAIR entries never route. `e` explicitly adds **Engine only**, a labelled
+manual bypass that trusts no PAIR claims; a PAIR owner's engine needs LAN engine
+binding enabled. `r` forgets a manual entry without removing cluster membership.
+Old entries without kind migrate to PAIR; remove/re-add a bare engine with `e`.
 
 Only pair when you trust both machines and the network. The PIN is a short-lived
 bootstrap code, not a durable credential. Refer to the

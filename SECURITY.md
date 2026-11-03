@@ -98,11 +98,15 @@ to the local admission and both certificates and are withdrawn on authorization
 changes or worker retirement. Older peers without authenticated service metadata
 remain previews, not service targets. Explicitly configured bare-engine manual
 routes remain a separately labelled bypass and supply no peer telemetry.
-Manual-entry kind is not yet persisted: after a manual-nodes worker restart,
-an address previously added for a PAIR peer can be routed as an unauthenticated
-plaintext bare engine if no PAIR endpoint answers there, including when another
-machine has taken that address. Persisting PAIR-vs-bare-engine intent is required
-to prevent that downgrade across worker restarts.
+The broker persists each manual entry's `pair` or `engine` kind in the canonical
+`configs/manual-nodes.json`. A `pair` entry never downgrades to a plaintext engine,
+including after worker/broker restarts or address reassignment. Entries without a
+historical kind migrate conservatively on disk to `pair`; resuming a bare-engine
+route requires an explicit **Engine only** choice. An `engine` entry trusts no
+PAIR claims even if a PAIR endpoint answers at that address. An authenticated
+pairing completion can associate a manual hostname with the pinned peer solely
+for later cleanup. This saved association does not mark the entry verified or
+supply routing, identity, inventory or telemetry authority.
 
 PAIR can advertise/rank Tailscale CGNAT addresses (`100.64.0.0/10`) and use known
 peer address fallbacks. This is not arbitrary tailnet peer enumeration, and

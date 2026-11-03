@@ -36,7 +36,7 @@ func TestPublicManualInventoryCannotClaimPinnedPrincipal(t *testing.T) {
 // It may advertise models without acquiring a host identity or GPU telemetry.
 func TestBareEnginesUseExplicitManualInventory(t *testing.T) {
 	m, rw, rt := newTestManager(t)
-	entry := ManualEntry{Name: "bare-engines", Address: "bare.local"}
+	entry := ManualEntry{Kind: "engine", Name: "bare-engines", Address: "bare.local"}
 	rt.set(http.MethodGet, "bare.local:14318", "/v1/node-info", func(*http.Request) (*http.Response, error) {
 		return httpJSON(http.StatusNotFound, `{}`)
 	})

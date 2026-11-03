@@ -405,11 +405,14 @@ type Broker struct {
 	// alias is reprojected from manualNodeStatuses (its last-seen payload) so the
 	// removed alias's address/models don't linger (the survivor's own periodic
 	// probe emits no update while its status is unchanged).
-	manualMu           sync.Mutex
-	manualNodeKeys     map[string]string
-	manualNodeStatuses map[string]manualNodeStatusEntry
-	manualPersistMu    sync.Mutex
-	manualMutationMu   sync.Mutex
+	manualMu                sync.Mutex
+	manualNodeKeys          map[string]string
+	manualNodeStatuses      map[string]manualNodeStatusEntry
+	manualPersistMu         sync.Mutex
+	manualMutationMu        sync.Mutex
+	manualCleanupMu         sync.Mutex
+	manualPendingRemoval    *pendingManualRemoval
+	manualRemovedAdmissions map[string]uint64
 	// manualMutationTail is closed when the most recently queued manual-node
 	// mutation finishes. Each node/add or node/remove waits for the one before
 	// it, so mutations apply in the order clients sent them without blocking
@@ -1530,6 +1533,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	s = b.normalizeManualStatus(s)
 	incoming := manualToEnriched(s)
 	b.annotateManualTrust(&incoming, s)
+	if incoming.Trusted {
+		b.rememberManualPeer(s)
+	}
 	key := incoming.storeKey()
 	receivedAt := time.Now()
 
@@ -2588,6 +2594,12 @@ func (b *Broker) forwardLogLevel(level string) {
 // errors:clear are routed into the nvpair-errors pipeline (the broker now
 // supervises it) rather than dropped.
 func (b *Broker) forwardClusterManagerNotification(method string, params json.RawMessage) {
+	if method == "cluster:pairing-completed" {
+		if err := b.associatePairedManualNodes(params); err != nil {
+			slog.Warn("failed to persist pairing cleanup association", "err", err)
+		}
+		return // broker-internal lifecycle metadata, not renderer peer identity
+	}
 	if b.dispatchErrorsNotif("cluster-manager", method, params) {
 		return
 	}
@@ -3739,7 +3751,67 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 		}
 		return
 	}
+	var manualAliases []string
+	removedPeerID := ""
+	if msg.Method == "nodes:remove" {
+		// Resolve and forget the same aliases even if another client has an
+		// in-flight manual add/remove when unpair begins.
+		b.manualMutationMu.Lock()
+		defer b.manualMutationMu.Unlock()
+		var params struct {
+			NodeUUID string `json:"nodeUuid"`
+			NodeID   string `json:"nodeId"`
+		}
+		_ = json.Unmarshal(msg.Params, &params)
+		id := params.NodeUUID
+		if id == "" {
+			id = params.NodeID
+		}
+		member, lookupErr := b.manualMemberForID(id)
+		if lookupErr != nil {
+			_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-node lookup failed: %v", lookupErr))
+			return
+		}
+		removedPeerID = member.NodeUUID
+		b.beginManualRemoval(member)
+		defer b.finishManualRemoval(false)
+		var err error
+		manualAliases, err = b.manualAliasesForPeer(id)
+		if err != nil {
+			_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-node lookup failed: %v", err))
+			return
+		}
+	}
 	result, rpcErr, err := cm.Call(context.Background(), msg.Method, msg.Params)
+	if err == nil && rpcErr == nil && msg.Method == "nodes:remove" {
+		var removed struct {
+			Removed bool `json:"removed"`
+		}
+		if json.Unmarshal(result, &removed) == nil && removed.Removed {
+			// A pairing completion may have arrived while removal was in flight.
+			// Its cleanup-only association precedes this response on the worker
+			// stream, so include it even if no inventory proof was ever published.
+			hints := b.finishManualRemoval(true)
+			latest, lookupErr := b.manualAliasesForPeer(removedPeerID, hints...)
+			if lookupErr != nil {
+				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but manual-node lookup failed: %v", lookupErr))
+				return
+			}
+			seen := make(map[string]bool, len(manualAliases))
+			for _, alias := range manualAliases {
+				seen[alias] = true
+			}
+			for _, alias := range latest {
+				if !seen[alias] {
+					manualAliases = append(manualAliases, alias)
+				}
+			}
+			if err := b.forgetManualAliases(manualAliases, removedPeerID); err != nil {
+				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but forgetting manual entries failed: %v", err))
+				return
+			}
+		}
+	}
 	switch {
 	case err != nil:
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("cluster-manager call failed: %v", err)); err != nil {

@@ -23,11 +23,14 @@ const manualRefreshInterval = 10 * time.Second
 
 // manualNode is the subset of nvpair-manual-nodes' ManualNodeStatus shown.
 type manualNode struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Address    string `json:"address"`
-	OllamaUp   bool   `json:"ollama_up"`
-	NodeInfoUp bool   `json:"node_info_up"`
+	Kind                 string `json:"kind"`
+	IdentityVerification string `json:"identityVerification"`
+	FromCluster          bool   `json:"from_cluster"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Address              string `json:"address"`
+	OllamaUp             bool   `json:"ollama_up"`
+	NodeInfoUp           bool   `json:"node_info_up"`
 }
 
 // manualView manages user-added nodes that don't appear via mDNS: list,
@@ -39,6 +42,7 @@ type manualView struct {
 	nodes         []manualNode
 	input         textinput.Model
 	adding        bool
+	kind          string
 	status        string
 	confirm       *confirmPrompt
 	width, height int
@@ -56,8 +60,15 @@ type manualActionMsg struct {
 	err  error
 }
 
+type manualPairSavedMsg struct {
+	address string
+	err     error
+}
+
 var (
-	manualAddKey    = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add node"))
+	manualAddKey    = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add PAIR machine"))
+	manualEngineKey = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "add engine only"))
+	manualPairKey   = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pair selected"))
 	manualRemoveKey = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "remove node"))
 )
 
@@ -97,14 +108,14 @@ func (v *manualView) tickCmd() tea.Cmd {
 
 func (v *manualView) SetSize(w, h int) {
 	v.width, v.height = w, h
-	const ollama, nodeinfo = 8, 9
+	const ollama, nodeinfo = 8, 24
 	id := clampWidth((w-ollama-nodeinfo-2)/2, 8)
 	addr := clampWidth(w-ollama-nodeinfo-id-2, 10)
 	v.table.SetColumns([]table.Column{
 		{Title: "ID", Width: id},
 		{Title: "ADDRESS", Width: addr},
 		{Title: "OLLAMA", Width: ollama},
-		{Title: "NODEINFO", Width: nodeinfo},
+		{Title: "KIND / VERIFICATION", Width: nodeinfo},
 	})
 	v.table.SetWidth(w)
 	v.table.SetHeight(clampWidth(h-2, 1))
@@ -119,6 +130,21 @@ func (v *manualView) Update(msg tea.Msg) tea.Cmd {
 			v.setNodes(msg.nodes)
 		}
 		return nil
+	case manualPairSavedMsg:
+		if msg.err != nil {
+			v.status = "add " + msg.address + " failed: " + msg.err.Error()
+			return nil
+		}
+		return v.pairCmd(msg.address)
+	case clusterActionMsg:
+		if msg.err != nil {
+			v.status = "pairing failed (address kept): " + msg.err.Error()
+		} else if msg.rejected {
+			v.status = "pairing rejected: " + rejectReason(msg.reason)
+		} else {
+			v.status = "Pairing PIN: " + msg.pin + " (read it to the joining node)"
+		}
+		return v.listCmd()
 	case manualTickMsg:
 		return tea.Batch(v.listCmd(), v.tickCmd())
 	case manualActionMsg:
@@ -152,7 +178,17 @@ func (v *manualView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	switch {
-	case key.Matches(msg, manualAddKey):
+	case key.Matches(msg, manualPairKey):
+		idx := v.table.Cursor()
+		if idx >= 0 && idx < len(v.nodes) && v.nodes[idx].Kind == "pair" {
+			return v.pairCmd(v.nodes[idx].Address)
+		}
+		return nil
+	case key.Matches(msg, manualAddKey), key.Matches(msg, manualEngineKey):
+		v.kind = "pair"
+		if key.Matches(msg, manualEngineKey) {
+			v.kind = "engine"
+		}
 		v.adding = true
 		v.input.SetValue("")
 		v.input.Focus()
@@ -173,8 +209,25 @@ func (v *manualView) submitAdd() tea.Cmd {
 		v.status = "address required"
 		return nil
 	}
-	return call(v.client, "node/add", map[string]string{"address": addr}, func(_ *rpc.Message, err error) tea.Msg {
+	kind := v.kind
+	if kind == "" {
+		kind = "pair"
+	}
+	return call(v.client, "node/add", map[string]string{"address": addr, "kind": kind}, func(_ *rpc.Message, err error) tea.Msg {
+		if kind == "pair" {
+			return manualPairSavedMsg{address: addr, err: err}
+		}
 		return manualActionMsg{what: "add " + addr, err: err}
+	})
+}
+
+func (v *manualView) pairCmd(address string) tea.Cmd {
+	return inviteNodeCmd(v.client, map[string]any{"address": address}, func(res inviteNodeResult, err error) tea.Msg {
+		pin := ""
+		if res.Pin != nil {
+			pin = *res.Pin
+		}
+		return clusterActionMsg{what: "pair", pin: pin, rejected: res.State == "rejected", reason: res.Reason, err: err}
 	})
 }
 
@@ -192,14 +245,18 @@ func (v *manualView) removeSelected() tea.Cmd {
 }
 
 func (v *manualView) setNodes(nodes []manualNode) {
-	v.nodes = nodes
+	v.nodes = nil
 	rows := make([]table.Row, 0, len(nodes))
 	for _, n := range nodes {
+		if n.FromCluster {
+			continue
+		}
+		v.nodes = append(v.nodes, n)
 		rows = append(rows, table.Row{
 			truncate(n.ID, 16),
 			n.Address,
 			yesNo(n.OllamaUp),
-			yesNo(n.NodeInfoUp),
+			n.Kind + " / " + n.IdentityVerification,
 		})
 	}
 	v.table.SetRows(rows)
@@ -208,12 +265,15 @@ func (v *manualView) setNodes(nodes []manualNode) {
 func (v *manualView) View() string {
 	var b strings.Builder
 	if len(v.nodes) == 0 {
-		b.WriteString(footerStyle.Render("No manual nodes. Press a to add one by address."))
+		b.WriteString(footerStyle.Render("No manual entries. Press a for a PAIR machine or e for an engine."))
 	} else {
 		b.WriteString(v.table.View())
 	}
 	if v.adding {
-		b.WriteString("\nadd node: " + v.input.View())
+		b.WriteString("\nadd " + v.kind + ": " + v.input.View())
+		if v.kind == "engine" {
+			b.WriteString("\nManual bypass: trusts no PAIR claims. A PAIR owner's engine needs LAN engine binding enabled.")
+		}
 	}
 	if v.confirm.open() {
 		b.WriteString("\n" + v.confirm.View())
@@ -228,5 +288,5 @@ func (v *manualView) Help() []key.Binding {
 	if v.confirm.open() {
 		return v.confirm.Help()
 	}
-	return []key.Binding{manualAddKey, manualRemoveKey}
+	return []key.Binding{manualAddKey, manualEngineKey, manualPairKey, manualRemoveKey}
 }

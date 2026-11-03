@@ -851,18 +851,19 @@ Some networks block or filter multicast, so discovery is not the only path in.
 fixed interval. A PAIR peer enters the verified directory only after pinned
 cluster mTLS proves its current identity and service metadata; public HTTP or
 operator CA trust cannot substitute for that proof. Its configuration keeps an
-independent manual record key until authentication succeeds. There is no
+independent `preview:<sha>` record key until authentication succeeds. There is no
 plaintext downgrade for peer hardware, models, engine state or scheduling data.
 Explicitly user-added bare engines keep the separate manual routing bypass and
-never establish a PAIR peer identity or provide scheduling telemetry. Recognizing
-a PAIR endpoint prevents a bare-engine downgrade for that configuration's lifetime
-in the manual-nodes worker, but this kind is not persisted. After that worker
-restarts, a previously added PAIR address can become an unauthenticated plaintext
-bare-engine route if no PAIR endpoint answers there, including if another machine
-answers instead. Persisting each entry's PAIR-vs-bare-engine kind in
-`manual-nodes.json` is a follow-up, alongside desktop handling of the additive
-`peerRecordId` and `identityVerification` fields without keying previews by a
-claimed `hostUuid`.
+never establish a PAIR peer identity or provide scheduling telemetry. The broker
+is the single persistence owner of `configs/manual-nodes.json`, including each
+entry's explicitly chosen `pair` or `engine` kind. A `pair` entry never becomes an
+engine bypass, even when offline or replayed after a worker/broker restart.
+Historical entries without kind migrate on disk to `pair`; users of a former bare
+engine must remove and re-add it as **Engine only**. A successful cluster removal
+also forgets associated manual PAIR addresses. Verified associations retained in
+the file help removal while a peer is offline; they are not routing proofs.
+Desktop Add node and the TUI Manual tab register kind before PIN pairing, retaining
+an unverified address if pairing fails. See [Routed networks](remote-networks.mdx).
 
 ## Observability and Distributed Tracing
 

@@ -21,9 +21,12 @@ import {
     nodeRecordKey,
     nodeVerificationLabel
 } from '@/shared/utils/node-record-key'
+import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
 import { useBlurOnOpen } from '@/ui/hooks/useBlurOnOpen'
 import { useInvitePairing } from '@/ui/hooks/useInvitePairing'
 import { useInvitablePeers } from '@/ui/hooks/useInvitablePeers'
+import type { ManualNodeKind } from '@/shared/types/manual-nodes'
+import getErrorString from '@/shared/utils/get-error-string'
 
 interface AddNodeModalProps {
     open: boolean
@@ -32,24 +35,45 @@ interface AddNodeModalProps {
 
 export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
     useBlurOnOpen(open)
-    const [manualIp, setManualIp] = useState('')
+    const [kind, setKind] = useState<ManualNodeKind>('pair')
+    const [manualAddress, setManualAddress] = useState('')
+    const [error, setError] = useState<string | null>(null)
+    const [submitting, setSubmitting] = useState(false)
     const pairing = useInvitePairing()
     const nodesThatCanBeAdded = useInvitablePeers()
 
     const handleOpenChange = useCallback(
         (next: boolean) => {
-            setManualIp('')
+            setManualAddress('')
+            setKind('pair')
+            setError(null)
+            setSubmitting(false)
             pairing.reset()
             onOpenChange(next)
         },
         [onOpenChange, pairing]
     )
 
-    const handleManualInvite = useCallback(() => {
-        const ip = manualIp.trim()
-        if (!ip) return
-        void pairing.start(ip)
-    }, [manualIp, pairing])
+    const handleAddManualNode = useCallback(async () => {
+        const address = manualAddress.trim()
+        if (!address) return
+        setError(null)
+        setSubmitting(true)
+        try {
+            if (kind === 'pair') {
+                // Save reachability before pairing; failed pairing keeps an unverified entry.
+                await window.pairApi.manualNodes.add({ address, kind: 'pair' })
+                void pairing.start(address)
+            } else {
+                await window.pairApi.manualNodes.add({ address, kind: 'engine' })
+                handleOpenChange(false)
+            }
+        } catch (err) {
+            setError(getErrorString(err))
+        } finally {
+            setSubmitting(false)
+        }
+    }, [manualAddress, kind, pairing, handleOpenChange])
 
     const showPairing = pairing.invite !== null || pairing.error !== null
     const inviteInFlight = pairing.submitting || pairing.invite?.state === 'pending'
@@ -61,7 +85,7 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
                     <DialogHeader onClose={() => handleOpenChange(false)}>
                         <Flex align="center" gap="2">
                             <span>Add node</span>
-                            {pairing.submitting && (
+                            {(pairing.submitting || submitting) && (
                                 <span className="spinner-element" role="status" aria-label="" />
                             )}
                         </Flex>
@@ -77,25 +101,71 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
                             />
                         ) : (
                             <>
-                                <Flex align="end" gap="2">
-                                    <FormField slotLabel="IP address" className="flex-1">
-                                        <TextInput
-                                            value={manualIp}
-                                            onValueChange={setManualIp}
-                                            placeholder="192.168.1.100"
-                                            onKeyDown={event => {
-                                                if (event.key === 'Enter') handleManualInvite()
+                                {error && <InlineErrorBanner severity="error" message={error} />}
+
+                                <Stack gap="2">
+                                    <Text kind="body/semibold/sm">Node type</Text>
+                                    <Flex gap="2">
+                                        <Button
+                                            kind={kind === 'pair' ? 'primary' : 'secondary'}
+                                            color={kind === 'pair' ? 'brand' : 'neutral'}
+                                            size="small"
+                                            onClick={() => {
+                                                setKind('pair')
+                                                setError(null)
                                             }}
-                                            disabled={inviteInFlight}
+                                            disabled={inviteInFlight || submitting}
+                                        >
+                                            PAIR machine
+                                        </Button>
+                                        <Button
+                                            kind={kind === 'engine' ? 'primary' : 'secondary'}
+                                            color={kind === 'engine' ? 'brand' : 'neutral'}
+                                            size="small"
+                                            onClick={() => {
+                                                setKind('engine')
+                                                setError(null)
+                                            }}
+                                            disabled={inviteInFlight || submitting}
+                                        >
+                                            Engine only
+                                        </Button>
+                                    </Flex>
+                                    {kind === 'engine' && (
+                                        <Text kind="body/regular/sm" className="text-subtle-color">
+                                            Manual bypass: PAIR trusts no PAIR claims from this
+                                            engine. A PAIR machine’s engine is reachable only if its
+                                            owner enabled LAN engine binding.
+                                        </Text>
+                                    )}
+                                </Stack>
+
+                                <Flex align="end" gap="2">
+                                    <FormField
+                                        slotLabel="Address (hostname or IP)"
+                                        className="flex-1"
+                                    >
+                                        <TextInput
+                                            value={manualAddress}
+                                            onValueChange={setManualAddress}
+                                            placeholder="192.168.1.100 or host.local"
+                                            onKeyDown={event => {
+                                                if (event.key === 'Enter') {
+                                                    void handleAddManualNode()
+                                                }
+                                            }}
+                                            disabled={inviteInFlight || submitting}
                                         />
                                     </FormField>
                                     <Button
                                         kind="primary"
                                         color="brand"
-                                        onClick={handleManualInvite}
-                                        disabled={!manualIp.trim() || inviteInFlight}
+                                        onClick={handleAddManualNode}
+                                        disabled={
+                                            !manualAddress.trim() || inviteInFlight || submitting
+                                        }
                                     >
-                                        Invite
+                                        {kind === 'pair' ? 'Invite' : 'Add engine'}
                                     </Button>
                                 </Flex>
 

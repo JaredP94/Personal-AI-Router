@@ -20,6 +20,7 @@ import type {
 import type { Workload, WorkloadLiveProgress } from '@/shared/types/workloads'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type { AppInitialSnapshot, ClusterInitialSnapshot } from '@/shared/types/bootstrap'
+import type { ManualNodeAddRequest, ManualNodeStatus } from '@/shared/types/manual-nodes'
 import type {
     TelemetryConfig,
     TelemetryConfigRequest,
@@ -153,6 +154,15 @@ export interface IMetricsApi {
     onNodeMetrics(callback: (snapshot: NodeInferenceMetricsSnapshot) => void): () => void
 }
 
+interface IManualNodesApi {
+    /** Fetch all tracked manual nodes. */
+    list(): Promise<ManualNodeStatus[]>
+    /** Add a manual node with explicit kind ('pair' | 'engine'). */
+    add(params: ManualNodeAddRequest): Promise<ManualNodeStatus>
+    /** Remove a manual node by id from durable storage. */
+    remove(id: string): Promise<{ removed: boolean }>
+}
+
 // ---------------------------------------------------------------------------
 // Composite API
 // ---------------------------------------------------------------------------
@@ -165,6 +175,7 @@ export interface IPairApi {
     app: IAppApi
     connection: IConnectionApi
     nodes: INodesApi
+    manualNodes: IManualNodesApi
     cluster: IClusterApi
     discovery: IDiscoveryApi
     engines: IEngineApi
@@ -201,6 +212,11 @@ export function createPairApi(transport: ServiceTransport): IPairApi {
             onUpsert: cb => transport.subscribePush('nodes:upsert', cb),
             onRemove: cb => transport.subscribePush('nodes:remove', cb),
             onMembersChanged: cb => transport.subscribePush('nodes:changed', cb)
+        },
+        manualNodes: {
+            list: () => transport.invoke('nodes:manual-list'),
+            add: params => transport.invoke('nodes:manual-add', params),
+            remove: id => transport.invoke('nodes:manual-remove', { id })
         },
         cluster: {
             getInitial: () => transport.invoke('cluster:get-initial'),

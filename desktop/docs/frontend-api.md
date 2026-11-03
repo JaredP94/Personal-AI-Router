@@ -52,6 +52,12 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `onRemove(callback)` reports node removals.
 - `onMembersChanged(callback)` reports a complete membership snapshot.
 
+### `pairApi.manualNodes`
+
+- `list()` returns all tracked manual nodes with kind (`pair` | `engine`), address, name, and identity verification.
+- `add({ address, kind, name?, tls_port?, mtls? })` adds a manual node entry with explicit kind (`pair` or `engine`).
+- `remove(id)` removes a manual node entry from durable storage.
+
 ### `pairApi.cluster`
 
 - `getInitial()` returns identity, settings, membership, and all live inbound invites.

@@ -162,15 +162,11 @@ type NodeInfoResponse struct {
 	ClusterUUID *string `json:"clusterUuid,omitempty"`
 }
 
-// ManualEntry is the user-supplied identity of a manually added
-// node. Address + Name are the historical fields. TLSPort is an
-// optional hint that node-info on this host listens for HTTPS on
-// the given port (typically 14319 with our default node-info
-// flags); a zero TLSPort means "probe plain HTTP on 14318" — the
-// historical behavior. MTLS is informational only on the entry
-// (we don't probe differently), but it's persisted so the UI can
-// show the operator the configuration they set.
+// ManualEntry stores user intent, not endpoint-derived classification. Missing
+// historical kind conservatively means pair. TLSPort overrides the pinned mTLS
+// node-info port (default 14318); MTLS is retained as operator display metadata.
 type ManualEntry struct {
+	Kind    string `json:"kind"`
 	Address string `json:"address"`
 	Name    string `json:"name"`
 	TLSPort int    `json:"tls_port,omitempty"`
@@ -185,6 +181,8 @@ type ManualEntry struct {
 // 14318 otherwise) so existing UI that displays the port stays
 // correct.
 type ManualNodeStatus struct {
+	Kind                 string                      `json:"kind"`
+	FromCluster          bool                        `json:"from_cluster,omitempty"`
 	IdentityVerification string                      `json:"identityVerification,omitempty"`
 	PeerRecordID         string                      `json:"peerRecordId,omitempty"`
 	PeerMetadata         *noderec.PeerMetadataParams `json:"peerMetadata,omitempty"`
@@ -245,7 +243,6 @@ type trackedNode struct {
 	entry       ManualEntry
 	status      ManualNodeStatus
 	fromCluster bool
-	peerSeen    bool
 
 	// consecutiveFails counts back-to-back probes where neither
 	// service answered (OllamaUp && NodeInfoUp both false). Reset
@@ -571,7 +568,7 @@ func (m *Manager) syncClusterMembers() {
 	}
 
 	m.mu.Lock()
-	var toProbe []ManualEntry
+	var toProbe []*trackedNode
 	var toRemove []string
 
 	for id, tn := range m.nodes {
@@ -601,6 +598,9 @@ func (m *Manager) syncClusterMembers() {
 	for _, member := range activeMembers {
 		var existing *trackedNode
 		for _, tn := range m.nodes {
+			if tn.entry.Kind == "engine" {
+				continue
+			}
 			if (tn.status.HostUUID != "" && tn.status.HostUUID == member.NodeUUID) ||
 				tn.entry.Address == member.IPAddress {
 				existing = tn
@@ -616,18 +616,25 @@ func (m *Manager) syncClusterMembers() {
 		}
 
 		entry := ManualEntry{
+			Kind:    "pair",
 			Address: member.IPAddress,
 			Name:    member.Name,
 		}
 		id := nodeID(entry)
+		if _, occupied := m.nodes[id]; occupied {
+			continue
+		}
 		status := ManualNodeStatus{
-			ID:           id,
-			Name:         entry.Name,
-			Address:      entry.Address,
-			HostUUID:     member.NodeUUID,
-			ClusterUUID:  member.NodeUUID,
-			OllamaPort:   11434,
-			NodeInfoPort: 14318,
+			Kind:                 "pair",
+			FromCluster:          true,
+			IdentityVerification: "unverified",
+			ID:                   id,
+			Name:                 entry.Name,
+			Address:              entry.Address,
+			HostUUID:             member.NodeUUID,
+			ClusterUUID:          member.NodeUUID,
+			OllamaPort:           11434,
+			NodeInfoPort:         14318,
 		}
 		tn := &trackedNode{
 			entry:       entry,
@@ -636,29 +643,24 @@ func (m *Manager) syncClusterMembers() {
 		}
 		m.nodes[id] = tn
 		m.startTelemetryLoopLocked(id, tn)
-		toProbe = append(toProbe, entry)
+		toProbe = append(toProbe, tn)
 	}
-	m.mu.Unlock()
 
 	for _, id := range toRemove {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
 		_ = m.codec.Notify("errors:clear", errors.ClearParams{ID: probeFailedID(id)})
 	}
 
-	for _, entry := range toProbe {
-		go func(e ManualEntry) {
-			m.probeNode(e)
-			id := nodeID(e)
-			m.mu.RLock()
-			tn, ok := m.nodes[id]
-			if !ok {
-				m.mu.RUnlock()
-				return
+	m.mu.Unlock()
+	for _, tracked := range toProbe {
+		go func(tn *trackedNode) {
+			m.probeNode(tn.entry)
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if current := m.nodes[nodeID(tn.entry)]; current == tn {
+				m.codec.Notify("node/discovered", tn.status)
 			}
-			st := tn.status
-			m.mu.RUnlock()
-			m.codec.Notify("node/discovered", st)
-		}(entry)
+		}(tracked)
 	}
 }
 
@@ -689,24 +691,25 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		return
 	}
 	prior := tracked.status
-	peerSeen := tracked.peerSeen || tracked.fromCluster || prior.PeerRecordID != ""
+	fromCluster := tracked.fromCluster
 	m.mu.RUnlock()
 	// Use the request start as the age anchor so transport time cannot make a
 	// remotely sampled observation look fresher than it is.
 	nodeInfoReceived := m.clockNow()
-	info, nodeInfoPort, nodeInfoUp := m.authenticatedNodeInfo(m.ctx, entry, prior.ClusterUUID)
+	var info NodeInfoResponse
+	nodeInfoPort := 14318
+	if entry.TLSPort > 0 {
+		nodeInfoPort = entry.TLSPort
+	}
+	nodeInfoUp := false
 	clusterUUID := ""
 	emPort := 0
+	if entry.Kind != "engine" {
+		info, nodeInfoPort, nodeInfoUp = m.authenticatedNodeInfo(m.ctx, entry, prior.ClusterUUID)
+	}
 	if nodeInfoUp {
 		clusterUUID = *info.ClusterUUID
 		emPort = info.PeerMetadata.Services[noderec.ServiceEngineManager]
-		peerSeen = true
-	}
-	if !peerSeen && entry.TLSPort == 0 && !entry.MTLS {
-		// Public PAIR presence can only deny the bare-engine bypass, never
-		// establish an identity or supply service inventory.
-		publicUp, _ := m.probeNodeInfo(m.client, "http", addr, 14318)
-		peerSeen = publicUp
 	}
 	emUp, emRes, engineNative := m.probePeerEngineManager(m.ctx, addr, clusterUUID, info.PeerRecordID, emPort, m.engineNativeDue(id))
 
@@ -714,10 +717,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	finalModelsByEngine := emRes.ModelsByEngine
 	finalLoadedByEngine := emRes.LoadedByEngine
 
-	// Plaintext engine probes are only valid for unclustered/non-mTLS nodes;
-	// clustered peers reject non-loopback plaintext requests on their proxy
-	// ports and publish their authoritative inventory via Engine Manager (:14322).
-	canProbePlaintextEngines := !peerSeen && !entry.MTLS && entry.TLSPort == 0
+	// Only an explicit engine choice enables the labelled manual bypass.
+	// PAIR intent never depends on endpoint availability, including after replay.
+	canProbePlaintextEngines := entry.Kind == "engine"
 
 	var (
 		ollamaUp, lmStudioUp, omlxUp             bool
@@ -812,14 +814,16 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 	}
 
-	verification := "manual"
-	if peerSeen {
-		verification = "unverified"
+	verification := "unverified"
+	if entry.Kind == "engine" {
+		verification = "manual"
 	}
 	if nodeInfoUp {
 		verification = "verified"
 	}
 	newStatus := ManualNodeStatus{
+		Kind:                 entry.Kind,
+		FromCluster:          fromCluster,
 		IdentityVerification: verification,
 		PeerRecordID:         info.PeerRecordID,
 		PeerMetadata:         info.PeerMetadata,
@@ -876,8 +880,10 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			return
 		}
 	}
-	tn.peerSeen = peerSeen
 
+	// State commit and publication form one transaction with replacement and
+	// removal. An older engine observation must never overtake a new PAIR preview.
+	defer m.mu.Unlock()
 	prev := tn.status
 	prevFails := tn.consecutiveFails
 	// A failed node-info probe returns no HostUUID; preserve the last-learned one
@@ -905,7 +911,6 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		tn.consecutiveFails++
 	}
 	curFails := tn.consecutiveFails
-	m.mu.Unlock()
 
 	changed := prev.IdentityVerification != newStatus.IdentityVerification || prev.PeerRecordID != newStatus.PeerRecordID || prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
@@ -1280,7 +1285,7 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 	trackedEntry := tn.entry
 	prior := tn.status
 	m.mu.RUnlock()
-	if trackedEntry != entry || prior.PeerRecordID == "" {
+	if entry.Kind == "engine" || trackedEntry != entry || prior.PeerRecordID == "" {
 		return
 	}
 	nodeInfoReceived := m.clockNow()
@@ -1297,8 +1302,8 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 		m.mu.Unlock()
 		return
 	}
+	defer m.mu.Unlock()
 	hostUUID := info.HostUUID
-	m.mu.Unlock()
 
 	var msSince int64
 	if info.TelemetryValid {
@@ -1339,26 +1344,35 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 }
 
 func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
+	if entry.Kind == "" {
+		entry.Kind = "pair"
+	}
 	id := nodeID(entry)
 
 	nodeInfoPort := 14318
 	if entry.TLSPort > 0 {
 		nodeInfoPort = entry.TLSPort
 	}
+	verification := "unverified"
+	if entry.Kind == "engine" {
+		verification = "manual"
+	}
 	status := ManualNodeStatus{
-		ID:           id,
-		Name:         entry.Name,
-		Address:      entry.Address,
-		OllamaPort:   11434,
-		NodeInfoPort: nodeInfoPort,
-		TLSEnabled:   entry.TLSPort > 0,
-		MTLSRequired: entry.TLSPort > 0 && entry.MTLS,
+		Kind:                 entry.Kind,
+		IdentityVerification: verification,
+		ID:                   id,
+		Name:                 entry.Name,
+		Address:              entry.Address,
+		OllamaPort:           11434,
+		NodeInfoPort:         nodeInfoPort,
+		TLSEnabled:           entry.TLSPort > 0,
+		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
 	}
 
 	var supersededClusterIDs []string
 	m.mu.Lock()
 	for existingID, tn := range m.nodes {
-		if existingID == id || !tn.fromCluster {
+		if existingID == id || !tn.fromCluster || entry.Kind == "engine" {
 			continue
 		}
 		if tn.entry.Address == entry.Address {
@@ -1375,30 +1389,31 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 			supersededClusterIDs = append(supersededClusterIDs, existingID)
 		}
 	}
-	if existing, ok := m.nodes[id]; ok && existing.cancelTelemetry != nil {
+	existing, replacing := m.nodes[id]
+	if replacing && existing.cancelTelemetry != nil {
 		existing.cancelTelemetry()
 	}
 	tn := &trackedNode{entry: entry, status: status}
 	m.nodes[id] = tn
 	m.startTelemetryLoopLocked(id, tn)
-	m.mu.Unlock()
+	if replacing {
+		// Withdraw the old route now, before the replacement's network probe.
+		m.codec.Notify("node/updated", status)
+	}
 
 	for _, oldID := range supersededClusterIDs {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: oldID})
 		_ = m.codec.Notify("errors:clear", errors.ClearParams{ID: probeFailedID(oldID)})
 	}
 
+	m.mu.Unlock()
 	go func() {
 		m.probeNode(entry)
-		m.mu.RLock()
-		tn, exists := m.nodes[id]
-		if !exists {
-			m.mu.RUnlock()
-			return
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if current := m.nodes[id]; current == tn {
+			m.codec.Notify("node/discovered", tn.status)
 		}
-		discStatus := tn.status
-		m.mu.RUnlock()
-		m.codec.Notify("node/discovered", discStatus)
 	}()
 
 	return status
@@ -1413,10 +1428,6 @@ func (m *Manager) removeNode(id string) bool {
 		}
 		delete(m.nodes, id)
 		m.lastMembersMtime = time.Time{}
-	}
-	m.mu.Unlock()
-
-	if exists {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
 		// Defensive clear: if this node had a probe-failed entry it
 		// would outlive the node itself otherwise — the UI would
@@ -1428,6 +1439,9 @@ func (m *Manager) removeNode(id string) bool {
 		}); err != nil {
 			log.Printf("failed to send errors:clear on remove for %s: %v", id, err)
 		}
+	}
+	m.mu.Unlock()
+	if exists {
 		m.syncClusterMembers()
 	}
 	return exists
@@ -1518,8 +1532,8 @@ func (m *Manager) handleMessage(msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"address\": \"...\"}")
 			return
 		}
-		if entry.Address == "" {
-			m.codec.RespondError(msg.ID, -32602, "address is required")
+		if err := validateManualEntry(&entry); err != nil {
+			m.codec.RespondError(msg.ID, -32602, err.Error())
 			return
 		}
 		status := m.addNode(entry)
