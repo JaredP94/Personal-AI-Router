@@ -22,6 +22,9 @@ type macmonConfig struct {
 	BackoffMin time.Duration
 	BackoffMax time.Duration
 	CheckEvery time.Duration
+
+	// waitBackoff defaults to the context-aware timer in waitMacmon.
+	waitBackoff func(context.Context, time.Duration) bool
 }
 
 // macmonSupervisor owns one child at a time. Configuration durations must be
@@ -41,6 +44,9 @@ type macmonSupervisor struct {
 
 func newMacmonSupervisor(cfg macmonConfig) *macmonSupervisor {
 	cfg.Paths = append([]string(nil), cfg.Paths...)
+	if cfg.waitBackoff == nil {
+		cfg.waitBackoff = waitMacmon
+	}
 	return &macmonSupervisor{cfg: cfg, status: MacmonMissing}
 }
 
@@ -86,7 +92,7 @@ func (s *macmonSupervisor) Run(ctx context.Context) {
 		s.mu.Lock()
 		s.status = MacmonFailed
 		s.mu.Unlock()
-		if !waitMacmon(ctx, backoff) {
+		if !s.cfg.waitBackoff(ctx, backoff) {
 			return
 		}
 		if backoff >= s.cfg.BackoffMax-backoff {

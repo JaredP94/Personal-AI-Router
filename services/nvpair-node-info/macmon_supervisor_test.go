@@ -447,35 +447,44 @@ func TestMacmonSupervisorBackoffDoublesCapsAndResets(t *testing.T) {
 [ ! -f "$DIR/count" ] || read -r count < "$DIR/count"
 count=$((count + 1))
 printf '%s\n' "$count" > "$DIR/count"
-[ "$count" -ne 4 ] || printf '%s\n' "$LINE"
-[ "$count" -lt 5 ] || exec sleep 30
+[ "$count" -ne 5 ] || printf '%s\n' "$LINE"
 exit 1`)
 	cfg := macmonTestConfig(path)
+	cfg.Interval = func() time.Duration { return time.Hour }
 	cfg.BackoffMin = 50 * time.Millisecond
 	cfg.BackoffMax = 150 * time.Millisecond
+	want := []time.Duration{
+		50 * time.Millisecond, 100 * time.Millisecond,
+		150 * time.Millisecond, 150 * time.Millisecond,
+		50 * time.Millisecond, 100 * time.Millisecond,
+	}
+	var delays []time.Duration
+	// Observe the actual scheduled delays, without process startup or runner
+	// scheduling latency. Stop at the last wait so no extra child can start.
+	cfg.waitBackoff = func(ctx context.Context, delay time.Duration) bool {
+		delays = append(delays, delay)
+		return ctx.Err() == nil && len(delays) < len(want)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	s := newMacmonSupervisor(cfg)
-	runMacmonSupervisor(t, s)
-	var starts []time.Time
-	waitFor(t, func() bool {
-		count := len(macmonArgs(path))
-		if count > len(starts) {
-			if count != len(starts)+1 {
-				t.Fatal("missed a child start while observing backoff")
-			}
-			starts = append(starts, time.Now())
-		}
-		return len(starts) == 5
-	})
-	for i, min := range []time.Duration{40 * time.Millisecond, 90 * time.Millisecond, 140 * time.Millisecond, 40 * time.Millisecond} {
-		if gap := starts[i+1].Sub(starts[i]); gap < min {
-			t.Errorf("restart gap %d = %v, want >= %v", i+1, gap, min)
+	s.Run(ctx)
+	if ctx.Err() != nil {
+		t.Fatalf("supervisor did not finish: %v", ctx.Err())
+	}
+	if len(delays) != len(want) {
+		t.Fatalf("scheduled delays = %v, want %v", delays, want)
+	}
+	for i, delay := range delays {
+		if delay != want[i] {
+			t.Errorf("scheduled backoff %d = %v, want %v", i+1, delay, want[i])
 		}
 	}
-	if gap := starts[3].Sub(starts[2]); gap >= 190*time.Millisecond {
-		t.Errorf("backoff exceeded cap: %v", gap)
+	if got := len(macmonArgs(path)); got != len(want) {
+		t.Errorf("child starts = %d, want %d", got, len(want))
 	}
-	if gap := starts[4].Sub(starts[3]); gap >= 120*time.Millisecond {
-		t.Errorf("backoff did not reset after good line: %v", gap)
+	if _, sample, _ := s.Latest(); sample == nil {
+		t.Fatal("good line did not publish a sample")
 	}
 }
 
