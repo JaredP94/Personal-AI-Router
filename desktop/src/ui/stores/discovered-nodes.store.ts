@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { nodeRecordKey } from '@/shared/utils/node-record-key'
 import { create } from 'zustand'
 import type { AvailableNode } from '@/shared/types/cluster'
 
@@ -13,6 +14,15 @@ interface DiscoveredNodesStore {
 
 let unsubs: Array<() => void> = []
 
+function validNodes(nodes: AvailableNode[]): AvailableNode[] {
+    const records = new Map<string, AvailableNode>()
+    for (const node of nodes) {
+        const id = nodeRecordKey(node)
+        if (id) records.set(id, { ...node, id })
+    }
+    return [...records.values()]
+}
+
 export const useDiscoveredNodesStore = create<DiscoveredNodesStore>(set => ({
     nodes: [],
 
@@ -22,7 +32,7 @@ export const useDiscoveredNodesStore = create<DiscoveredNodesStore>(set => ({
         if (!window.pairApi) return
         unsubs.push(
             window.pairApi.discovery.onNodesChanged(nodes => {
-                set({ nodes })
+                set({ nodes: validNodes(nodes) })
             })
         )
     },
@@ -30,7 +40,7 @@ export const useDiscoveredNodesStore = create<DiscoveredNodesStore>(set => ({
     refresh: async () => {
         try {
             const nodes = await window.pairApi.discovery.getNodes()
-            set({ nodes })
+            set({ nodes: validNodes(nodes) })
         } catch {
             set({ nodes: [] })
         }

@@ -21,7 +21,18 @@ function discover(name = 'fixture'): void {
     getModularBridgeState().handleNotification({
         source: 'broker',
         method: 'discovery:nodes-changed',
-        params: { nodes: [{ hostUuid: nodeId, name, ipAddress: '192.0.2.1', port: 14318 }] }
+        params: {
+            nodes: [
+                {
+                    identityVerification: 'verified',
+                    peerRecordId: 'proof:fixture',
+                    hostUuid: nodeId,
+                    name,
+                    ipAddress: '192.0.2.1',
+                    port: 14318
+                }
+            ]
+        }
     })
 }
 
@@ -64,7 +75,12 @@ describe('node-info sensors through metrics updates and renderer state', () => {
                     getNodeMetrics: async () => ({ nodes: [] }),
                     onNodeMetrics: () => () => {}
                 },
-                nodes: { onRemove: () => () => {} }
+                nodes: {
+                    onRemove: (callback: (id: string) => void) =>
+                        subscribePush(event => {
+                            if (event.channel === 'nodes:remove') callback(event.payload)
+                        })
+                }
             }
         })
         useMetricsStore.getState().clearAll()
@@ -314,8 +330,8 @@ describe('node-info sensors through metrics updates and renderer state', () => {
             method: 'discovery:nodes-changed',
             params: { nodes: [] }
         })
-        expect(current().sensors).toBeNull()
-        expect(storedSensors()).toBeNull()
+        expect(getModularBridgeState().getNodesInitial().nodes[nodeId]).toBeUndefined()
+        expect(storedSensors()).toBeUndefined()
     })
 
     it('includes current sensors when other telemetry changes and upserts', () => {

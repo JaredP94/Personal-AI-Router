@@ -59,20 +59,18 @@ allows the user to restart the service.
 Personal AI Router consumes `discovery:get-nodes` and `discovery:nodes-changed` from the
 broker. The bridge:
 
-- keys every node by the backend's stable per-host UUID (`AvailableNode.hostUuid`),
-  the same identity workloads (`originatedFrom`/`scheduledOn`), errors (`nodeId`),
-  proxy routing (`Node.ID`), `/v1/node-info` (`hostUuid`), and cluster membership
-  (`ClusterNode.nodeUuid`) all use; the hostname is display only;
+- mirrors Go `DirectoryNode.RecordKey()`: local/verified records use `hostUuid`
+  unless reserved; all others require a `preview:` / `manual:` `peerRecordId`.
+  Invalid keys are dropped. Proof bindings are not host ids, and unverified
+  claimed UUIDs and display names never correlate with peer records;
 - preserves the backend's canonical reachable address;
-- reflects the discovery `trusted` (locally pinned peer) and `clustered` (belongs
-  to some cluster) flags, and uses `clustered` to mark an already-clustered
-  discovered node non-invitable. `trusted` is a display annotation the scanner
-  re-derives whenever the cluster-manager reports a pin-set change, and again on
-  its periodic sweep of each peer's reported membership; it is not the routing
-  gate. Each proxy answers "do I hold a pin for this peer?" from its own
-  mesh when it resolves candidates, so PAIR must never treat `trusted` as
-  authoritative for whether work can reach a node;
-- merges per-engine proxy presence;
+- reflects broker-reported `identityVerification`, `peerRecordId`, `trusted`,
+  and `clustered`, without establishing trust in TypeScript. Previews show
+  **Not in your cluster** with **Pair** by address using the existing PIN flow;
+  public cluster claims do not suppress that action. Manual engines show
+  **Engine only — added by address** and no Pair action;
+- merges per-engine proxy presence only into broker-established peer identities.
+  Proxy events cannot create or resurrect records after broker withdrawal;
 - carries flat and per-engine remote model inventories;
 - emits node and discovery pushes to the renderer.
 
@@ -81,7 +79,12 @@ at startup and resolved as soon as the broker is ready, so self is identified by
 the same UUID key rather than a hostname guess.
 
 The broker discovery surface does not include full dynamic telemetry, so
-Electron polls `/v1/node-info` for CPU, system memory, and per-adapter GPU values.
+Electron polls `/v1/node-info` for CPU, system memory, and per-adapter GPU values
+only for local/verified records. Preview/manual cards never mount peer telemetry,
+engine controls, or workload-targeting UI. Older peers are unverified until the
+services can prove their identity; no update diagnosis is inferred from missing
+metadata. Missing/invalid record keys are dropped rather than shown under a
+claimed UUID. Membership and workload UUIDs only resolve peer-keyed records.
 
 Go classifies each GPU's `memory_kind`; the bridge preserves it as `memoryKind`
 without name-based inference. Dedicated, unified, shared, and unavailable memory
@@ -156,9 +159,10 @@ Personal AI Router consequences (all reflection, no security implementation):
 - The proxy `node/*` presence port is the peer's promoted proxy port. Personal AI Router
   surfaces it as `EngineStatusData.proxyPort` and never labels it as the engine
   port; a remote engine's port comes only from `ec` facts.
-- Because both peers must speak the mTLS channel, mixed-version clusters cannot
-  run inference across the version boundary. Local use and the shared
-  nearby-model list are unaffected.
+- Older peers without authenticated service metadata stay unverified previews,
+  not routing/model-inventory peers. Local engine use is unaffected. The UI
+  cannot distinguish an old peer from another unverified PAIR machine and does
+  not infer an upgrade recommendation from that state alone.
 
 ## Engine lifecycle
 
@@ -458,16 +462,14 @@ provide an equivalent client-facing contract:
 | Serve the model hub (Ollama committed list, LM Studio live) | `src/electron/model-hub/`                        |
 | Accumulate and reconcile receiver-side pending invites      | `modular-state.ts`, `modular-supervisor.ts`      |
 | Mirror backend-coupled runtime defaults not yet reported    | `modular-runtime.ts`                             |
-| Collapse a superseded node row before the scanner proves it | `modular-state.ts`, `modular-runtime.ts`         |
 
 These are current integration boundaries. Do not add compatibility shims or
 duplicate backend services around them.
 
-The last row is a display-side collapse, not a directory decision. The scanner
-treats a matching address, hostname, and `lastSeen` gap as grounds to ask the
-machine who it is, and evicts only on a node-info identity mismatch; the bridge
-has no such proof and hides the row on the suspicion alone. It must never be
-extended into anything a consumer reads as an eviction.
+Node identity and lifetime belong to broker discovery. The desktop does not
+collapse rows by address, name, or age; independent records stay visible until
+the broker withdraws them. The shared TypeScript key helper and Go
+`DirectoryNode.RecordKey()` consume one table-driven fixture.
 
 ## Unused backend methods
 

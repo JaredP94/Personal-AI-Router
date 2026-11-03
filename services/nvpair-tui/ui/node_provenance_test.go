@@ -20,10 +20,13 @@ func TestNodeProvenanceKeepsPreviewSeparateFromVerifiedPeer(t *testing.T) {
 	if len(view.nodes) != 2 || view.nodes[0].PeerRecordID == view.nodes[1].PeerRecordID {
 		t.Fatal("preview collided with verified row")
 	}
-	if nodeStatus(nodes[0]) != "Unverified" || nodeStatus(nodes[1]) != "Connected" {
+	if nodeStatus(nodes[0]) != "Not in your cluster" || nodeStatus(nodes[1]) != "Connected" {
 		t.Fatal("provenance labels do not distinguish trust")
 	}
-	if nodeStatus(availableNode{IdentityVerification: "manual"}) != "Manual engine" {
+	if nodeStatus(availableNode{IdentityVerification: "manual"}) != "Engine only — added by address" {
 		t.Fatal("manual bypass is not separately labelled")
+	}
+	if nodeStatus(availableNode{Trusted: true}) != "Not in your cluster" {
+		t.Fatal("missing provenance was treated as verified")
 	}
 }

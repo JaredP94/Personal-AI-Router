@@ -36,7 +36,16 @@ describe('GPU memory semantics from node-info through metrics history', () => {
             source: 'broker',
             method: 'discovery:nodes-changed',
             params: {
-                nodes: [{ hostUuid: nodeId, name: 'fixture', ipAddress: '192.0.2.1', port: 14318 }]
+                nodes: [
+                    {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
+                        hostUuid: nodeId,
+                        name: 'fixture',
+                        ipAddress: '192.0.2.1',
+                        port: 14318
+                    }
+                ]
             }
         })
         updates.length = 0

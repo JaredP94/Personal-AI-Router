@@ -26,6 +26,8 @@ describe('node-info self poll', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-self',
                         name: 'self-host',
                         ipAddress: '192.0.2.51',
@@ -33,6 +35,8 @@ describe('node-info self poll', () => {
                         port: 14318
                     },
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-peer',
                         name: 'peer-host',
                         ipAddress: '192.0.2.61',

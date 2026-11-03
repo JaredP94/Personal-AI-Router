@@ -34,6 +34,8 @@ function gpu(memoryKind: GpuMemoryKind, overrides: Partial<HardwareGpuInfo> = {}
 function node(gpus: HardwareGpuInfo[]): NodeItem {
     return {
         id: 'fixture',
+        hostUuid: 'fixture',
+        identityVerification: 'local',
         name: 'Fixture node',
         ipAddress: '192.0.2.1',
         port: 14318,

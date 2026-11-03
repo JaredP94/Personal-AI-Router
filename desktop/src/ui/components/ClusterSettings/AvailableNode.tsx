@@ -4,10 +4,12 @@
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { AvailableNode as AvailableNodeType } from '@/shared/types/cluster'
 import { InvitePairingPanel } from '@/ui/components/InvitePairingPanel'
+import { canPairByAddress, nodeVerificationLabel } from '@/shared/utils/node-record-key'
 import { useInvitePairing } from '@/ui/hooks/useInvitePairing'
 
 export default function AvailableNode({ node }: { node: AvailableNodeType }) {
     const pairing = useInvitePairing()
+    const canPair = canPairByAddress(node)
     const showPairing = pairing.invite !== null || pairing.error !== null
     const inviteInFlight = pairing.submitting || pairing.invite?.state === 'pending'
 
@@ -27,22 +29,25 @@ export default function AvailableNode({ node }: { node: AvailableNodeType }) {
                             {(node.name || node.ipAddress).toUpperCase()}
                         </Text>
                         <Text kind="body/regular/sm" className="text-subtle-color">
-                            {node.clustered
-                                ? 'In another cluster'
-                                : `${node.ipAddress}:${node.port}`}
+                            {nodeVerificationLabel(node)}
+                        </Text>
+                        <Text kind="body/regular/sm" className="text-subtle-color">
+                            {node.ipAddress}
                         </Text>
                     </Stack>
-                    <Button
-                        kind="primary"
-                        color="brand"
-                        size="small"
-                        onClick={() => void pairing.start(node.ipAddress)}
-                        // A node already in a cluster cannot join another; the
-                        // backend rejects the invite (`rejected`/`already-clustered`).
-                        disabled={inviteInFlight || node.clustered}
-                    >
-                        Invite
-                    </Button>
+                    {canPair && (
+                        <Button
+                            kind="primary"
+                            color="brand"
+                            size="small"
+                            onClick={() => void pairing.start(node.ipAddress)}
+                            // Public cluster claims do not establish identity. Pair by address;
+                            // the existing PIN exchange reports any actual rejection.
+                            disabled={inviteInFlight || !node.ipAddress}
+                        >
+                            Pair
+                        </Button>
+                    )}
                 </Flex>
             )}
         </div>

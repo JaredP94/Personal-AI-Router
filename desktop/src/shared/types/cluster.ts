@@ -10,8 +10,10 @@
  * interactive PIN-pairing invite handshake.
  */
 
-export interface AvailableNode {
-    /** Canonical node key = the backend's stable per-host UUID (matches `NodeItem.id`). */
+import type { NodeRecordIdentity } from '@/shared/utils/node-record-key'
+
+export interface AvailableNode extends NodeRecordIdentity {
+    /** Canonical Go record key (matches NodeItem.id); never an unverified claimed UUID. */
     id: string
     /** Display hostname. */
     name: string
@@ -29,7 +31,7 @@ export interface AvailableNode {
     ipAddresses?: string[]
     port: number
     lastSeen: number
-    /** Whether this node is already a locally-trusted (pinned) peer. */
+    /** Broker-reported identity proof over current pinned cluster mTLS. */
     trusted: boolean
     /**
      * Whether this node already belongs to a cluster. An already-clustered node
@@ -53,7 +55,7 @@ export interface ClusterNode {
     /**
      * Stable cryptographic identity; the trusted-node-store key and cert subject.
      * This is the cross-domain correlation key — it equals a discovered node's
-     * hostUuid / `NodeItem.id` / `selfId`, so member↔node matching keys on this,
+     * hostUuid / `NodeItem.id` for proven peers / `selfId`, so matching keys on this,
      * never `id` (hostname).
      */
     nodeUuid: string

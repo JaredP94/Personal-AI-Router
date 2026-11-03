@@ -86,7 +86,7 @@ func (v *nodesView) Init() tea.Cmd {
 
 func (v *nodesView) SetSize(w, h int) {
 	v.width, v.height = w, h
-	const port, age, status = 7, 8, 11
+	const port, age, status = 7, 8, 32
 	name := clampWidth((w-port-age-status-2)/2, 10)
 	addr := clampWidth(w-port-age-status-name-2, 10)
 	v.table.SetColumns([]table.Column{
@@ -200,15 +200,14 @@ func (v *nodesView) setNodes(nodes []availableNode) {
 	v.table.SetRows(rows)
 }
 
-// nodeStatus is the STATUS cell for a discovered node: "Connected" for a paired
-// peer of ours, "In cluster" for a node clustered elsewhere (both non-invitable),
-// empty for an invitable standalone node.
+// nodeStatus renders provenance before public trust/cluster claims. Only local
+// and verified records retain the established connected/cluster status labels.
 func nodeStatus(n availableNode) string {
 	switch {
-	case n.IdentityVerification == "unverified":
-		return "Unverified"
 	case n.IdentityVerification == "manual":
-		return "Manual engine"
+		return "Engine only — added by address"
+	case n.IdentityVerification != "verified" && n.IdentityVerification != "local":
+		return "Not in your cluster"
 	case n.Trusted:
 		return "Connected"
 	case n.Clustered:
