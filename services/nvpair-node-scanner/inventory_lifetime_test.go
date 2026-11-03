@@ -131,6 +131,61 @@ func TestBrowseChurnPreservesVerifiedTelemetryRetry(t *testing.T) {
 	}
 }
 
+// A wipe replaces the key-bearing endpoint, not merely a hostUuid field under
+// the old certificate. An answering TCP port and a new public identity must not
+// extend the independent verified record's lifetime.
+func TestVerifiedPeerWipedAtSameAddressExpiresDespitePublicResponder(t *testing.T) {
+	d, server, _ := secureInventoryFixture(t, "uuid-peer")
+	addr := server.Listener.Addr().String()
+	host, portString, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portString)
+	raw := RawNode{ID: "genuine", Addresses: []string{host}, TXT: []string{
+		"v=1", "uuid=uuid-peer", "cluster-uuid=uuid-peer", "ip=" + host, "ni=" + portString,
+	}}
+	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: raw})
+	original, ok := d.dir.get("uuid-peer")
+	if !ok || !original.ServicePeer() {
+		t.Fatal("fixture did not establish an authenticated peer")
+	}
+	// A multicast miss alone must not withdraw the proven incarnation.
+	d.onBrowse(DiscoveryEvent{Type: "removed", Node: raw})
+	d.refreshNodeClusterIdentity("uuid-peer", host, port)
+	if node, ok := d.dir.get("uuid-peer"); !ok || !node.ServicePeer() {
+		t.Fatal("multicast loss evicted a peer that still proves its identity")
+	}
+	server.Close()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wiped := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(NodeInfoResponse{HostUUID: "new-uuid-after-wipe"})
+	})}
+	t.Cleanup(func() { _ = wiped.Close() })
+	go func() { _ = wiped.Serve(listener) }()
+	if info, ok := d.probeIdentity(host, port); !ok || info.HostUUID != "new-uuid-after-wipe" {
+		t.Fatalf("wiped endpoint must remain live under a fresh identity: %+v, ok=%v", info, ok)
+	}
+
+	capture := &notifyCapture{}
+	d.codec = NewCodec(capture)
+	d.refreshNodeClusterIdentity("uuid-peer", host, port)
+	if _, ok := d.dir.get("uuid-peer"); !ok || len(capture.nodes(t)) != 0 {
+		t.Fatal("one failed proof must not bypass the verified-peer grace period")
+	}
+	stale, _ := d.dir.get("uuid-peer")
+	stale.LastSeen = time.Now().Add(-time.Minute).Unix()
+	d.dir.upsert(stale)
+	d.refreshNodeClusterIdentity("uuid-peer", host, port)
+	if _, ok := d.dir.get("uuid-peer"); ok {
+		t.Fatal("a new identity at the same live endpoint kept stale verified inventory alive")
+	}
+	events := capture.nodes(t)
+	if len(events) != 1 || events[0].HostUUID != "uuid-peer" || events[0].PeerRecordID != original.PeerRecordID || events[0].IdentityVerification != "verified" {
+		t.Fatalf("withdrawal did not name the original verified record: %+v", events)
+	}
+}
+
 func TestFailedProofExpiresVerifiedRecordWithOriginalToken(t *testing.T) {
 	d, server, mismatch := secureInventoryFixture(t, "uuid-peer")
 	host, portString, _ := net.SplitHostPort(server.Listener.Addr().String())
