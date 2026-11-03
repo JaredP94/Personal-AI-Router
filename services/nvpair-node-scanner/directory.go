@@ -126,6 +126,19 @@ func (d *directory) replaceIfCurrent(old, replacement noderec.DirectoryNode) boo
 	return true
 }
 
+// removeIfCurrent atomically removes only the exact snapshot that expired.
+// A refresh within the same LastSeen second is still a different record.
+func (d *directory) removeIfCurrent(old noderec.DirectoryNode) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	current, ok := d.nodes[old.RecordKey()]
+	if !ok || !reflect.DeepEqual(current, old) {
+		return false
+	}
+	delete(d.nodes, old.RecordKey())
+	return true
+}
+
 // remove drops a node by hostUuid and reports whether it existed.
 func (d *directory) remove(hostUUID string) (existed bool) {
 	d.mu.Lock()

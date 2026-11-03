@@ -79,6 +79,8 @@ func (d *daemon) candidateSnapshot() []noderec.DirectoryNode {
 }
 
 func (d *daemon) publishVerified(node noderec.DirectoryNode, candidateKey string) bool {
+	d.inventoryMu.Lock()
+	defer d.inventoryMu.Unlock()
 	if !d.currentPeer(node) {
 		return false
 	}
@@ -116,11 +118,11 @@ func (d *daemon) publishVerified(node noderec.DirectoryNode, candidateKey string
 }
 
 func (d *daemon) expireVerified(node noderec.DirectoryNode) {
-	current, exists := d.dir.get(node.HostUUID)
-	if !exists || current.PeerRecordID != node.PeerRecordID || current.LastSeen != node.LastSeen || current.IP != node.IP {
+	d.inventoryMu.Lock()
+	defer d.inventoryMu.Unlock()
+	if !d.dir.removeIfCurrent(node) {
 		return
 	}
-	d.dir.remove(node.HostUUID)
 	d.forget(node.HostUUID)
 	d.emit(noderec.NotifyNodeRemoved, node)
 }

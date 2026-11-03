@@ -4,13 +4,99 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"net"
+	"net/http"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
 
 	"nvpair-shared/noderec"
 )
+
+// A refresh in the same timestamp second can change inventory without changing
+// the proof, IP or LastSeen. Expiry must compare the entire observed record.
+func TestVerifiedExpiryPreservesConcurrentRefresh(t *testing.T) {
+	h := newTelemetryHarness(t)
+	h.peer("peer", func(*http.Request) NodeInfoResponse { return NodeInfoResponse{HostUUID: "peer"} })
+	old, _ := h.d.dir.get("peer")
+	fresh := old
+	fresh.Models = []string{"fresh-model"}
+	capture := &notifyCapture{}
+	h.d.codec = NewCodec(capture)
+	// Hold the directory lock while expiry starts with its old snapshot, then
+	// publish the refreshed record before permitting its conditional removal.
+	h.d.dir.mu.Lock()
+	started, done := make(chan struct{}), make(chan struct{})
+	go func() { close(started); h.d.expireVerified(old); close(done) }()
+	<-started
+	h.d.dir.nodes["peer"] = fresh
+	h.d.dir.mu.Unlock()
+	<-done
+	got, ok := h.d.dir.get("peer")
+	if !ok || len(got.Models) != 1 || got.Models[0] != "fresh-model" {
+		t.Fatalf("stale expiry deleted refreshed inventory: %+v, exists=%v", got, ok)
+	}
+	if len(capture.nodes(t)) != 0 {
+		t.Fatal("stale expiry withdrew refreshed peer telemetry")
+	}
+}
+
+func TestVerifiedExpiryOrdersWithdrawalBeforeNewPublication(t *testing.T) {
+	h := newTelemetryHarness(t)
+	h.peer("peer", func(*http.Request) NodeInfoResponse { return NodeInfoResponse{HostUUID: "peer"} })
+	old, _ := h.d.dir.get("peer")
+	fresh := old
+	fresh.Models = []string{"fresh-model"}
+	capture := &notifyCapture{}
+	h.d.codec = NewCodec(capture)
+	// Pause expiry after directory removal but before cache cleanup/withdrawal.
+	h.d.infoMu.Lock()
+	expired := make(chan struct{})
+	go func() { h.d.expireVerified(old); close(expired) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, exists := h.d.dir.get("peer"); !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			h.d.infoMu.Unlock()
+			t.Fatal("expiry did not remove old record")
+		}
+		runtime.Gosched()
+	}
+	published := make(chan struct{})
+	go func() { h.d.publishVerified(fresh, ""); close(published) }()
+	select {
+	case <-published:
+		t.Error("publication overtook paused withdrawal")
+	case <-time.After(50 * time.Millisecond):
+	}
+	h.d.infoMu.Unlock()
+	<-expired
+	<-published
+	capture.mu.Lock()
+	raw := bytes.Clone(capture.frames)
+	capture.mu.Unlock()
+	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("expected withdrawal and update, got %s", raw)
+	}
+	for i, want := range []string{noderec.NotifyNodeRemoved, noderec.NotifyNodeUpdated} {
+		var msg Message
+		if err := json.Unmarshal(lines[i], &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Method != want {
+			t.Errorf("event %d=%s, want %s; fresh inventory would be withdrawn", i, msg.Method, want)
+		}
+	}
+	if got, ok := h.d.dir.get("peer"); !ok || len(got.Models) != 1 || got.Models[0] != "fresh-model" {
+		t.Fatal("new publication lost")
+	}
+}
 
 // Browser churn must not reset the independent verified peer's retry budget.
 func TestBrowseChurnPreservesVerifiedTelemetryRetry(t *testing.T) {

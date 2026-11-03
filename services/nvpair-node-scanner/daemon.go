@@ -61,8 +61,11 @@ type daemon struct {
 	modelsHTTP *http.Client
 	// modelsClients is the long-lived per-peer mTLS pool for LAN /v1/models
 	// fetches. A throwaway Transport every 15s paid a full handshake each time.
-	modelsClients   *clustertrust.PeerClientPool
-	peerInfoOnce    sync.Once
+	modelsClients *clustertrust.PeerClientPool
+	peerInfoOnce  sync.Once
+	// inventoryMu orders verified publication, conditional removal, cache cleanup
+	// and their notifications. Network probes run outside this lock.
+	inventoryMu     sync.Mutex
 	candidateMu     sync.Mutex
 	candidates      map[string]noderec.DirectoryNode
 	peerInfoClients *clustertrust.PeerClientPool
@@ -2048,6 +2051,8 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 		return false
 	}
 	models, byEngine, loadedByEngine := inventory.models, inventory.byEngine, inventory.loadedByEngine
+	d.inventoryMu.Lock()
+	defer d.inventoryMu.Unlock()
 	if !d.localNode(hostUUID) {
 		after, exists := d.dir.get(hostUUID)
 		if !exists || before.PeerRecordID != after.PeerRecordID || !d.currentPeer(after) {
@@ -2192,6 +2197,8 @@ func (d *daemon) refreshNodeEngineNative(ctx context.Context, hostUUID, guardIP 
 	if !fetched {
 		return false
 	}
+	d.inventoryMu.Lock()
+	defer d.inventoryMu.Unlock()
 	if !d.localNode(hostUUID) {
 		after, exists := d.dir.get(hostUUID)
 		if !exists || before.PeerRecordID != after.PeerRecordID || !d.currentPeer(after) {
