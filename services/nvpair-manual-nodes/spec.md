@@ -37,6 +37,11 @@ second store or replay path.
 - `mtls`: informational configuration metadata; never permits weaker peer reads.
 
 `node/add` returns initial `ManualNodeStatus` immediately and probes asynchronously.
+Replacement/removal and all node-status/telemetry publications share the worker's
+state lock. A probe cannot publish after its tracked entry has been replaced or
+removed. Replacement publishes an empty initial status immediately, withdrawing
+the old route before the new network probe completes.
+
 Status includes `kind`, `id`, `address`, optional name and configuration metadata,
 `identityVerification`, availability, model inventory, and authenticated proof and
 hardware fields when available. Initial PAIR status is `unverified`; initial engine

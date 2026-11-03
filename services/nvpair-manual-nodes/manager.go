@@ -568,7 +568,7 @@ func (m *Manager) syncClusterMembers() {
 	}
 
 	m.mu.Lock()
-	var toProbe []ManualEntry
+	var toProbe []*trackedNode
 	var toRemove []string
 
 	for id, tn := range m.nodes {
@@ -643,29 +643,24 @@ func (m *Manager) syncClusterMembers() {
 		}
 		m.nodes[id] = tn
 		m.startTelemetryLoopLocked(id, tn)
-		toProbe = append(toProbe, entry)
+		toProbe = append(toProbe, tn)
 	}
-	m.mu.Unlock()
 
 	for _, id := range toRemove {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
 		_ = m.codec.Notify("errors:clear", errors.ClearParams{ID: probeFailedID(id)})
 	}
 
-	for _, entry := range toProbe {
-		go func(e ManualEntry) {
-			m.probeNode(e)
-			id := nodeID(e)
-			m.mu.RLock()
-			tn, ok := m.nodes[id]
-			if !ok {
-				m.mu.RUnlock()
-				return
+	m.mu.Unlock()
+	for _, tracked := range toProbe {
+		go func(tn *trackedNode) {
+			m.probeNode(tn.entry)
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if current := m.nodes[nodeID(tn.entry)]; current == tn {
+				m.codec.Notify("node/discovered", tn.status)
 			}
-			st := tn.status
-			m.mu.RUnlock()
-			m.codec.Notify("node/discovered", st)
-		}(entry)
+		}(tracked)
 	}
 }
 
@@ -886,6 +881,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 	}
 
+	// State commit and publication form one transaction with replacement and
+	// removal. An older engine observation must never overtake a new PAIR preview.
+	defer m.mu.Unlock()
 	prev := tn.status
 	prevFails := tn.consecutiveFails
 	// A failed node-info probe returns no HostUUID; preserve the last-learned one
@@ -913,7 +911,6 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		tn.consecutiveFails++
 	}
 	curFails := tn.consecutiveFails
-	m.mu.Unlock()
 
 	changed := prev.IdentityVerification != newStatus.IdentityVerification || prev.PeerRecordID != newStatus.PeerRecordID || prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
@@ -1305,8 +1302,8 @@ func (m *Manager) probeNodeTelemetry(ctx context.Context, id string, entry Manua
 		m.mu.Unlock()
 		return
 	}
+	defer m.mu.Unlock()
 	hostUUID := info.HostUUID
-	m.mu.Unlock()
 
 	var msSince int64
 	if info.TelemetryValid {
@@ -1392,30 +1389,31 @@ func (m *Manager) addNode(entry ManualEntry) ManualNodeStatus {
 			supersededClusterIDs = append(supersededClusterIDs, existingID)
 		}
 	}
-	if existing, ok := m.nodes[id]; ok && existing.cancelTelemetry != nil {
+	existing, replacing := m.nodes[id]
+	if replacing && existing.cancelTelemetry != nil {
 		existing.cancelTelemetry()
 	}
 	tn := &trackedNode{entry: entry, status: status}
 	m.nodes[id] = tn
 	m.startTelemetryLoopLocked(id, tn)
-	m.mu.Unlock()
+	if replacing {
+		// Withdraw the old route now, before the replacement's network probe.
+		m.codec.Notify("node/updated", status)
+	}
 
 	for _, oldID := range supersededClusterIDs {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: oldID})
 		_ = m.codec.Notify("errors:clear", errors.ClearParams{ID: probeFailedID(oldID)})
 	}
 
+	m.mu.Unlock()
 	go func() {
 		m.probeNode(entry)
-		m.mu.RLock()
-		tn, exists := m.nodes[id]
-		if !exists {
-			m.mu.RUnlock()
-			return
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if current := m.nodes[id]; current == tn {
+			m.codec.Notify("node/discovered", tn.status)
 		}
-		discStatus := tn.status
-		m.mu.RUnlock()
-		m.codec.Notify("node/discovered", discStatus)
 	}()
 
 	return status
@@ -1430,10 +1428,6 @@ func (m *Manager) removeNode(id string) bool {
 		}
 		delete(m.nodes, id)
 		m.lastMembersMtime = time.Time{}
-	}
-	m.mu.Unlock()
-
-	if exists {
 		m.codec.Notify("node/removed", ManualNodeStatus{ID: id})
 		// Defensive clear: if this node had a probe-failed entry it
 		// would outlive the node itself otherwise — the UI would
@@ -1445,6 +1439,9 @@ func (m *Manager) removeNode(id string) bool {
 		}); err != nil {
 			log.Printf("failed to send errors:clear on remove for %s: %v", id, err)
 		}
+	}
+	m.mu.Unlock()
+	if exists {
 		m.syncClusterMembers()
 	}
 	return exists
