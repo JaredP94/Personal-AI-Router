@@ -20,7 +20,9 @@ func TestSendersMultiplexUnicastAcrossOwners(t *testing.T) {
 	}
 	defer sink.Close()
 	sink.SetReadDeadline(time.Now().Add(time.Second))
-	var browser, responder Sender
+	listen := testSenderListener(0)
+	browser := Sender{listenPacket: listen}
+	responder := Sender{listenPacket: listen}
 	defer browser.Close()
 	defer responder.Close()
 	browserPackets, responderPackets := make(chan string, 4), make(chan string, 4)
@@ -40,6 +42,14 @@ func TestSendersMultiplexUnicastAcrossOwners(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		for _, socket := range browser.sockets {
+			if from.String() != socket.conn.LocalAddr().String() {
+				t.Fatalf("owners use different source endpoints: %v and %v", from, socket.conn.LocalAddr())
+			}
+		}
+	}
+	if from.Port == 5353 || from.Port == 0 {
+		t.Fatalf("source port=%d, want an isolated ephemeral port", from.Port)
 	}
 	if _, err := sink.WriteToUDP([]byte("unicast"), from); err != nil {
 		t.Fatal(err)

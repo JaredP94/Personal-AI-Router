@@ -36,6 +36,10 @@ type multicastOptions interface {
 // Source binding preserves the Windows multicast-send workaround on every send.
 // Methods are safe to call concurrently.
 type Sender struct {
+	// listenPacket overrides binding in package tests; nil uses the production
+	// listener with setSenderReuse. Set before the first Send.
+	listenPacket func(context.Context, string, string) (net.PacketConn, error)
+
 	mu        sync.Mutex
 	sockets   map[senderKey]*senderSocket
 	closed    bool
@@ -80,7 +84,11 @@ func (s *Sender) Send(buf []byte, ifi *net.Interface, src net.IP, target *net.UD
 	socket := s.sockets[key]
 	if socket == nil {
 		lc := net.ListenConfig{Control: setSenderReuse}
-		conn, err := lc.ListenPacket(context.Background(), "udp4", (&net.UDPAddr{IP: source, Port: mdnsPort}).String())
+		listen := s.listenPacket
+		if listen == nil {
+			listen = lc.ListenPacket
+		}
+		conn, err := listen(context.Background(), "udp4", (&net.UDPAddr{IP: source, Port: mdnsPort}).String())
 		if err != nil {
 			return fmt.Errorf("bind mDNS sender: %w", err)
 		}

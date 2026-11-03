@@ -215,15 +215,16 @@ func TestWritePacketLogsMulticastOptionFailuresAndStillWrites(t *testing.T) {
 	}
 }
 
-func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
+func TestResponderSendUsesRequestedSourcePortAlongsideReceiver(t *testing.T) {
 	ifi, source := loopbackIPv4(t)
 
 	lc := net.ListenConfig{Control: setReuseAddr}
-	receiveSocket, err := lc.ListenPacket(context.Background(), "udp4", mdnsTargetV4.String())
+	receiveSocket, err := lc.ListenPacket(context.Background(), "udp4", (&net.UDPAddr{IP: mdnsGroupV4}).String())
 	if err != nil {
 		t.Fatalf("open reusable mDNS receive socket: %v", err)
 	}
 	defer receiveSocket.Close()
+	sourcePort := receiveSocket.LocalAddr().(*net.UDPAddr).Port
 
 	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: source, Port: 0})
 	if err != nil {
@@ -244,6 +245,9 @@ func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 			ifi.Index: {source},
 		},
 	}
+	// The hook checks that Send requests 5353 before substituting this test's
+	// receive port, so the source-port contract needs no bind on real 5353.
+	responder.sender.listenPacket = testSenderListener(sourcePort)
 	defer responder.sender.Close()
 	payload := []byte("mDNS source-port regression")
 	if err := responder.sendOnInterface(payload, ifi.Index, target); err != nil {
@@ -261,8 +265,8 @@ func TestResponderSendUsesMDNSSourcePortAlongsideReceiver(t *testing.T) {
 	if !from.IP.Equal(source) {
 		t.Errorf("source IP = %s, want %s", from.IP, source)
 	}
-	if from.Port != mdnsPort {
-		t.Errorf("source port = %d, want %d", from.Port, mdnsPort)
+	if from.Port != sourcePort {
+		t.Errorf("source port = %d, want %d", from.Port, sourcePort)
 	}
 }
 

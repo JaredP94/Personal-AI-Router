@@ -19,7 +19,7 @@ func TestSenderReusesSocketAndRefreshesRemovedInterface(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sink.Close()
-	var s Sender
+	s := Sender{listenPacket: testSenderListener(0)}
 	defer s.Close()
 	target := sink.LocalAddr().(*net.UDPAddr)
 	var original net.PacketConn
@@ -89,7 +89,7 @@ func TestSenderReadsUnicastAndReportsBindFailures(t *testing.T) {
 	defer sink.Close()
 	sink.SetReadDeadline(time.Now().Add(time.Second))
 	received := make(chan string, 1)
-	var s Sender
+	s := Sender{listenPacket: testSenderListener(0)}
 	defer s.Close()
 	callback := func(buf []byte, index int, from net.Addr) {
 		if index == ifi.Index {
@@ -104,8 +104,8 @@ func TestSenderReadsUnicastAndReportsBindFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if from.Port != 5353 {
-		t.Fatalf("source port=%d", from.Port)
+	if from.Port == 5353 || from.Port == 0 {
+		t.Fatalf("source port=%d, want an isolated ephemeral port", from.Port)
 	}
 	if _, err := sink.WriteToUDP([]byte("reply"), from); err != nil {
 		t.Fatal(err)
