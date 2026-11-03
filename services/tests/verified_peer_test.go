@@ -30,6 +30,13 @@ func (c *interNodeCluster) startVerifiedPeer(t *testing.T, instance string, mode
 	if err != nil {
 		t.Fatalf("verified peer listen: %v", err)
 	}
+	return c.startVerifiedPeerOn(t, instance, models, workloads, ln)
+}
+
+// startVerifiedPeerOn lets a wipe regression reuse the exact listener address
+// after stopping the original, authenticated incarnation.
+func (c *interNodeCluster) startVerifiedPeerOn(t *testing.T, instance string, models, workloads http.Handler, ln net.Listener) func() {
+	t.Helper()
 	_, portString, err := net.SplitHostPort(ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
