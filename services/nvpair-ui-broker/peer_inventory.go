@@ -108,6 +108,32 @@ func (b *Broker) hasDecisionInventory(hostUUID string) bool {
 	return (sn.scanner != nil && b.decisionInventory(*sn.scanner)) || (sn.manual != nil && b.decisionInventory(*sn.manual))
 }
 
+// onlyUnprovenWorkloadInventory rejects known previews (including their
+// independent record keys), without requiring every participant of a relayed
+// workload to have been discovered locally. A preview cannot shadow a proven
+// record or an explicit bare-engine configuration for the same participant.
+func (b *Broker) onlyUnprovenWorkloadInventory(id string) bool {
+	if id == "" || id == b.nodeID || b.store == nil {
+		return false
+	}
+	b.store.mu.RLock()
+	var candidates []EnrichedNode
+	for _, sn := range b.store.nodes {
+		for _, n := range []*EnrichedNode{sn.scanner, sn.manual} {
+			if n != nil && (n.HostUUID == id || n.storeKey() == id) {
+				candidates = append(candidates, *n)
+			}
+		}
+	}
+	b.store.mu.RUnlock()
+	for _, n := range candidates {
+		if b.decisionInventory(n) {
+			return false
+		}
+	}
+	return len(candidates) != 0
+}
+
 func (b *Broker) authorizedTelemetry(source nodeSource, hostUUID, proof string) bool {
 	if b.store == nil {
 		return false
@@ -225,7 +251,7 @@ func (b *Broker) clearScannerInventory() {
 		if n.IdentityVerification == "verified" || n.IdentityVerification == "local" {
 			b.removeTelemetry(sourceScanner, n.HostUUID)
 		}
-		if gone && b.workloads != nil && (n.IdentityVerification == "verified" || n.IdentityVerification == "local") {
+		if gone && b.workloads != nil && !b.hasDecisionInventory(n.HostUUID) {
 			b.failWorkloadsForNode(n.HostUUID, n.ID)
 		}
 	}

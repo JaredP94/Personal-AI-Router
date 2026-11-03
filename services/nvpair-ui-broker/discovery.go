@@ -752,7 +752,7 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 				// node by HostUUID, the value workloads are stamped/keyed with,
 				// not the display hostname.
 				gone := s.store.Remove(directoryToEnriched(ev.Node).storeKey(), sourceScanner)
-				if ev.Node.IdentityVerification != "unverified" && ev.Node.IdentityVerification != "manual" && (gone || s.authorize != nil) && s.onNodeLost != nil {
+				if (gone || (ev.Node.ServicePeer() && s.authorize != nil)) && s.onNodeLost != nil {
 					s.onNodeLost(ev.Node.HostUUID, ev.Node.Name)
 				}
 			} else {

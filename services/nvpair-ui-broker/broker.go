@@ -2804,6 +2804,12 @@ func (b *Broker) applyWorkloadEvent(method string, params json.RawMessage, infer
 		if !ok {
 			return false
 		}
+		// A peer may relay jobs whose other participants we have not yet
+		// discovered, but a known preview is not a workload participant.
+		// Still accept terminal events so existing state can be retired.
+		if !inferred && !workloadstore.IsTerminal(in.State) && (b.onlyUnprovenWorkloadInventory(in.Origin) || b.onlyUnprovenWorkloadInventory(in.ScheduledOn)) {
+			return false
+		}
 		if inferred {
 			if !unchangedSince.IsZero() {
 				return b.workloads.ApplyInferredUnchangedSince(in, unchangedSince)
