@@ -16,6 +16,11 @@ import {
 } from '@nvidia/foundations-react-core'
 import { DialogHeader } from './DialogHeader'
 import { InvitePairingPanel } from './InvitePairingPanel'
+import {
+    canPairByAddress,
+    nodeRecordKey,
+    nodeVerificationLabel
+} from '@/shared/utils/node-record-key'
 import { useBlurOnOpen } from '@/ui/hooks/useBlurOnOpen'
 import { useInvitePairing } from '@/ui/hooks/useInvitePairing'
 import { useInvitablePeers } from '@/ui/hooks/useInvitablePeers'
@@ -101,7 +106,7 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
                                         <Stack gap="1">
                                             {nodesThatCanBeAdded.map(node => (
                                                 <Flex
-                                                    key={node.id}
+                                                    key={nodeRecordKey(node)}
                                                     align="center"
                                                     justify="between"
                                                     gap="2"
@@ -118,25 +123,33 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
                                                             kind="body/regular/sm"
                                                             className="text-subtle-color"
                                                         >
-                                                            {node.clustered
-                                                                ? 'In another cluster'
-                                                                : `${node.ipAddress}:${node.port}`}
+                                                            {nodeVerificationLabel(node)}
+                                                        </Text>
+                                                        <Text
+                                                            kind="body/regular/sm"
+                                                            className="text-subtle-color"
+                                                        >
+                                                            {node.ipAddress}
                                                         </Text>
                                                     </Stack>
-                                                    <Button
-                                                        kind="primary"
-                                                        color="brand"
-                                                        size="small"
-                                                        onClick={() =>
-                                                            void pairing.start(node.ipAddress)
-                                                        }
-                                                        // A node already in a cluster cannot join
-                                                        // another; the backend would reject the
-                                                        // invite (`rejected` / `already-clustered`).
-                                                        disabled={inviteInFlight || node.clustered}
-                                                    >
-                                                        Invite
-                                                    </Button>
+                                                    {canPairByAddress(node) && (
+                                                        <Button
+                                                            kind="primary"
+                                                            color="brand"
+                                                            size="small"
+                                                            onClick={() =>
+                                                                void pairing.start(node.ipAddress)
+                                                            }
+                                                            // Public cluster claims do not establish
+                                                            // identity. Pair by address; the PIN
+                                                            // exchange reports any real rejection.
+                                                            disabled={
+                                                                inviteInFlight || !node.ipAddress
+                                                            }
+                                                        >
+                                                            Pair
+                                                        </Button>
+                                                    )}
                                                 </Flex>
                                             ))}
                                         </Stack>

@@ -6,6 +6,7 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AvailableNode from '@/ui/components/ClusterSettings/AvailableNode'
+import { AddNodeModal } from '@/ui/components/AddNodeModal'
 import NodeCardDetails from '@/ui/components/NodeList/NodeCardDetails'
 import { useNodesStore } from '@/ui/stores/nodes.store'
 import { useDiscoveredNodesStore } from '@/ui/stores/discovered-nodes.store'
@@ -118,6 +119,43 @@ describe('node verification presentation', () => {
         expect(button?.disabled).toBe(false)
         await act(async () => button?.click())
         expect(inviteNode).toHaveBeenCalledWith('192.0.2.10')
+    })
+
+    it('offers Pair in the Add node modal for a preview whose public cluster claim is set', async () => {
+        // jsdom has no <dialog> modal API; the modal calls showModal()/close().
+        Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+            configurable: true,
+            value(this: HTMLDialogElement) {
+                this.open = true
+            }
+        })
+        Object.defineProperty(HTMLDialogElement.prototype, 'close', {
+            configurable: true,
+            value(this: HTMLDialogElement) {
+                this.open = false
+            }
+        })
+        useDiscoveredNodesStore.setState({
+            nodes: [
+                { ...preview, trusted: false, clustered: true, lastSeen: 0 },
+                { ...manual, trusted: false, clustered: false, lastSeen: 0 }
+            ]
+        })
+        await act(async () =>
+            root.render(createElement(AddNodeModal, { open: true, onOpenChange: vi.fn() }))
+        )
+        expect(document.body.textContent).toContain('Not in your cluster')
+        expect(document.body.textContent).not.toContain('In another cluster')
+        const buttons = Array.from(document.body.querySelectorAll('button'))
+        const pair = buttons.filter(button => button.textContent === 'Pair')
+        expect(pair).toHaveLength(1)
+        expect(pair[0]?.disabled).toBe(false)
+        await act(async () => pair[0]?.click())
+        expect(inviteNode).toHaveBeenCalledWith('192.0.2.10')
+        await act(async () => root.render(null))
+        useDiscoveredNodesStore.setState({ nodes: [] })
+        Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+        Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
     })
 
     it('does not infer a version diagnosis from unverified metadata', () => {

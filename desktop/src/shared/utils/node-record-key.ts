@@ -28,6 +28,16 @@ export function isPairPeer(record: NodeRecordIdentity): boolean {
     )
 }
 
+/**
+ * Only an unverified PAIR preview is offered pairing, by address through the
+ * PIN exchange. Its public cluster claim is not trusted either way: the target
+ * reports any real rejection. Verified peers and manual engines are never
+ * offered it.
+ */
+export function canPairByAddress(record: NodeRecordIdentity): boolean {
+    return record.identityVerification !== 'manual' && nodeRecordKey(record).startsWith('preview:')
+}
+
 export function nodeVerificationLabel(record: NodeRecordIdentity): string {
     if (isPairPeer(record)) return ''
     return record.identityVerification === 'manual' || nodeRecordKey(record).startsWith('manual:')

@@ -4,13 +4,12 @@
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { AvailableNode as AvailableNodeType } from '@/shared/types/cluster'
 import { InvitePairingPanel } from '@/ui/components/InvitePairingPanel'
-import { nodeRecordKey, nodeVerificationLabel } from '@/shared/utils/node-record-key'
+import { canPairByAddress, nodeVerificationLabel } from '@/shared/utils/node-record-key'
 import { useInvitePairing } from '@/ui/hooks/useInvitePairing'
 
 export default function AvailableNode({ node }: { node: AvailableNodeType }) {
     const pairing = useInvitePairing()
-    const canPair =
-        node.identityVerification !== 'manual' && nodeRecordKey(node).startsWith('preview:')
+    const canPair = canPairByAddress(node)
     const showPairing = pairing.invite !== null || pairing.error !== null
     const inviteInFlight = pairing.submitting || pairing.invite?.state === 'pending'
 
