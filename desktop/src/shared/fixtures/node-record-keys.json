@@ -1,0 +1,120 @@
+{
+    "_copyright": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
+    "_license": "SPDX-License-Identifier: Apache-2.0",
+    "cases": [
+        {
+            "name": "local without proof binding",
+            "hostUuid": "self",
+            "identityVerification": "local",
+            "want": "self"
+        },
+        {
+            "name": "verified binding is not the key",
+            "hostUuid": "peer",
+            "identityVerification": "verified",
+            "peerRecordId": "proof:binding",
+            "want": "peer"
+        },
+        {
+            "name": "verified without binding still has a record key",
+            "hostUuid": "peer",
+            "identityVerification": "verified",
+            "want": "peer"
+        },
+        {
+            "name": "local reserved preview principal",
+            "hostUuid": "preview:claim",
+            "identityVerification": "local",
+            "want": ""
+        },
+        {
+            "name": "local reserved manual principal",
+            "hostUuid": "manual:claim",
+            "identityVerification": "local",
+            "want": ""
+        },
+        {
+            "name": "verified reserved preview principal",
+            "hostUuid": "preview:claim",
+            "identityVerification": "verified",
+            "peerRecordId": "proof",
+            "want": ""
+        },
+        {
+            "name": "verified reserved manual principal",
+            "hostUuid": "manual:claim",
+            "identityVerification": "verified",
+            "peerRecordId": "proof",
+            "want": ""
+        },
+        {
+            "name": "empty proven principal",
+            "hostUuid": "",
+            "identityVerification": "verified",
+            "peerRecordId": "preview:claim",
+            "want": ""
+        },
+        {
+            "name": "preview claiming peer",
+            "hostUuid": "peer",
+            "identityVerification": "unverified",
+            "peerRecordId": "preview:claim",
+            "want": "preview:claim"
+        },
+        {
+            "name": "manual claiming peer",
+            "hostUuid": "peer",
+            "identityVerification": "manual",
+            "peerRecordId": "manual:config",
+            "want": "manual:config"
+        },
+        {
+            "name": "missing metadata",
+            "hostUuid": "peer",
+            "want": ""
+        },
+        {
+            "name": "old peer preview",
+            "hostUuid": "peer",
+            "peerRecordId": "preview:old",
+            "want": "preview:old"
+        },
+        {
+            "name": "future state with preview key",
+            "hostUuid": "peer",
+            "identityVerification": "future",
+            "peerRecordId": "preview:future",
+            "want": "preview:future"
+        },
+        {
+            "name": "unverified proof is invalid",
+            "hostUuid": "peer",
+            "identityVerification": "unverified",
+            "peerRecordId": "proof:binding",
+            "want": ""
+        },
+        {
+            "name": "manual without opaque key",
+            "hostUuid": "peer",
+            "identityVerification": "manual",
+            "want": ""
+        },
+        {
+            "name": "case sensitive prefixes",
+            "hostUuid": "peer",
+            "identityVerification": "unverified",
+            "peerRecordId": "Preview:claim",
+            "want": ""
+        },
+        {
+            "name": "bare reserved preview namespace",
+            "peerRecordId": "preview:",
+            "want": "preview:"
+        },
+        {
+            "name": "bare reserved manual namespace",
+            "peerRecordId": "manual:",
+            "want": "manual:"
+        }
+    ]
+}

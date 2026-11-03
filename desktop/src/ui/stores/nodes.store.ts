@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { nodeRecordKey } from '@/shared/utils/node-record-key'
 import { NodeItem } from '@/shared/types/nodes'
 import deepEqual from '@/ui/utils/deep-equal'
 import { create } from 'zustand'
@@ -27,8 +28,9 @@ export const useNodesStore = create<NodesStore>((set, get) => ({
 
             const map = new Map<string, NodeItem>()
 
-            for (const [id, node] of Object.entries(nodeMap)) {
-                map.set(id, node)
+            for (const node of Object.values(nodeMap)) {
+                const id = nodeRecordKey(node)
+                if (id) map.set(id, { ...node, id })
             }
 
             set({
@@ -41,7 +43,10 @@ export const useNodesStore = create<NodesStore>((set, get) => ({
 
         if (window.pairApi) {
             unsubs.push(
-                window.pairApi.nodes.onUpsert((node: NodeItem) => {
+                window.pairApi.nodes.onUpsert((incoming: NodeItem) => {
+                    const id = nodeRecordKey(incoming)
+                    if (!id) return
+                    const node = { ...incoming, id }
                     const prev = get().nodes
                     const existing = prev.get(node.id)
                     if (existing && deepEqual(existing, node)) return
@@ -67,8 +72,9 @@ export const useNodesStore = create<NodesStore>((set, get) => ({
 
             const map = new Map<string, NodeItem>()
 
-            for (const [id, node] of Object.entries(nodeMap)) {
-                map.set(id, node)
+            for (const node of Object.values(nodeMap)) {
+                const id = nodeRecordKey(node)
+                if (id) map.set(id, { ...node, id })
             }
 
             set({

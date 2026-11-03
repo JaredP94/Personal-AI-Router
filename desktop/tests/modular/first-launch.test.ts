@@ -158,6 +158,8 @@ describe('first launch', () => {
     it('replaces the temporary local card with discovered data', () => {
         const discovered: NodeItem = {
             id: 'local-node',
+            hostUuid: 'local-node',
+            identityVerification: 'local',
             name: 'My PC',
             status: 'active',
             ipAddress: '192.168.1.2',

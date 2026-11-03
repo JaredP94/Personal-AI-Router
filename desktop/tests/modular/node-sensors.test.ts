@@ -23,6 +23,8 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
 const GiB = 1024 ** 3
 const node: NodeItem = {
     id: 'fixture',
+    hostUuid: 'fixture',
+    identityVerification: 'local',
     name: 'Fixture Mac',
     ipAddress: '192.0.2.1',
     port: 14318,

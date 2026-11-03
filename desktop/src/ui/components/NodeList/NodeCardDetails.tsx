@@ -5,6 +5,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Flex, Stack } from '@nvidia/foundations-react-core'
 import { BarChartOutlined, SettingsOutlined, Thermometer } from '@/ui/components/icons'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
+import { isPairPeer } from '@/shared/utils/node-record-key'
+import UnverifiedNode from './UnverifiedNode'
 import type { NodeItem } from '@/shared/types/nodes'
 import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
@@ -35,6 +37,10 @@ interface NodeCardDetailsProps {
 }
 
 function NodeCardDetails({ node }: NodeCardDetailsProps) {
+    return isPairPeer(node) ? <PeerNodeCardDetails node={node} /> : <UnverifiedNode node={node} />
+}
+
+function PeerNodeCardDetails({ node }: NodeCardDetailsProps) {
     const nodeMetrics = useMetricsStore(state => state.nodeMetrics.get(node.id))
     const sensors = nodeMetrics?.sensors ?? null
     const [isSensorsExpanded, setIsSensorsExpanded] = useState(false)

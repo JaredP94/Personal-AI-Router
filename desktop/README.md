@@ -32,6 +32,27 @@ supervises up to 12 workers. The service bundle contains 14 executables, includi
 broker, scanner, Ollama proxy, node-info, and node-settings; standalone broker
 requirements are narrower.
 
+## Node identity and verification
+
+Desktop node ids mirror Go's `DirectoryNode.RecordKey()`: local and verified
+records use `hostUuid` (reserved `preview:` / `manual:` principals are invalid);
+all other records need a namespaced `peerRecordId`. Invalid records are dropped.
+The shared TypeScript helper and Go test consume the same record-key fixture.
+A verified `peerRecordId` is a proof binding, not a host id.
+
+Broker discovery owns identity and lifetime. Proxy events only enrich established
+peer records; matching names, addresses, timestamps, or claimed UUIDs never merge
+records. Membership, workload attribution, metrics, and engine actions use the
+canonical record key. Priorities and routing selection remain service-owned;
+the desktop exposes no scheduler-priority or proxy-selection action.
+
+Previews show **Not in your cluster** and offer **Pair** by address through the
+existing PIN exchange. Manual engines show **Engine only — added by address**,
+without PAIR identity, peer telemetry, or peer controls. Local and verified peer
+cards retain their existing controls. Older peers remain unverified until the
+services can verify them; the payload does not identify why proof is unavailable,
+so the UI does not guess that an update is needed.
+
 ## Develop
 
 ```bash

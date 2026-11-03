@@ -3,6 +3,7 @@
 
 import type { ClusterNode } from '@/shared/types/cluster'
 import type { NodeItem } from '@/shared/types/nodes'
+import { isPairPeer, nodeRecordKey } from '@/shared/utils/node-record-key'
 import type { PlatformDisplayName } from '@/shared/types/platform'
 
 function offlineMemberNode(member: ClusterNode): NodeItem {
@@ -10,6 +11,8 @@ function offlineMemberNode(member: ClusterNode): NodeItem {
         // NodeItem.id is the stable node UUID (the cross-domain key); the
         // hostname (`member.id`/`member.name`) is display only.
         id: member.nodeUuid,
+        hostUuid: member.nodeUuid,
+        identityVerification: 'verified',
         name: member.name || member.id,
         status: 'offline',
         ipAddress: member.ipAddress,
@@ -23,6 +26,8 @@ function offlineMemberNode(member: ClusterNode): NodeItem {
 function localPlaceholderNode(id: string, name: string, os: PlatformDisplayName): NodeItem {
     return {
         id,
+        hostUuid: id,
+        identityVerification: 'local',
         name: name || id,
         status: 'active',
         ipAddress: '',
@@ -33,28 +38,39 @@ function localPlaceholderNode(id: string, name: string, os: PlatformDisplayName)
     }
 }
 
-/** Build the membership-scoped overview, always including the local node. */
+/** Membership-scoped peers plus separately keyed previews/manual engines. */
 export function buildOverviewNodes(
     nodesMap: ReadonlyMap<string, NodeItem>,
     members: readonly ClusterNode[],
     selfId: string | null,
     platform: PlatformDisplayName
 ): NodeItem[] {
+    const records = new Map<string, NodeItem>()
+    for (const node of nodesMap.values()) {
+        const key = nodeRecordKey(node)
+        if (key) records.set(key, node.id === key ? node : { ...node, id: key })
+    }
     const out = new Map<string, NodeItem>()
 
     // `nodesMap`, `selfId`, and every member correlate on the node UUID
     // (`ClusterNode.nodeUuid` = `NodeItem.id`), never the hostname (`member.id`).
     for (const member of members) {
         if (member.state !== 'member' || member.nodeUuid === selfId) continue
-        out.set(member.nodeUuid, nodesMap.get(member.nodeUuid) ?? offlineMemberNode(member))
+        const node = records.get(member.nodeUuid) ?? offlineMemberNode(member)
+        const key = nodeRecordKey(node)
+        if (key) out.set(key, node)
     }
 
     if (selfId) {
         const selfMember = members.find(member => member.nodeUuid === selfId)
-        out.set(
-            selfId,
-            nodesMap.get(selfId) ?? localPlaceholderNode(selfId, selfMember?.name ?? '', platform)
-        )
+        const node =
+            records.get(selfId) ?? localPlaceholderNode(selfId, selfMember?.name ?? '', platform)
+        const key = nodeRecordKey(node)
+        if (key) out.set(key, node)
+    }
+
+    for (const [key, node] of records) {
+        if (!isPairPeer(node)) out.set(key, node)
     }
 
     const list = Array.from(out.values())

@@ -196,6 +196,20 @@ describe("engine status carries the owning node's reported capabilities", () => 
         const state = getModularBridgeState()
         state.setSelfId('gates-local')
         state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'gates-remote',
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
+                        name: 'gates-remote'
+                    }
+                ]
+            }
+        })
+        state.handleNotification({
             source: 'proxy',
             method: 'node/discovered',
             params: { id: 'gates-remote', host: 'gates-remote', port: 54301 }
@@ -242,6 +256,20 @@ describe("engine status carries the owning node's reported capabilities", () => 
     it('preserves flags during local and remote transitions and replaces them on lifecycle results', () => {
         const state = getModularBridgeState()
         state.setSelfId('gates-lifecycle')
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'gates-remote',
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
+                        name: 'gates-remote'
+                    }
+                ]
+            }
+        })
         state.handleNotification({
             source: 'proxy',
             method: 'node/discovered',
@@ -309,6 +337,20 @@ describe("engine status carries the owning node's reported capabilities", () => 
     it('treats a peer that sends no capabilities object as all-false', () => {
         const state = getModularBridgeState()
         state.setSelfId('gates-local-2')
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'gates-remote-2',
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
+                        name: 'gates-remote-2'
+                    }
+                ]
+            }
+        })
         state.handleNotification({
             source: 'proxy',
             method: 'node/discovered',

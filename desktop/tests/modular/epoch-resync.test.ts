@@ -540,6 +540,8 @@ describe('broker epoch tracking and resync', () => {
                 nodes: [
                     {
                         id: 'sender-uuid',
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'sender-uuid',
                         name: 'Sender',
                         ipAddress: '10.0.0.2',

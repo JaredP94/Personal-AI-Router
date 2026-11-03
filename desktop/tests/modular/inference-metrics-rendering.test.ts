@@ -134,6 +134,8 @@ describe('the node card prefill/decode section', () => {
     it('is rendered by the node card itself', async () => {
         const node: NodeItem = {
             id: 'node-a',
+            hostUuid: 'node-a',
+            identityVerification: 'local',
             name: 'Fixture node',
             ipAddress: '192.0.2.1',
             port: 14318,
@@ -573,6 +575,8 @@ describe("the node card's engine-native section", () => {
     function nodeWithEngineNative(engineNative: EngineNativeView): NodeItem {
         const node: NodeItem = {
             id: 'node-a',
+            hostUuid: 'node-a',
+            identityVerification: 'local',
             name: 'Fixture node',
             ipAddress: '192.0.2.1',
             port: 14318,

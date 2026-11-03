@@ -15,6 +15,20 @@ describe('remote engine status', () => {
 
         state.setSelfId('remote-engine-status-local')
         state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'remote-engine-status-remote',
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
+                        name: 'remote-engine-status-remote'
+                    }
+                ]
+            }
+        })
+        state.handleNotification({
             source: 'lmstudio-proxy',
             method: 'node/discovered',
             params: {

@@ -6,9 +6,11 @@ import { SystemTopology } from '@/shared/types/hardware'
 import type { EngineNativeView } from '@/shared/types/metrics'
 import { PlatformDisplayName } from '@/shared/types/platform'
 
+import type { NodeRecordIdentity } from '@/shared/utils/node-record-key'
+
 export type NodeStatus = (typeof NodeStatuses)[number]
 
-export interface NodeItem {
+export interface NodeItem extends NodeRecordIdentity {
     id: string
     name: string
     status: NodeStatus

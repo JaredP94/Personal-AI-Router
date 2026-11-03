@@ -11,9 +11,8 @@ import {
     parseWorkloadsInitial
 } from '@/electron/service-bridge/modular-state'
 
-// The bridge keys every node by the backend's stable per-host UUID; the hostname
-// is display only. These tests lock in the two behaviours that migration exists
-// for: a broker view and a proxy view of the same machine collapse to one
+// Proven peer records use host UUIDs; previews use independent opaque keys.
+// The hostname is display only. These tests lock in peer enrichment behaviour: a broker view and a proxy view of the same machine collapse to one
 // UUID-keyed entry (no hostname ghost), and cross-domain attribution refuses a
 // telemetry response whose reported UUID does not match the polled node.
 describe('UUID node keying', () => {
@@ -25,6 +24,8 @@ describe('UUID node keying', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-merge-1',
                         name: 'merge-host-1',
                         ipAddress: '192.0.2.11',
@@ -80,6 +81,8 @@ describe('UUID node keying', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-merge-2',
                         name: 'merge-host-2',
                         ipAddress: '192.0.2.12',
@@ -108,6 +111,8 @@ describe('UUID node keying', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-ni-1',
                         name: 'ni-host-1',
                         ipAddress: '192.0.2.50',
@@ -149,6 +154,8 @@ describe('UUID node keying', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-ni-failover',
                         name: 'ni-failover-host',
                         ipAddress: '192.0.2.80',

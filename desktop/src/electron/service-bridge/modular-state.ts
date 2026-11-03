@@ -33,6 +33,7 @@ import type {
 } from '@/shared/types/metrics'
 import type { GpuMemoryKind } from '@/shared/types/hardware'
 import type { NodeItem } from '@/shared/types/nodes'
+import { isPairPeer, nodeRecordKey, type NodeRecordIdentity } from '@/shared/utils/node-record-key'
 import type { ServiceError, ServiceErrorAction, ServiceErrorSeverity } from '@/shared/types/errors'
 import type {
     Workload,
@@ -44,10 +45,7 @@ import type {
 import type { WorkerState, WorkerStatus } from '@/shared/types/workers'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
-import {
-    MODULAR_NODE_INFO_SELF_HOST,
-    MODULAR_SUPERSEDE_MIN_AGE_MS
-} from '@/shared/constants/modular-runtime'
+import { MODULAR_NODE_INFO_SELF_HOST } from '@/shared/constants/modular-runtime'
 import { WorkloadStates } from '@/shared/constants/workloads'
 import {
     isEngineType,
@@ -131,13 +129,10 @@ interface RemoteEngineFacts {
     capabilities: EngineCapabilityFlags
 }
 
-interface ModularNode {
-    // Canonical cross-domain node key = the backend's stable per-host UUID
-    // (`shared/nodeid`). The broker carries it on `AvailableNode.hostUuid`, the
-    // proxies key `Node.ID` by it, and `/v1/node-info` reports it, so every
-    // domain now agrees on this id: workload `originatedFrom`/`scheduledOn`,
-    // error `nodeId`, and proxy routing all resolve against it. Never key,
-    // dedupe, or attribute by hostname — that is display only (`name`).
+interface ModularNode extends NodeRecordIdentity {
+    // Canonical Go RecordKey: hostUuid for local/verified peers, opaque
+    // preview:/manual: key otherwise. Claimed UUIDs and names never correlate
+    // unverified records with membership, workloads, metrics or proxy presence.
     id: string
     sources: BrokerNodeSource[]
     // Display hostname (broker `AvailableNode.name` / proxy `Node.Host`). Shown
@@ -1165,6 +1160,9 @@ function toNodeItem(node: ModularNode, selfId: string | null): NodeItem {
     const port = primaryServicePort(node)
     return {
         id: node.id,
+        hostUuid: node.hostUuid,
+        peerRecordId: node.peerRecordId,
+        identityVerification: node.identityVerification,
         // Display label: the hostname, else the reachable address; never the raw
         // UUID key (falls back to it only if a node somehow has neither).
         name: node.name || ipAddress || node.id,
@@ -1277,8 +1275,8 @@ function toEngineStatus(
 function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
-    // The proxy keys `Node.ID` by the stable per-host UUID (and rejects empty),
-    // so this is already the canonical node key — no TXT parsing needed.
+    // This feed carries presence, not provenance. Its id may only look up an
+    // identity already established by broker discovery; never parse TXT as proof.
     const id = stringValue(obj.id)
     if (!id) return null
     const engines = emptyEngines()
@@ -1334,11 +1332,13 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
 function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const obj = objectValue(params)
     if (!obj) return null
-    // `AvailableNode.hostUuid` is the canonical node key. The broker's discovery
-    // store rejects an empty UUID, so every node it reports carries one; a
-    // payload without it is malformed and dropped rather than keyed by hostname.
-    const hostUuid = stringValue(obj.hostUuid)
-    if (!hostUuid) return null
+    const identity = {
+        hostUuid: stringValue(obj.hostUuid),
+        peerRecordId: stringValue(obj.peerRecordId),
+        identityVerification: stringValue(obj.identityVerification)
+    }
+    const id = nodeRecordKey(identity)
+    if (!id) return null
     // `AvailableNode.id`/`.name` are the mDNS instance hostname (display only).
     const hostname = stringValue(obj.name) || stringValue(obj.id)
     const ipAddress = stringValue(obj.ipAddress) || stringValue(obj.ip_address)
@@ -1348,7 +1348,8 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
     const ipAddresses = stringArrayValue(obj.ipAddresses)
     const brokerAddresses = ipAddresses.length > 0 ? ipAddresses : ipAddress ? [ipAddress] : []
     return {
-        id: hostUuid,
+        id,
+        ...identity,
         sources: ['broker'],
         name: hostname,
         host: ipAddress,
@@ -1422,6 +1423,9 @@ function sameEngines(
 function sameNode(left: ModularNode, right: ModularNode): boolean {
     return (
         left.id === right.id &&
+        left.hostUuid === right.hostUuid &&
+        left.peerRecordId === right.peerRecordId &&
+        left.identityVerification === right.identityVerification &&
         sameStringList(left.sources, right.sources) &&
         left.name === right.name &&
         left.host === right.host &&
@@ -1526,6 +1530,8 @@ class ModularBridgeState {
     }
 
     private nodes = new Map<string, ModularNode>()
+    // Proxy events carry no provenance. Cache presence only; they cannot create identities.
+    private proxyNodes = new Map<ProxyEngine, Map<string, ModularNode>>()
     private brokerNodeIds = new Set<string>()
     private errors: ServiceError[] = []
     private workers: WorkerStatus[] = []
@@ -1768,7 +1774,7 @@ class ModularBridgeState {
         // over the inferred presence, and is omitted entirely when neither is
         // known — see {@link resolveRemoteEngineStatus}.
         for (const node of Array.from(this.nodes.values())) {
-            if (node.id === selfId) continue
+            if (node.id === selfId || !isPairPeer(node)) continue
             for (const engine of PROXY_ENGINES) {
                 const status = this.resolveRemoteEngineStatus(node.id, engine)
                 if (status) statuses.push(status)
@@ -1789,6 +1795,9 @@ class ModularBridgeState {
             const addresses = nodeAddresses(node)
             return {
                 id: node.id,
+                hostUuid: node.hostUuid,
+                peerRecordId: node.peerRecordId,
+                identityVerification: node.identityVerification,
                 // Display label: hostname, else reachable address; never the raw UUID.
                 name: node.name || primaryNodeAddress(node) || node.id,
                 ipAddress: primaryNodeAddress(node),
@@ -1808,7 +1817,7 @@ class ModularBridgeState {
     getNodeInfoPollTargets(): { id: string; hosts: string[]; port: number }[] {
         const targets: { id: string; hosts: string[]; port: number }[] = []
         for (const node of Array.from(this.nodes.values())) {
-            if (!node.nodeInfoUp || node.nodeInfoPort <= 0) continue
+            if (!isPairPeer(node) || !node.nodeInfoUp || node.nodeInfoPort <= 0) continue
             // This machine appears in its own discovery snapshot, but its own
             // node-info is on this machine: loopback reaches it without depending
             // on the host's inbound path. Loopback alone, with no failover — the
@@ -1836,7 +1845,7 @@ class ModularBridgeState {
 
     mergeNodeInfoResponse(nodeId: string, response: JsonValue): void {
         const node = this.nodes.get(nodeId)
-        if (!node) return
+        if (!node || !isPairPeer(node)) return
 
         const obj = objectValue(response)
         if (!obj) return
@@ -3070,6 +3079,7 @@ class ModularBridgeState {
         if (notification.method === 'node/removed') {
             const node = parseProxyNode(notification.params, engine)
             if (!node) return
+            this.proxyNodes.get(engine)?.delete(node.id)
             this.clearNodeEngine(node.id, engine)
             return
         }
@@ -3077,7 +3087,17 @@ class ModularBridgeState {
         if (notification.method === 'node/discovered' || notification.method === 'node/updated') {
             const node = parseProxyNode(notification.params, engine)
             if (!node) return
-            this.upsertNode(node, proxyEngineToSource(engine))
+            let entries = this.proxyNodes.get(engine)
+            if (!entries) {
+                entries = new Map()
+                this.proxyNodes.set(engine, entries)
+            }
+            entries.set(node.id, node)
+            // Only the broker establishes record identity, including after withdrawal.
+            const existing = this.nodes.get(node.id)
+            if (existing && isPairPeer(existing)) {
+                this.upsertNode(node, proxyEngineToSource(engine))
+            }
         }
     }
 
@@ -3131,33 +3151,7 @@ class ModularBridgeState {
         const existing = this.nodes.get(nodeId)
         if (!existing) return
 
-        const remainingSources = removeSource(existing.sources, 'broker')
-        if (remainingSources.length === 0) {
-            this.removeNodeEntry(nodeId)
-            return
-        }
-
-        // A proxy source still reports the node; drop only the node-info snapshot
-        // (the broker is the sole node-info / telemetry source now).
-        const next: ModularNode = {
-            ...existing,
-            sources: remainingSources,
-            nodeInfoPort: 0,
-            nodeInfoUp: false,
-            // Clear the broker's now-stale canonical address and ranking; a
-            // still-present proxy source repopulates `reachableAddress` from its
-            // `ip` field on the next node/* event, so we never keep a dead broker
-            // IP — nor project addresses no live source claims any more.
-            reachableAddress: '',
-            brokerAddresses: [],
-            gpus: [],
-            cpu: null,
-            memory: null,
-            sensors: null,
-            lastSeen: Date.now()
-        }
-        this.nodes.set(next.id, next)
-        this.emitNodeChanged(next)
+        this.removeNodeEntry(nodeId)
     }
 
     private upsertNode(node: ModularNode, source?: BrokerNodeSource): void {
@@ -3165,12 +3159,12 @@ class ModularBridgeState {
         // (`cluster:get-node-id`), which equals the discovery/proxy hostUuid key,
         // so there is no hostname guessing here — `setSelfId` is the sole source.
         const existing = this.nodes.get(node.id)
-        const merged = this.mergeNode(existing, node, source)
-        // Collapse a wiped-and-rejoined host onto its new UUID before storing,
-        // so the pre-wipe record never reaches the map (see resolveAddressCollision).
-        if (this.resolveAddressCollision(merged)) {
-            this.removeNodeEntry(merged.id)
-            return
+        let merged = this.mergeNode(existing, node, source)
+        if (source === 'broker' && isPairPeer(merged)) {
+            for (const engine of PROXY_ENGINES) {
+                const presence = this.proxyNodes.get(engine)?.get(merged.id)
+                if (presence) merged = this.mergeNode(merged, presence, proxyEngineToSource(engine))
+            }
         }
         if (existing && sameNode(existing, merged)) return
         this.nodes.set(merged.id, merged)
@@ -3206,66 +3200,6 @@ class ModularBridgeState {
         }
     }
 
-    /**
-     * Collapse two UUIDs that are really one machine.
-     *
-     * A node whose appdata is wiped mints a fresh hostUuid, so peers advertise
-     * the same machine under a new key while the pre-wipe key survives — the
-     * fleet sees a duplicate "ghost" row. Nothing on the wire marks the two as
-     * the same host, so this infers it from the three signals the node-scanner
-     * uses to nominate a superseded record (`directory.supersedeCandidates`):
-     * same address, same hostname, and a `lastSeen` gap of at least
-     * MODULAR_SUPERSEDE_MIN_AGE_MS.
-     *
-     * It stops there, and the scanner does not. Those signals come from an
-     * unauthenticated mDNS advertisement, and `lastSeen` is not a liveness
-     * clock — the backend re-stamps a node only when its record CHANGES, so a
-     * healthy peer's `lastSeen` freezes exactly like a ghost's. The scanner
-     * therefore treats them as a suspicion and deletes only once node-info
-     * names a different host. This has no such proof available, so it must stay
-     * a display-side collapse: it hides a row until the next snapshot, and must
-     * never be read as the directory having evicted anything.
-     *
-     * Two caveats on how faithfully this can mirror the backend, both stemming
-     * from a proxy-sourced node carrying less than a discovery record does:
-     * `parseProxyNode` stamps `lastSeen` locally rather than echoing the
-     * backend's, and `primaryNodeAddress` falls back to `host` (a hostname for a
-     * proxy node), which can collapse the address and name conditions into one.
-     * Both only ever make this rule fire LESS often than the scanner's, so the
-     * node list stays a subset of the directory rather than contradicting it.
-     *
-     * Returns true when `node` is the STALE side and must not be stored — a
-     * backend that has not yet evicted the ghost keeps re-publishing it in every
-     * `discovery:nodes-changed` snapshot, so refusing it on arrival is what
-     * makes the eviction stick. Otherwise the losing entries are evicted here.
-     */
-    private resolveAddressCollision(node: ModularNode): boolean {
-        const address = primaryNodeAddress(node)
-        if (!address || !node.name) return false
-        const rivals: ModularNode[] = []
-        for (const other of this.nodes.values()) {
-            if (other.id === node.id || other.id === this.selfId) continue
-            if (primaryNodeAddress(other) !== address || other.name !== node.name) continue
-            rivals.push(other)
-        }
-        // Self is pinned by the cluster-manager's node UUID, so it is always the
-        // live identity for this machine's address: skipped above so it can
-        // never be evicted, and skipped as a claimant below so it never evicts.
-        // The backend applies the same asymmetry (directory.supersedeCandidates).
-        if (node.id === this.selfId) return false
-        // Decide before mutating. Returning mid-loop would strand entries
-        // already marked stale, leaving a partially applied collapse.
-        if (rivals.some(other => other.lastSeen - node.lastSeen >= MODULAR_SUPERSEDE_MIN_AGE_MS)) {
-            return true
-        }
-        for (const other of rivals) {
-            if (node.lastSeen - other.lastSeen >= MODULAR_SUPERSEDE_MIN_AGE_MS) {
-                this.removeNodeEntry(other.id)
-            }
-        }
-        return false
-    }
-
     /** Delete a node and clean every index that referenced it. */
     private removeNodeEntry(nodeId: string): void {
         if (!this.nodes.delete(nodeId)) return
@@ -3277,13 +3211,14 @@ class ModularBridgeState {
 
     private emitNodeChanged(merged: ModularNode): void {
         emitBridgePush('nodes:upsert', toNodeItem(merged, this.selfId))
-        emitBridgePush('metrics:update', toMetrics(merged))
+        if (isPairPeer(merged)) emitBridgePush('metrics:update', toMetrics(merged))
         emitBridgePush('discovery:nodes-changed', this.getAvailableNodes())
         // For the local node, engine-manager is the source of truth for
         // install/running state; discovery only fills in models. A remote node
         // has no local engine-manager, so its status comes from authoritative
         // peer facts or its advertisement, and is omitted when neither is known.
         // Push per proxy-engine (Ollama + LM Studio) so both light up per node.
+        if (!isPairPeer(merged)) return
         const isSelf = merged.id === this.selfId
         for (const engine of PROXY_ENGINES) {
             if (!isSelf) {
@@ -3348,6 +3283,9 @@ class ModularBridgeState {
             // The proxy feed carries no hostname/trust/cluster facts; keep the
             // broker-reported values rather than overwriting them with the proxy
             // node's empty name and default-false flags.
+            hostUuid: existing.hostUuid,
+            peerRecordId: existing.peerRecordId,
+            identityVerification: existing.identityVerification,
             name: existing.name || next.name,
             trusted: existing.trusted,
             clustered: existing.clustered,

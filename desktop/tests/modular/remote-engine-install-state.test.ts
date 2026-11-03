@@ -26,6 +26,8 @@ describe('remote engine install state', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: remoteNodeId,
                         name: 'unknown-host',
                         ipAddress: '192.0.2.60',
@@ -54,6 +56,8 @@ describe('remote engine install state', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: remoteNodeId,
                         name: 'peer-no-lms',
                         ipAddress: '192.0.2.61',
@@ -95,6 +99,8 @@ describe('remote engine install state', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: remoteNodeId,
                         name: 'peer-stopped-lms',
                         ipAddress: '192.0.2.62',
@@ -128,6 +134,20 @@ describe('remote engine install state', () => {
     it('treats proxy presence as running when facts are absent on an unclustered peer', () => {
         const state = getModularBridgeState()
         const remoteNodeId = 'remote-presence'
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: {
+                nodes: [
+                    {
+                        hostUuid: 'remote-presence',
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
+                        name: 'remote-presence'
+                    }
+                ]
+            }
+        })
 
         state.setSelfId('local-self')
         state.handleNotification({
@@ -161,6 +181,8 @@ describe('remote engine install state', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: remoteNodeId,
                         name: 'clustered-peer',
                         ipAddress: '192.0.2.65',
@@ -198,6 +220,8 @@ describe('remote engine install state', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: remoteNodeId,
                         name: 'peer-stale',
                         ipAddress: '192.0.2.64',

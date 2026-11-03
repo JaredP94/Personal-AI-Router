@@ -49,6 +49,11 @@ warns that engines may remain running or stop and inference may be interrupted.
 Restart initiation is not completed recovery; follow subsequent worker updates.
 See [broker supervision](../nvpair-ui-broker/README.md#supervision--recovery).
 
+The Nodes status column labels unverified PAIR previews **Not in your cluster**
+and explicit bare engines **Engine only — added by address**. A missing
+verification state is unverified; a public claim alone is not a connected peer.
+Local/verified peers retain their existing connected/cluster status.
+
 ## Keys
 
 - `tab` / `shift+tab` (or `→` / `←`, `l` / `h`) — switch tabs

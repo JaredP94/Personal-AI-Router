@@ -6,6 +6,7 @@ import { memo, useMemo } from 'react'
 import { Stack } from '@nvidia/foundations-react-core'
 import { OverlayScrollbarsComponent } from 'overlayscrollbars-react'
 import type { PartialOptions } from 'overlayscrollbars'
+import { isPairPeer } from '@/shared/utils/node-record-key'
 import type { NodeItem } from '@/shared/types/nodes'
 import { useOverviewNodes } from '@/ui/hooks/useOverviewNodes'
 import NodeCardDetails from './NodeCardDetails'
@@ -23,7 +24,7 @@ function NodeList() {
         const on: NodeItem[] = []
         const off: NodeItem[] = []
         allNodes.forEach(n => {
-            if (n.status !== 'offline') {
+            if (n.status !== 'offline' || !isPairPeer(n)) {
                 on.push(n)
             } else {
                 off.push(n)

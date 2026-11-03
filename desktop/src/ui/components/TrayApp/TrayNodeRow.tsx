@@ -7,6 +7,8 @@ import { useMetricsStore } from '@/ui/stores/metrics.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { LocalBadge } from '@/ui/components/LocalBadge'
+import { isPairPeer } from '@/shared/utils/node-record-key'
+import UnverifiedNode from '@/ui/components/NodeList/UnverifiedNode'
 import type { NodeItem } from '@/shared/types/nodes'
 import type { Workload } from '@/shared/types/workloads'
 import { workloadExecutionNodeId } from '@/shared/utils/workloads'
@@ -28,7 +30,13 @@ const gridStyle = {
     borderBottom: '1px solid var(--color-translucent-white-100)'
 }
 
-function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkloads: Workload[] }) {
+function PeerTrayNodeRow({
+    node,
+    activeWorkloads
+}: {
+    node: NodeItem
+    activeWorkloads: Workload[]
+}) {
     const nodeMetrics = useMetricsStore(state => state.nodeMetrics.get(node.id))
     const isLocal = useConnectionStore(state => state.selfId === node.id)
     const statusByNode = useEngineStatusStore(s => s.statusByNode)
@@ -149,6 +157,14 @@ function TrayNodeRow({ node, activeWorkloads }: { node: NodeItem; activeWorkload
                 </Stack>
             </div>
         </div>
+    )
+}
+
+function TrayNodeRow(props: { node: NodeItem; activeWorkloads: Workload[] }) {
+    return isPairPeer(props.node) ? (
+        <PeerTrayNodeRow {...props} />
+    ) : (
+        <UnverifiedNode node={props.node} />
     )
 }
 

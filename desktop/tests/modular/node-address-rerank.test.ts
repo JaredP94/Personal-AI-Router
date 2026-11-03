@@ -23,6 +23,8 @@ describe('broker address re-rank', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-rerank',
                         name: 'rerank-host',
                         ipAddress: '192.0.2.101',
@@ -58,6 +60,8 @@ describe('broker address re-rank', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-rerank',
                         name: 'rerank-host',
                         ipAddress: '192.0.2.102',
@@ -84,6 +88,8 @@ describe('broker address re-rank', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: 'uuid-proxy-refresh',
                         name: 'proxy-refresh-host',
                         ipAddress: '192.0.2.201',

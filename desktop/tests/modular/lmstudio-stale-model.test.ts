@@ -48,6 +48,8 @@ describe('LM Studio model reconciliation', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: nodeId,
                         name: 'lmstudio-reconciliation-host',
                         ipAddress: '127.0.0.1',
@@ -106,6 +108,8 @@ describe('LM Studio model reconciliation', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: nodeId,
                         name: 'shared-model-host',
                         ipAddress: '127.0.0.1',
@@ -127,6 +131,8 @@ describe('LM Studio model reconciliation', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: nodeId,
                         name: 'shared-model-host',
                         ipAddress: '127.0.0.1',
@@ -150,6 +156,8 @@ describe('LM Studio model reconciliation', () => {
         const supervisor = getModularSupervisor()
         const nodeId = 'lmstudio-proxy-down-deletion-local'
         const discoveryNode = (models: string[]) => ({
+            identityVerification: 'verified',
+            peerRecordId: 'proof:fixture',
             hostUuid: nodeId,
             name: 'lmstudio-proxy-down-deletion-host',
             ipAddress: '127.0.0.1',
@@ -217,6 +225,8 @@ describe('LM Studio model reconciliation', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: nodeId,
                         name: 'lmstudio-restart-host',
                         ipAddress: '127.0.0.1',
@@ -279,6 +289,8 @@ describe('LM Studio model reconciliation', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: nodeId,
                         name: 'lmstudio-last-good-empty-host',
                         ipAddress: '127.0.0.1',
@@ -338,6 +350,8 @@ describe('LM Studio model reconciliation', () => {
             params: {
                 nodes: [
                     {
+                        identityVerification: 'verified',
+                        peerRecordId: 'proof:fixture',
                         hostUuid: nodeId,
                         name: 'lmstudio-malformed-restart-host',
                         ipAddress: '127.0.0.1',
@@ -409,6 +423,8 @@ describe('LM Studio model reconciliation', () => {
         const supervisor = getModularSupervisor()
         const nodeId = 'lmstudio-discovery-retry-local'
         const discoveryNode = (models: string[]) => ({
+            identityVerification: 'verified',
+            peerRecordId: 'proof:fixture',
             hostUuid: nodeId,
             name: 'lmstudio-discovery-retry-host',
             ipAddress: '127.0.0.1',
