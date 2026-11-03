@@ -21,6 +21,7 @@ var (
 	multicastOnce   sync.Once
 	multicastSkip   string
 	multicastFailed error
+	multicastNotes  []string
 )
 
 // requireMulticast skips a test that needs real mDNS discovery when this host
@@ -31,7 +32,12 @@ var (
 // test. An unexpected socket error fails the test rather than skipping it.
 func requireMulticast(t *testing.T) {
 	t.Helper()
-	multicastOnce.Do(func() { multicastSkip, multicastFailed = decideMulticast(probeInterfaces()) })
+	multicastOnce.Do(func() {
+		multicastSkip, multicastFailed, multicastNotes = decideMulticast(probeInterfaces())
+	})
+	for _, note := range multicastNotes {
+		t.Logf("multicast probe: %s", note)
+	}
 	if multicastFailed != nil {
 		t.Fatalf("multicast probe: %v", multicastFailed)
 	}
@@ -100,27 +106,39 @@ func sendProbe(ifi *net.Interface, src net.IP) error {
 	return err
 }
 
-// decideMulticast turns the probe results into a decision: run when any
-// interface sent; skip, naming why, when none could because the host has no
-// usable multicast route (or no eligible interface); fail on anything else.
-func decideMulticast(probes []interfaceProbe) (skip string, failed error) {
+// decideMulticast turns the probe results into a decision. Every result is
+// inspected: an unexpected error on any interface is reported as a note even
+// when another interface sent, so nothing is masked. The test runs when any
+// interface sent, since discovery tolerates per-interface failures too. It
+// skips, naming why, only when none could send for lack of a multicast route
+// (or there is no eligible interface), and fails when none could send and an
+// error was anything else.
+func decideMulticast(probes []interfaceProbe) (skip string, failed error, notes []string) {
 	if len(probes) == 0 {
-		return "no up, multicast-capable IPv4 interface", nil
+		return "no up, multicast-capable IPv4 interface", nil, nil
 	}
+	sent := false
+	var unexpected error
 	var reasons []string
 	for _, p := range probes {
 		if p.err == nil {
-			return "", nil
-		}
-		if !noMulticastRoute(p.err) {
-			failed = errors.Join(failed, fmt.Errorf("%s: %w", p.name, p.err))
+			sent = true
+			continue
 		}
 		reasons = append(reasons, fmt.Sprintf("%s: %v", p.name, p.err))
+		if !noMulticastRoute(p.err) {
+			unexpected = errors.Join(unexpected, fmt.Errorf("%s: %w", p.name, p.err))
+			notes = append(notes, fmt.Sprintf("unexpected send error on %s: %v", p.name, p.err))
+		}
 	}
-	if failed != nil {
-		return "", failed
+	switch {
+	case sent:
+		return "", nil, notes
+	case unexpected != nil:
+		return "", unexpected, notes
+	default:
+		return strings.Join(reasons, "; "), nil, notes
 	}
-	return strings.Join(reasons, "; "), nil
 }
 
 // noMulticastRoute reports whether a send failed because the host has no
@@ -145,20 +163,23 @@ func TestDecideMulticast(t *testing.T) {
 	noRoute := &net.OpError{Op: "write", Net: "udp4", Err: syscall.EHOSTUNREACH}
 	odd := &net.OpError{Op: "write", Net: "udp4", Err: syscall.EPERM}
 	for _, tc := range []struct {
-		name     string
-		probes   []interfaceProbe
-		wantSkip bool
-		wantFail bool
+		name      string
+		probes    []interfaceProbe
+		wantSkip  bool
+		wantFail  bool
+		wantNotes int
 	}{
-		{"no eligible interface", nil, true, false},
-		{"one interface can send", []interfaceProbe{{"en0", nil}}, false, false},
-		{"any interface sending wins", []interfaceProbe{{"en0", noRoute}, {"en1", nil}}, false, false},
-		{"no route anywhere", []interfaceProbe{{"en0", noRoute}, {"utun3", noRoute}}, true, false},
-		{"an unexpected error fails", []interfaceProbe{{"en0", noRoute}, {"en1", odd}}, false, true},
+		{"no eligible interface", nil, true, false, 0},
+		{"one interface can send", []interfaceProbe{{"en0", nil}}, false, false, 0},
+		{"any interface sending wins", []interfaceProbe{{"en0", noRoute}, {"en1", nil}}, false, false, 0},
+		{"no route anywhere", []interfaceProbe{{"en0", noRoute}, {"utun3", noRoute}}, true, false, 0},
+		{"an unexpected error with no sender fails", []interfaceProbe{{"en0", noRoute}, {"en1", odd}}, false, true, 1},
+		{"success then unexpected error is noted", []interfaceProbe{{"en0", nil}, {"en1", odd}}, false, false, 1},
+		{"unexpected error then success is noted", []interfaceProbe{{"en1", odd}, {"en0", nil}}, false, false, 1},
 	} {
-		skip, failed := decideMulticast(tc.probes)
-		if (skip != "") != tc.wantSkip || (failed != nil) != tc.wantFail {
-			t.Errorf("%s: skip=%q failed=%v", tc.name, skip, failed)
+		skip, failed, notes := decideMulticast(tc.probes)
+		if (skip != "") != tc.wantSkip || (failed != nil) != tc.wantFail || len(notes) != tc.wantNotes {
+			t.Errorf("%s: skip=%q failed=%v notes=%q", tc.name, skip, failed, notes)
 		}
 	}
 }
