@@ -283,7 +283,7 @@ func TestScannerRestartWithdrawsProofButPreservesIndependentManualEngine(t *test
 	node := verifiedDirectoryForTest(b)
 	b.store.Upsert(directoryToEnriched(node), sourceScanner)
 	b.relayDir.Apply(noderec.NotifyNodeDiscovered, node)
-	b.upsertManualNode(manualNodeStatus{ID: "manual:engine", Address: "192.0.2.3", OMLXUp: true, OMLXPort: 1236, OMLXModels: []string{"bare-model"}})
+	b.upsertManualNode(manualNodeStatus{Kind: "engine", IdentityVerification: "manual", ID: "manual:engine", Address: "192.0.2.3", OMLXUp: true, OMLXPort: 1236, OMLXModels: []string{"bare-model"}})
 	b.clearScannerInventory()
 	got := b.schedulerNodes()
 	if len(got) != 1 || got[0].HostUUID != noderec.ManualRecordID("manual:engine") || len(got[0].Models) != 1 || got[0].Models[0] != "bare-model" {

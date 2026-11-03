@@ -1530,6 +1530,9 @@ func (b *Broker) upsertManualNode(s manualNodeStatus) {
 	s = b.normalizeManualStatus(s)
 	incoming := manualToEnriched(s)
 	b.annotateManualTrust(&incoming, s)
+	if incoming.Trusted {
+		b.rememberManualPeer(s)
+	}
 	key := incoming.storeKey()
 	receivedAt := time.Now()
 
@@ -3739,7 +3742,40 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 		}
 		return
 	}
+	var manualAliases []string
+	if msg.Method == "nodes:remove" {
+		// Resolve and forget the same aliases even if another client has an
+		// in-flight manual add/remove when unpair begins.
+		b.manualMutationMu.Lock()
+		defer b.manualMutationMu.Unlock()
+		var params struct {
+			NodeUUID string `json:"nodeUuid"`
+			NodeID   string `json:"nodeId"`
+		}
+		_ = json.Unmarshal(msg.Params, &params)
+		id := params.NodeUUID
+		if id == "" {
+			id = params.NodeID
+		}
+		var err error
+		manualAliases, err = b.manualAliasesForPeer(id)
+		if err != nil {
+			_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-node lookup failed: %v", err))
+			return
+		}
+	}
 	result, rpcErr, err := cm.Call(context.Background(), msg.Method, msg.Params)
+	if err == nil && rpcErr == nil && len(manualAliases) > 0 {
+		var removed struct {
+			Removed bool `json:"removed"`
+		}
+		if json.Unmarshal(result, &removed) == nil && removed.Removed {
+			if err := b.forgetManualAliases(manualAliases); err != nil {
+				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but forgetting manual entries failed: %v", err))
+				return
+			}
+		}
+	}
 	switch {
 	case err != nil:
 		if err := b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("cluster-manager call failed: %v", err)); err != nil {

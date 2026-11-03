@@ -31,10 +31,10 @@ func (b *Broker) pushPeerMetadataToNodeInfo() {
 }
 
 func (b *Broker) normalizeManualStatus(s manualNodeStatus) manualNodeStatus {
-	if s.PeerRecordID == "" {
+	if s.Kind == "engine" && s.PeerRecordID == "" && s.HostUUID == "" && s.ClusterUUID == "" && s.IdentityVerification == "manual" {
 		return s
 	}
-	if s.HostUUID == s.ClusterUUID && s.PeerMetadata != nil && s.PeerMetadata.HostUUID == s.HostUUID && b.currentPeerProof(s.ClusterUUID, s.PeerRecordID) {
+	if s.Kind != "engine" && s.PeerRecordID != "" && s.HostUUID == s.ClusterUUID && s.PeerMetadata != nil && s.PeerMetadata.HostUUID == s.HostUUID && b.currentPeerProof(s.ClusterUUID, s.PeerRecordID) {
 		return s
 	}
 	// A retired worker proof may remain as an unverified configuration preview,

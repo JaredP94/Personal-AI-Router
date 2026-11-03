@@ -207,7 +207,7 @@ func TestBrokerBridgesBareManualOllamaIntoProxy(t *testing.T) {
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	const nodeName = "xproc-manual-proxy-bridge"
-	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":900,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
+	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":900,"method":"node/add","params":{"kind":"engine","address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
 	if _, err := stdin.Write([]byte(addReq)); err != nil {
 		t.Fatalf("write node/add: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestBrokerKeepsUnclusteredManualPAIRAsUnverifiedPreview(t *testing.T) {
 			for {
 				n, ok := manualInventory(t, stdin, msgs, nodeName)
 				if ok && n.IdentityVerification == "unverified" {
-					if n.PeerRecordID != noderec.ManualRecordID(nodeName) || n.Trusted || len(n.Models) != 0 {
+					if n.PeerRecordID != noderec.PreviewRecordID(nodeName, "") || n.Trusted || len(n.Models) != 0 {
 						t.Fatalf("PAIR preview acquired peer trust or routing inventory: %+v", n)
 					}
 					if tc.hostUUID != "" && (n.HostUUID == tc.hostUUID || n.PeerRecordID == tc.hostUUID) {
@@ -325,6 +325,72 @@ func TestBrokerKeepsUnclusteredManualPAIRAsUnverifiedPreview(t *testing.T) {
 	}
 }
 
+// A live engine at a replayed PAIR address is not consent to a manual bypass.
+func TestManualPairIntentSurvivesWorkerRestartWithoutPairEndpoint(t *testing.T) {
+	t.Cleanup(fakeOllama(t))
+	t.Cleanup(fakeNodeInfo(t, nil))
+	stdin, msgs, _, cleanup := startBrokerWith(t, "--manual-nodes-path", manualNodesBin)
+	t.Cleanup(cleanup)
+	waitForMethod(t, msgs, "app:ready", 10*time.Second)
+	initialWorker := waitWorkerRunning(t, stdin, msgs, "manual-nodes")
+	const name = "pair-restart-intent"
+	added := callRPC(t, stdin, msgs, "node/add", map[string]string{"address": "127.0.0.1", "name": name, "kind": "pair"}, 5*time.Second)
+	if added.Error != nil {
+		t.Fatalf("add: %+v", added.Error)
+	}
+	for generation := 0; generation < 2; generation++ {
+		deadline := time.Now().Add(15 * time.Second)
+		seen := false
+		for time.Now().Before(deadline) {
+			n, ok := manualInventory(t, stdin, msgs, name)
+			if ok {
+				seen = true
+				if n.IdentityVerification != "unverified" || n.PeerRecordID != noderec.PreviewRecordID(name, "") || n.Trusted || len(n.Models) != 0 {
+					t.Fatalf("generation %d downgraded PAIR: %+v", generation, n)
+				}
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !seen {
+			t.Fatalf("generation %d did not replay PAIR entry", generation)
+		}
+		listed := callRPC(t, stdin, msgs, "nodes/list", nil, 5*time.Second)
+		var list struct {
+			Nodes []struct {
+				ID       string `json:"id"`
+				Kind     string `json:"kind"`
+				OllamaUp bool   `json:"ollama_up"`
+			} `json:"nodes"`
+		}
+		if err := json.Unmarshal(listed.Result, &list); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range list.Nodes {
+			if n.ID == name && (n.Kind != "pair" || n.OllamaUp) {
+				t.Fatalf("replayed configuration: %+v", n)
+			}
+		}
+		if generation == 0 {
+			restarted := callRPC(t, stdin, msgs, "workers:restart", map[string]string{"name": "manual-nodes"}, 10*time.Second)
+			if restarted.Error != nil {
+				t.Fatalf("restart: %+v", restarted.Error)
+			}
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				worker := waitWorkerRunning(t, stdin, msgs, "manual-nodes")
+				if worker.PID != initialWorker.PID {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("manual worker did not change process")
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}
+}
+
 // Bare LM Studio has the same explicit manual bypass as bare Ollama.
 func TestBrokerBridgesBareManualLMStudioIntoProxy(t *testing.T) {
 	configDir := persistLMStudioProxyPort(t, freePort(t))
@@ -341,7 +407,7 @@ func TestBrokerBridgesBareManualLMStudioIntoProxy(t *testing.T) {
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
 
 	const nodeName = "xproc-manual-lmstudio-bridge"
-	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":920,"method":"node/add","params":{"address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
+	addReq := fmt.Sprintf(`{"jsonrpc":"2.0","id":920,"method":"node/add","params":{"kind":"engine","address":"127.0.0.1","name":%q}}`, nodeName) + "\n"
 	if _, err := stdin.Write([]byte(addReq)); err != nil {
 		t.Fatalf("write node/add: %v", err)
 	}

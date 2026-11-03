@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-manual-nodes
 
-A Go service for managing manually configured nodes on networks where mDNS discovery is unavailable. Accepts node addresses via JSON-RPC, probes each for Ollama, LM Studio, and node-info, and emits status events.
+A Go service for probing explicitly configured PAIR machines or bare engines on networks where mDNS is unavailable. The broker owns persistence; this worker owns live probe state. See [spec.md](spec.md) for the normative trust, intent and replay contract.
 
 Node-info JSON decoding reads at most 1 MiB, and model-list decoding at most
 16 MiB. A JSON value that extends past its limit follows the existing probe or
@@ -84,7 +84,7 @@ Emitted when a manually added node has been probed and its initial status determ
 
 PAIR peers must first prove identity through pinned cluster mTLS node-info on `:14318` (or the configured `tls_port`). Matching certificate, response and broker-owned `peerMetadata` identities are required. Only authenticated metadata supplies service ports; models and engine state are then read over pinned mTLS with no HTTP or operator-CA downgrade. Completed reads recheck the exact current pin and admission-bound `peerRecordId`.
 
-Explicitly user-added bare engines retain independent manual routes: Ollama on `:11434`, LM Studio on `:1234`, and oMLX on `:1236`. They remain labelled `identityVerification: "manual"`, never acquire peer trust, and provide no hardware scheduling telemetry. Recognized PAIR configurations that cannot authenticate are labelled `unverified`, not silently downgraded into this bypass. The broker namespaces manual configurations separately from authenticated host UUIDs. Recognition lasts only for the configuration's lifetime in this worker: kind is not yet persisted in `manual-nodes.json`. After a worker restart, an address previously added for a PAIR peer can be routed as an unauthenticated plaintext bare engine if no PAIR endpoint answers there (including if another machine answers instead). Persisting PAIR-vs-bare-engine intent is follow-up work.
+Explicitly user-added bare engines retain independent manual routes: Ollama on `:11434`, LM Studio on `:1234`, and oMLX on `:1236`. They remain labelled `identityVerification: "manual"`, never acquire peer trust, and provide no hardware scheduling telemetry. Each entry stores `kind: "pair"` or `kind: "engine"`. PAIR entries that cannot authenticate are `unverified` previews keyed `preview:<sha>`, never engine bypasses, including after worker/broker restarts or when no PAIR endpoint answers. Only an explicit `engine` choice creates a `manual:<hash>` bypass; it reads no PAIR identity, hardware, inventory or telemetry claims. The broker atomically persists kind in `configs/manual-nodes.json` and replays entries into replacement workers. Historical entries without kind are explicitly migrated on disk to `pair`: a former bare engine must be removed and re-added as **Engine only** to resume direct routing. Unknown kinds fail closed.
 
 `engineNative` is the remote engine's own report of itself — the counters, the rates and the active models the node's engine-manager publishes at `GET /v1/engine-stats`. It is read over the same transport as the model list beside it, because it is the same kind of data: a peer's engine counters are cluster data, so a clustered peer is read over cluster mTLS pinned to the principal the node advertises, and there is no weaker fallback for a peer. The field is absent when the node publishes no view — an engine with no admin API, an engine that could not be reached, or a node this one cannot read. A node whose view could not be re-read keeps the view it had (the last-good rule the node-scanner follows for a discovered node). It is read on a slower cadence than the probe (once a minute), because the engine's counters move slowly and every reading is a fresh observation.
 
@@ -134,15 +134,16 @@ see [Worker control health](#worker-control-health) for its limited meaning.
 
 Add a node by address. The manager immediately probes it and emits a `node/discovered` event.
 
-A hostname is preferred over an IP literal: probe clients disable keep-alives specifically so every probe re-resolves the name, which lets a node that gets a new address recover on its own. An IP-literal entry is dead once the device is renumbered. Supply the address on its own — a `host:port` string is not parsed, because ports are appended to it, so such an entry reads permanently down.
+A hostname is preferred over an IP literal: fresh dials re-resolve the name, allowing recovery after renumbering. Direct engine probes disable keep-alives; authenticated clients may reuse a live pinned connection. An IP-literal entry cannot follow renumbering. The address is stored as entered. Supply it without a scheme or port; malformed addresses and `host:port` receive `-32602` with an actionable message. IPv6 literals are accepted without brackets.
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"my-server"}}
+{"jsonrpc":"2.0","id":1,"method":"node/add","params":{"address":"10.0.1.50","name":"my-server","kind":"pair"}}
 ```
 
 | Param | Required | Description |
 |---|---|---|
-| `address` | Yes | IP address or hostname of the node, with no port |
+| `address` | Yes | IP address or hostname of the node, with no scheme or port; preserved as entered |
+| `kind` | Choose explicitly | `pair` or `engine`; omission conservatively means `pair`, never an engine bypass |
 | `name` | No | Friendly name (used as node ID; defaults to `manual:<address>`) |
 | `tls_port` | No | Probe pinned cluster mTLS node-info on this port instead of the primary `14318`. Echoed back as `tls_enabled`; no plaintext downgrade |
 | `mtls` | No | Stored and echoed back as `mtls_required`. The probe transport itself is chosen by `tls_port` and live cluster membership, so this field records intent rather than driving it |
@@ -159,7 +160,7 @@ Remove a previously added manual node.
 
 ### `nodes/list`
 
-Returns all currently tracked manual nodes with their latest probe status.
+Returns `{ nodes: ManualNodeStatus[] }` with each entry's `kind`, address, name, ID, `identityVerification` and probe status. Automatically tracked cluster addresses carry `from_cluster: true`; manual-entry management surfaces omit those rows. Removing a cluster peer via the broker also forgets its associated persisted PAIR addresses only after successful unpair.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"nodes/list"}
@@ -204,9 +205,9 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
 - **Node Info** on port 14318, or `tls_port`: pinned cluster mTLS hardware inventory, matching identity and authenticated service metadata (`GET /v1/node-info`). Public responses cannot establish identity or scheduling measurements.
 
-A node can have any combination of these, or none if the target is unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
+PAIR entries use only pinned cluster mTLS node-info and authenticated engine-manager inventory. Engine entries probe Ollama, LM Studio and oMLX (`:1236`) directly and never read node-info. A node can have any combination of eligible engines, or none if unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 
-The three engine ports are compiled in: only the node-info leg's port can be moved, via `tls_port`. A remote engine on a non-default port is not discovered.
+Bare-engine ports are fixed (`11434`, `1234`, `1236`). PAIR engine ports come only from authenticated broker-owned service metadata; `tls_port` can override its node-info port. Unverified peers cannot supply ports or model inventory.
 
 ## Shutdown
 
