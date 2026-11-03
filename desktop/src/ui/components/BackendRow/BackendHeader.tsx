@@ -8,7 +8,10 @@ import type { BackendInfo } from '@/ui/types/engine-info'
 import type { PlatformDisplayName } from '@/shared/types/platform'
 import { InstallButton } from './InstallButton'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
-import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
+import {
+    gatewayEndpointApiLabel,
+    gatewayEndpointDisplayUrl
+} from '@/ui/utils/gateway-inference-paths'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
 import { statusLabel } from '@/ui/utils/status'
 
@@ -116,9 +119,9 @@ export function BackendHeader({
                                     e.stopPropagation()
                                     handleCopy()
                                 }}
-                                title={`Copy ${backend.displayName} API http://127.0.0.1:${backend.proxyPort}`}
+                                title={`Copy ${backend.displayName} ${gatewayEndpointApiLabel(backend.type)} ${proxyUrl}`}
                                 style={{ padding: '2px 6px', minWidth: 'auto' }}
-                                aria-label={`Copy ${backend.displayName} API URL`}
+                                aria-label={`Copy ${backend.displayName} ${gatewayEndpointApiLabel(backend.type)} URL`}
                             >
                                 {copied ? (
                                     <Check style={{ fontSize: 14 }} />

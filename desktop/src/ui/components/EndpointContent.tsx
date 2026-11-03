@@ -10,7 +10,10 @@ import { useCallback, useMemo, useState } from 'react'
 import EngineIcon from './EngineIcon'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { getEnginesForNode, isEngineTypeRunningClusterWide } from '@/ui/utils/get-engines-for-node'
-import { gatewayEndpointDisplayUrl } from '@/ui/utils/gateway-inference-paths'
+import {
+    gatewayEndpointApiLabel,
+    gatewayEndpointDisplayUrl
+} from '@/ui/utils/gateway-inference-paths'
 import type { EngineType } from '@/shared/types/engines'
 
 function createCopiedState(enabledEngines: EngineType[]): Record<string, boolean> {
@@ -50,6 +53,7 @@ export default function EndpointContent({
                 name: EngineDisplayNames[type],
                 proxyPort: port,
                 url: gatewayEndpointDisplayUrl(port, type),
+                apiLabel: gatewayEndpointApiLabel(type),
                 icon: <EngineIcon type={type} />
             }
         }).filter(v => !!v)
@@ -111,6 +115,7 @@ export default function EndpointContent({
 
                     <Stack className="grow min-w-0">
                         <Text kind="body/semibold/sm">{endpoint?.name}</Text>
+                        <Text kind="body/regular/sm">{endpoint?.apiLabel}</Text>
                         {endpoint?.url && (
                             <Text kind="body/regular/sm" className="text-subtle-color truncate">
                                 {endpoint?.url}
@@ -118,8 +123,15 @@ export default function EndpointContent({
                         )}
                     </Stack>
 
-                    <DismissibleTooltip slotContent="Copy" placement="right">
-                        <Button kind="tertiary" size="small" aria-label={`Copy ${endpoint?.name}`}>
+                    <DismissibleTooltip
+                        slotContent={`Copy ${endpoint?.apiLabel} URL`}
+                        placement="right"
+                    >
+                        <Button
+                            kind="tertiary"
+                            size="small"
+                            aria-label={`Copy ${endpoint?.name} ${endpoint?.apiLabel} URL`}
+                        >
                             {copied[endpoint?.name ?? ''] ? (
                                 <Text kind="body/regular/sm">Copied</Text>
                             ) : (

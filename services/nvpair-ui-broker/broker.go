@@ -2035,6 +2035,7 @@ func (b *Broker) Serve(ctx context.Context) error {
 	defer b.store.SetOnChange(nil)
 
 	err := b.readLoop(ctx)
+	beginTeardown() // include the heartbeat writer join in the shared budget
 	cancel()
 	stopHeartbeat()
 	heartbeatStopped = true
@@ -2049,21 +2050,8 @@ func (b *Broker) shutdownInferenceStack() {
 	// wait that both run before any deferred join.
 	beginTeardown()
 
-	// Stop ingress first so no new inference can arrive while engine-manager is
-	// draining engines. supervisor.Stop uses each proxy's stdin-close/join path;
-	// it never adds a parent-side kill timeout.
-	if b.omlxProxySup != nil && b.workerActive("omlx-proxy") {
-		b.omlxProxySup.Stop()
-		b.setOMLXProxy(nil)
-	}
-	if b.lmstudioProxySup != nil && b.workerActive("lmstudio-proxy") {
-		b.lmstudioProxySup.Stop()
-		b.setLMStudioProxy(nil)
-	}
-	if b.proxySup != nil && b.workerActive("proxy") {
-		b.proxySup.Stop()
-		b.setProxy(nil)
-	}
+	// Close all ingress concurrently before asking engine-manager to drain.
+	b.stopInferenceProxies()
 	b.prepareEngineManagerShutdown()
 }
 

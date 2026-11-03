@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"nvpair-shared/workerhealth"
@@ -121,13 +122,52 @@ func (b *Broker) workerActive(name string) bool {
 	return true // fixtures that construct only the inference stack
 }
 
+// stopWorkers joins only supervisors whose monitor was started. Stop on an
+// unstarted supervisor would wait forever. Snapshot under the status lock, but
+// never hold it across Stop: monitors publish status while finishing.
 func (b *Broker) stopWorkers() {
-	for i := len(b.workerEntries) - 1; i >= 0; i-- {
-		entry := b.workerEntries[i]
-		if b.workerActive(entry.sup.name) {
-			entry.sup.Stop()
+	b.workerStatusMu.Lock()
+	var active []*supervisor
+	for _, entry := range b.workerEntries {
+		if entry.started {
+			active = append(active, entry.sup)
 		}
 	}
+	b.workerStatusMu.Unlock()
+	if len(active) == 0 {
+		return
+	}
+	beginTeardown() // also covers early Serve returns before shutdownInferenceStack
+	b.stopInferenceProxies()
+	stopSupervisors(active)
+}
+
+// Proxies close ingress together, before any engine shutdown. Stop is idempotent,
+// so the deferred stopWorkers call can repeat this after the ordinary path.
+func (b *Broker) stopInferenceProxies() {
+	var proxies []*supervisor
+	for _, sup := range []*supervisor{b.omlxProxySup, b.lmstudioProxySup, b.proxySup} {
+		if sup != nil && b.workerActive(sup.name) {
+			proxies = append(proxies, sup)
+		}
+	}
+	stopSupervisors(proxies)
+	b.setOMLXProxy(nil)
+	b.setLMStudioProxy(nil)
+	b.setProxy(nil)
+}
+
+// Fan out before waiting: teardown costs the slowest exit, not their sum.
+func stopSupervisors(supervisors []*supervisor) {
+	var wg sync.WaitGroup
+	for _, sup := range supervisors {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sup.Stop()
+		}()
+	}
+	wg.Wait()
 }
 
 func (b *Broker) workerSnapshotLocked() WorkersResult {

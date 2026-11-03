@@ -173,8 +173,10 @@ inference engine or the node that serves the request. PAIR calls that local
 address an endpoint.
 
 Select **Endpoints** in the top toolbar to open the **API endpoints** window. It
-lists one copyable `http://127.0.0.1:<port>` URL per engine. Copy the one for the
-engine you prepared. If it says **No engines are running**, return to step 4 and
+lists one copyable URL per engine, labelled by API style: Ollama's native API
+root (`http://127.0.0.1:<port>`) or the OpenAI-compatible base URL for LM Studio
+and oMLX (`http://127.0.0.1:<port>/v1`). The engine header's copy button uses the
+same URL and label. Copy the one for the engine you prepared. If it says **No engines are running**, return to step 4 and
 start an engine.
 
 ![The API endpoints window listing a copyable local URL for each running engine.](assets/onboarding/getting-started/08-api-endpoints.png)
@@ -203,8 +205,8 @@ how to change them.
 
 ## 6. Run Your First Inference
 
-Send a request to the endpoint you copied. Replace `<PAIR_BASE_URL>` with that
-value and `<MODEL_NAME>` with a model you prepared in step 4.
+Send a request using the API style below. Replace `<MODEL_NAME>` with a model
+you prepared in step 4; each style explains which copied base URL to use.
 
 The prompt below uses a familiar topic that any model can answer. A sensible
 reply confirms that the full path is working.
@@ -219,18 +221,22 @@ The engine therefore has to understand the style you send.
 | --- | --- | --- |
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
+| oMLX | Works | Not available |
 
-**If you are unsure, send the OpenAI-style request.** It works with either engine,
+**If you are unsure, send the OpenAI-style request.** It works with all three engines,
 and most tools and SDKs use it. Use the Ollama style
 only when something you already have is written against Ollama's `/api/...` API.
 
 The choice does not affect routing. Both styles are routed across your cluster the
 same way, and neither one changes which node serves the request.
 
-### OpenAI-Style Request (Works With Either Engine)
+### OpenAI-Style Request (Works With All Engines)
+
+Use the copied LM Studio or oMLX URL as `<OPENAI_BASE_URL>`. For Ollama's
+OpenAI-compatible API, append `/v1` to its copied native root first.
 
 ```bash
-curl <PAIR_BASE_URL>/v1/chat/completions \
+curl <OPENAI_BASE_URL>/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "<MODEL_NAME>",
@@ -245,12 +251,12 @@ curl <PAIR_BASE_URL>/v1/chat/completions \
 
 ### Ollama-Style Request (Ollama Endpoint Only)
 
-Sending this to the LM Studio endpoint fails, because LM Studio does not
-implement Ollama's API. The `-N` flag tells `curl` not to buffer, so it displays
-the response stream as it is generated.
+Use Ollama's copied native root as `<OLLAMA_BASE_URL>`. LM Studio and oMLX do
+not implement Ollama's API. The `-N` flag tells `curl` not to buffer, so it
+displays the response stream as it is generated.
 
 ```bash
-curl -N <PAIR_BASE_URL>/api/chat \
+curl -N <OLLAMA_BASE_URL>/api/chat \
   -H "Content-Type: application/json" \
   -d '{
     "model": "<MODEL_NAME>",
@@ -462,9 +468,10 @@ The distinction matters when you fill in an application's settings. A client
 written against the OpenAI API usually wants the `/v1` included, as in
 `http://127.0.0.1:11434/v1`, and appends the rest of the path itself. A client
 written against Ollama wants the host on its own,
-`http://127.0.0.1:11434`. Either way, copy the current value from **Endpoints**
-rather than typing a port from memory, because a port you changed moves the
-endpoint with it.
+`http://127.0.0.1:11434`. **Endpoints** labels Ollama's copied URL as the native
+API root; append `/v1` when using it with an OpenAI client. LM Studio and oMLX
+copies already include `/v1`. Use these current values rather than typing a port
+from memory, because a port you changed moves the endpoint with it.
 
 For what PAIR supports, operating systems, engines, and client applications,
 refer to [What is supported](../README.md#what-is-supported) in the README.
@@ -518,7 +525,7 @@ Ask the endpoint what it can serve. This proves the proxy is listening and routi
 without depending on any particular model working:
 
 ```bash
-curl <PAIR_BASE_URL>/v1/models
+curl <OPENAI_BASE_URL>/models
 ```
 
 The reply is the cluster's inventory, not only this machine's, which is also a

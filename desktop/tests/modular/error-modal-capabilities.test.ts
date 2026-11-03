@@ -39,13 +39,18 @@ function report(nodeId: string, engineType: EngineType, capabilities: EngineCapa
     act(() => useEngineStatusStore.setState({ statusByNode }))
 }
 
-function render(operation: string, engineType: EngineType = 'ollama', nodeId = 'peer'): void {
+function render(
+    operation: string,
+    engineType: EngineType = 'ollama',
+    nodeId = 'peer',
+    message = 'Failed operation'
+): void {
     act(() => {
         useErrorsStore.setState({
             errors: [
                 {
                     id: 'retained-failure',
-                    message: 'Failed operation',
+                    message,
                     timestamp: 1,
                     engineType,
                     nodeId,
@@ -98,6 +103,20 @@ describe('ErrorModal retry capability gates', () => {
         useErrorsStore.setState({ errors: [] })
         useEngineStatusStore.setState({ statusByNode: new Map() })
         vi.unstubAllGlobals()
+    })
+
+    it('preserves a pull error and displays recognised cause guidance only for pulls', () => {
+        const message = 'pull model: no space left on device'
+        render('pull', 'ollama', 'peer', message)
+        expect(document.body.textContent).toContain(message)
+        expect(document.body.textContent).toContain(
+            'Free disk space on the node running the engine, then retry.'
+        )
+        render('install', 'ollama', 'peer', message)
+        expect(document.body.textContent).toContain(message)
+        expect(document.body.textContent).not.toContain(
+            'Free disk space on the node running the engine, then retry.'
+        )
     })
 
     it('never offers a retained oMLX pull retry locally or on a peer', () => {

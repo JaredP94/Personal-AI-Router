@@ -46,6 +46,14 @@ PAIR discovers peers on the local network. If **Add node** or
 - Allow PAIR through host firewalls on each system.
 - Retry with the peer's IP address in **Add node**.
 
+On macOS, check **System Settings > Privacy & Security > Local Network** and
+allow PAIR if it is listed. Packaged builds declare a local-network usage
+explanation and the `_nvpair-node._tcp` Bonjour service. A reporter in
+[NVIDIA/Personal-AI-Router#3](https://github.com/NVIDIA/Personal-AI-Router/issues/3)
+found these keys necessary but not sufficient on macOS 27 for Go-sent multicast.
+The declarations alone do not establish that discovery works; use a peer's IP
+address if automatic discovery remains unavailable.
+
 ## Pairing Fails or Stalls
 
 A PIN belongs to one invitation attempt. A mistyped PIN, a canceled or expired
@@ -86,6 +94,19 @@ should serve requests.
 
 For a fuller walkthrough of install, start, stop, update, uninstall, and what
 PAIR restores after relaunch, refer to [Managing Engines](engine-lifecycle.mdx).
+
+## A Model Download Fails
+
+The error dialog retains the engine's original pull error. For recognisable disk-full,
+DNS, network-timeout, TLS, explicit IPv6-reachability, missing-model, or authentication
+errors, it also shows a short next step. Unrecognised errors show only the original
+message; PAIR does not infer a cause from a generic failure or exit code.
+
+Apply network and disk checks on the **node running the engine**, which may be a peer.
+Check the model name and tag at its source. If access is restricted, authenticate
+through the engine or provider; never paste tokens or credentials into a support
+request. For TLS failures, check the clock and certificate trust rather than
+disabling verification. Retry after addressing the reported cause.
 
 ## An Application Cannot Reach PAIR
 

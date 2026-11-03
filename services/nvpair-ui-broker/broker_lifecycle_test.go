@@ -125,11 +125,18 @@ func (h *orderedLifecycleHandle) Stop() {
 }
 
 func TestInferenceShutdownStopsProxiesBeforeEngines(t *testing.T) {
-	order := make(chan string, 3)
+	resetTeardownClock()
+	t.Cleanup(resetTeardownClock)
+	order := make(chan string, 4)
 	ollama := newOrderedLifecycleHandle("ollama-proxy", order)
 	lmstudio := newOrderedLifecycleHandle("lmstudio-proxy", order)
+	omlx := newOrderedLifecycleHandle("omlx-proxy", order)
 	proxySup := newSupervisor("proxy", noRestartPolicy(), func() (supervisedHandle, error) { return ollama, nil })
 	lmstudioSup := newSupervisor("lmstudio-proxy", noRestartPolicy(), func() (supervisedHandle, error) { return lmstudio, nil })
+	omlxSup := newSupervisor("omlx-proxy", noRestartPolicy(), func() (supervisedHandle, error) { return omlx, nil })
+	if err := omlxSup.Start(); err != nil {
+		t.Fatal(err)
+	}
 	if err := proxySup.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -152,13 +159,14 @@ func TestInferenceShutdownStopsProxiesBeforeEngines(t *testing.T) {
 		_ = codec.Respond(msg.ID, nil)
 	}()
 
-	b := &Broker{proxySup: proxySup, lmstudioProxySup: lmstudioSup}
+	b := &Broker{proxySup: proxySup, lmstudioProxySup: lmstudioSup, omlxProxySup: omlxSup}
 	b.setEngineMgr(engine)
 	b.shutdownInferenceStack()
 
-	got := []string{<-order, <-order, <-order}
-	if got[0] != "lmstudio-proxy" || got[1] != "ollama-proxy" || got[2] != "engine-manager" {
-		t.Fatalf("shutdown order = %v, want [lmstudio-proxy ollama-proxy engine-manager]", got)
+	got := []string{<-order, <-order, <-order, <-order}
+	seen := map[string]bool{got[0]: true, got[1]: true, got[2]: true}
+	if !seen["omlx-proxy"] || !seen["lmstudio-proxy"] || !seen["ollama-proxy"] || got[3] != "engine-manager" {
+		t.Fatalf("shutdown order = %v, want all three proxies before engine-manager", got)
 	}
 }
 
