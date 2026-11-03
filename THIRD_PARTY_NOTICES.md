@@ -180,7 +180,6 @@ graph and requires separate review, including preservation in built CSS.
 | `get-proto` | 1.0.1 | MIT |
 | `github.com/atotto/clipboard` | v0.1.4 | BSD-3-Clause |
 | `github.com/aymanbagabas/go-osc52/v2` | v2.0.1 | MIT |
-| `github.com/cenkalti/backoff` | v2.2.1+incompatible | MIT |
 | `github.com/cenkalti/backoff/v4` | v4.3.0 | MIT |
 | `github.com/charmbracelet/bubbles` | v1.0.0 | MIT |
 | `github.com/charmbracelet/bubbletea` | v1.3.10 | MIT |
@@ -198,7 +197,6 @@ graph and requires separate review, including preservation in built CSS.
 | `github.com/go-logr/stdr` | v1.2.2 | Apache-2.0 |
 | `github.com/go-ole/go-ole` | v1.2.6 | MIT |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause |
-| `github.com/grandcat/zeroconf` | v1.0.0 | MIT |
 | `github.com/grpc-ecosystem/grpc-gateway/v2` | v2.25.1 | BSD-3-Clause |
 | `github.com/jaypipes/ghw` | v0.24.0 | Apache-2.0 |
 | `github.com/jaypipes/pcidb` | v1.1.1 | Apache-2.0 |
@@ -5365,36 +5363,6 @@ SOFTWARE.
 
 ```
 
-### github.com/cenkalti/backoff v2.2.1+incompatible
-
-License: MIT
-
-Repository: https://github.com/cenkalti/backoff
-
-```text
-The MIT License (MIT)
-
-Copyright (c) 2014 Cenk Altı
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-```
-
 ### github.com/cenkalti/backoff/v4 v4.3.0
 
 License: MIT
@@ -6464,43 +6432,6 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-```
-
-### github.com/grandcat/zeroconf v1.0.0
-
-License: MIT
-
-Repository: https://github.com/grandcat/zeroconf
-
-```text
-The MIT License (MIT)
- 
-Copyright (c) 2016 Stefan Smarzly
-Copyright (c) 2014 Oleksandr Lobunets
-
-Note: Copyright for portions of project zeroconf.sd are held by Oleksandr 
-      Lobunets, 2014, as part of project bonjour. All other copyright for 
-      project zeroconf.sd are held by Stefan Smarzly, 2016.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
 
 ```
 
