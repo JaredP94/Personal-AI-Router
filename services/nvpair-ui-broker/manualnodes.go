@@ -200,7 +200,7 @@ func (b *Broker) persistManualNode(entry persistedManualNode) error {
 	replaced := false
 	for i := range entries {
 		if entries[i].key() == entry.key() {
-			if entry.Kind == "pair" && entry.PeerUUID == "" && entries[i].Kind == "pair" && entries[i].Address == entry.Address {
+			if entry.Kind == "pair" && entries[i].Kind == "pair" && entries[i].Address == entry.Address && entries[i].PeerUUID != "" {
 				entry.PeerUUID = entries[i].PeerUUID
 			}
 			entries[i] = entry
@@ -287,7 +287,7 @@ func (b *Broker) rememberManualPeer(s manualNodeStatus) {
 		return
 	}
 	for i := range entries {
-		if entries[i].key() == s.ID && entries[i].Address == s.Address && entries[i].Kind == "pair" && entries[i].PeerUUID != s.HostUUID {
+		if entries[i].key() == s.ID && entries[i].Address == s.Address && entries[i].Kind == "pair" && entries[i].PeerUUID == "" {
 			entries[i].PeerUUID = s.HostUUID
 			if err := writePersistedManualNodes(b.manualNodesConfigPath, entries); err != nil {
 				slog.Warn("failed to persist manual peer association", "err", err)
@@ -317,11 +317,9 @@ func (b *Broker) manualAliasesForPeer(id string, addressHints ...string) ([]stri
 	}
 	aliases := map[string]bool{}
 	b.manualMu.Lock()
+	statuses := make(map[string]manualNodeStatus, len(b.manualNodeStatuses))
 	for alias, entry := range b.manualNodeStatuses {
-		s := entry.status
-		if s.Kind != "engine" && (s.HostUUID == peerID || s.ClusterUUID == peerID || alias == id || addresses[s.Address]) {
-			aliases[alias] = true
-		}
+		statuses[alias] = entry.status
 	}
 	b.manualMu.Unlock()
 	b.manualPersistMu.Lock()
@@ -330,9 +328,34 @@ func (b *Broker) manualAliasesForPeer(id string, addressHints ...string) ([]stri
 	if err != nil {
 		return nil, err
 	}
+	configured := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		if entry.Kind == "pair" && (entry.PeerUUID == peerID || entry.key() == id || addresses[entry.Address]) {
-			aliases[entry.key()] = true
+		alias := entry.key()
+		configured[alias] = true
+		if entry.Kind != "pair" {
+			continue
+		}
+		// A current durable association wins over every cached identity,
+		// reused address, or transient hint. Only unassociated entries need
+		// the reachability/observation fallbacks.
+		if entry.PeerUUID != "" {
+			if entry.PeerUUID == peerID {
+				aliases[alias] = true
+			}
+			continue
+		}
+		s := statuses[alias]
+		if alias == id || addresses[entry.Address] || s.Address == entry.Address && s.Kind != "engine" && (s.HostUUID == peerID || s.ClusterUUID == peerID) {
+			aliases[alias] = true
+		}
+	}
+	// Automatically tracked cluster rows do not have durable configurations.
+	for alias, s := range statuses {
+		if configured[alias] || s.Kind == "engine" {
+			continue
+		}
+		if s.HostUUID == peerID || s.ClusterUUID == peerID || alias == id || addresses[s.Address] {
+			aliases[alias] = true
 		}
 	}
 	out := make([]string, 0, len(aliases))
@@ -343,11 +366,46 @@ func (b *Broker) manualAliasesForPeer(id string, addressHints ...string) ([]stri
 	return out, nil
 }
 
+// Recheck the current association atomically with the durable deletion: a
+// pairing completion can reassociate an alias while the removal RPC is pending,
+// after either snapshot was collected.
+func (b *Broker) forgetPersistedManualPeerAlias(alias, peerID string) (bool, error) {
+	b.manualPersistMu.Lock()
+	defer b.manualPersistMu.Unlock()
+	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
+	if err != nil {
+		return false, err
+	}
+	out := entries[:0]
+	found := false
+	for _, entry := range entries {
+		if entry.key() != alias {
+			out = append(out, entry)
+			continue
+		}
+		if entry.Kind != "pair" || entry.PeerUUID != "" && entry.PeerUUID != peerID {
+			return false, nil
+		}
+		found = true
+	}
+	if !found {
+		return true, nil
+	} // an automatically tracked, non-durable row
+	if err := writePersistedManualNodes(b.manualNodesConfigPath, out); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Caller serializes this transaction with manual-node mutations.
-func (b *Broker) forgetManualAliases(aliases []string) error {
+func (b *Broker) forgetManualAliases(aliases []string, peerID string) error {
 	for _, alias := range aliases {
-		if err := b.removePersistedManualNode(alias); err != nil {
+		removed, err := b.forgetPersistedManualPeerAlias(alias, peerID)
+		if err != nil {
 			return err
+		}
+		if !removed {
+			continue
 		}
 		if worker := b.getManualNodes(); worker != nil {
 			params, _ := json.Marshal(map[string]string{"id": alias})

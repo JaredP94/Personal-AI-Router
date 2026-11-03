@@ -112,7 +112,12 @@ hints can support an already in-flight unpair when the roster file has already
 lost the peer; they expire on that request's success or failure and never enter
 persistent configuration, inventory or routing. This field
 is not an identity, inventory or transport proof; clients cannot supply it as an
-authenticated association. After successful `nodes:remove`, the broker forgets
+authenticated association. Once non-empty, each entry's current `peer_uuid`
+is authoritative for cleanup: only that peer matches. Address and cached-identity
+fallbacks apply only when the entry has no association. Cached inventory and
+ordinary re-adds cannot override a current association; authenticated pairing can
+reassociate it, and deletion rechecks ownership atomically with the file write.
+After successful `nodes:remove`, the broker forgets
 all associated manual PAIR aliases and their live projections. Failed unpair keeps
 them. A cleanup failure is returned to the client, not silently swallowed. This
 adapts the behavior of NVIDIA/Personal-AI-Router@692950c

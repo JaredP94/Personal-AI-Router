@@ -3806,7 +3806,7 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 					manualAliases = append(manualAliases, alias)
 				}
 			}
-			if err := b.forgetManualAliases(manualAliases); err != nil {
+			if err := b.forgetManualAliases(manualAliases, removedPeerID); err != nil {
 				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but forgetting manual entries failed: %v", err))
 				return
 			}
