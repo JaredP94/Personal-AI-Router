@@ -156,7 +156,11 @@ version only decides what a fresh install starts from.
 `install.creates` names `/Applications/oMLX.app`: an install that finds an app
 already there opens it but does not record it as PAIR's (and drops any earlier
 claim), so it is never offered for uninstall. A claim records the created app's
-file identity and covers that exact bundle only. A copy put there later is a
+file identity and covers that exact bundle only. On macOS this includes birth
+time (stable across the install's rename); on Linux it includes ctime so a reused
+inode cannot inherit the claim. Linux metadata changes also invalidate the claim.
+Older device/inode-only claims no longer authorize removal; reinstall through
+PAIR to establish a new claim. A copy put there later is a
 different file, and so is a bundle oMLX's own updater swaps in: after an in-app
 update PAIR no longer offers uninstall, and the app is removed from the Finder. Uninstalling an oMLX PAIR installed quits the app and removes
 `/Applications/oMLX.app` and the two shims it writes (`omlx`,

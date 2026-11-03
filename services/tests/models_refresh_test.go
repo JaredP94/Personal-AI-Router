@@ -55,6 +55,7 @@ func (s *swapModels) handler() http.HandlerFunc {
 }
 
 func TestModelsPeriodicRefreshConvergesWithoutMDNSChange(t *testing.T) {
+	requireMulticast(t)
 	// Start with an empty inventory (engine present but serving no models yet).
 	stub := &swapModels{}
 	stub.set(map[string]any{"models": []string{}})

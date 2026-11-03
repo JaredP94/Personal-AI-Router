@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,6 +163,41 @@ func goBuild(srcDir, output string) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+var isolatedHomeKeys = []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "USERPROFILE"}
+
+// testCommand is the only runtime command factory. Like upstream's post-build
+// isolation, this leaves goBuild's module/build caches alone, but gives each
+// test child (and all its supervised workers) disposable app-data state.
+func testCommand(t *testing.T, binary string, args ...string) *exec.Cmd {
+	t.Helper()
+	return testCommandInDir(t, t.TempDir(), binary, args...)
+}
+
+// An explicit root lets restart tests reuse their own persisted state.
+func testCommandInDir(t *testing.T, root, binary string, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(binary, args...)
+	cmd.Env = os.Environ()
+	for _, key := range isolatedHomeKeys {
+		cmd.Env = append(cmd.Env, key+"="+root)
+	}
+	return cmd
+}
+
+// addTestEnv permits scenario-specific overrides without undoing isolation.
+func addTestEnv(t *testing.T, cmd *exec.Cmd, entries ...string) {
+	t.Helper()
+	for _, entry := range entries {
+		key, _, _ := strings.Cut(entry, "=")
+		for _, isolated := range isolatedHomeKeys {
+			if strings.EqualFold(key, isolated) {
+				t.Fatalf("test environment cannot override %s", isolated)
+			}
+		}
+	}
+	cmd.Env = append(cmd.Env, entries...)
 }
 
 // --- JSON-RPC helpers ---

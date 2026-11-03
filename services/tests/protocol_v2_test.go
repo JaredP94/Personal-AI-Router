@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -40,15 +39,11 @@ type protocolV2Broker struct {
 func startProtocolV2Broker(t *testing.T) *protocolV2Broker {
 	t.Helper()
 	p := &protocolV2Broker{
-		cmd:      exec.Command(brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir()),
+		cmd:      testCommand(t, brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir()),
 		messages: make(chan jsonrpc.Message, 64), readError: make(chan error, 1), done: make(chan struct{}),
 	}
 	// Optional binaries resolve ONLY against cwd, not next to brokerBin.
 	p.cmd.Dir = t.TempDir()
-	p.cmd.Env = os.Environ()
-	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"} {
-		p.cmd.Env = append(p.cmd.Env, key+"="+t.TempDir())
-	}
 	p.cmd.Stderr = &p.stderr
 	p.cmd.WaitDelay = time.Second
 	var err error

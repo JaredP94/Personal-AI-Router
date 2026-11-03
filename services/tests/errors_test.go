@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"sync"
@@ -36,7 +35,7 @@ import (
 //   - clear   →  update broadcast with empty list
 //   - re-report after clear  →  resurrect (ack-until-reemit)
 func TestErrorsBrokerPipeline_EndToEnd(t *testing.T) {
-	cmd := exec.Command(errorsBin)
+	cmd := testCommand(t, errorsBin)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)

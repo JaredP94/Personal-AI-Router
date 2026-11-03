@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"sort"
 	"sync"
 	"testing"
@@ -57,7 +56,7 @@ func writeStampedSchedulerNotification(t *testing.T, w io.Writer, nextSeq *int, 
 // reader over its stdout JSON-RPC frames, and a cleanup.
 func startSchedulerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
-	cmd := exec.Command(schedulerBin, args...)
+	cmd := testCommand(t, schedulerBin, args...)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

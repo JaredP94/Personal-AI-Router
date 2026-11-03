@@ -62,14 +62,10 @@ type proxyProc struct {
 // config.
 func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc {
 	t.Helper()
-	cfg := t.TempDir()
-	cmd := exec.Command(proxyBin,
+	cmd := testCommand(t, proxyBin,
 		"--cluster-dir", clusterDir,
 		"--port", strconv.Itoa(listenPort),
 		"--ignore-persisted-port",
-	)
-	cmd.Env = append(os.Environ(),
-		"HOME="+cfg, "XDG_CONFIG_HOME="+cfg, "APPDATA="+cfg, "LOCALAPPDATA="+cfg,
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -241,6 +237,7 @@ func startFakeOllama(t *testing.T) (host string, port int, generates *int32) {
 }
 
 func TestSecureInferenceClusterMTLS(t *testing.T) {
+	requireMulticast(t)
 	baseA, baseB, baseC := t.TempDir(), t.TempDir(), t.TempDir()
 	clusterA := filepath.Join(baseA, "cluster")
 	clusterB := filepath.Join(baseB, "cluster")

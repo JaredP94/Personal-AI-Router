@@ -36,9 +36,9 @@ func TestWriteDemandFrame(t *testing.T) {
 			}
 
 			var frame struct {
-				JSONRPC string                `json:"jsonrpc"`
-				Method  string                `json:"method"`
-				ID      json.RawMessage       `json:"id"`
+				JSONRPC string               `json:"jsonrpc"`
+				Method  string               `json:"method"`
+				ID      json.RawMessage      `json:"id"`
 				Params  noderec.DemandParams `json:"params"`
 			}
 			if err := json.Unmarshal([]byte(line), &frame); err != nil {
@@ -78,7 +78,7 @@ func TestBrokerDemandOnWorkloadTransitions(t *testing.T) {
 				continue
 			}
 			var f struct {
-				Method string                `json:"method"`
+				Method string               `json:"method"`
 				Params noderec.DemandParams `json:"params"`
 			}
 			if err := json.Unmarshal([]byte(l), &f); err == nil && f.Method == "stats/set-demand" {
@@ -205,7 +205,7 @@ func TestBrokerDemandOnNodeInfoRestart(t *testing.T) {
 		t.Fatalf("expected 1 frame on restart, got %d: %q", len(lines), buf.String())
 	}
 	var f struct {
-		Method string                `json:"method"`
+		Method string               `json:"method"`
 		Params noderec.DemandParams `json:"params"`
 	}
 	if err := json.Unmarshal([]byte(lines[0]), &f); err != nil {

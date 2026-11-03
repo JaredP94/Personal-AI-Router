@@ -24,6 +24,7 @@ import (
 )
 
 func TestModelsHTTPEnrichment(t *testing.T) {
+	requireMulticast(t)
 	// Stand-in engine-manager HTTP surface serving the model list.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {

@@ -29,7 +29,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -80,8 +79,13 @@ func startBrokerProc(t *testing.T, args ...string) (io.WriteCloser, <-chan jsonr
 // cluster that directory describes (see newInterNodeCluster).
 func startBrokerProcInCluster(t *testing.T, clusterDir string, args ...string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
+	for _, arg := range args {
+		if arg == "--workload-manager-path" && portBusy(14320) {
+			t.Skip("workload-manager inter-node port 14320 already in use; skipping")
+		}
+	}
 	args = append([]string{"--cluster-dir", clusterDir}, args...)
-	cmd := exec.Command(brokerBin, args...)
+	cmd := testCommand(t, brokerBin, args...)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -278,6 +282,7 @@ func TestWorkloadOutOfOrderSuppressed(t *testing.T) {
 // evicts it (miss threshold + liveness probe), and the broker synthesizes the
 // terminal workloads:upsert(state=failed).
 func TestWorkloadFailedOnNodeLoss(t *testing.T) {
+	requireMulticast(t)
 	// The peer's mDNS instance name and its stable HostUUID differ on purpose:
 	// workloads are stamped/keyed by HostUUID, and the node-loss sweep
 	// must match on that UUID, not the display name. Keying by name would leave
@@ -365,6 +370,7 @@ func TestWorkloadFailedOnNodeLoss(t *testing.T) {
 // workload event that the broker stamps and forwards to the manager, which
 // broadcasts it to a discovered peer.
 func TestWorkloadManagerOutboundBroadcast(t *testing.T) {
+	requireMulticast(t)
 	// Fake Ollama upstream the proxy forwards to (200 on any request).
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)

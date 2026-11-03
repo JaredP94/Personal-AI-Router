@@ -36,10 +36,8 @@ func startCM(t *testing.T, configDir string, port int) *cmProc {
 // cancel-vs-Completion commit-window delay).
 func startCMEnv(t *testing.T, configDir string, port int, extraEnv []string) *cmProc {
 	t.Helper()
-	cmd := exec.Command(clusterMgrBin, "--config-dir", configDir, "--port", strconv.Itoa(port))
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd := testCommand(t, clusterMgrBin, "--config-dir", configDir, "--port", strconv.Itoa(port))
+	addTestEnv(t, cmd, extraEnv...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)

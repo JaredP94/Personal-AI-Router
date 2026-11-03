@@ -79,6 +79,16 @@ func (p hangPolicy) withDefaults() hangPolicy {
 	return p
 }
 
+// startProbe transfers cancellation ownership to watch, which cancels on
+// completion, deadline, or any exit. A buffered result lets a late probe finish
+// without blocking after watch has moved on to a replacement handle.
+func (p hangPolicy) startProbe() (context.Context, context.CancelFunc, <-chan error) {
+	ctx, cancel := context.WithTimeout(context.Background(), p.deadline)
+	result := make(chan error, 1)
+	go func() { result <- p.probe(ctx) }()
+	return ctx, cancel, result
+}
+
 // restartPolicy configures the hybrid auto-restart behaviour the broker
 // applies to a crashed worker. The defaults (see defaultRestartPolicy)
 // implement: exponential backoff between attempts, a bounded budget so a
@@ -535,10 +545,8 @@ func (s *supervisor) watch(h supervisedHandle, onStable func(), onHealth func(er
 			if probeC != nil {
 				continue // Never overlap probes for the same live handle.
 			}
-			probeCtx, cancel = context.WithTimeout(context.Background(), policy.deadline)
-			result := make(chan error, 1)
-			probeC, deadlineC = result, probeCtx.Done()
-			go func(ctx context.Context) { result <- policy.probe(ctx) }(probeCtx)
+			probeCtx, cancel, probeC = policy.startProbe()
+			deadlineC = probeCtx.Done()
 		case err := <-probeC:
 			if probeCtx.Err() != nil {
 				err = probeCtx.Err() // A late success cannot beat the deadline.

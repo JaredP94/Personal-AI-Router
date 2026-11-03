@@ -17,7 +17,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,7 +124,7 @@ func startNodeInfo(t *testing.T, instanceName string, extraArgs ...string) (clea
 	t.Helper()
 	// node-info no longer advertises over mDNS (discovery consolidation), so
 	// these tests connect directly to the ports they pass.
-	cmd := exec.Command(nodeInfoBin, extraArgs...)
+	cmd := testCommand(t, nodeInfoBin, extraArgs...)
 	cmd.Stderr = os.Stderr
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {

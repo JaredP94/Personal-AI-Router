@@ -15,11 +15,11 @@ func TestPolicyTable(t *testing.T) {
 	epoch := time.Unix(1000000, 0)
 
 	cases := []struct {
-		name           string
-		setup          func(p *SamplingPolicy, now time.Time)
-		evalAt         time.Duration
-		wantInterval   time.Duration
-		wantMode       SamplingMode
+		name         string
+		setup        func(p *SamplingPolicy, now time.Time)
+		evalAt       time.Duration
+		wantInterval time.Duration
+		wantMode     SamplingMode
 	}{
 		{
 			name:         "clean idle: no leases, no demand",
@@ -189,9 +189,9 @@ func TestPollIntentClassification(t *testing.T) {
 		{"foreground", PollIntentForeground},
 		{"scheduling", PollIntentScheduling},
 		{"background", PollIntentBackground},
-		{"", PollIntentForeground},        // missing header behaves as foreground
-		{"unknown", PollIntentForeground},   // unknown header behaves as foreground
-		{"FOREGROUND", PollIntentForeground},// unknown/cased behaves as foreground
+		{"", PollIntentForeground},           // missing header behaves as foreground
+		{"unknown", PollIntentForeground},    // unknown header behaves as foreground
+		{"FOREGROUND", PollIntentForeground}, // unknown/cased behaves as foreground
 	}
 	for _, tc := range cases {
 		if got := parsePollIntent(tc.header); got != tc.want {

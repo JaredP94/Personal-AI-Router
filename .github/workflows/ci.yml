@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Adapted from NVIDIA/Personal-AI-Router@b4a0cc5. PR code runs only on
+# disposable GitHub-hosted runners, without secrets or release automation.
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches: [main]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ci-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+    GOTOOLCHAIN: local
+
+jobs:
+    headers:
+        name: SPDX headers
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@v5.0.0
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@v5.0.0
+              with:
+                  node-version: '25.5.0'
+            - run: node scripts/spdx-headers.mjs
+
+    desktop:
+        name: Desktop checks
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        defaults:
+            run:
+                working-directory: desktop
+        steps:
+            - uses: actions/checkout@v5.0.0
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@v5.0.0
+              with:
+                  node-version: '25.5.0'
+                  cache: npm
+                  cache-dependency-path: desktop/package-lock.json
+            - uses: actions/setup-go@v6.0.0
+              with:
+                  go-version: '1.26.7'
+                  cache-dependency-path: services/**/go.sum
+            # The license checker is deliberately offline and enumerates every
+            # release target, including Windows-only dependencies. A native
+            # build alone would leave those dependencies out of the cache.
+            - name: Populate Go license dependency cache
+              working-directory: .
+              shell: bash
+              run: |
+                  for mod in services/*/go.mod; do
+                      (cd "$(dirname "$mod")" && go mod download)
+                  done
+                  git diff --exit-code -- services
+            - run: npm ci --prefer-offline
+            - run: npm run typecheck
+            - run: npm run lint -- --max-warnings=0
+            - run: npm run test:unit
+            - run: npm run dead-code:check
+            - run: npm run service-contracts:check
+            - run: npm run licenses:check
+
+    services:
+        name: Go modules (${{ matrix.os }})
+        # Pin the supported arm64 image: macos-latest failed runner acquisition
+        # during the macOS 26 rollout, before any test step could execute.
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [macos-15, ubuntu-latest]
+        steps:
+            - uses: actions/checkout@v5.0.0
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-go@v6.0.0
+              with:
+                  go-version: '1.26.7'
+                  cache-dependency-path: services/**/go.sum
+            - name: Linux test tools
+              if: runner.os == 'Linux'
+              run: sudo apt-get update -qq && sudo apt-get install -y -qq lsof iproute2
+            - name: Check Go formatting
+              shell: bash
+              run: |
+                  unformatted=$(gofmt -l services)
+                  if [ -n "$unformatted" ]; then
+                      printf '%s\n' "$unformatted"
+                      exit 1
+                  fi
+            - name: Vet and test every service module (including libraries)
+              shell: bash
+              run: |
+                  failed=0
+                  for mod in services/*/go.mod; do
+                      dir=$(dirname "$mod")
+                      # Cross-process tests run in their own job (Linux and macOS).
+                      if [ "$dir" = services/tests ]; then continue; fi
+                      echo "==> $dir"
+                      (cd "$dir" && go vet ./... && go test -count=1 -timeout=5m -v ./...) || failed=1
+                  done
+                  exit "$failed"
+
+    cross-process:
+        name: Cross-process tests (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            # Linux runners can send mDNS multicast, so discovery is exercised
+            # there. Hosted macOS VMs cannot (every send to 224.0.0.251 fails
+            # with "no route to host"); on macOS the discovery tests skip with
+            # that reason named, and everything else runs.
+            matrix:
+                os: [ubuntu-latest, macos-15]
+        steps:
+            - uses: actions/checkout@v5.0.0
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-go@v6.0.0
+              with:
+                  go-version: '1.26.7'
+                  cache-dependency-path: services/**/go.sum
+            - name: Install port-owner tools
+              if: runner.os == 'Linux'
+              run: sudo apt-get update -qq && sudo apt-get install -y -qq lsof iproute2
+            # Run the source guard before executing any application binary.
+            # All runtime helpers must use per-test disposable app-data roots.
+            - name: Check process isolation
+              working-directory: services/tests
+              run: go test -count=1 -run '^Test(ProcessHelpersRequireIsolation|CommandEnvironmentIsPerTest)$' .
+            - name: Vet cross-process suite
+              working-directory: services/tests
+              run: go vet ./...
+            # Leave five minutes for setup and artifact upload. The Go deadline
+            # prints the active test and goroutines before the job is killed.
+            - name: Run isolated cross-process suite with diagnostics
+              working-directory: services/tests
+              shell: bash
+              run: |
+                  set -o pipefail
+                  go test -v -count=1 -timeout=15m -json ./... 2>&1 \
+                      | tee "$RUNNER_TEMP/cross-process.jsonl" \
+                      | jq --unbuffered -j 'select(.Output != null) | .Output'
+            - name: Upload cross-process diagnostics
+              if: always()
+              uses: actions/upload-artifact@v4.6.2
+              with:
+                  name: cross-process-${{ matrix.os }}
+                  path: ${{ runner.temp }}/cross-process.jsonl
+                  if-no-files-found: warn

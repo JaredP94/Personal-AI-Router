@@ -17,6 +17,7 @@ import (
 // ni=14318. This is the new consolidated discovery record (distinct from
 // node-info's own transitional _nvpair-node-info advertisement).
 func TestBrokerAdvertisesNodeRecord(t *testing.T) {
+	requireMulticast(t)
 	_, msgs, stderr, cleanup := startBrokerWith(t, "--node-info-path", nodeInfoBin)
 	t.Cleanup(cleanup)
 	// Drain the broker's stdout/stderr so it doesn't stall on a full pipe while

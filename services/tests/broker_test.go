@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -59,7 +58,7 @@ type subscriptionResult struct {
 
 func startBroker(t *testing.T) (stdin io.WriteCloser, msgs <-chan jsonrpc.Message, cleanup func()) {
 	t.Helper()
-	cmd := exec.Command(brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir())
+	cmd := testCommand(t, brokerBin, "--scanner-path", scannerBin, "--cluster-dir", t.TempDir())
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -192,6 +191,7 @@ func waitForPushContaining(t *testing.T, msgs <-chan jsonrpc.Message, instance s
 }
 
 func TestCrossProcessBrokerSubscription(t *testing.T) {
+	requireMulticast(t)
 	const (
 		inst1 = "xproc-broker-1"
 		inst2 = "xproc-broker-2"

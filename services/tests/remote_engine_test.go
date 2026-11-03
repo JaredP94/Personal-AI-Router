@@ -23,7 +23,6 @@ import (
 	"math/big"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -202,7 +201,7 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 // would leak into the fixture.
 func setRemoteEngineHome(t *testing.T, dir string) {
 	t.Helper()
-	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"} {
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "USERPROFILE"} {
 		t.Setenv(key, dir)
 	}
 }
@@ -247,7 +246,7 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 // stays alive) and drains stdout. Returns stdin and a cleanup.
 func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) (io.WriteCloser, func()) {
 	t.Helper()
-	cmd := exec.Command(engineMgrBin,
+	cmd := testCommandInDir(t, clusterDir, engineMgrBin,
 		"--control-port", fmt.Sprintf("%d", controlPort),
 		"--cluster-dir", clusterDir,
 		"--log-level", "warn",
@@ -282,7 +281,7 @@ func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) 
 // client. Returns its stdin, a reader over its stdout frames, and a cleanup.
 func startEngineManagerStdio(t *testing.T, clusterDir string) (io.WriteCloser, <-chan jsonrpc.Message, func()) {
 	t.Helper()
-	cmd := exec.Command(engineMgrBin, "--cluster-dir", clusterDir, "--log-level", "warn")
+	cmd := testCommandInDir(t, clusterDir, engineMgrBin, "--cluster-dir", clusterDir, "--log-level", "warn")
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -149,6 +149,10 @@ func TestBrokerBridgesManualNodeIntoProxy(t *testing.T) {
 	stopOllama := fakeOllama(t) // skips if 11434 unavailable
 	t.Cleanup(stopOllama)
 
+	// Own node-info as well as the engine: a running local PAIR must not
+	// supply its cluster principal/UUID to this deliberately unclustered node.
+	t.Cleanup(fakeNodeInfo(t, ""))
+
 	stdin, msgs, _, cleanup := startBrokerWith(t,
 		"--manual-nodes-path", manualNodesBin,
 		"--proxy-path", proxyBin,
@@ -257,6 +261,7 @@ func TestBrokerBridgesManualNodeIntoLMStudioProxy(t *testing.T) {
 	configDir := persistLMStudioProxyPort(t, freePort(t))
 	stopLM := fakeLMStudio(t) // skips if 1234 unavailable
 	t.Cleanup(stopLM)
+	t.Cleanup(fakeNodeInfo(t, ""))
 
 	stdin, msgs, _, cleanup := startBrokerWithConfigDir(t, configDir,
 		"--manual-nodes-path", manualNodesBin,

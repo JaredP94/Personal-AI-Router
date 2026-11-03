@@ -32,6 +32,55 @@ func (h *fakeHandle) Stop() { h.stopOnce.Do(func() { close(h.stoppedC) }) }
 // crash closes the handle's done channel, simulating an unexpected exit.
 func (h *fakeHandle) crash() { close(h.done) }
 
+func TestWatchCancelsInFlightProbeOnExit(t *testing.T) {
+	for _, exit := range []string{"stop", "restart", "worker-exit"} {
+		t.Run(exit, func(t *testing.T) {
+			sup := newSupervisor("cancel-test", restartPolicy{}, nil)
+			h := newFakeHandle()
+			started := make(chan context.Context, 1)
+			sup.hang = hangPolicy{
+				interval: time.Millisecond, deadline: time.Hour,
+				probe: func(ctx context.Context) error {
+					started <- ctx
+					<-ctx.Done()
+					return ctx.Err()
+				},
+			}
+			defer sup.stopOnce.Do(func() { close(sup.stopCh) })
+			done := make(chan watchResult, 1)
+			go func() { done <- sup.watch(h, nil, nil) }()
+			var probeCtx context.Context
+			select {
+			case probeCtx = <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("probe did not start")
+			}
+			want := watchStopped
+			switch exit {
+			case "stop":
+				sup.stopOnce.Do(func() { close(sup.stopCh) })
+			case "restart":
+				sup.restartCh <- struct{}{}
+				want = watchRestart
+			case "worker-exit":
+				h.crash()
+				want = watchExited
+			}
+			select {
+			case got := <-done:
+				if got != want {
+					t.Fatalf("watch = %v, want %v", got, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("watch did not exit")
+			}
+			if !errors.Is(probeCtx.Err(), context.Canceled) {
+				t.Fatalf("in-flight probe not canceled on %s: %v", exit, probeCtx.Err())
+			}
+		})
+	}
+}
+
 func TestRestartPolicyBackoff(t *testing.T) {
 	p := restartPolicy{baseDelay: time.Second, maxDelay: 16 * time.Second}
 	cases := []struct {

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -42,6 +41,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("multicast + miss-threshold timing; skipped under -short")
 	}
+	requireMulticast(t)
 
 	const (
 		peerInstance = "ghost-peer-host"
@@ -129,7 +129,7 @@ func TestScannerEvictsRecordSupersededAtItsAddress(t *testing.T) {
 // real cluster identity on the LAN while the test runs.
 func startScannerForGhostTest(t *testing.T) <-chan jsonrpc.Message {
 	t.Helper()
-	cmd := exec.Command(scannerBin, "--cluster-dir", t.TempDir())
+	cmd := testCommand(t, scannerBin, "--cluster-dir", t.TempDir())
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
