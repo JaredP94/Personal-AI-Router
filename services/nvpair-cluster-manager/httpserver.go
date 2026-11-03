@@ -689,18 +689,6 @@ func (m *Manager) finalizePairing(inviteID string, sess *pairingSession, pi *Pai
 		m.deleteSession(inviteID)
 		return errPairingCommitStale
 	}
-	// Preserve the entered dial name for manual-address lifecycle cleanup. The
-	// roster deliberately records the observed numeric source instead. Emit
-	// only after the authenticated pin/member commit, before publishing paired
-	// state; this association is not an inventory or routing proof.
-	if address := hostOnly(sess.joinerAddr); address != "" {
-		if err := m.codec.Notify("cluster:pairing-completed", struct {
-			Address  string `json:"address"`
-			PeerUUID string `json:"peerUuid"`
-		}{Address: address, PeerUUID: pi.NodeUUID}); err != nil {
-			log.Printf("pairing cleanup association notification failed: %v", err)
-		}
-	}
 	if inv, ok := m.getInvite(inviteID); ok {
 		inv.State = inviteStatePaired
 		inv.RespondedAt = &now
@@ -770,6 +758,21 @@ func (m *Manager) commitPairing(sess *pairingSession, pi *PairingInfo, cert *x50
 			log.Printf("pairing: clear superseded removal proof for %s: %v", admitted.NodeUUID, clearErr)
 		}
 		sess.peerPairing = &admitted
+		// This fire-and-forget write is ordered with the roster commit/removal.
+		// It never waits for an acknowledgement or a broker RPC: the broker's
+		// independent worker read pump consumes it while its caller may be
+		// waiting for nodes:remove, and the consumer takes no mutation lock or
+		// worker round trip.
+		if address := hostOnly(sess.joinerAddr); address != "" {
+			if notifyErr := m.codec.Notify("cluster:pairing-completed", struct {
+				Address        string `json:"address"`
+				PeerUUID       string `json:"peerUuid"`
+				ClusterID      string `json:"clusterId"`
+				AdmissionEpoch uint64 `json:"admissionEpoch"`
+			}{address, admitted.NodeUUID, admitted.ClusterID, admitted.AdmissionEpoch}); notifyErr != nil {
+				log.Printf("pairing cleanup association notification failed: %v", notifyErr)
+			}
+		}
 		committed = true
 	})
 	return

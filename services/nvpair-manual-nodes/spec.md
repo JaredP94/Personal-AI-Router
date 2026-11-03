@@ -102,10 +102,15 @@ stored kinds or failed migration writes prevent replay rather than guessing.
 
 `peer_uuid` records a cleanup-only association from authenticated pairing
 completion (or a later pinned inventory proof). Cluster-manager emits internal
-`cluster:pairing-completed` with the original dial hostname and authenticated peer
-UUID after committing the pin/member, before publishing paired state. The broker
+`cluster:pairing-completed` with the original dial hostname, authenticated peer
+UUID, cluster ID and admission epoch inside the roster commit/removal boundary,
+before publishing paired state. It never waits for a broker acknowledgement. The broker
 associates matching manual PAIR aliases durably, even though the roster records
-an observed numeric source address and no node-info proof exists yet. This field
+an observed numeric source address and no node-info proof exists yet. Removed or
+obsolete admissions cannot persist an association. Up to 16 transient address
+hints can support an already in-flight unpair when the roster file has already
+lost the peer; they expire on that request's success or failure and never enter
+persistent configuration, inventory or routing. This field
 is not an identity, inventory or transport proof; clients cannot supply it as an
 authenticated association. After successful `nodes:remove`, the broker forgets
 all associated manual PAIR aliases and their live projections. Failed unpair keeps

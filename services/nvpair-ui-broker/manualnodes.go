@@ -272,40 +272,6 @@ func (b *Broker) manualAliasForKey(id string) string {
 	return id
 }
 
-// associatePairedManualNodes consumes only the supervised cluster-manager's
-// post-authentication completion. The original dial name connects a manual alias
-// to its peer even when the roster records an observed numeric source address.
-// This durable association is only for cleanup, never service authorization.
-func (b *Broker) associatePairedManualNodes(params json.RawMessage) error {
-	var paired struct {
-		Address  string `json:"address"`
-		PeerUUID string `json:"peerUuid"`
-	}
-	if err := json.Unmarshal(params, &paired); err != nil {
-		return err
-	}
-	if paired.Address == "" || paired.PeerUUID == "" {
-		return fmt.Errorf("invalid pairing cleanup association")
-	}
-	b.manualPersistMu.Lock()
-	defer b.manualPersistMu.Unlock()
-	entries, err := loadPersistedManualNodes(b.manualNodesConfigPath)
-	if err != nil {
-		return err
-	}
-	changed := false
-	for i := range entries {
-		if entries[i].Kind == "pair" && entries[i].Address == paired.Address && entries[i].PeerUUID != paired.PeerUUID {
-			entries[i].PeerUUID = paired.PeerUUID
-			changed = true
-		}
-	}
-	if changed {
-		return writePersistedManualNodes(b.manualNodesConfigPath, entries)
-	}
-	return nil
-}
-
 // rememberManualPeer records only a current, authenticated association. The
 // association helps lifecycle removal when the peer is later offline; it never
 // authorizes transport or inventory.
@@ -331,41 +297,29 @@ func (b *Broker) rememberManualPeer(s manualNodeStatus) {
 	}
 }
 
-func (b *Broker) manualAliasesForPeer(id string) ([]string, error) {
+func (b *Broker) manualAliasesForPeer(id string, addressHints ...string) ([]string, error) {
 	if id == "" {
 		return nil, nil
 	}
-	// Pairing may have finished before the first inventory probe. The local
-	// roster's configured address is sufficient for forgetting reachability,
-	// never for granting peer inventory or routing authority.
-	peerID, address := id, ""
-	if b.clusterDir != "" {
-		data, err := os.ReadFile(filepath.Join(b.clusterDir, "members.json"))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		if err == nil {
-			var members []struct {
-				ID       string `json:"id"`
-				NodeUUID string `json:"nodeUuid"`
-				Address  string `json:"ipAddress"`
-			}
-			if err := json.Unmarshal(data, &members); err != nil {
-				return nil, err
-			}
-			for _, member := range members {
-				if member.NodeUUID != "" && (member.NodeUUID == id || member.ID == id) {
-					peerID, address = member.NodeUUID, member.Address
-					break
-				}
-			}
+	member, err := b.manualMemberForID(id)
+	if err != nil {
+		return nil, err
+	}
+	peerID := member.NodeUUID
+	addresses := make(map[string]bool, len(addressHints)+1)
+	if member.Address != "" {
+		addresses[member.Address] = true
+	}
+	for _, hint := range addressHints {
+		if hint != "" {
+			addresses[hint] = true
 		}
 	}
 	aliases := map[string]bool{}
 	b.manualMu.Lock()
 	for alias, entry := range b.manualNodeStatuses {
 		s := entry.status
-		if s.Kind != "engine" && (s.HostUUID == peerID || s.ClusterUUID == peerID || alias == id || address != "" && s.Address == address) {
+		if s.Kind != "engine" && (s.HostUUID == peerID || s.ClusterUUID == peerID || alias == id || addresses[s.Address]) {
 			aliases[alias] = true
 		}
 	}
@@ -377,7 +331,7 @@ func (b *Broker) manualAliasesForPeer(id string) ([]string, error) {
 		return nil, err
 	}
 	for _, entry := range entries {
-		if entry.Kind == "pair" && (entry.PeerUUID == peerID || entry.key() == id || address != "" && entry.Address == address) {
+		if entry.Kind == "pair" && (entry.PeerUUID == peerID || entry.key() == id || addresses[entry.Address]) {
 			aliases[entry.key()] = true
 		}
 	}

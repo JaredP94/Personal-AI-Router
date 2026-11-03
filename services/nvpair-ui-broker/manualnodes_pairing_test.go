@@ -18,7 +18,7 @@ func TestPairingCompletionDuringUnpairForgetsHostname(t *testing.T) {
 	if err := writePersistedManualNodes(path, []persistedManualNode{{Kind: "pair", ID: "alias", Address: "Workstation.tail.example"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "members.json"), []byte(`[{"nodeUuid":"peer","ipAddress":"192.0.2.50"}]`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "members.json"), []byte(`[{"nodeUuid":"peer","ipAddress":"192.0.2.50","clusterId":"cluster-1","admissionEpoch":1,"state":"member"}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	clientBroker, client := net.Pipe()
@@ -37,7 +37,13 @@ func TestPairingCompletionDuringUnpairForgetsHostname(t *testing.T) {
 		if err != nil {
 			return
 		}
-		_ = codec.Notify("cluster:pairing-completed", map[string]string{"address": "Workstation.tail.example", "peerUuid": "peer"})
+		// Publication was ordered first, but the broker can consume it after
+		// the producer has already persisted the removed roster.
+		if err := os.WriteFile(filepath.Join(dir, "members.json"), []byte(`[]`), 0600); err != nil {
+			_ = codec.RespondError(msg.ID, -32000, err.Error())
+			return
+		}
+		_ = codec.Notify("cluster:pairing-completed", manualPairingCompletion{Address: "Workstation.tail.example", PeerUUID: "peer", ClusterID: "cluster-1", AdmissionEpoch: 1})
 		_ = codec.Respond(msg.ID, map[string]bool{"removed": true})
 	}()
 	id := json.RawMessage("1")
@@ -58,13 +64,13 @@ func TestPairingCompletionForgetsHostnameBeforeInventoryProof(t *testing.T) {
 	if err := writePersistedManualNodes(path, []persistedManualNode{{Kind: "pair", ID: "original-alias", Address: "Workstation.tail.example"}, {Kind: "engine", ID: "independent-engine", Address: "Workstation.tail.example"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "members.json"), []byte(`[{"id":"workstation","nodeUuid":"peer","ipAddress":"192.0.2.50"}]`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "members.json"), []byte(`[{"id":"workstation","nodeUuid":"peer","ipAddress":"192.0.2.50","clusterId":"cluster-1","admissionEpoch":1,"state":"member"}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var frontend bytes.Buffer
 	b := &Broker{codec: NewCodec(&frontend), clusterDir: dir, manualNodesConfigPath: path, store: newDiscoveryStore()}
 	// This is a worker-owned post-authentication completion, not a public claim.
-	b.forwardClusterManagerNotification("cluster:pairing-completed", json.RawMessage(`{"address":"Workstation.tail.example","peerUuid":"peer"}`))
+	b.forwardClusterManagerNotification("cluster:pairing-completed", json.RawMessage(`{"address":"Workstation.tail.example","peerUuid":"peer","clusterId":"cluster-1","admissionEpoch":1}`))
 	stored, err := loadPersistedManualNodes(path)
 	if err != nil {
 		t.Fatal(err)

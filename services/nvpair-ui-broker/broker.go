@@ -405,11 +405,14 @@ type Broker struct {
 	// alias is reprojected from manualNodeStatuses (its last-seen payload) so the
 	// removed alias's address/models don't linger (the survivor's own periodic
 	// probe emits no update while its status is unchanged).
-	manualMu           sync.Mutex
-	manualNodeKeys     map[string]string
-	manualNodeStatuses map[string]manualNodeStatusEntry
-	manualPersistMu    sync.Mutex
-	manualMutationMu   sync.Mutex
+	manualMu                sync.Mutex
+	manualNodeKeys          map[string]string
+	manualNodeStatuses      map[string]manualNodeStatusEntry
+	manualPersistMu         sync.Mutex
+	manualMutationMu        sync.Mutex
+	manualCleanupMu         sync.Mutex
+	manualPendingRemoval    *pendingManualRemoval
+	manualRemovedAdmissions map[string]uint64
 	// manualMutationTail is closed when the most recently queued manual-node
 	// mutation finishes. Each node/add or node/remove waits for the one before
 	// it, so mutations apply in the order clients sent them without blocking
@@ -3764,7 +3767,14 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 		if id == "" {
 			id = params.NodeID
 		}
-		removedPeerID = id
+		member, lookupErr := b.manualMemberForID(id)
+		if lookupErr != nil {
+			_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("manual-node lookup failed: %v", lookupErr))
+			return
+		}
+		removedPeerID = member.NodeUUID
+		b.beginManualRemoval(member)
+		defer b.finishManualRemoval(false)
 		var err error
 		manualAliases, err = b.manualAliasesForPeer(id)
 		if err != nil {
@@ -3781,7 +3791,8 @@ func (b *Broker) relayToClusterManager(msg *Message) {
 			// A pairing completion may have arrived while removal was in flight.
 			// Its cleanup-only association precedes this response on the worker
 			// stream, so include it even if no inventory proof was ever published.
-			latest, lookupErr := b.manualAliasesForPeer(removedPeerID)
+			hints := b.finishManualRemoval(true)
+			latest, lookupErr := b.manualAliasesForPeer(removedPeerID, hints...)
 			if lookupErr != nil {
 				_ = b.codec.RespondError(msg.ID, -32000, fmt.Sprintf("peer removed, but manual-node lookup failed: %v", lookupErr))
 				return

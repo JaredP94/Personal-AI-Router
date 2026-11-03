@@ -39,8 +39,10 @@ func TestPairingCompletionPublishesOriginalHostnameForCleanup(t *testing.T) {
 				var event struct {
 					Method string `json:"method"`
 					Params struct {
-						Address  string `json:"address"`
-						PeerUUID string `json:"peerUuid"`
+						Address        string `json:"address"`
+						PeerUUID       string `json:"peerUuid"`
+						ClusterID      string `json:"clusterId"`
+						AdmissionEpoch uint64 `json:"admissionEpoch"`
 					} `json:"params"`
 				}
 				err := decoder.Decode(&event)
@@ -54,7 +56,7 @@ func TestPairingCompletionPublishesOriginalHostnameForCleanup(t *testing.T) {
 					continue
 				}
 				found = true
-				if event.Params.Address != "Workstation.tail.example" || event.Params.PeerUUID != peer.uuid {
+				if event.Params.Address != "Workstation.tail.example" || event.Params.PeerUUID != peer.uuid || event.Params.ClusterID != "cluster-1" || event.Params.AdmissionEpoch != 1 {
 					t.Fatalf("cleanup association lost original address or authenticated peer: %+v", event.Params)
 				}
 			}

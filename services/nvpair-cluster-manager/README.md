@@ -183,7 +183,12 @@ No `id`; never carry an error; handle them off your read loop.
 
 `cluster:pairing-completed` is broker-internal: after the inviter commits the
 authenticated peer pin/member, and before publishing paired invite state, it
-emits `{ address, peerUuid }`. `address` is the original dial name, not the
+emits `{ address, peerUuid, clusterId, admissionEpoch }` inside the same
+`rosterMu` transaction as the pin/member commit, ordering it before removal. This
+is a fire-and-forget notification: it never waits for a broker reply. The broker's
+independent read pump consumes it without a worker round trip or mutation-lock
+wait, even while the request caller awaits removal. `address` is the original
+dial name, not the
 observed numeric source recorded in the roster. The broker persists its manual
 PAIR aliases' cleanup-only association, allowing unpair to forget hostname
 entries before any node-info inventory proof. Desktop and TUI never receive this
