@@ -66,6 +66,10 @@ beforeEach(() => {
 afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
+    // Runs even when an assertion fails, so no test leaks into the next.
+    useDiscoveredNodesStore.setState({ nodes: [] })
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
     vi.unstubAllGlobals()
 })
 
@@ -152,10 +156,6 @@ describe('node verification presentation', () => {
         expect(pair[0]?.disabled).toBe(false)
         await act(async () => pair[0]?.click())
         expect(inviteNode).toHaveBeenCalledWith('192.0.2.10')
-        await act(async () => root.render(null))
-        useDiscoveredNodesStore.setState({ nodes: [] })
-        Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
-        Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
     })
 
     it('does not infer a version diagnosis from unverified metadata', () => {
