@@ -35,10 +35,16 @@ const nodeURISANPrefix = "urn:nvpair:node:"
 // membership, so writing it alone does NOT make a node clustered (see Join).
 func WriteKeypair(t *testing.T, clusterDir, uuid string) {
 	t.Helper()
+	WriteKeypairWithValidity(t, clusterDir, uuid, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+}
+
+// WriteKeypairWithValidity writes a leaf with controlled validity boundaries.
+func WriteKeypairWithValidity(t *testing.T, clusterDir, uuid string, notBefore, notAfter time.Time) {
+	t.Helper()
 	if err := os.MkdirAll(clusterDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	certPEM, keyPEM := mintLeaf(t, uuid)
+	certPEM, keyPEM := mintLeafWithValidity(t, uuid, notBefore, notAfter)
 	if err := os.WriteFile(filepath.Join(clusterDir, "node.crt"), certPEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +116,11 @@ func Join(t *testing.T, clusterDir, clusterID, selfUUID string, peerUUIDs ...str
 // uuid as the node principal.
 func mintLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	t.Helper()
+	return mintLeafWithValidity(t, uuid, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+}
+
+func mintLeafWithValidity(t *testing.T, uuid string, notBefore, notAfter time.Time) (certPEM, keyPEM []byte) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +132,8 @@ func mintLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: uuid},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
 		URIs:         []*url.URL{uri},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)

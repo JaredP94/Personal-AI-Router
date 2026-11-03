@@ -11,6 +11,8 @@ import (
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 	"nvpair-ui-broker/workloadstore"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -92,9 +94,26 @@ func TestReplayInvalidTelemetryRequiresCurrentProof(t *testing.T) {
 }
 
 func TestVerifiedInventoryWithdrawnOnPinAndAdmissionChanges(t *testing.T) {
-	for _, change := range []string{"pin", "admission"} {
+	for _, change := range []string{"pin", "admission", "expiry"} {
 		t.Run(change, func(t *testing.T) {
 			b := inventoryTestBroker(t)
+			deadline := time.Now().Truncate(time.Second).Add(2 * time.Second)
+			if change == "expiry" {
+				peerDir := t.TempDir()
+				clustertrusttest.WriteKeypairWithValidity(t, peerDir, "peer", time.Now().Add(-time.Hour), deadline)
+				cert, err := os.ReadFile(filepath.Join(peerDir, "node.crt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				pin, err := json.Marshal(map[string]string{"nodeUuid": "peer", "certPem": string(cert)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(b.clusterDir, "trusted", "peer.json"), pin, 0600); err != nil {
+					t.Fatal(err)
+				}
+				b.mesh.Refresh()
+			}
 			node := verifiedDirectoryForTest(b)
 			b.store.Upsert(directoryToEnriched(node), sourceScanner)
 			b.relayDir.Apply(noderec.NotifyNodeDiscovered, node)
@@ -104,8 +123,18 @@ func TestVerifiedInventoryWithdrawnOnPinAndAdmissionChanges(t *testing.T) {
 			}
 			if change == "pin" {
 				clustertrusttest.RemovePeerPin(t, b.clusterDir, "peer")
-			} else {
+			} else if change == "admission" {
 				clustertrusttest.WriteAdmission(t, b.clusterDir, "test-cluster", 2)
+			} else {
+				<-time.After(time.Until(deadline.Add(time.Millisecond)))
+			}
+			if b.authorizedTelemetry(sourceScanner, "peer", node.PeerRecordID) {
+				t.Error("stale proof still authorizes telemetry")
+			}
+			var out bytes.Buffer
+			worker := &rpcWorker{peer: NewPeer(NewCodec(&out))}
+			if got := b.replayTelemetryToScheduler(worker); got != 0 || out.Len() != 0 {
+				t.Error("stale cached telemetry replayed")
 			}
 			// Cached relay/scheduler reads independently recheck authorization, before
 			// the worker has reacted to the notification.

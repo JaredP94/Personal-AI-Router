@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ClusterUUIDTXTKey is the mDNS TXT key carrying a node's cluster principal —
@@ -256,12 +257,17 @@ func (m *Mesh) PeerRecordID(uuid string) string {
 	if !m.clustered || m.id == nil || m.admission.ClusterID == "" || m.admission.Epoch == 0 || m.admission.Retired {
 		return ""
 	}
+	now := time.Now()
+	if !validLeafDER(selfLeafDER(m.id), now) {
+		return ""
+	}
 	peer := selfLeafDER(m.id)
 	if uuid != m.id.NodeUUID {
 		m.trust.mu.RLock()
 		peer = bytes.Clone(m.trust.raw[uuid])
+		valid := validLeafDER(m.trust.ders[uuid], now)
 		m.trust.mu.RUnlock()
-		if len(peer) == 0 {
+		if len(peer) == 0 || !valid {
 			return ""
 		}
 	}
@@ -272,7 +278,16 @@ func (m *Mesh) PeerRecordID(uuid string) string {
 // VerifyPeerCertificate rechecks the current exact pin after a response, since
 // pooled connections and in-flight requests can outlive their authorization.
 func (m *Mesh) VerifyPeerCertificate(uuid string, cert *x509.Certificate) bool {
-	return cert != nil && UUIDFromCert(cert) == uuid && m.matchDER(uuid, cert.Raw)
+	return validLeaf(cert, time.Now()) && UUIDFromCert(cert) == uuid && m.matchDER(uuid, cert.Raw)
+}
+
+func validLeafDER(der []byte, now time.Time) bool {
+	cert, err := x509.ParseCertificate(der)
+	return err == nil && validLeaf(cert, now)
+}
+
+func validLeaf(cert *x509.Certificate, now time.Time) bool {
+	return cert != nil && !now.Before(cert.NotBefore) && !now.After(cert.NotAfter)
 }
 
 // matchDER is the server-side gate: accept der for uuid when it byte-for-byte

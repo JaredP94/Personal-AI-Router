@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"nvpair-shared/clustertrusttest"
 	"os"
 	"path/filepath"
@@ -18,9 +19,15 @@ import (
 
 func inventoryPair(t *testing.T) (string, *Mesh, *Mesh) {
 	t.Helper()
+	return inventoryPairWithPeerValidity(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+}
+
+func inventoryPairWithPeerValidity(t *testing.T, notBefore, notAfter time.Time) (string, *Mesh, *Mesh) {
+	t.Helper()
 	selfDir, peerDir := t.TempDir(), t.TempDir()
 	clustertrusttest.Join(t, selfDir, "test-cluster", "self")
-	clustertrusttest.Join(t, peerDir, "test-cluster", "peer")
+	clustertrusttest.WriteKeypairWithValidity(t, peerDir, "peer", notBefore, notAfter)
+	clustertrusttest.WriteAdmission(t, peerDir, "test-cluster", 1)
 	pin := func(dir, uuid, certDir string) {
 		cert, err := os.ReadFile(filepath.Join(certDir, "node.crt"))
 		if err != nil {
@@ -54,6 +61,79 @@ func inventoryServer(t *testing.T, mesh *Mesh, handler http.HandlerFunc) *httpte
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestInventoryProofRejectsCertificatesOutsideValidity(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name          string
+		before, after time.Time
+	}{
+		{"expired", now.Add(-time.Hour), now.Add(-time.Minute)},
+		{"not-yet-valid", now.Add(time.Hour), now.Add(2 * time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, self, peer := inventoryPairWithPeerValidity(t, tc.before, tc.after)
+			id, _ := peer.identity()
+			if self.VerifyPeerCertificate("peer", id.Cert.Leaf) {
+				t.Error("invalid leaf accepted as proof")
+			}
+			if self.PeerRecordID("peer") != "" || peer.PeerRecordID("peer") != "" || peer.PeerRecordID("self") != "" {
+				t.Error("invalid peer or local leaf authorized cached proof")
+			}
+			srv := inventoryServer(t, peer, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"value":42}`)) })
+			pool := NewPeerClientPool(self, time.Second)
+			defer pool.CloseIdle()
+			client, _ := pool.Client("peer")
+			var value struct{ Value int }
+			if _, _, ok := ReadPeerInventory(t.Context(), self, client, "peer", srv.URL, "", 1024, &value); ok {
+				t.Error("invalid leaf authorized inventory read")
+			}
+		})
+	}
+}
+
+func TestInventoryProofExpiresOnPooledAndInflightReads(t *testing.T) {
+	deadline := time.Now().Truncate(time.Second).Add(2 * time.Second)
+	_, self, peer := inventoryPairWithPeerValidity(t, time.Now().Add(-time.Hour), deadline)
+	var hold atomic.Bool
+	srv := inventoryServer(t, peer, func(w http.ResponseWriter, _ *http.Request) {
+		if hold.Load() {
+			<-time.After(time.Until(deadline.Add(time.Millisecond)))
+		}
+		_, _ = w.Write([]byte(`{"value":42}`))
+	})
+	pool := NewPeerClientPool(self, 4*time.Second)
+	defer pool.CloseIdle()
+	client, _ := pool.Client("peer")
+	var reused atomic.Bool
+	ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused.Store(info.Reused) }})
+	read := func() bool {
+		var value struct{ Value int }
+		_, _, ok := ReadPeerInventory(ctx, self, client, "peer", srv.URL, "", 1024, &value)
+		return ok
+	}
+	if !read() {
+		t.Fatal("valid certificate rejected")
+	}
+	proof := self.PeerRecordID("peer")
+	hold.Store(true)
+	if read() {
+		t.Error("read crossing expiry accepted on existing connection")
+	}
+	if !reused.Load() {
+		t.Fatal("expiry regression did not exercise a pooled connection")
+	}
+	if self.PeerRecordID("peer") != "" {
+		t.Errorf("cached inventory proof %s remains authorized after expiry", proof)
+	}
+	id, _ := peer.identity()
+	if self.VerifyPeerCertificate("peer", id.Cert.Leaf) {
+		t.Error("expired peer certificate accepted")
+	}
+	if read() {
+		t.Error("pooled read after expiry accepted")
+	}
 }
 
 func TestReadPeerInventoryRequiresCurrentExactAuthorization(t *testing.T) {
