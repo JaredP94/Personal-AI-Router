@@ -89,27 +89,23 @@ describe('engine settings authority and recovery', () => {
 
     it('keeps progress covered after an applying receipt until its own snapshot arrives', async () => {
         store.getState().receive(baseline)
-        await store
-            .getState()
-            .apply({
-                ...target,
-                expectedRevision: 1,
-                requestId: 'request',
-                settings: baseline.settings
-            })
+        await store.getState().apply({
+            ...target,
+            expectedRevision: 1,
+            requestId: 'request',
+            settings: baseline.settings
+        })
         expect(store.getState().entries[key].snapshot?.revision).toBe(1)
         expect(store.getState().entries[key].pending).toBe('request')
         store.getState().receive({ ...baseline, sequence: 2, requestId: 'other' })
         expect(store.getState().entries[key].pending).toBe('request')
-        store
-            .getState()
-            .receive({
-                ...baseline,
-                sequence: 3,
-                revision: 2,
-                requestId: 'request',
-                phase: 'applying'
-            })
+        store.getState().receive({
+            ...baseline,
+            sequence: 3,
+            revision: 2,
+            requestId: 'request',
+            phase: 'applying'
+        })
         expect(store.getState().entries[key].pending).toBeUndefined()
         expect(store.getState().entries[key].snapshot?.phase).toBe('applying')
     })
@@ -124,14 +120,12 @@ describe('engine settings authority and recovery', () => {
             requestId: 'request',
             phase: 'succeeded'
         })
-        await store
-            .getState()
-            .apply({
-                ...target,
-                expectedRevision: 1,
-                requestId: 'request',
-                settings: baseline.settings
-            })
+        await store.getState().apply({
+            ...target,
+            expectedRevision: 1,
+            requestId: 'request',
+            settings: baseline.settings
+        })
         expect(store.getState().entries[key].snapshot?.phase).toBe('succeeded')
         expect(store.getState().entries[key].pending).toBeUndefined()
     })
