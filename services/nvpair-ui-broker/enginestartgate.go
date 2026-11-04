@@ -14,23 +14,38 @@ import (
 // transaction. The worker prepares outside opMu, then checks this generation
 // again at its launch chokepoint. A configure revokes ordinary start grants.
 func (b *Broker) prepareEngineStart(ctx context.Context, engine, operationID string) (string, error) {
-	b.settingsApplyMu.Lock()
-	defer b.settingsApplyMu.Unlock()
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
 	if ctx.Err() != nil || !b.managedPortAuthorizedLocked(engine, operationID) {
 		return "", fmt.Errorf("%s", settingsRecoveryError)
 	}
 	if engine == "ollama" || engine == "lmstudio" || engine == "omlx" {
-		if b.engineSettingsError != nil {
-			b.engineSettingsLoaded = false
-			b.engineSettingsError = nil
-		}
-		if !b.recoverEngineSettingsLocked(engine) {
-			return "", fmt.Errorf("%s", settingsRecoveryError)
+		loadErr := b.loadEngineSettingsLocked()
+		record := b.engineSettings[engine]
+		needsRecovery := loadErr != nil || b.settingsRecoveryBlocked[engine] || (record != nil && (record.Snapshot.Phase == "failed" || record.Snapshot.Phase == "applying"))
+		if needsRecovery {
+			// A reverse callback must never acquire port-op, or wait for its
+			// parent operation. Fail closed while any operation owns this engine.
+			if operationID != "" || b.portOperation(engine).active.Load() {
+				return "", fmt.Errorf("%s", settingsRecoveryError)
+			}
+			// Recovery is a separate operation, not work done under a callback
+			// lock. Ordinary prepare occurs before the worker takes opMu.
+			done := make(chan bool, 1)
+			go func() { done <- b.tryRecoverEngineSettingsForStart(engine) }()
+			b.engineConfigMu.Unlock()
+			var recovered bool
+			select {
+			case recovered = <-done:
+			case <-ctx.Done():
+			}
+			b.engineConfigMu.Lock()
+			if !recovered {
+				return "", fmt.Errorf("%s", settingsRecoveryError)
+			}
 		}
 	}
-	if ctx.Err() != nil || !b.managedPortAuthorizedLocked(engine, operationID) {
+	if ctx.Err() != nil || b.settingsRecoveryBlocked[engine] || !b.managedPortAuthorizedLocked(engine, operationID) {
 		return "", fmt.Errorf("%s", settingsRecoveryError)
 	}
 	b.settingsRelayMu.Lock()

@@ -63,6 +63,10 @@ func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
 		} else if relay.Method == "rebind" || relay.Method == "rollback" {
 			b.settingsRelayMu.Lock()
 			operation, ok := b.activeSettings[relay.Request.RequestID]
+			if ok && operation.Callbacks != nil {
+				operation.Callbacks.Add(1)
+				defer operation.Callbacks.Done()
+			}
 			b.settingsRelayMu.Unlock()
 			if !ok || operation.Engine != relay.Request.Engine || operation.Port != relay.Request.Settings.ProxyPort {
 				err = fmt.Errorf("unknown settings operation")

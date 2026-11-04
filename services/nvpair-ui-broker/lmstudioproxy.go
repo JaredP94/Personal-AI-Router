@@ -61,6 +61,8 @@ func (b *Broker) lmstudioProxyArgs() []string {
 // mirroring spawnProxy. It reuses startProxy because the two proxies share a
 // binary protocol.
 func (b *Broker) spawnLMStudioProxy() (supervisedHandle, error) {
+	finish := b.beginPortOperation("lmstudio")
+	defer finish()
 	b.lmstudioReadyMu.Lock()
 	generation := b.lmstudioProxyGeneration.Add(1)
 	b.lmstudioReadyMu.Unlock()
@@ -122,12 +124,7 @@ func (b *Broker) forwardLMStudioProxyNotificationForGeneration(generation uint64
 			Port int    `json:"port"`
 		}
 		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.lmstudioExplicitSettings.Load() {
-			if b.managedLMStudioFacade.Load() && ep.Port == managedLMStudioFacadePort {
-				_, _ = b.blockManagedLMStudioFacade("another process acquired the compatibility port during startup", nil)
-			} else {
-				fallback := b.setLMStudioProxyFallback(ep.Port)
-				slog.Warn("LM Studio proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
-			}
+			go b.recoverProxyBindFailure("lmstudio", generation, ep.Port)
 		}
 	}
 	if b.routeProxyWorkloadMethod(method, params) {

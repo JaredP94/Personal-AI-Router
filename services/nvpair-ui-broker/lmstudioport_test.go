@@ -694,6 +694,14 @@ func TestManagedLMStudioRestartBindFailureChoosesFallback(t *testing.T) {
 	b.markLMStudioPortReady() // a later supervised proxy generation failed
 
 	b.forwardLMStudioProxyNotification("error", json.RawMessage(`{"code":"bind-failed","port":1234}`))
+	deadline := time.After(2 * time.Second)
+	for b.lmstudioProxyStartupPort.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("queued bind-failure operation did not finish")
+		case <-time.After(time.Millisecond):
+		}
+	}
 	if b.managedLMStudioFacade.Load() {
 		t.Fatal("restart bind failure left managed ownership enabled")
 	}

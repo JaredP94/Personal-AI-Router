@@ -9,6 +9,7 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -197,6 +198,16 @@ func TestManagedOllamaMoveRevalidatesNewSettings(t *testing.T) {
 	request.Settings.ServerPort = listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	receipt, err := h.b.applyEngineSettings(context.Background(), request, "")
+	if err != nil && strings.Contains(err.Error(), "settings changed") {
+		// Port operations now queue: a fenced fallback may commit its
+		// observed baseline before this Apply enters. Reload, not overwrite.
+		snapshot, readErr := h.b.getEngineSettings(context.Background(), request, "")
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		request.ExpectedRevision = snapshot.Revision
+		receipt, err = h.b.applyEngineSettings(context.Background(), request, "")
+	}
 	if err != nil || receipt.Phase != "succeeded" {
 		t.Fatalf("concurrent apply: %+v, %v", receipt, err)
 	}

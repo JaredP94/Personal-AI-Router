@@ -161,6 +161,8 @@ func (b *Broker) prepareManagedOllamaFacade() {
 }
 
 func (b *Broker) prepareManagedOllamaFacadeWithPortCheck(portAvailable func(int) bool) {
+	finish := b.beginPortOperation("ollama")
+	defer finish()
 	if b.prepareExplicitEngineSettings("ollama") {
 		b.markOllamaPortReady()
 		return
@@ -327,6 +329,12 @@ func needsOllamaPortGate(method string, params json.RawMessage) bool {
 // goroutine that calls forwardProxyNotification), so the p.Call round-trip
 // can't deadlock the very reader that would deliver its response.
 func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
+	finish := b.beginPortOperation("ollama")
+	defer finish()
+	b.reconcileProxyPortOnReadyInOperation(boundPort)
+}
+
+func (b *Broker) reconcileProxyPortOnReadyInOperation(boundPort int) {
 	b.engineConfigMu.Lock()
 	retry := false
 	defer func() {
@@ -365,7 +373,7 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 			body, _ := json.Marshal(map[string]int{"port": managedOllamaFacadePort})
 			var rpcErr *RPCError
 			var err error
-			if !call(func() { _, rpcErr, err = p.Call(context.Background(), "set-port", body) }) {
+			if !call(func() { _, rpcErr, err = writeProxyPort(p, body) }) {
 				return
 			}
 			if err != nil || rpcErr != nil {
@@ -412,7 +420,7 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 					body, _ := json.Marshal(map[string]int{"port": fallback})
 					var moveErr *RPCError
 					var callErr error
-					if !call(func() { _, moveErr, callErr = p.Call(context.Background(), "set-port", body) }) {
+					if !call(func() { _, moveErr, callErr = writeProxyPort(p, body) }) {
 						return
 					}
 					if callErr != nil || moveErr != nil {
@@ -481,6 +489,7 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 		Severity:  "warning",
 		Action:    "none",
 	})
+	b.settingsStartupPort("ollama", effective)
 	body, err := json.Marshal(map[string]int{"port": effective})
 	if err != nil {
 		slog.Warn("failed to encode corrective proxy set-port", "err", err)
@@ -488,7 +497,7 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 	}
 	var rpcErr *RPCError
 	var callErr error
-	if !call(func() { _, rpcErr, callErr = p.Call(context.Background(), "set-port", body) }) {
+	if !call(func() { _, rpcErr, callErr = writeProxyPort(p, body) }) {
 		return
 	}
 	if callErr != nil || rpcErr != nil {

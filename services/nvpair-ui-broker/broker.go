@@ -174,7 +174,9 @@ type ProxyStatusResult struct {
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
 	// Applies serialize end to end. The journal lock is released during engine
-	// restart so unrelated settings reads remain responsive. Take apply first.
+	// restart so unrelated settings reads remain responsive. Port-op comes
+	// first; see portoperation.go for the complete lock/callback discipline.
+	portOperations           sync.Map // engine -> *enginePortOperation; see portoperation.go
 	settingsApplyMu          sync.Mutex
 	engineConfigMu           sync.Mutex
 	managedPortOperations    map[string]managedPortAuthorization // guarded by engineConfigMu
@@ -820,6 +822,8 @@ func (b *Broker) spawnNodeInfo() (supervisedHandle, error) {
 }
 
 func (b *Broker) spawnProxy() (supervisedHandle, error) {
+	finish := b.beginPortOperation("ollama")
+	defer finish()
 	var args []string
 	if port := int(b.ollamaProxyStartupPort.Load()); port != 0 {
 		args = []string{"--port", fmt.Sprintf("%d", port), "--ignore-persisted-port"}
@@ -2071,7 +2075,11 @@ func (b *Broker) Serve(ctx context.Context) error {
 	b.startWorker("lmstudio-proxy")
 	if b.lmstudioProxyPath == "" {
 		if b.managedLMStudioFacade.Load() {
-			_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy is unavailable", nil)
+			func() {
+				finish := b.beginPortOperation("lmstudio")
+				defer finish()
+				_, _ = b.blockManagedLMStudioFacade("the LM Studio proxy is unavailable", nil)
+			}()
 		}
 		b.finishLMStudioProxyTerminal()
 	}
@@ -2242,7 +2250,7 @@ func (b *Broker) forwardProxyNotificationForGeneration(generation uint64, method
 			Port int    `json:"port"`
 		}
 		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && ep.Port == managedOllamaFacadePort && !b.ollamaExplicitSettings.Load() {
-			b.blockManagedOllamaFacade("another process acquired the compatibility port during startup")
+			go b.recoverProxyBindFailure("ollama", generation, ep.Port)
 		}
 	}
 	// Workload lifecycle / removal events are not proxy control-plane
@@ -3579,6 +3587,10 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	}
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
+	if isEnginePortAssignment {
+		finish := b.beginPortOperation(requestedEngine)
+		defer finish()
+	}
 	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
 		// The worker retries recovery before its engine lock and checks the
 		// broker's grant at doStart. Do not hold settings locks across worker

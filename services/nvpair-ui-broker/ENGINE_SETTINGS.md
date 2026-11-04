@@ -154,9 +154,14 @@ worker generation; ordinary lifecycle preparation omits it.
 only for the current generation or that engine's active configure operation ID.
 These use the existing `Request` envelope; no client request or result changes.
 Authorization takes only the relay-state mutex, never the journal/apply locks,
-and does no worker I/O. Legacy broker lifecycle relays also hold neither settings
-lock across worker calls; their post-call snapshot refresh reacquires them in the
-usual apply-then-journal order. Replies stay with the captured
+and does no worker I/O. Preparation uses short journal critical sections and never
+acquires the port-operation serialiser. If recovery is needed, it submits a
+separate recovery operation before the worker takes its engine lock. That executor
+uses nonblocking admission: a busy port operation rejects preparation immediately
+instead of waiting for its own callback. Failed/applying settings remain
+fail-closed until recovery succeeds; retrying start can retry recovery. Legacy
+broker lifecycle relays hold neither journal nor apply lock across worker calls;
+port assignments retain port-operation ownership through their post-call refresh. Replies stay with the captured
 worker, never a replacement process. `engine:settings-cancel` cancels pending
 requests. `engine:settings-projection` supplies full snapshots to the worker.
 
@@ -169,10 +174,35 @@ joins the canceled operation, including a queued engine-lock wait. Fallback and
 rollback cannot proceed without that acknowledgement. The worker rechecks
 cancellation and its reconciliation grant after acquiring the engine lock and
 before persistence, even for a stopped engine. Public `engine:set-port` is unchanged.
-The broker holds no journal/apply lock during these calls, including rollback,
-proxy rebinds and conflict lookups. It snapshots state under the journal lock,
-then revalidates after each call; a changed configuration discards the result and
-reconciles current authoritative state rather than overwriting newer choices.
+The broker holds no journal/apply lock during managed Ollama calls, including
+rollback, proxy rebinds and conflict lookups. It snapshots state under the journal
+lock, then revalidates after each call. Timed-out engine moves still require their
+cancellation join before fallback or rollback.
+
+### Port-operation ownership and lock order
+
+`portoperation.go` defines **one per-engine port-operation serialiser**, stored in
+`Broker.portOperations`. Apply (including compensation), port-only UI/TUI requests,
+managed ready reconciliation, conflict recovery, startup planning, proxy spawning,
+and settings restoration all retain it for the whole operation and worker I/O.
+The lock order is **port-op → settingsApplyMu (when needed) → engineConfigMu**.
+Never acquire port-op while holding `engineConfigMu` or `settingsApplyMu`.
+
+Reverse worker callbacks (`prepare-start`, `authorize-start`, `rebind`, `rollback`)
+never acquire port-op. Rebind and rollback are delegated writes under the active
+parent Apply/restoration operation, validated against its operation ID. The parent
+seals callback admission and joins in-flight callbacks before releasing ownership.
+Ready/error notification readers only dispatch operations off the reader goroutine;
+they never wait on port-op and can continue delivering worker replies.
+
+The final step of every port operation compares the proxy's actual port with the
+current accepted journal port (or the managed startup choice before explicit
+settings exist) and corrects any mismatch, even on early/stale-result exits.
+Ready observations never replace an explicit accepted proxy port in the journal.
+Unversioned proxy writes join the worker response or worker exit without a local
+timeout, preventing a delayed bind from escaping its operation; an unresponsive
+proxy therefore requires a manual worker restart. Failed convergence withdraws
+availability rather than advertising an unverified port.
 
 The existing authenticated control channel serves POST
 `/v1/engine-settings/{get,preview,apply}` and GET

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"nvpair-shared/appdir"
@@ -38,6 +39,7 @@ type activeSettingsOperation struct {
 	Engine       string
 	Port         int
 	PreviousPort int
+	Callbacks    *sync.WaitGroup
 }
 
 func settingsID() string                     { var id [16]byte; _, _ = rand.Read(id[:]); return hex.EncodeToString(id[:]) }
@@ -191,7 +193,7 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 	}
 	record := b.engineSettings[engine]
 	configuredProxy := proxyPort
-	if !ready && record != nil {
+	if record != nil && (!ready || record.Explicit) {
 		configuredProxy = record.Snapshot.Settings.ProxyPort
 	}
 	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText}
@@ -359,9 +361,9 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 		b.activeSettings = make(map[string]activeSettingsOperation)
 	}
 	delete(b.settingsStartGrants, engine)
-	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort, PreviousPort: record.Previous.ProxyPort}
+	callbacks := &sync.WaitGroup{}
+	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort, PreviousPort: record.Previous.ProxyPort, Callbacks: callbacks}
 	b.settingsRelayMu.Unlock()
-	defer func() { b.settingsRelayMu.Lock(); delete(b.activeSettings, id); b.settingsRelayMu.Unlock() }()
 	configure := settings.Configure{Engine: engine, Settings: record.Snapshot.Settings, OperationID: id, Resume: record.Resume}
 
 	launch, err := func() (settings.LaunchState, error) {
@@ -377,6 +379,15 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 		}
 		return launch, err
 	}()
+
+	// Seal callback admission, then join any in-flight unversioned proxy
+	// writes before accepting the outcome or releasing port-op ownership.
+	b.settingsRelayMu.Lock()
+	delete(b.activeSettings, id)
+	b.settingsRelayMu.Unlock()
+	b.engineConfigMu.Unlock()
+	callbacks.Wait()
+	b.engineConfigMu.Lock()
 
 	if err != nil {
 		record.Snapshot.Phase = "failed"
@@ -493,7 +504,9 @@ func (b *Broker) previewEngineSettings(ctx context.Context, p settings.Request, 
 func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, caller string) (settingsReceipt, error) {
 	ctx, cancel := context.WithTimeout(ctx, settings.CallBudget)
 	defer cancel()
-	// Serialize whole applies. Taken before engineConfigMu; see its comment.
+	finish := b.beginPortOperation(p.Engine)
+	defer finish()
+	// Retain cross-engine validation/acceptance ordering inside port-op.
 	b.settingsApplyMu.Lock()
 	defer b.settingsApplyMu.Unlock()
 	b.engineConfigMu.Lock()
@@ -633,7 +646,7 @@ func (b *Broker) rebindSettingsProxy(ctx context.Context, engine string, port in
 	// explicit rebind. The accepted journal restores these choices after restart.
 	b.setExplicitSettings(engine, true)
 	b.disableManagedSettingsFacade(engine)
-	_, rpcErr, err := p.Call(ctx, "set-port", settingsJSON(map[string]int{"port": port}))
+	_, rpcErr, err := writeProxyPort(p, settingsJSON(map[string]int{"port": port}))
 	if err != nil {
 		return err
 	}

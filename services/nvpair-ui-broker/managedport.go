@@ -85,6 +85,8 @@ func (b *Broker) ollamaPortReconcileStateLocked() ollamaPortReconcileState {
 // A discarded result can still describe a completed move on an old worker.
 // Re-read authoritative state and re-plan; never reuse its consumed candidate.
 func (b *Broker) reconcileCurrentOllamaPorts(boundPort int) {
+	finish := b.beginPortOperation("ollama")
+	defer finish()
 	for {
 		b.engineConfigMu.Lock()
 		if b.loadEngineSettingsLocked() != nil {
@@ -94,7 +96,7 @@ func (b *Broker) reconcileCurrentOllamaPorts(boundPort int) {
 		state := b.ollamaPortReconcileStateLocked()
 		if state.explicit || !state.managed {
 			b.engineConfigMu.Unlock()
-			b.reconcileProxyPortOnReady(boundPort)
+			b.reconcileProxyPortOnReadyInOperation(boundPort)
 			return
 		}
 		if state.worker == nil {
@@ -131,7 +133,7 @@ func (b *Broker) reconcileCurrentOllamaPorts(boundPort int) {
 			b.managedOllamaBackend.Store(int32(plan.BackendPort))
 		}
 		b.engineConfigMu.Unlock()
-		b.reconcileProxyPortOnReady(boundPort)
+		b.reconcileProxyPortOnReadyInOperation(boundPort)
 		return
 	}
 }

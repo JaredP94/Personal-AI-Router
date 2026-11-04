@@ -85,6 +85,8 @@ func (b *Broker) initWorkerRegistry() {
 }
 
 func (b *Broker) finishOllamaProxyTerminal() {
+	finish := b.beginPortOperation("ollama")
+	defer finish()
 	b.disableOllamaHostAliasReservation()
 	if b.managedOllamaFacade.Load() {
 		b.blockManagedOllamaFacade("the Ollama proxy is unavailable")

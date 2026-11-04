@@ -55,12 +55,7 @@ func (b *Broker) prepareExplicitEngineSettings(engine string) bool {
 // can be at any phase after a crash; configure revalidates and converges them
 // under the same engine lock used by a live Apply, then records its outcome.
 func (b *Broker) recoverEngineSettings() []string {
-	// Same order a live Apply uses: the operation lock, then the journal lock
-	// that runSettingsOperationLocked releases around the engine restart.
-	b.settingsApplyMu.Lock()
-	defer b.settingsApplyMu.Unlock()
 	b.engineConfigMu.Lock()
-	defer b.engineConfigMu.Unlock()
 	b.settingsRecoveryBlocked = make(map[string]bool)
 	loadErr := b.loadEngineSettingsLocked()
 	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
@@ -70,13 +65,56 @@ func (b *Broker) recoverEngineSettings() []string {
 			b.settingsAvailabilityBlockedLocked(engine)
 		}
 	}
+	b.engineConfigMu.Unlock()
 	var excluded []string
 	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
-		if !b.recoverEngineSettingsLocked(engine) {
+		if !b.recoverEngineSettingsForEngine(engine) {
 			excluded = append(excluded, engine)
 		}
 	}
 	return excluded
+}
+
+// Operation executor, never called inline from a reverse callback. Startup,
+// lifecycle entry points, and queued recovery all use the same serialiser.
+func (b *Broker) recoverEngineSettingsForEngine(engine string) (recovered bool) {
+	finish := b.beginPortOperation(engine)
+	defer func() {
+		finish()
+		b.engineConfigMu.Lock()
+		recovered = recovered && !b.settingsRecoveryBlocked[engine]
+		b.engineConfigMu.Unlock()
+	}()
+	return b.recoverEngineSettingsInOperation(engine)
+}
+
+// Submitted by prepare-start, but never waits behind a port operation. The
+// callback remains fail-closed if an operation won admission in the meantime.
+func (b *Broker) tryRecoverEngineSettingsForStart(engine string) (recovered bool) {
+	op := b.portOperation(engine)
+	if !op.mu.TryLock() {
+		return false
+	}
+	finish := b.ownPortOperation(engine, op)
+	defer func() {
+		finish()
+		b.engineConfigMu.Lock()
+		recovered = recovered && !b.settingsRecoveryBlocked[engine]
+		b.engineConfigMu.Unlock()
+	}()
+	return b.recoverEngineSettingsInOperation(engine)
+}
+
+func (b *Broker) recoverEngineSettingsInOperation(engine string) bool {
+	b.settingsApplyMu.Lock()
+	defer b.settingsApplyMu.Unlock()
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if b.engineSettingsError != nil {
+		b.engineSettingsLoaded = false
+		b.engineSettingsError = nil
+	}
+	return b.recoverEngineSettingsLocked(engine)
 }
 
 const settingsRecoveryError = "Engine settings could not be reconciled. This engine is unavailable; restart it to retry."
@@ -132,6 +170,9 @@ func (b *Broker) recoverEngineSettingsLocked(engine string) bool {
 }
 
 func (b *Broker) finishSettingsRecoveryLocked(engine string, recovered bool) {
+	if b.settingsRecoveryBlocked == nil {
+		b.settingsRecoveryBlocked = make(map[string]bool)
+	}
 	id := "engine-settings:recovery:" + engine
 	if recovered {
 		delete(b.settingsRecoveryBlocked, engine)
