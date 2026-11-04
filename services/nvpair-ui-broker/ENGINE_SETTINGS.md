@@ -83,8 +83,19 @@ to loopback); proxy rebinds change only the port, not their listening address.
 The journal retains previous choices after failure so startup never replays the
 failed candidate. Startup reconciles failed component stores to those previous
 choices before automatic engine restoration, without changing the failed receipt;
-if reconciliation fails, automatic restoration is blocked. A retry can reconcile
-an incomplete restoration.
+if reconciliation fails, that engine is excluded from automatic restoration and
+its discovery advertisement and healthy proxy destination are withdrawn. Other
+engines whose reconciliation succeeded still restore normally. Both interrupted
+`applying` operations and failed compensation must reconcile successfully,
+including saving the result, before restoration is allowed. A stopped engine is
+not resumed during reconciliation; saved ON/OFF intent remains authoritative.
+A value-free error is reported through the existing `errors:update` channel.
+The next broker startup or engine-manager worker restart retries reconciliation.
+An explicit engine start/restart retries that engine first (including rereading a
+repaired unreadable journal) and is refused if reconciliation still fails. A
+successful retry clears the recovery error and allows normal advertisement again.
+An unreadable journal blocks all three settings-managed engines, since none of
+their accepted settings can be established safely; it does not change saved intent.
 Reusing a request ID with identical input returns its receipt without another
 restart; reusing it for different input or applying a stale revision is refused.
 
@@ -102,6 +113,12 @@ Port-only `engine:set-port`, `proxy:set-port`, `lmstudio-proxy:set-port` and
 the same coordinator. Direct client `engine:configure-launch` is refused.
 
 ## Internal worker and authenticated peer surfaces
+
+The broker-only `engine:restore-enabled` notification carries
+`{excludedEngines?: string[]}`. Engine-manager skips these engines for this startup
+attempt without changing persisted ON/OFF choices. The broker computes the list
+from recovery results on initial startup and every manager respawn; desktop does
+not send or interpret this internal notification.
 
 Engine-manager exposes `engine:get-launch`, `engine:preview-launch`,
 `engine:configured-ports`, `engine:configure-launch` and

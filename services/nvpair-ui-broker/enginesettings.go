@@ -411,7 +411,7 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	}
 	// An unsuccessful apply can leave the previous engine running. Restore
 	// discovery from observed runtime state, independent of the apply result.
-	if proxyReady && launch.Running && launch.EffectivePort > 0 && record.Snapshot.EffectiveProxyPort > 0 && launch.EffectivePort != record.Snapshot.EffectiveProxyPort {
+	if !b.settingsRecoveryBlocked[engine] && proxyReady && launch.Running && launch.EffectivePort > 0 && record.Snapshot.EffectiveProxyPort > 0 && launch.EffectivePort != record.Snapshot.EffectiveProxyPort {
 		b.setProxyLocalBackend(b.settingsProxy(engine), engine, launch.EffectivePort, true)
 		if b.regCache != nil {
 			b.registerService(noderec.RegisterParams{Service: service, Port: record.Snapshot.EffectiveProxyPort})
@@ -564,7 +564,9 @@ func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, ca
 	// peer cannot abandon half a port swap. The operation has its own deadline.
 	operationCtx, operationCancel := context.WithTimeout(context.Background(), settings.OperationBudget)
 	defer operationCancel()
-	_ = b.runSettingsOperationLocked(operationCtx, p.Engine, record)
+	if err := b.runSettingsOperationLocked(operationCtx, p.Engine, record); err == nil && b.settingsRecoveryBlocked[p.Engine] {
+		b.finishSettingsRecoveryLocked(p.Engine, true)
+	}
 	return record.Receipts[p.RequestID], nil
 }
 

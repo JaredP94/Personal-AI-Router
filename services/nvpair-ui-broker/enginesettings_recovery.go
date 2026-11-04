@@ -5,10 +5,10 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	settings "nvpair-shared/enginesettings"
+	serviceerrors "nvpair-shared/errors"
 )
 
 func (b *Broker) explicitEngineSettings(engine string) (settings.Config, bool) {
@@ -54,53 +54,106 @@ func (b *Broker) prepareExplicitEngineSettings(engine string) bool {
 // Replay accepted operations before automatic engine startup. Component stores
 // can be at any phase after a crash; configure revalidates and converges them
 // under the same engine lock used by a live Apply, then records its outcome.
-func (b *Broker) recoverEngineSettings() bool {
+func (b *Broker) recoverEngineSettings() []string {
 	// Same order a live Apply uses: the operation lock, then the journal lock
 	// that runSettingsOperationLocked releases around the engine restart.
 	b.settingsApplyMu.Lock()
 	defer b.settingsApplyMu.Unlock()
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
+	b.settingsRecoveryBlocked = make(map[string]bool)
+	loadErr := b.loadEngineSettingsLocked()
+	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+		record := b.engineSettings[engine]
+		if loadErr != nil || (record != nil && (record.Snapshot.Phase == "failed" || record.Snapshot.Phase == "applying")) {
+			b.settingsRecoveryBlocked[engine] = true
+			b.settingsAvailabilityBlockedLocked(engine)
+		}
+	}
+	var excluded []string
+	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+		if !b.recoverEngineSettingsLocked(engine) {
+			excluded = append(excluded, engine)
+		}
+	}
+	return excluded
+}
+
+const settingsRecoveryError = "Engine settings could not be reconciled. This engine is unavailable; restart it to retry."
+
+// Called with both settings locks held. Failure in one engine must not prevent
+// another engine's journal entry from being reconciled.
+func (b *Broker) recoverEngineSettingsLocked(engine string) bool {
+	if b.settingsRecoveryBlocked == nil {
+		b.settingsRecoveryBlocked = make(map[string]bool)
+	}
 	if err := b.loadEngineSettingsLocked(); err != nil {
-		slog.Error("engine settings recovery blocked", "err", err)
+		b.finishSettingsRecoveryLocked(engine, false)
 		return false
 	}
-	for engine, record := range b.engineSettings {
-		if record.Snapshot.Phase == "failed" {
-			// A failed rollback can leave component files unreconciled. Converge
-			// the previous choices before allowing any automatic enabled start,
-			// but never turn the original failed receipt into a successful apply.
-			recovery := *record
-			recovery.Receipts = make(map[string]settingsReceipt)
-			recovery.Resume = false
-			ctx, cancel := context.WithTimeout(context.Background(), settings.OperationBudget)
-			err := b.runSettingsOperationLocked(ctx, engine, &recovery)
-			cancel()
-			if err == nil {
-				recovery.Snapshot.Error = "Settings could not be applied; previous settings were restored."
-			}
-			phase, applied, sequence := record.Snapshot.Phase, record.Snapshot.AppliedRevision, record.Snapshot.Sequence
-			record.Snapshot = recovery.Snapshot
-			record.Snapshot.Phase = phase
-			record.Snapshot.AppliedRevision = applied
-			record.Snapshot.Sequence = sequence
-			record.Resume = false
-			if b.saveEngineSettingsLocked() != nil {
-				return false
-			}
-			b.publishSettingsLocked()
-			if err != nil {
-				return false
-			}
-			continue
-		}
-		if record.Snapshot.Phase != "applying" {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), settings.OperationBudget)
-		_ = b.runSettingsOperationLocked(ctx, engine, record)
-		cancel()
+	record := b.engineSettings[engine]
+	if record == nil || (record.Snapshot.Phase != "failed" && record.Snapshot.Phase != "applying") {
+		b.finishSettingsRecoveryLocked(engine, true)
+		return true
 	}
+	// Keep polling advertisers and the operation's own advertisement restoration
+	// gated while the journal lock is released for the worker call.
+	b.settingsRecoveryBlocked[engine] = true
+	ctx, cancel := context.WithTimeout(context.Background(), settings.OperationBudget)
+	defer cancel()
+	var err error
+	if record.Snapshot.Phase == "failed" {
+		// Converge previous choices without changing the original failed receipt.
+		recovery := *record
+		recovery.Receipts = make(map[string]settingsReceipt)
+		recovery.Resume = false
+		err = b.runSettingsOperationLocked(ctx, engine, &recovery)
+		if err == nil {
+			recovery.Snapshot.Error = "Settings could not be applied; previous settings were restored."
+		}
+		phase, applied, sequence := record.Snapshot.Phase, record.Snapshot.AppliedRevision, record.Snapshot.Sequence
+		record.Snapshot = recovery.Snapshot
+		record.Snapshot.Phase = phase
+		record.Snapshot.AppliedRevision = applied
+		record.Snapshot.Sequence = sequence
+		record.Resume = false
+		if saveErr := b.saveEngineSettingsLocked(); saveErr != nil {
+			err = saveErr
+		}
+		b.publishSettingsLocked()
+	} else {
+		// Startup restoration, not replay of an interrupted operation, owns the
+		// decision to start a stopped engine after reconciliation succeeds.
+		record.Resume = false
+		err = b.runSettingsOperationLocked(ctx, engine, record)
+	}
+	b.finishSettingsRecoveryLocked(engine, err == nil)
+	return err == nil
+}
+
+func (b *Broker) finishSettingsRecoveryLocked(engine string, recovered bool) {
+	id := "engine-settings:recovery:" + engine
+	if recovered {
+		delete(b.settingsRecoveryBlocked, engine)
+		b.forwardErrorsClear(id)
+		return
+	}
+	b.settingsRecoveryBlocked[engine] = true
+	b.settingsAvailabilityBlockedLocked(engine)
+	b.forwardErrorsReport(serviceerrors.ServiceError{
+		ID: id, NodeID: b.nodeID, Timestamp: nowMillis(),
+		Message: engine + ": " + settingsRecoveryError, Severity: "error", Action: "none",
+	})
+}
+
+// Advertisers hold engineConfigMu. Suppress even a healthy external listener
+// when its settings could not be reconciled; do not claim ownership or stop it.
+func (b *Broker) settingsAvailabilityBlockedLocked(engine string) bool {
+	if !b.settingsRecoveryBlocked[engine] {
+		return false
+	}
+	b.unregisterService(engineSettingsService(engine))
+	b.setProxyLocalBackend(b.settingsProxy(engine), engine, 0, false)
 	return true
 }
 

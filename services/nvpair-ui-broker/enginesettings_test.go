@@ -23,8 +23,11 @@ import (
 
 type settingsHarness struct {
 	b                *Broker
+	notifications    chan *Message
 	applies          atomic.Int32
+	starts           atomic.Int32
 	fail             atomic.Bool
+	failOllamaOnly   atomic.Bool
 	failBeforeStop   atomic.Bool
 	loseProxyOnStop  atomic.Bool
 	failResultSave   atomic.Bool
@@ -50,7 +53,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 	for _, ln := range listeners {
 		_ = ln.Close()
 	}
-	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}}
+	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}, notifications: make(chan *Message, 100)}
 	worker, codec := newTestRPCWorkerPipe(t)
 	h.b.setEngineMgr(worker)
 	for i, engine := range []string{"ollama", "lmstudio", "omlx"} {
@@ -96,9 +99,13 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 				return
 			}
 			if !msg.IsRequest() {
+				h.notifications <- msg
 				continue
 			}
 			switch msg.Method {
+			case "engine:start", "engine:restart":
+				h.starts.Add(1)
+				_ = codec.Respond(msg.ID, map[string]bool{"running": true})
 			case "engine:get-launch":
 				h.launchMu.Lock()
 				current := launch
@@ -146,7 +153,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 						_ = codec.RespondError(msg.ID, -32000, err.Error())
 						return
 					}
-					if h.fail.Load() {
+					if h.fail.Load() && (!h.failOllamaOnly.Load() || p.Engine == "ollama") {
 						_ = h.b.rebindSettingsProxy(context.Background(), p.Engine, previousProxy)
 						h.launchMu.Lock()
 						launch = previousLaunch
@@ -377,13 +384,13 @@ func TestSettingsJournalFailureAndInterruptedRecovery(t *testing.T) {
 	// Simulate a fresh coordinator after its journal was written but component
 	// writes/rebind/start had not completed. The same replay handles later cuts.
 	h.b.engineSettingsLoaded = false
-	if !h.b.recoverEngineSettings() {
+	if len(h.b.recoverEngineSettings()) != 0 {
 		t.Fatal("recovery refused")
 	}
 	if h.applies.Load() != 1 || h.b.engineSettings["ollama"].Snapshot.Phase != "succeeded" {
 		t.Fatal("accepted operation not recovered")
 	}
-	if !h.b.recoverEngineSettings() || h.applies.Load() != 1 {
+	if len(h.b.recoverEngineSettings()) != 0 || h.applies.Load() != 1 {
 		t.Fatal("completed operation replayed")
 	}
 	if _, ok := h.b.explicitEngineSettings("ollama"); !ok {

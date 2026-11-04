@@ -6,6 +6,12 @@ package enginesettings
 
 import "fmt"
 
+// RestoreEnabled is the broker-internal startup gate. Exclusions apply only to
+// this restoration attempt and never overwrite the user's saved ON/OFF intent.
+type RestoreEnabled struct {
+	ExcludedEngines []string `json:"excludedEngines,omitempty"`
+}
+
 type Config struct {
 	ServerPort int `json:"serverPort"`
 	ProxyPort  int `json:"proxyPort"`

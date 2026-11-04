@@ -15,6 +15,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	settings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
 	"nvpair-shared/workerhealth"
@@ -183,8 +184,13 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		return
 	}
 	if msg.Method == restoreEnabledMethod && msg.IsNotification() {
+		var p settings.RestoreEnabled
+		if len(msg.Params) > 0 && json.Unmarshal(msg.Params, &p) != nil {
+			slog.Warn("invalid enabled-engine restoration gate; restoration skipped")
+			return
+		}
 		go func() {
-			if err := m.exec.RestoreEnabled(ctx); err != nil {
+			if err := m.exec.RestoreEnabled(ctx, p.ExcludedEngines...); err != nil {
 				slog.Warn("one or more enabled engines could not be restored", "err", err)
 			}
 		}()

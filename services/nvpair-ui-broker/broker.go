@@ -23,6 +23,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/enginenative"
+	settings "nvpair-shared/enginesettings"
 	"nvpair-shared/errors"
 	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/jsonrpc"
@@ -180,6 +181,7 @@ type Broker struct {
 	engineSettingsError      error
 	engineSettingsEpoch      string
 	engineSettings           map[string]*engineSettingsRecord
+	settingsRecoveryBlocked  map[string]bool // guarded by engineConfigMu
 	settingsRelayMu          sync.Mutex
 	settingsCancels          map[string]context.CancelFunc
 	activeSettings           map[string]activeSettingsOperation
@@ -637,11 +639,11 @@ func (b *Broker) getEngineMgr() *rpcWorker {
 }
 
 func (b *Broker) restoreEnabledEngines(w *rpcWorker) {
+	excluded := b.recoverEngineSettings()
 	if w == nil {
 		return
 	}
-	b.recoverEngineSettings()
-	if err := w.Notify(restoreEnabledEnginesMethod, nil); err != nil {
+	if err := w.Notify(restoreEnabledEnginesMethod, settings.RestoreEnabled{ExcludedEngines: excluded}); err != nil {
 		slog.Warn("failed to request enabled-engine restoration", "err", err)
 	}
 }
@@ -3581,6 +3583,24 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 		b.engineConfigMu.Lock()
 		defer b.engineConfigMu.Unlock()
 		defer b.reconcileLegacySettingsLocked()
+		if msg.Method == "engine:start" || msg.Method == "engine:restart" {
+			var p struct {
+				Engine string `json:"engine"`
+			}
+			if json.Unmarshal(msg.Params, &p) == nil && (p.Engine == "ollama" || p.Engine == "lmstudio" || p.Engine == "omlx") {
+				// Also guard requests arriving before the startup goroutine has
+				// run. Never forward a start until its journal entry reconciles.
+				// An explicit retry can reread a repaired unreadable journal.
+				if b.engineSettingsError != nil {
+					b.engineSettingsLoaded = false
+					b.engineSettingsError = nil
+				}
+				if !b.recoverEngineSettingsLocked(p.Engine) {
+					_ = b.codec.RespondError(msg.ID, -32000, settingsRecoveryError)
+					return
+				}
+			}
+		}
 	}
 	isOllamaPortAssignment := isEnginePortAssignment && requestedEngine == "ollama"
 	if isEnginePortAssignment && b.rejectOllamaHostAliasPort(msg, requestedPort, requestedEngine) {

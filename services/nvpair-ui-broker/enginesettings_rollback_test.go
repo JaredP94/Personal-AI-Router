@@ -77,11 +77,11 @@ func TestSettingsFailedRecoveryCannotReplayCandidateOrChangeReceipt(t *testing.T
 	if err != nil || receipt.Phase != "failed" {
 		t.Fatal("expected a failed operation")
 	}
-	if h.b.recoverEngineSettings() {
+	if len(h.b.recoverEngineSettings()) == 0 {
 		t.Fatal("failed compensation allowed automatic engine restoration")
 	}
 	h.fail.Store(false)
-	if !h.b.recoverEngineSettings() {
+	if len(h.b.recoverEngineSettings()) != 0 {
 		t.Fatal("previous configuration could not be reconciled")
 	}
 	if h.applies.Load() != 3 {

@@ -268,6 +268,17 @@ a successful command must leave the tool detectable.
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
 
+### Enabled-engine startup gate
+
+The broker-internal `engine:restore-enabled` notification accepts
+`{excludedEngines?: string[]}`. Engines excluded because their settings recovery
+failed are not started by this restoration attempt. Other saved-ON engines still
+restore, and exclusions never change persisted ON/OFF intent. Invalid gate params
+skip the entire attempt. The broker retries reconciliation on its next startup,
+manager worker restart, or an explicit engine start/restart; see
+[settings recovery](../nvpair-ui-broker/ENGINE_SETTINGS.md#state-progress-and-recovery).
+Desktop does not consume or send this internal notification.
+
 ### Startup cancellation
 
 A command-mode control CLI can launch its daemon before the CLI exits. Failed

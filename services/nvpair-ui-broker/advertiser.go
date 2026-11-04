@@ -88,6 +88,9 @@ func (b *Broker) runAutoAdvertise(ctx context.Context) {
 func (b *Broker) reconcileAdvertise(client *http.Client) {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
+	if b.settingsAvailabilityBlockedLocked("ollama") {
+		return
+	}
 	if r := b.engineSettings["ollama"]; r != nil && r.Snapshot.Phase == "applying" {
 		return
 	}
@@ -159,6 +162,9 @@ func (b *Broker) runAutoAdvertiseLMStudio(ctx context.Context) {
 func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
+	if b.settingsAvailabilityBlockedLocked("lmstudio") {
+		return
+	}
 	if r := b.engineSettings["lmstudio"]; r != nil && r.Snapshot.Phase == "applying" {
 		return
 	}
@@ -326,6 +332,9 @@ func (b *Broker) runAutoAdvertiseOMLX(ctx context.Context) {
 func (b *Broker) reconcileAdvertiseOMLX(client *http.Client) {
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
+	if b.settingsAvailabilityBlockedLocked("omlx") {
+		return
+	}
 	if r := b.engineSettings["omlx"]; r != nil && r.Snapshot.Phase == "applying" {
 		return
 	}
