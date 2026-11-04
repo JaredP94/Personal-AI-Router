@@ -56,7 +56,7 @@ func TestCommandUninstallCoverage(t *testing.T) {
 			stopMarker := filepath.Join(home, "stop-ran")
 			p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}}
 			m.Platforms[key] = p
-			ex := NewExecutor(reg, NewReporter(nil), nil, base)
+			ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), nil, base))
 			ex.detectTimeout = 0 // never wait for a destructive-command regression
 			if tc.installedByPAIR {
 				st, _ := ex.state(tc.engine)
@@ -132,7 +132,7 @@ func TestCommandUninstallManifestPolicy(t *testing.T) {
 			m, _ := reg.Get("policy")
 			p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 			p.Uninstall.Run = rmCmd(cli)
-			ex := NewExecutor(reg, NewReporter(nil), nil, base)
+			ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), nil, base))
 			ex.detectTimeout = 0
 			if err := writeInstallMarker(filepath.Join(base, "policy"), "policy", "", ""); err != nil {
 				t.Fatal(err)

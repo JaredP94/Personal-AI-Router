@@ -37,6 +37,10 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 	if err := e.reservedPortError(port); err != nil {
 		return EngineStatus{}, err
 	}
+	ctx, err := e.prepareStart(ctx, engine)
+	if err != nil {
+		return EngineStatus{}, err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return EngineStatus{}, err

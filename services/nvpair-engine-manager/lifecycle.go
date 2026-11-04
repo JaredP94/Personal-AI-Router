@@ -92,6 +92,10 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	if err != nil {
 		return err
 	}
+	ctx, err = e.prepareStart(ctx, engine)
+	if err != nil {
+		return err
+	}
 	st.lockOperation()
 	defer st.unlockOperation()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
@@ -102,6 +106,9 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 
 // doStart performs the start. Callers must hold st.opMu.
 func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, opts startOpts) error {
+	if err := e.authorizeStart(ctx, engine); err != nil {
+		return err
+	}
 	if engine == "omlx" && opts.Port > 0 && opts.Port != st.plat.Runtime.Port {
 		return fmt.Errorf("oMLX server settings are managed in the oMLX app; only the PAIR proxy port can be changed")
 	}
@@ -758,6 +765,10 @@ func (e *Executor) reconcileFailedCommandStop(st *engineState, engine string, ru
 // so nothing can interleave between the stop and the start.
 func (e *Executor) Restart(ctx context.Context, engine string) error {
 	st, err := e.state(engine)
+	if err != nil {
+		return err
+	}
+	ctx, err = e.prepareStart(ctx, engine)
 	if err != nil {
 		return err
 	}

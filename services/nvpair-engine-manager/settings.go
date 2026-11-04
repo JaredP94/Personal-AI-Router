@@ -329,6 +329,9 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	// This operation returns its one failure through the settings snapshot.
 	// Do not also open the global lifecycle error dialog for the same attempt.
 	ctx = context.WithValue(ctx, settingsApplyContextKey{}, true)
+	// The broker's active operation authorizes candidate and compensation
+	// starts without re-entering recovery while this engine lock is held.
+	ctx = context.WithValue(ctx, startAuthorizationKey{}, startAuthorization{p.Engine, p.OperationID})
 	e.reporter.clear(startFailedID(p.Engine))
 	e.reporter.clear(exitedID(p.Engine))
 	old := e.launchStateLocked(p.Engine, st)

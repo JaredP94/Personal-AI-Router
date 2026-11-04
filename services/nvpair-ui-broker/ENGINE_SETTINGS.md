@@ -91,9 +91,24 @@ including saving the result, before restoration is allowed. A stopped engine is
 not resumed during reconciliation; saved ON/OFF intent remains authoritative.
 A value-free error is reported through the existing `errors:update` channel.
 The next broker startup or engine-manager worker restart retries reconciliation.
-An explicit engine start/restart retries that engine first (including rereading a
-repaired unreadable journal) and is refused if reconciliation still fails. A
-successful retry clears the recovery error and allows normal advertisement again.
+Every engine launch or adoption passes engine-manager's `Executor.doStart`
+authorization gate. Ordinary lifecycle operations retry broker-owned recovery
+before taking the engine operation lock (including rereading a repaired unreadable
+journal); failed recovery refuses both local and paired-device remote starts with
+the same value-free error. Successful recovery issues an engine-scoped generation
+grant, clears the recovery error and allows normal advertisement again. Accepting a
+configure operation or failing recovery revokes ordinary grants, so a start queued
+behind an apply cannot use stale reconciliation. No broker journal or proxy
+reconciliation logic is duplicated in engine-manager.
+
+The gate covers local start/restart, saved-ON startup restoration, remote start,
+install autostart (including remote install), action-triggered restart, server-port
+restart and persistence-failure compensation, and Apply's candidate and rollback
+restart. Apply and rollback use the broker's active operation ID rather than
+recursively retrying recovery while holding the engine lock. Both are authorized
+at the same `doStart` chokepoint, even though the journal is still `applying`.
+Missing broker authority or a missing, revoked or wrong-engine grant fails closed;
+adding a direct `doStart` caller cannot bypass reconciliation.
 An unreadable journal blocks all three settings-managed engines, since none of
 their accepted settings can be established safely; it does not change saved intent.
 Reusing a request ID with identical input returns its receipt without another
@@ -130,7 +145,15 @@ operation ID, engine and candidate port; an unknown operation cannot rebind a pr
 
 One `engine:settings-request` / `engine:settings-reply` correlation path serves
 both the live `settings/get-engine-allow-lan-bind` read and settings
-`get`, `preview`, `apply`, `rebind`, `rollback` requests. Replies stay with the captured
+`get`, `preview`, `apply`, `rebind`, `rollback`, `prepare-start`, `authorize-start`
+requests. `prepare-start` takes `{engine}` and returns an opaque reconciliation
+generation string; `authorize-start` takes `{engine, requestId}` and returns null
+only for the current generation or that engine's active configure operation ID.
+These use the existing `Request` envelope; no client request or result changes.
+Authorization takes only the relay-state mutex, never the journal/apply locks,
+and does no worker I/O. Legacy broker lifecycle relays also hold neither settings
+lock across worker calls; their post-call snapshot refresh reacquires them in the
+usual apply-then-journal order. Replies stay with the captured
 worker, never a replacement process. `engine:settings-cancel` cancels pending
 requests. `engine:settings-projection` supplies full snapshots to the worker.
 

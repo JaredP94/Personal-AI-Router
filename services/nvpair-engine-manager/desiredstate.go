@@ -139,6 +139,10 @@ func (e *Executor) RestoreEnabled(ctx context.Context, excluded ...string) error
 }
 
 func (e *Executor) restoreEnabled(ctx context.Context, engine string) error {
+	ctx, err := e.prepareStart(ctx, engine)
+	if err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return err

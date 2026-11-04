@@ -185,6 +185,7 @@ type Broker struct {
 	settingsRelayMu          sync.Mutex
 	settingsCancels          map[string]context.CancelFunc
 	activeSettings           map[string]activeSettingsOperation
+	settingsStartGrants      map[string]string // guarded by settingsRelayMu
 	ollamaExplicitSettings   atomic.Bool
 	lmstudioExplicitSettings atomic.Bool
 	omlxExplicitSettings     atomic.Bool
@@ -3578,29 +3579,16 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 
 	requestedEngine, requestedPort, isEnginePortAssignment := enginePortAssignmentRequest(msg.Method, msg.Params)
 	if isEnginePortAssignment || msg.Method == "engine:stop" || msg.Method == "engine:start" || msg.Method == "engine:restart" {
-		b.settingsApplyMu.Lock()
-		defer b.settingsApplyMu.Unlock()
-		b.engineConfigMu.Lock()
-		defer b.engineConfigMu.Unlock()
-		defer b.reconcileLegacySettingsLocked()
-		if msg.Method == "engine:start" || msg.Method == "engine:restart" {
-			var p struct {
-				Engine string `json:"engine"`
-			}
-			if json.Unmarshal(msg.Params, &p) == nil && (p.Engine == "ollama" || p.Engine == "lmstudio" || p.Engine == "omlx") {
-				// Also guard requests arriving before the startup goroutine has
-				// run. Never forward a start until its journal entry reconciles.
-				// An explicit retry can reread a repaired unreadable journal.
-				if b.engineSettingsError != nil {
-					b.engineSettingsLoaded = false
-					b.engineSettingsError = nil
-				}
-				if !b.recoverEngineSettingsLocked(p.Engine) {
-					_ = b.codec.RespondError(msg.ID, -32000, settingsRecoveryError)
-					return
-				}
-			}
-		}
+		// The worker retries recovery before its engine lock and checks the
+		// broker's grant at doStart. Do not hold settings locks across worker
+		// lifecycle calls: their recovery callback needs those same locks.
+		defer func() {
+			b.settingsApplyMu.Lock()
+			defer b.settingsApplyMu.Unlock()
+			b.engineConfigMu.Lock()
+			defer b.engineConfigMu.Unlock()
+			b.reconcileLegacySettingsLocked()
+		}()
 	}
 	isOllamaPortAssignment := isEnginePortAssignment && requestedEngine == "ollama"
 	if isEnginePortAssignment && b.rejectOllamaHostAliasPort(msg, requestedPort, requestedEngine) {

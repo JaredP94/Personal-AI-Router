@@ -279,6 +279,15 @@ manager worker restart, or an explicit engine start/restart; see
 [settings recovery](../nvpair-ui-broker/ENGINE_SETTINGS.md#state-progress-and-recovery).
 Desktop does not consume or send this internal notification.
 
+Restoration exclusions are not the launch safety boundary: every launch/adoption
+passes `Executor.doStart`, which requires broker authorization. Ordinary starts
+retry recovery via the internal `prepare-start` relay before acquiring the engine
+operation lock, then check the grant via `authorize-start` at `doStart`. Local and
+remote starts fail closed with the same value-free error when recovery fails or
+the broker cannot authorize them. Apply/rollback restarts use their active broker
+operation ID, avoiding recursive recovery while holding that engine lock. See
+[the protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md#internal-worker-and-authenticated-peer-surfaces).
+
 ### Startup cancellation
 
 A command-mode control CLI can launch its daemon before the CLI exits. Failed

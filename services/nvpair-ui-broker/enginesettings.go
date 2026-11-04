@@ -358,6 +358,7 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	if b.activeSettings == nil {
 		b.activeSettings = make(map[string]activeSettingsOperation)
 	}
+	delete(b.settingsStartGrants, engine)
 	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort, PreviousPort: record.Previous.ProxyPort}
 	b.settingsRelayMu.Unlock()
 	defer func() { b.settingsRelayMu.Lock(); delete(b.activeSettings, id); b.settingsRelayMu.Unlock() }()

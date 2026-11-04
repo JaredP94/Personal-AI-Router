@@ -139,6 +139,9 @@ func (b *Broker) finishSettingsRecoveryLocked(engine string, recovered bool) {
 		return
 	}
 	b.settingsRecoveryBlocked[engine] = true
+	b.settingsRelayMu.Lock()
+	delete(b.settingsStartGrants, engine)
+	b.settingsRelayMu.Unlock()
 	b.settingsAvailabilityBlockedLocked(engine)
 	b.forwardErrorsReport(serviceerrors.ServiceError{
 		ID: id, NodeID: b.nodeID, Timestamp: nowMillis(),

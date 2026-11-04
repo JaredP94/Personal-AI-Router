@@ -20,7 +20,7 @@ func desiredTestExecutor(t *testing.T, manifest *Manifest, baseDir string) *Exec
 	t.Helper()
 	reg := NewRegistry()
 	reg.engines[manifest.Engine] = manifest
-	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	return reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 }
 
 func TestDesiredStateStoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {

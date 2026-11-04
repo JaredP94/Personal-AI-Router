@@ -72,7 +72,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 	var pulls []map[string]any
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(method string, params any) {
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(method string, params any) {
 		if method != "engine:pull-progress" {
 			return
 		}
@@ -80,7 +80,7 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 		mu.Lock()
 		pulls = append(pulls, mp)
 		mu.Unlock()
-	}, t.TempDir())
+	}, t.TempDir()))
 
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -130,7 +130,7 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 	var pulls []map[string]any
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(method string, params any) {
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(method string, params any) {
 		if method != "engine:pull-progress" {
 			return
 		}
@@ -138,7 +138,7 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 		mu.Lock()
 		pulls = append(pulls, mp)
 		mu.Unlock()
-	}, t.TempDir())
+	}, t.TempDir()))
 
 	// A Cmd action just runs a binary; the engine need not be started.
 	var out bytes.Buffer
@@ -178,7 +178,7 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 	reg.engines[m.Engine] = m
 	var reportBuf bytes.Buffer
 	reporter := NewReporter(NewCodec(&reportBuf))
-	ex := NewExecutor(reg, reporter, func(method string, params any) {
+	ex := reconciledTestExecutor(NewExecutor(reg, reporter, func(method string, params any) {
 		if method != "engine:pull-progress" {
 			return
 		}
@@ -186,7 +186,7 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 		mu.Lock()
 		pulls = append(pulls, mp)
 		mu.Unlock()
-	}, t.TempDir())
+	}, t.TempDir()))
 
 	// The engine is never started, so the HTTP pull path fails with "not running".
 	var out bytes.Buffer

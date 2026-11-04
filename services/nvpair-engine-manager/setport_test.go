@@ -46,7 +46,7 @@ func hostPort(t *testing.T, reg *Registry, engine string) int {
 func newBundledExecutor(t *testing.T, overrideDir string) *Executor {
 	t.Helper()
 	reg := loadWithOverrides(t, overrideDir)
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir()))
 	ex.overrideDir = overrideDir
 	return ex
 }

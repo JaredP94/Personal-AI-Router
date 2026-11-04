@@ -90,7 +90,7 @@ func TestPersistPortOverridesBundledPlatformPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg.bundledRaw["platform-engine"] = raw
-	ex := NewExecutor(reg, NewReporter(nil), nil, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), nil, t.TempDir()))
 	ex.overrideDir = t.TempDir()
 	for _, port := range []int{22002, 22001} {
 		if err := ex.persistPort("platform-engine", port); err != nil {

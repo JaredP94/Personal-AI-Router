@@ -56,6 +56,10 @@ func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
 					err = fmt.Errorf("node-settings read rejected")
 				}
 			}
+		} else if relay.Method == "prepare-start" {
+			result, err = b.prepareEngineStart(ctx, relay.Request.Engine)
+		} else if relay.Method == "authorize-start" {
+			err = b.authorizeEngineStart(relay.Request)
 		} else if relay.Method == "rebind" || relay.Method == "rollback" {
 			b.settingsRelayMu.Lock()
 			operation, ok := b.activeSettings[relay.Request.RequestID]

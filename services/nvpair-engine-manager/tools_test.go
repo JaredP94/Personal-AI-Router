@@ -28,7 +28,7 @@ func newToolTestExecutor(t *testing.T) (*Executor, string, string, string) {
 	brew := filepath.Join(dir, "brew")
 	detect := filepath.Join(dir, "macmon")
 	args := filepath.Join(dir, "args")
-	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, dir)
+	ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, dir))
 	ex.tools = toolEnv{
 		InstallTimeout: 15 * time.Minute,
 		Platform:       "darwin/arm64",
@@ -95,7 +95,7 @@ func TestInstallToolHomebrewMissing(t *testing.T) {
 }
 
 func TestDefaultToolAllowlist(t *testing.T) {
-	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir()))
 	want := toolEnv{
 		InstallTimeout: 15 * time.Minute,
 		Platform:       runtime.GOOS + "/" + runtime.GOARCH,

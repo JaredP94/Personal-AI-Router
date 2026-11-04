@@ -29,7 +29,7 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 		m.Engine = name
 		reg.engines[name] = m
 	}
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir()))
 	ctx := context.Background()
 
 	ports := make([]int, len(names))

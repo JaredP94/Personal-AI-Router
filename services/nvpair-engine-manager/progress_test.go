@@ -157,7 +157,7 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 	var frames []map[string]any
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(method string, params any) {
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(method string, params any) {
 		if method != "engine:install-progress" {
 			return
 		}
@@ -165,7 +165,7 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 		mu.Lock()
 		frames = append(frames, p)
 		mu.Unlock()
-	}, t.TempDir())
+	}, t.TempDir()))
 	ex.detectTimeout = 2 * time.Second
 
 	if err := ex.Install(context.Background(), m.Engine); err != nil {

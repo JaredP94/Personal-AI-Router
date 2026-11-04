@@ -104,8 +104,20 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			}
 			switch msg.Method {
 			case "engine:start", "engine:restart":
-				h.starts.Add(1)
-				_ = codec.Respond(msg.ID, map[string]bool{"running": true})
+				go func(msg *Message) {
+					var p settings.Request
+					_ = json.Unmarshal(msg.Params, &p)
+					token, err := h.b.prepareEngineStart(context.Background(), p.Engine)
+					if err == nil {
+						err = h.b.authorizeEngineStart(settings.Request{Engine: p.Engine, RequestID: token})
+					}
+					if err != nil {
+						_ = codec.RespondError(msg.ID, -32000, err.Error())
+						return
+					}
+					h.starts.Add(1)
+					_ = codec.Respond(msg.ID, map[string]bool{"running": true})
+				}(msg)
 			case "engine:get-launch":
 				h.launchMu.Lock()
 				current := launch

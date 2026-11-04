@@ -56,7 +56,7 @@ func newTestExecutor(t *testing.T, m *Manifest) *Executor {
 	t.Helper()
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	return reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir()))
 }
 
 func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
@@ -421,7 +421,7 @@ func TestInstallAdoptsExternalServiceWithoutDownloading(t *testing.T) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	var methods []string
-	ex := NewExecutor(reg, NewReporter(nil), func(method string, _ any) { methods = append(methods, method) }, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(method string, _ any) { methods = append(methods, method) }, t.TempDir()))
 
 	if err := ex.Install(context.Background(), m.Engine); err != nil {
 		t.Fatalf("install should adopt the external service: %v", err)
@@ -723,7 +723,7 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 	if err := ex.Uninstall(context.Background(), "fake"); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
@@ -769,7 +769,7 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	m.Platforms[key] = p
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 
 	err = ex.Uninstall(context.Background(), m.Engine)
 	if err == nil || !strings.Contains(err.Error(), "external management") {
@@ -827,7 +827,7 @@ func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 	err := ex.Uninstall(context.Background(), m.Engine)
 	if err == nil || !strings.Contains(err.Error(), "occupied by an unidentified service") {
 		t.Fatalf("uninstall unidentified listener error = %v", err)
@@ -931,7 +931,7 @@ func TestEngineUninstall(t *testing.T) {
 
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 	if ok, _ := ex.Detect("fake"); !ok {
 		t.Fatal("expected installed before uninstall")
 	}

@@ -15,7 +15,7 @@ func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
 	manifest := testEngineManifest(fakeEngineBin)
 	reg := NewRegistry()
 	reg.engines[manifest.Engine] = manifest
-	exec := NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir())
+	exec := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir()))
 	exec.overrideDir = t.TempDir()
 	if err := exec.SetReservedPort(15555); err != nil {
 		t.Fatal(err)

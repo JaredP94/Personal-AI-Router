@@ -51,7 +51,7 @@ func capturingExecutor(t *testing.T, m *Manifest) (*Executor, *captured) {
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
 	c := &captured{}
-	ex := NewExecutor(reg, NewReporter(nil), c.emit, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), c.emit, t.TempDir()))
 	ex.detectTimeout = 2 * time.Second // keep failure paths fast in tests
 	return ex, c
 }

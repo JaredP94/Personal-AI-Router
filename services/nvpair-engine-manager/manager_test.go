@@ -20,7 +20,7 @@ import (
 func TestManagerErrorResponses(t *testing.T) {
 	newM := func() (*Manager, *bytes.Buffer) {
 		var out bytes.Buffer
-		ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+		ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir()))
 		return NewManager(NewCodec(&out), ex, nil), &out
 	}
 	id := json.RawMessage("1")
@@ -49,7 +49,7 @@ func TestManagerErrorResponses(t *testing.T) {
 
 func TestRunOpRejectsBadPort(t *testing.T) {
 	var out bytes.Buffer
-	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir()))
 	m := NewManager(NewCodec(&out), ex, nil)
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start",
@@ -59,7 +59,7 @@ func TestRunOpRejectsBadPort(t *testing.T) {
 
 func TestRunOpRejectsBadBind(t *testing.T) {
 	var out bytes.Buffer
-	ex := NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), func(string, any) {}, t.TempDir()))
 	m := NewManager(NewCodec(&out), ex, nil)
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:start",
@@ -72,6 +72,7 @@ func TestRunOpInstallAutostart(t *testing.T) {
 	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	m := NewManager(NewCodec(&out), ex, nil)
+	allowReconciledTestStarts(t, m)
 	id := json.RawMessage("1")
 	m.runOp(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:install",
 		Params: json.RawMessage(`{"engine":"fake","start":true}`)})

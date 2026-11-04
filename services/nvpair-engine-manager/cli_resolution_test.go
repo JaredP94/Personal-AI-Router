@@ -42,7 +42,7 @@ func isolatedCommandRegistry(t *testing.T, engine, root string) *Registry {
 func assertCommandPresence(t *testing.T, reg *Registry, base, engine, wantPath string, wantUninstall bool) {
 	t.Helper()
 	wantInstalled := wantPath != ""
-	ex := NewExecutor(reg, NewReporter(nil), nil, base)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), nil, base))
 	if got, err := ex.Detect(engine); err != nil || got != wantInstalled {
 		t.Errorf("Detect = %v, %v; want installed=%v", got, err, wantInstalled)
 	}
@@ -182,7 +182,7 @@ func TestLMStudioCLIResolutionUnchanged(t *testing.T) {
 	reg := isolatedCommandRegistry(t, "lmstudio", home)
 	cli := filepath.Join(home, ".lmstudio/bin/lms")
 	resolutionFile(t, cli)
-	ex := NewExecutor(reg, NewReporter(nil), nil, base)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), nil, base))
 	if installed, err := ex.Detect("lmstudio"); err != nil || !installed {
 		t.Fatalf("Detect = %v, %v", installed, err)
 	}
