@@ -53,6 +53,23 @@ cards retain their existing controls. Older peers remain unverified until the
 services can verify them; the payload does not identify why proof is unavailable,
 so the UI does not guess that an update is needed.
 
+## Engine launch settings
+
+Expand a local or verified paired device's engine card, then **Settings**, to
+edit the server port, proxy port, and launch arguments/environment assignments.
+Apply validates with the owning device before saving; only changes requiring an
+engine restart ask for confirmation. Progress stays in the Apply button, and a
+failed operation reports one message. Revision conflicts reload saved settings
+for review instead of overwriting another editor's changes.
+
+For oMLX, only the proxy port is editable. Server settings remain managed in the
+oMLX app, and no launch-text editor is shown. Preview records and manual bare
+engines have no Settings panel. Unsupported devices/formats and disconnected
+devices remain read-only. Launch text is displayed only in its editor.
+
+The renderer consumes the node-owned settings protocol described in
+[`ENGINE_SETTINGS.md`](../services/nvpair-ui-broker/ENGINE_SETTINGS.md).
+
 ## Develop
 
 ```bash

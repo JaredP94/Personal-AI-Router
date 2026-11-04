@@ -10,6 +10,28 @@ import type { BackendInfo } from '@/ui/types/engine-info'
 import { BackendRow } from '@/ui/components/BackendRow/BackendRow'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
+import { useEngineSettingsStore } from '@/ui/stores/engine-settings.store'
+import type { EngineSettingsSnapshot } from '@/shared/types/engine-settings'
+
+const settings: EngineSettingsSnapshot = {
+    nodeId: 'local',
+    engine: 'ollama',
+    revision: 1,
+    appliedRevision: 1,
+    sequence: 1,
+    epoch: 'one',
+    settings: { serverPort: 11434, proxyPort: 54301, launchText: '' },
+    effectiveServerPort: 11434,
+    effectiveProxyPort: 54301,
+    running: false,
+    adopted: false,
+    editable: true,
+    reason: '',
+    format: 'pair-arguments-v1',
+    phase: 'idle',
+    error: '',
+    requestId: ''
+}
 
 const supported: EngineCapabilityFlags = {
     listModels: true,
@@ -95,9 +117,19 @@ function expand(): void {
 describe('BackendRow reported capability gates', () => {
     beforeEach(() => {
         vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-        vi.stubGlobal('pairApi', { engines: { install, update } })
+        vi.stubGlobal('pairApi', {
+            engines: {
+                install,
+                update,
+                getSettings: () => new Promise<EngineSettingsSnapshot>(() => {}),
+                onSettingsChanged: () => () => {},
+                onSettingsDisconnected: () => () => {}
+            }
+        })
+        useEngineSettingsStore.setState({ entries: {} })
+        useEngineSettingsStore.getState().receive(settings)
         vi.stubGlobal('windowApi', { platform: 'macOS' })
-        useConnectionStore.setState({ selfId: 'local' })
+        useConnectionStore.setState({ selfId: 'local', connected: true })
         container = document.createElement('div')
         document.body.appendChild(container)
         root = createRoot(container)
@@ -106,7 +138,8 @@ describe('BackendRow reported capability gates', () => {
         act(() => root.unmount())
         container.remove()
         useEngineStatusStore.setState({ statusByNode: new Map() })
-        useConnectionStore.setState({ selfId: null })
+        useConnectionStore.setState({ selfId: null, connected: false })
+        useEngineSettingsStore.setState({ entries: {} })
         vi.unstubAllGlobals()
     })
 
@@ -136,10 +169,10 @@ describe('BackendRow reported capability gates', () => {
         expect(reinstallButton === undefined || reinstallButton.disabled).toBe(true)
     })
 
-    it('hides the server-port field but keeps the proxy field when set_port is false', () => {
+    it('uses the revisioned settings authority rather than the old port capability', () => {
         render({ ...supported, setPort: false })
         expand()
-        expect(portValues()).toEqual(['54301'])
+        expect(portValues()).toEqual(['11434', '54301'])
         render(supported)
         expect(portValues()).toContain('11434')
     })
@@ -148,6 +181,6 @@ describe('BackendRow reported capability gates', () => {
         render(null)
         expand()
         expect(buttons().find(button => button.textContent === 'Uninstall')).toBeUndefined()
-        expect(portValues()).toEqual(['54301'])
+        expect(portValues()).toEqual(['11434', '54301'])
     })
 })
