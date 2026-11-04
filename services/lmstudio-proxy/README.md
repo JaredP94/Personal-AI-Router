@@ -9,6 +9,27 @@ A discovery-aware HTTP reverse proxy for LM Studio nodes on the local network. I
 
 > **Clone of `ollama-proxy`.** This proxy is a deliberate clone of [`ollama-proxy`](../ollama-proxy/README.md) so the two share identical routing, failover, CORS, and node-selection behavior — the CORS policy is literally the same code, `nvpair-shared/cors`, and is documented [there](../ollama-proxy/README.md#http-reverse-proxy). The differences are engine-specific: it subscribes to the discovery relay for `lm` nodes, forwards the OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), tags workloads `lmstudio`, and persists its port to its own file. It has no `--alias-address`, so its self-forward guard covers only its own listener.
 
+## Anthropic Messages API
+
+`POST /v1/messages` is an inference route, supported with **LM Studio
+0.4.1 or newer** (see the engine's [release announcement](https://lmstudio.ai/blog/claudecode)).
+The body’s `model` selects eligible owners through the same selection,
+scheduler, failover, and workload path as other inference routes. PAIR performs
+no protocol translation: the request body and response, including SSE with
+`stream: true`, pass through unchanged. SSE is flushed as it arrives;
+the existing first-body deadline and cooldown rules apply, and no attempt is
+retried after response bytes reach the client.
+
+`x-api-key` and `anthropic-version` follow existing request-header forwarding;
+`x-api-key` is not PAIR authentication. Existing proxy authentication and
+loopback/cluster policies are unchanged.
+
+PAIR does not negotiate engine API versions. An older engine without this
+endpoint returns its HTTP error (typically `404`); that status may try the next
+eligible model owner, but only within the existing finite candidate list.
+If none supports the endpoint, the final engine error is returned, not translated
+or redirected to another model. Upgrade the serving engines to use this route.
+
 ## Worker control health
 
 An id-bearing `worker/health` request (no params) returns `{"ok":true}` with

@@ -9,6 +9,27 @@ A discovery-aware HTTP reverse proxy for oMLX nodes on the local network (Apple 
 
 > **OpenAI API Compatibility.** This proxy shares identical routing, failover, CORS, and node-selection behavior with [`lmstudio-proxy`](../lmstudio-proxy/README.md) and [`ollama-proxy`](../ollama-proxy/README.md). It subscribes to the discovery relay for `om` nodes, forwards the OpenAI-compatible inference routes (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), tags workloads `omlx`, and persists its port to `omlx-proxy-port.json`.
 
+## Anthropic Messages API
+
+`POST /v1/messages` is an inference route, supported with **oMLX
+0.1.0 or newer** (see the engine's [route registration](https://github.com/jundot/omlx/blob/v0.1.0/omlx/server.py)).
+The body’s `model` selects eligible owners through the same selection,
+scheduler, failover, and workload path as other inference routes. PAIR performs
+no protocol translation: the request body and response, including SSE with
+`stream: true`, pass through unchanged. SSE is flushed as it arrives;
+the existing first-body deadline and cooldown rules apply, and no attempt is
+retried after response bytes reach the client.
+
+`x-api-key` and `anthropic-version` follow existing request-header forwarding;
+`x-api-key` is not PAIR authentication. Existing proxy authentication and
+loopback/cluster policies are unchanged.
+
+PAIR does not negotiate engine API versions. An older engine without this
+endpoint returns its HTTP error (typically `404`); that status may try the next
+eligible model owner, but only within the existing finite candidate list.
+If none supports the endpoint, the final engine error is returned, not translated
+or redirected to another model. Upgrade the serving engines to use this route.
+
 ## Worker control health
 
 An id-bearing `worker/health` request (no params) returns `{"ok":true}` with

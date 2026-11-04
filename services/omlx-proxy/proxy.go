@@ -173,6 +173,7 @@ var inferenceEndpoints = map[string]bool{
 	"/v1/chat/completions": true,
 	"/v1/completions":      true,
 	"/v1/embeddings":       true,
+	"/v1/messages":         true,
 }
 
 // isInferenceRequest reports whether a request should be tracked as a
@@ -1124,13 +1125,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, model := bufferBodyAndModel(r)
 	isInf := isInferenceRequest(r.Method, r.URL.Path)
 
-	// The body forwarded to the engine asks oMLX for its usage block, so the
-	// engine's prefill/decode numbers reach the telemetry reader (oMLX emits
-	// that block only when the request asks for it). The client's own body is
-	// never modified: the flag is added to the buffered copy that every
-	// failover attempt replays, so all attempts forward the same body.
+	// OpenAI inference asks oMLX for its usage block so prefill/decode numbers
+	// reach the telemetry reader. The flag is added to the buffered copy every
+	// failover attempt replays, never the client's body. Anthropic Messages
+	// requests pass through unchanged and must not get OpenAI stream_options.
 	forwardBody := bodyBytes
-	if isInf {
+	if isInf && r.URL.Path != "/v1/messages" {
 		if injected := withUsageRequested(bodyBytes); !bytes.Equal(injected, bodyBytes) {
 			forwardBody = injected
 			// The forwarded body is longer than the client's, so a declared

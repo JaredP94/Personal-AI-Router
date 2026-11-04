@@ -177,6 +177,7 @@ var inferenceEndpoints = map[string]bool{
 	"/v1/chat/completions": true,
 	"/v1/completions":      true,
 	"/v1/embeddings":       true,
+	"/v1/messages":         true,
 }
 
 // isInferenceRequest reports whether a request should be tracked as a

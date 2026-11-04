@@ -5,6 +5,7 @@ package tests
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"nvpair-shared/jsonrpc"
 )
 
 type routingUpstream struct {
@@ -38,6 +41,44 @@ func newRoutingUpstream(t *testing.T, status int) *routingUpstream {
 	return upstream
 }
 
+// Match only the requested status response; startup notifications and earlier
+// workers' replies must not supply another proxy's port.
+func waitRoutingProxyReady(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, prefix string) int {
+	t.Helper()
+	id := map[string]int{"proxy": 10000, "lmstudio-proxy": 20000, "omlx-proxy": 30000}[prefix]
+	send := func() {
+		writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, id, prefix+":get-status"))
+	}
+	send()
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case msg, ok := <-msgs:
+			if !ok {
+				t.Fatal("broker stream closed waiting for proxy readiness")
+			}
+			if msg.ID == nil || string(*msg.ID) != fmt.Sprint(id) {
+				continue
+			}
+			var status struct {
+				Ready bool `json:"ready"`
+				Port  int  `json:"port"`
+			}
+			if json.Unmarshal(msg.Result, &status) == nil && status.Ready {
+				return status.Port
+			}
+		case <-tick.C:
+			id++
+			send()
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s readiness", prefix)
+		}
+	}
+}
+
 func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	if portBusy(11435) || portBusy(1234) {
 		t.Skip("ollama-proxy (11435) or lmstudio-proxy (1234) default port already in use; skipping")
@@ -50,6 +91,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	stdin, msgs, stderr, cleanup := startBrokerWith(t,
 		"--proxy-path", proxyBin,
 		"--lmstudio-proxy-path", lmstudioProxyBin,
+		"--omlx-proxy-path", omlxProxyBin,
 	)
 	t.Cleanup(cleanup)
 	go func() {
@@ -58,8 +100,9 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	}()
 
 	waitForMethod(t, msgs, "app:ready", 10*time.Second)
-	ollamaPort := waitProxyReady(t, stdin, msgs, 15*time.Second)
-	lmstudioPort := waitLMStudioProxyReady(t, stdin, msgs, 15*time.Second)
+	ollamaPort := waitRoutingProxyReady(t, stdin, msgs, "proxy")
+	lmstudioPort := waitRoutingProxyReady(t, stdin, msgs, "lmstudio-proxy")
+	omlxPort := waitRoutingProxyReady(t, stdin, msgs, "omlx-proxy")
 
 	type proxyCase struct {
 		name      string
@@ -69,7 +112,10 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	}
 	cases := []proxyCase{
 		{name: "ollama", rpcPrefix: "proxy", path: "/api/chat", port: ollamaPort},
+		{name: "ollama-anthropic", rpcPrefix: "proxy", path: "/v1/messages", port: ollamaPort},
 		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
+		{name: "lmstudio-anthropic", rpcPrefix: "lmstudio-proxy", path: "/v1/messages", port: lmstudioPort},
+		{name: "omlx-anthropic", rpcPrefix: "omlx-proxy", path: "/v1/messages", port: omlxPort},
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
