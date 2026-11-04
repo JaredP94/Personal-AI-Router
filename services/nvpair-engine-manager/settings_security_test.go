@@ -27,7 +27,7 @@ func TestManagedSettingsRejectBeforeAnyRuntimeMutation(t *testing.T) {
 			p := settingsRequest(t, e)
 			p.Settings.LaunchText = input
 			called := false
-			_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { called = true; return nil })
+			_, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { called = true; return nil })
 			if err == nil || !strings.Contains(err.Error(), "PAIR owns") || called {
 				t.Fatal("managed override reached runtime")
 			}
@@ -57,7 +57,7 @@ func TestOMLXOnlyProxySettingsForRunningApp(t *testing.T) {
 		if err != nil || !strings.Contains(preview.Errors["launchText"], "oMLX app") {
 			t.Fatal("oMLX launch edit not clearly rejected")
 		}
-		_, err = e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "omlx", Settings: config}, func() error { t.Error("invalid oMLX settings rebound"); return nil })
+		_, err = e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "omlx", Settings: config}, func(context.Context, bool) error { t.Error("invalid oMLX settings rebound"); return nil })
 		if err == nil || !strings.Contains(err.Error(), "oMLX app") {
 			t.Fatal("oMLX configure accepted launch edit")
 		}
@@ -69,7 +69,7 @@ func TestOMLXOnlyProxySettingsForRunningApp(t *testing.T) {
 		t.Fatal("oMLX direct port edit accepted")
 	}
 	rebound := 0
-	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "omlx", Settings: settings.Config{ServerPort: 1235, ProxyPort: 24000, LaunchText: "  "}, Resume: true}, func() error { rebound++; return nil })
+	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "omlx", Settings: settings.Config{ServerPort: 1235, ProxyPort: 24000, LaunchText: "  "}, Resume: true}, func(context.Context, bool) error { rebound++; return nil })
 	if err != nil || rebound != 1 || !result.Running || !result.Adopted || result.ServerPort != 1235 {
 		t.Fatalf("proxy-only operation touched running app: %+v %v", result, err)
 	}

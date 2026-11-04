@@ -68,6 +68,7 @@ type engineState struct {
 	adopted    bool  // started externally; we can't stop it
 	gen        int64 // bumped each start; gates stale health loops
 	port       int
+	bind       string // effective address of the last PAIR-owned launch
 	binPath    string
 	proc       *managedProc
 	healthStop context.CancelFunc

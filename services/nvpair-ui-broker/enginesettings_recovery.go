@@ -66,6 +66,34 @@ func (b *Broker) recoverEngineSettings() bool {
 		return false
 	}
 	for engine, record := range b.engineSettings {
+		if record.Snapshot.Phase == "failed" {
+			// A failed rollback can leave component files unreconciled. Converge
+			// the previous choices before allowing any automatic enabled start,
+			// but never turn the original failed receipt into a successful apply.
+			recovery := *record
+			recovery.Receipts = make(map[string]settingsReceipt)
+			recovery.Resume = false
+			ctx, cancel := context.WithTimeout(context.Background(), settings.OperationBudget)
+			err := b.runSettingsOperationLocked(ctx, engine, &recovery)
+			cancel()
+			if err == nil {
+				recovery.Snapshot.Error = "Settings could not be applied; previous settings were restored."
+			}
+			phase, applied, sequence := record.Snapshot.Phase, record.Snapshot.AppliedRevision, record.Snapshot.Sequence
+			record.Snapshot = recovery.Snapshot
+			record.Snapshot.Phase = phase
+			record.Snapshot.AppliedRevision = applied
+			record.Snapshot.Sequence = sequence
+			record.Resume = false
+			if b.saveEngineSettingsLocked() != nil {
+				return false
+			}
+			b.publishSettingsLocked()
+			if err != nil {
+				return false
+			}
+			continue
+		}
 		if record.Snapshot.Phase != "applying" {
 			continue
 		}

@@ -56,14 +56,21 @@ func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
 					err = fmt.Errorf("node-settings read rejected")
 				}
 			}
-		} else if relay.Method == "rebind" {
+		} else if relay.Method == "rebind" || relay.Method == "rollback" {
 			b.settingsRelayMu.Lock()
 			operation, ok := b.activeSettings[relay.Request.RequestID]
 			b.settingsRelayMu.Unlock()
 			if !ok || operation.Engine != relay.Request.Engine || operation.Port != relay.Request.Settings.ProxyPort {
 				err = fmt.Errorf("unknown settings operation")
 			} else {
-				err = b.rebindSettingsProxy(operation.Engine, operation.Port)
+				port := operation.Port
+				if relay.Method == "rollback" {
+					// Only the broker's captured previous port is authorized;
+					// the worker cannot nominate an arbitrary recovery binding.
+					port = operation.PreviousPort
+					b.settingsStartupPort(operation.Engine, port)
+				}
+				err = b.rebindSettingsProxy(ctx, operation.Engine, port)
 			}
 		} else {
 			result, err = b.dispatchEngineSettings(ctx, relay.Method, relay.Request, relay.Caller)

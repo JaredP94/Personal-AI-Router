@@ -186,6 +186,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 
 	st.mu.Lock()
 	st.port = port
+	st.bind = vars["host"]
 	st.stopping = false
 	st.mu.Unlock()
 

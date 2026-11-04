@@ -17,7 +17,7 @@ func TestSettingsFailureDoesNotEchoOpaqueArgument(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
 		p.Settings.LaunchText = "--fail-launch --private-launch-value"
-		if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
+		if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		err := e.Start(context.Background(), "fake")

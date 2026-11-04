@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	settings "nvpair-shared/enginesettings"
 )
@@ -309,7 +310,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 // parent rebind callback. The parent serializes settings operations, releasing
 // its journal lock during this call; the callback uses only its operation token.
 // Explicit ON/OFF intent is untouched.
-func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, rebind func() error) (settings.LaunchState, error) {
+func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, rebind func(context.Context, bool) error) (settings.LaunchState, error) {
 	st, err := e.state(p.Engine)
 	if err != nil {
 		return settings.LaunchState{}, err
@@ -332,6 +333,70 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	e.reporter.clear(exitedID(p.Engine))
 	old := e.launchStateLocked(p.Engine, st)
 	changed := old.ServerPort != preview.Settings.ServerPort || old.LaunchText != preview.Settings.LaunchText
+	previousRuntime := st.plat.Runtime
+	st.mu.Lock()
+	previousBind := st.bind
+	st.mu.Unlock()
+	if old.Running && (old.Adopted || previousBind == "") {
+		// An adopted daemon's actual listening scope is unknown. Restarting
+		// it may narrow to loopback, but must never broaden its exposure.
+		previousBind = "127.0.0.1"
+	}
+	previousFile, err := captureSettingsOverride(e.overrideDir, p.Engine)
+	if err != nil {
+		return old, fmt.Errorf("Settings could not be applied; no runtime changes were made.")
+	}
+	stopped := changed && old.Running
+	startAttempted := false
+	stopAttempt := func() error {
+		err := e.doStop(st, p.Engine)
+		// A failed control CLI can leave a detached daemon even though
+		// running was never set. Verify both candidate and recovery cleanup.
+		rt := st.plat.Runtime
+		if rt.modeOrDefault() == "command" && rt.Ready != nil && !e.waitUnavailable(rt.Ready, st.port, time.Second) {
+			err = e.runCommandStop(st, p.Engine, rt, st.port)
+		}
+		return err
+	}
+	rollback := func() (settings.LaunchState, error) {
+		// Completion belongs to the node, not the canceled apply request. Keep
+		// the same operation lock and reserve bounded time to restore service.
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		defer cancel()
+		var stopErr error
+		if startAttempted {
+			stopErr = stopAttempt()
+		}
+		fileErr := previousFile.restore()
+		proxyErr := rebind(restoreCtx, true)
+		if stopErr == nil {
+			st.mu.Lock()
+			st.plat.Runtime = previousRuntime
+			st.port = old.EffectivePort
+			st.bind = previousBind
+			st.mu.Unlock()
+		}
+		failed := stopErr != nil || fileErr != nil || proxyErr != nil
+		if !failed && stopped {
+			failed = e.doStart(restoreCtx, st, p.Engine, startOpts{RequireOwned: true, Bind: previousBind}) != nil
+		}
+		if failed && p.Engine != "omlx" {
+			if err := stopAttempt(); err != nil {
+				stopErr = err
+			}
+		}
+		e.emitState(p.Engine)
+		if failed {
+			if stopErr != nil {
+				return e.launchStateLocked(p.Engine, st), fmt.Errorf("Settings could not be applied and previous settings restoration failed; engine shutdown could not be confirmed. Stop it in its own application before retrying.")
+			}
+			if p.Engine == "omlx" {
+				return e.launchStateLocked(p.Engine, st), fmt.Errorf("Settings could not be applied and previous settings restoration failed; inspect the PAIR proxy. The oMLX app was not changed.")
+			}
+			return e.launchStateLocked(p.Engine, st), fmt.Errorf("Settings could not be applied and previous settings restoration failed; the engine was left stopped. Reload to inspect the device.")
+		}
+		return e.launchStateLocked(p.Engine, st), fmt.Errorf("Settings could not be applied; previous settings were restored.")
+	}
 	// Stop before writing the override file. A stop failure returns with the
 	// engine still on its old launch, so persisting first would leave disk on
 	// the new one and the next start would silently adopt a configuration the
@@ -343,7 +408,7 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 	}
 	if p.Engine != "omlx" && (changed || !reflect.DeepEqual(st.plat.Runtime.LaunchArgs, &preview.Args) || !reflect.DeepEqual(st.plat.Runtime.LaunchEnv, &preview.Env)) {
 		if err := e.persistRuntimeConfig(p.Engine, preview.Settings.ServerPort, &preview.Args, &preview.Env); err != nil {
-			return e.launchStateLocked(p.Engine, st), err
+			return rollback()
 		}
 	}
 	st.mu.Lock()
@@ -354,18 +419,21 @@ func (e *Executor) ConfigureLaunch(ctx context.Context, p settings.Configure, re
 		st.port = preview.Settings.ServerPort
 	}
 	st.mu.Unlock()
-	if err := rebind(); err != nil {
-		e.emitState(p.Engine)
-		return e.launchStateLocked(p.Engine, st), err
+	if err := rebind(ctx, false); err != nil {
+		return rollback()
 	}
 	resume := p.Resume
 	if enabled, known, err := e.desired.get(p.Engine); err == nil && known && !enabled && !old.Running {
 		resume = false
 	}
 	if p.Engine != "omlx" && ((changed && old.Running) || resume) {
-		if err := e.doStart(ctx, st, p.Engine, startOpts{RequireOwned: true}); err != nil {
-			e.emitState(p.Engine)
-			return e.launchStateLocked(p.Engine, st), err
+		startAttempted = true
+		opts := startOpts{RequireOwned: true}
+		if old.Running {
+			opts.Bind = previousBind
+		}
+		if err := e.doStart(ctx, st, p.Engine, opts); err != nil {
+			return rollback()
 		}
 	}
 	e.emitState(p.Engine)

@@ -66,8 +66,25 @@ stream loss emits `engine:settings-disconnected` with `{nodeId}`. Sequence and
 epoch here belong to the settings domain, independently of relay envelopes.
 
 Show Apply progress from `applying`; use the snapshot's single failure message
-instead of opening a duplicate global lifecycle failure dialog. Desired values
-can differ from observed state after a failure. A retry can reconcile them.
+instead of opening a duplicate global lifecycle failure dialog. A failed apply
+restores the previous persisted configuration, proxy port and running state under
+the engine operation lock. Its receipt stays `failed`; snapshot `settings` returns
+to the previous configuration and the existing `error` field says that previous
+settings were restored. `revision` remains the failed attempt's revision and
+`appliedRevision` remains the last successful revision. No wire fields are added.
+
+If compensation fails, the snapshot error explicitly reports restoration failure
+and the engine is not restarted. Observed ports/running state remain authoritative;
+shutdown that cannot be confirmed is reported rather than claimed successful.
+oMLX's app is never stopped or restarted by proxy recovery. Recovery uses a
+separate bounded 20-second context and cannot be canceled by the failed apply.
+Restarts retain the previous effective bind address (unknown adopted binds narrow
+to loopback); proxy rebinds change only the port, not their listening address.
+The journal retains previous choices after failure so startup never replays the
+failed candidate. Startup reconciles failed component stores to those previous
+choices before automatic engine restoration, without changing the failed receipt;
+if reconciliation fails, automatic restoration is blocked. A retry can reconcile
+an incomplete restoration.
 Reusing a request ID with identical input returns its receipt without another
 restart; reusing it for different input or applying a stale revision is refused.
 
@@ -89,12 +106,14 @@ the same coordinator. Direct client `engine:configure-launch` is refused.
 Engine-manager exposes `engine:get-launch`, `engine:preview-launch`,
 `engine:configured-ports`, `engine:configure-launch` and
 `engine:remote-{get,preview,apply}-settings`. A configure callback requests the
-selected proxy rebind using an operation ID recorded by the broker; an unknown
-operation cannot rebind a proxy.
+selected proxy rebind using an operation ID recorded by the broker. The additive
+internal `rollback` relay method restores only the broker-captured previous proxy
+port, never a port nominated by the worker. Both callbacks require the same active
+operation ID, engine and candidate port; an unknown operation cannot rebind a proxy.
 
 One `engine:settings-request` / `engine:settings-reply` correlation path serves
 both the live `settings/get-engine-allow-lan-bind` read and settings
-`get`, `preview`, `apply`, `rebind` requests. Replies stay with the captured
+`get`, `preview`, `apply`, `rebind`, `rollback` requests. Replies stay with the captured
 worker, never a replacement process. `engine:settings-cancel` cancels pending
 requests. `engine:settings-projection` supplies full snapshots to the worker.
 

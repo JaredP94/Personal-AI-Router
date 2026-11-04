@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,22 +135,28 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 					}
 					var p settings.Configure
 					_ = json.Unmarshal(msg.Params, &p)
+					_, previousProxy := h.b.settingsProxy(p.Engine).Status()
 					h.launchMu.Lock()
+					previousLaunch := launch
 					launch.ServerPort = p.Settings.ServerPort
 					launch.LaunchText = p.Settings.LaunchText
 					launch.Running = false
 					h.launchMu.Unlock()
-					if err := h.b.rebindSettingsProxy(p.Engine, p.Settings.ProxyPort); err != nil {
+					if err := h.b.rebindSettingsProxy(context.Background(), p.Engine, p.Settings.ProxyPort); err != nil {
 						_ = codec.RespondError(msg.ID, -32000, err.Error())
 						return
 					}
 					if h.fail.Load() {
-						_ = codec.RespondError(msg.ID, -32000, "startup failure")
+						_ = h.b.rebindSettingsProxy(context.Background(), p.Engine, previousProxy)
+						h.launchMu.Lock()
+						launch = previousLaunch
+						h.launchMu.Unlock()
+						_ = codec.RespondError(msg.ID, -32000, "Settings could not be applied; previous settings were restored.")
 						return
 					}
 					h.launchMu.Lock()
 					launch.EffectivePort = p.Settings.ServerPort
-					launch.Running = p.Resume
+					launch.Running = previousLaunch.Running || p.Resume
 					current := launch
 					h.launchMu.Unlock()
 					if h.failResultSave.Load() {
@@ -212,6 +219,7 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 		t.Fatal("stale revision accepted")
 	}
 	p = h.request(t)
+	previousSettings := p.Settings
 	p.Settings.LaunchText += " --invalid"
 	h.fail.Store(true)
 	receipt, err = h.b.applyEngineSettings(context.Background(), p, "")
@@ -219,7 +227,7 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 		t.Fatalf("failure receipt %+v %v", receipt, err)
 	}
 	s := h.b.engineSettings["ollama"].Snapshot
-	if s.Settings != p.Settings || s.Running || s.AppliedRevision >= s.Revision || s.Error == "" {
+	if s.Settings != previousSettings || !s.Running || s.AppliedRevision >= s.Revision || !strings.Contains(s.Error, "previous settings were restored") {
 		t.Fatalf("untruthful failed snapshot: %+v", s)
 	}
 	h.fail.Store(false)
@@ -228,7 +236,7 @@ func TestSettingsCoordinatorRevisionDedupNoopAndFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s := h.b.engineSettings["ollama"].Snapshot; !s.Running || s.Phase != "succeeded" {
-		t.Fatalf("retry lost resume intent: %+v", s)
+		t.Fatalf("retry lost restored running state: %+v", s)
 	}
 }
 
@@ -240,7 +248,7 @@ func TestSettingsFailedApplyRestoresOnlyRunningReadyService(t *testing.T) {
 		advertised bool
 	}{
 		{"stop failed with engine still running", true, true, true},
-		{"engine stopped before startup failed", false, true, false},
+		{"engine restored after startup failed", false, true, true},
 		{"proxy unavailable", true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

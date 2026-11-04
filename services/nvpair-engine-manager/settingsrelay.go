@@ -162,8 +162,12 @@ func (m *Manager) handleSettingsMessage(ctx context.Context, msg *Message) bool 
 				if !m.parse(msg, &configure) {
 					return
 				}
-				result, err := m.exec.ConfigureLaunch(configureCtx, configure, func() error {
-					_, err := m.settingsRelay.call(configureCtx, "rebind", settings.Request{Engine: configure.Engine, RequestID: configure.OperationID, Settings: configure.Settings}, "")
+				result, err := m.exec.ConfigureLaunch(configureCtx, configure, func(callbackCtx context.Context, rollback bool) error {
+					method := "rebind"
+					if rollback {
+						method = "rollback"
+					}
+					_, err := m.settingsRelay.call(callbackCtx, method, settings.Request{Engine: configure.Engine, RequestID: configure.OperationID, Settings: configure.Settings}, "")
 					return err
 				})
 				m.respondOrErr(msg, result, err)

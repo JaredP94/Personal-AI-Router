@@ -29,7 +29,7 @@ func TestSettingsRebindOnlySelectedProxy(t *testing.T) {
 			}
 			port := listener.Addr().(*net.TCPAddr).Port
 			_ = listener.Close()
-			if err := h.b.rebindSettingsProxy(engine, port); err != nil {
+			if err := h.b.rebindSettingsProxy(context.Background(), engine, port); err != nil {
 				t.Fatal(err)
 			}
 			for name, want := range before {

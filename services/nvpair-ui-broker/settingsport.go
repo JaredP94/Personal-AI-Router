@@ -52,7 +52,7 @@ func (b *Broker) handleSettingsPortRPC(msg *Message, proxyEngine string) {
 		var receipt settingsReceipt
 		receipt, err = b.applyEngineSettings(context.Background(), target, "")
 		if err == nil && receipt.Phase == "failed" {
-			err = fmt.Errorf("settings were saved but could not be applied; inspect engine settings for the current state")
+			err = fmt.Errorf("settings could not be applied; inspect engine settings for the restoration outcome")
 		}
 	}
 	if err != nil {

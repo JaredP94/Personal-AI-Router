@@ -300,7 +300,7 @@ func TestSettingsConfigureLifecycle(t *testing.T) {
 				t.Fatalf("preview: %+v", preview)
 			}
 			rebinds := 0
-			result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error { rebinds++; return nil })
+			result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func(context.Context, bool) error { rebinds++; return nil })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -372,7 +372,7 @@ func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
 	if err != nil || len(preview.Errors) > 0 {
 		t.Fatalf("preview: %+v %v", preview, err)
 	}
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error { return nil }); err != nil {
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	st.mu.Lock()
@@ -393,7 +393,7 @@ func TestSettingsNoOpApplyKeepsEngineLogCapture(t *testing.T) {
 	}
 }
 
-func TestSettingsEarlyLaunchFailureRetainsDesiredOptions(t *testing.T) {
+func TestSettingsEarlyLaunchFailureRestoresPreviousOptions(t *testing.T) {
 	e := settingsExecutor(t, false)
 	if err := e.Start(context.Background(), "fake"); err != nil {
 		t.Fatal(err)
@@ -401,15 +401,15 @@ func TestSettingsEarlyLaunchFailureRetainsDesiredOptions(t *testing.T) {
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch private-value"
 	started := time.Now()
-	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
-	if err == nil || result.Running || !strings.Contains(err.Error(), "exited before readiness") {
+	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil })
+	if err == nil || !result.Running || !strings.Contains(err.Error(), "previous settings were restored") {
 		t.Fatalf("early failure misreported: %+v %v", result, err)
 	}
 	if time.Since(started) > 5*time.Second {
 		t.Fatal("early exit waited through readiness timeout")
 	}
-	if !strings.Contains(result.LaunchText, "--fail-launch") {
-		t.Fatal("failed desired arguments lost")
+	if strings.Contains(result.LaunchText, "--fail-launch") {
+		t.Fatal("failed arguments retained after rollback")
 	}
 	if strings.Contains(err.Error(), "private-value") {
 		t.Fatal("vendor echo escaped into error")
@@ -423,7 +423,7 @@ func TestEarlyExitHasOneStartError(t *testing.T) {
 	e := settingsExecutor(t, false)
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch"
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Start(context.Background(), "fake"); err == nil {
@@ -501,7 +501,7 @@ func TestSettingsManifestEnvironmentCanBeOverridden(t *testing.T) {
 			if preview := previewSettings(t, e, request); len(preview.Errors) != 0 {
 				t.Fatalf("rejected replacement library path %q: %+v", replacement, preview)
 			}
-			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
+			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
 			override := readSettingsOverride(t, e)
@@ -542,7 +542,7 @@ func TestSettingsSafeEditPreservesManifestEnvironment(t *testing.T) {
 			if len(actual) == 0 || actual[0] != tokens[0] {
 				t.Fatalf("safe edit lost fixed library path: %v", actual)
 			}
-			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return nil }); err != nil {
+			if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
 			state := settingsState(t, e)
@@ -622,7 +622,7 @@ func TestSettingsSwapsLiveServerAndProxyPorts(t *testing.T) {
 		t.Fatalf("swap preview: %+v %v", preview, err)
 	}
 	rebinds := 0
-	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func() error {
+	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: preview.Settings}, func(context.Context, bool) error {
 		rebinds++
 		next, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", oldServer))
 		if err != nil {
@@ -650,7 +650,7 @@ func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T
 	rt.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopped}}
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += ` "{port}" "$HOME" "two words" ""`
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Start(context.Background(), "fake"); err != nil {
@@ -669,7 +669,7 @@ func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T
 	}
 	p = settingsRequest(t, e)
 	p.Settings.LaunchText += " --fail-launch private-value"
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil }); err != nil {
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	err = e.Start(context.Background(), "fake")
@@ -702,7 +702,7 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 			p := settingsRequest(t, e)
 			p.Settings.LaunchText = prefix + " " + p.Settings.LaunchText
 			configure := func() settings.LaunchState {
-				result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func() error { return nil })
+				result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil })
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -788,7 +788,7 @@ func TestSettingsFailedStopLeavesSavedConfigurationIntact(t *testing.T) {
 	}
 	request := settingsRequest(t, e)
 	request.Settings.LaunchText += " --parallel 7"
-	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error {
+	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func(context.Context, bool) error {
 		t.Error("rebound an engine that could not be stopped")
 		return nil
 	})
@@ -808,7 +808,7 @@ func TestSettingsFailedStopLeavesSavedConfigurationIntact(t *testing.T) {
 	}
 }
 
-func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
+func TestSettingsRejectBeforeMutationAndRestoreAcceptedFailure(t *testing.T) {
 	e := settingsExecutor(t, false)
 	request := settingsRequest(t, e)
 	st := settingsState(t, e)
@@ -817,7 +817,7 @@ func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
 	st.adopted = true
 	st.mu.Unlock()
 	request.Settings.LaunchText += " --new"
-	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { t.Fatal("rebound adopted engine"); return nil }); err == nil {
+	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func(context.Context, bool) error { t.Fatal("rebound adopted engine"); return nil }); err == nil {
 		t.Fatal("adopted process accepted")
 	}
 	assertNoSettingsOverride(t, e)
@@ -825,10 +825,16 @@ func TestSettingsRejectBeforeMutationAndRetainAcceptedFailure(t *testing.T) {
 	st.running = false
 	st.adopted = false
 	st.mu.Unlock()
-	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func() error { return fmt.Errorf("bind failed") })
-	if err == nil || result.Running || !strings.Contains(result.LaunchText, "--new") {
-		t.Fatalf("accepted desired config not retained: %+v %v", result, err)
+	result, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: request.Settings}, func(_ context.Context, rollback bool) error {
+		if rollback {
+			return nil
+		}
+		return fmt.Errorf("bind failed")
+	})
+	if err == nil || result.Running || strings.Contains(result.LaunchText, "--new") || !strings.Contains(err.Error(), "previous settings were restored") {
+		t.Fatalf("previous stopped configuration not restored: %+v %v", result, err)
 	}
+	assertNoSettingsOverride(t, e)
 }
 
 func TestSettingsSupportsEngineWithoutStartupSubcommand(t *testing.T) {
@@ -923,7 +929,7 @@ func TestSettingsOmlxLaunchStateAndRestrictions(t *testing.T) {
 	_, err = e.ConfigureLaunch(context.Background(), settings.Configure{
 		Engine:   "omlx",
 		Settings: settings.Config{ServerPort: 9999, ProxyPort: 54321, LaunchText: ""},
-	}, func() error { return nil })
+	}, func(context.Context, bool) error { return nil })
 	if err == nil {
 		t.Fatal("expected ConfigureLaunch to reject changed serverPort")
 	}
@@ -932,7 +938,7 @@ func TestSettingsOmlxLaunchStateAndRestrictions(t *testing.T) {
 	_, err = e.ConfigureLaunch(context.Background(), settings.Configure{
 		Engine:   "omlx",
 		Settings: settings.Config{ServerPort: 1235, ProxyPort: 54321, LaunchText: "--arg"},
-	}, func() error { return nil })
+	}, func(context.Context, bool) error { return nil })
 	if err == nil {
 		t.Fatal("expected ConfigureLaunch to reject non-empty launchText")
 	}
@@ -942,7 +948,7 @@ func TestSettingsOmlxLaunchStateAndRestrictions(t *testing.T) {
 	cfgRes, err := e.ConfigureLaunch(context.Background(), settings.Configure{
 		Engine:   "omlx",
 		Settings: settings.Config{ServerPort: 1235, ProxyPort: 54321, LaunchText: ""},
-	}, func() error {
+	}, func(context.Context, bool) error {
 		rebound = true
 		return nil
 	})

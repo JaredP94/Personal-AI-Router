@@ -234,6 +234,16 @@ literal pass-through, managed-networking rejection, private persistence and
 secret-safe diagnostics. Remote settings require verified pinned peers; bare
 manual engines and discovery previews are never settings targets.
 
+A failed apply compensates under the same engine operation lock: the exact
+previous override (or its absence), proxy port and running state are restored.
+Override writes use a private temporary file, sync and rename, including during
+restoration. Recovery has a separate bounded 20-second context, so canceling the
+apply cannot cancel compensation. A failed compensation reports restoration
+failure and does not restart the engine; a shutdown that cannot be confirmed is
+reported explicitly. Restarts preserve the previous effective bind address;
+unknown adopted binds narrow to loopback, never a wider manifest default. oMLX
+remains app-managed: proxy recovery never stops or restarts the app.
+
 ### Tool installs
 
 `engine:install-tool` installs only the fixed allowlist below.

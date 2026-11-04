@@ -257,13 +257,17 @@ func writeJSONAtomic(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	return writeOverrideAtomic(path, data, 0o600)
+}
+
+func writeOverrideAtomic(path string, data []byte, mode os.FileMode) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".override-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create override: %w", err)
 	}
 	tmp := file.Name()
 	defer os.Remove(tmp)
-	if err := file.Chmod(0o600); err != nil {
+	if err := file.Chmod(mode); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("chmod override: %w", err)
 	}
@@ -271,14 +275,15 @@ func writeJSONAtomic(path string, v any) error {
 		_ = file.Close()
 		return fmt.Errorf("write override: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync override: %w", err)
+	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close override: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename override: %w", err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("chmod override: %w", err)
 	}
 	return nil
 }

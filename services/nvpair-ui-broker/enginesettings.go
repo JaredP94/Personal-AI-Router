@@ -35,8 +35,9 @@ type engineSettingsRecord struct {
 	Receipts map[string]settingsReceipt `json:"receipts"`
 }
 type activeSettingsOperation struct {
-	Engine string
-	Port   int
+	Engine       string
+	Port         int
+	PreviousPort int
 }
 
 func settingsID() string                     { var id [16]byte; _, _ = rand.Read(id[:]); return hex.EncodeToString(id[:]) }
@@ -50,8 +51,8 @@ func (b *Broker) engineSettingsPath() (string, error) {
 }
 
 // The journal records accepted desired configuration and operation outcomes.
-// Component stores still supply the normal settings baseline. Interrupted or
-// failed operations retain the journal's desired values until reconciled.
+// Component stores still supply the normal settings baseline. Interrupted
+// operations are reconciled; failed applies restore the previous choices.
 func (b *Broker) loadEngineSettingsLocked() error {
 	if b.engineSettingsLoaded {
 		return b.engineSettingsError
@@ -357,7 +358,7 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	if b.activeSettings == nil {
 		b.activeSettings = make(map[string]activeSettingsOperation)
 	}
-	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort}
+	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort, PreviousPort: record.Previous.ProxyPort}
 	b.settingsRelayMu.Unlock()
 	defer func() { b.settingsRelayMu.Lock(); delete(b.activeSettings, id); b.settingsRelayMu.Unlock() }()
 	configure := settings.Configure{Engine: engine, Settings: record.Snapshot.Settings, OperationID: id, Resume: record.Resume}
@@ -379,13 +380,19 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	if err != nil {
 		record.Snapshot.Phase = "failed"
 		record.Snapshot.Error = err.Error()
+		// Never replay a failed candidate on the next startup. The worker's
+		// safe error distinguishes completed compensation from failed recovery.
+		record.Snapshot.Settings = record.Previous
+		record.Resume = false
+		record.Snapshot.Running = false
+		b.settingsStartupPort(engine, record.Previous.ProxyPort)
 	} else {
 		record.Snapshot.Phase = "succeeded"
 		record.Snapshot.Error = ""
 		record.Snapshot.AppliedRevision = record.Snapshot.Revision
 	}
-	// Refresh observed facts without replacing the accepted desired revision;
-	// never publish the pre-operation running state.
+	// Refresh observed facts without reusing the pre-operation running state.
+	// A failed revision remains failed even when compensation restored service.
 	if launch.Engine != "" {
 		record.Snapshot.Running = launch.Running
 		record.Snapshot.Adopted = launch.Adopted
@@ -614,7 +621,7 @@ func (b *Broker) handleEngineSettings(msg *Message) {
 	}
 }
 
-func (b *Broker) rebindSettingsProxy(engine string, port int) error {
+func (b *Broker) rebindSettingsProxy(ctx context.Context, engine string, port int) error {
 	p := b.settingsProxy(engine)
 	if p == nil {
 		return fmt.Errorf("proxy unavailable")
@@ -623,7 +630,7 @@ func (b *Broker) rebindSettingsProxy(engine string, port int) error {
 	// explicit rebind. The accepted journal restores these choices after restart.
 	b.setExplicitSettings(engine, true)
 	b.disableManagedSettingsFacade(engine)
-	_, rpcErr, err := p.Call(context.Background(), "set-port", settingsJSON(map[string]int{"port": port}))
+	_, rpcErr, err := p.Call(ctx, "set-port", settingsJSON(map[string]int{"port": port}))
 	if err != nil {
 		return err
 	}
