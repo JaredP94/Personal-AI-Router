@@ -205,6 +205,8 @@ Requests (caller → service):
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
 | `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind); oMLX server settings stay in its app |
+| `internal:set-port` | `{ engine, port, operationId }` | `EngineStatus` (broker-only managed move, fenced by captured configuration) |
+| `internal:cancel-set-port` | `{ operationId }` | `null` after canceling and joining that managed move |
 | `engine:get-launch` | `{ engine }` | `LaunchState` (internal broker read) |
 | `engine:preview-launch` | settings `Request` | normalized `Preview` with field errors (internal) |
 | `engine:configured-ports` | — | `{ engines: [{ engine, port }] }`, including stopped engines |
@@ -406,6 +408,11 @@ the op finishes.
 
 `engine:set-port` is the **persistent** port setter (distinct from the
 one-shot `engine:start {port}` override, which reverts on the next restart).
+Canceled or revoked operations queued on the engine lock cannot persist a port,
+including when the engine is stopped. Managed broker moves additionally use the
+internal correlated set/cancel pair above: cancellation is acknowledged only
+when that operation has finished, so a timeout cannot leave a late write behind
+fallback or rollback. See [broker protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md).
 It validates `1-65535` and atomically merges `runtime.port` into the existing
 manifest override in the per-user `engines/` dir, preserving custom detection
 paths, environment, and every unrelated field. If the host's matching platform

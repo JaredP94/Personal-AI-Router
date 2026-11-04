@@ -23,7 +23,8 @@ func (e *Executor) prepareStart(ctx context.Context, engine string) (context.Con
 	if e.settingsParent == nil {
 		return ctx, errors.New(settingsRecoveryError)
 	}
-	raw, err := e.settingsParent(ctx, "prepare-start", settings.Request{Engine: engine}, "")
+	operationID, _ := ctx.Value(managedPortOperationKey{}).(string)
+	raw, err := e.settingsParent(ctx, "prepare-start", settings.Request{Engine: engine, RequestID: operationID}, "")
 	var token string
 	if err != nil || json.Unmarshal(raw, &token) != nil || token == "" {
 		return ctx, errors.New(settingsRecoveryError)

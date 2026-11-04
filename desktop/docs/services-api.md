@@ -31,6 +31,8 @@
 - ⚠️ nvpair-engine-manager → engine:remote-get-settings
 - ⚠️ nvpair-engine-manager → engine:remote-preview-settings
 - ⚠️ nvpair-engine-manager → engine:restart
+- ⚠️ nvpair-engine-manager → internal:cancel-set-port
+- ⚠️ nvpair-engine-manager → internal:set-port
 - ⚠️ nvpair-engine-manager → internal:set-reserved-port
 - ⚠️ nvpair-job-scheduler → scheduler:get-interval
 - ⚠️ nvpair-job-scheduler → scheduler:get-status
@@ -164,6 +166,8 @@
 | `engine:stop` | request (we call) | ✅ yes |
 | `engine:uninstall` | request (we call) | ✅ yes |
 | `error` | request (we call) | ✅ yes |
+| `internal:cancel-set-port` | request (we call) | ⚠️ not called |
+| `internal:set-port` | request (we call) | ⚠️ not called |
 | `internal:set-reserved-port` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**

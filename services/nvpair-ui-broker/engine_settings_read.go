@@ -57,7 +57,7 @@ func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
 				}
 			}
 		} else if relay.Method == "prepare-start" {
-			result, err = b.prepareEngineStart(ctx, relay.Request.Engine)
+			result, err = b.prepareEngineStart(ctx, relay.Request.Engine, relay.Request.RequestID)
 		} else if relay.Method == "authorize-start" {
 			err = b.authorizeEngineStart(relay.Request)
 		} else if relay.Method == "rebind" || relay.Method == "rollback" {

@@ -196,7 +196,11 @@ func TestRecoveryGateCoversLifecycleStarts(t *testing.T) {
 			case "action-restart":
 				err = e.restartAfterAction(ctx, st, "fake", "fixture")
 			}
-			if err != nil || prepares != 1 || authorizations != 1 {
+			wantAuthorizations := 1
+			if path == "set-port" {
+				wantAuthorizations = 2 // before persistence, then again at doStart
+			}
+			if err != nil || prepares != 1 || authorizations != wantAuthorizations {
 				t.Fatalf("err=%v prepares=%d authorizations=%d", err, prepares, authorizations)
 			}
 		})

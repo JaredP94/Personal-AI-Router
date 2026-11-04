@@ -177,6 +177,7 @@ type Broker struct {
 	// restart so unrelated settings reads remain responsive. Take apply first.
 	settingsApplyMu          sync.Mutex
 	engineConfigMu           sync.Mutex
+	managedPortOperations    map[string]managedPortAuthorization // guarded by engineConfigMu
 	engineSettingsLoaded     bool
 	engineSettingsError      error
 	engineSettingsEpoch      string

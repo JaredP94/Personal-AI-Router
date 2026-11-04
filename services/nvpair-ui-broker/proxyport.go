@@ -119,6 +119,14 @@ func (b *Broker) reportPortOwnershipBlocked(reason string) {
 // persisted :11434 must not make a blocked proxy crash-loop behind an existing
 // owner. It returns the fallback so a live proxy can rebind there too.
 func (b *Broker) blockManagedOllamaFacade(reason string, excludedPorts ...int) int {
+	fallback := b.blockManagedOllamaFacadePending(reason, excludedPorts...)
+	b.markOllamaPortReady()
+	return fallback
+}
+
+// The live move owner releases the gate only after cancellation and rollback
+// have joined. Other startup failures can use blockManagedOllamaFacade above.
+func (b *Broker) blockManagedOllamaFacadePending(reason string, excludedPorts ...int) int {
 	b.managedOllamaFacade.Store(false)
 	b.managedOllamaBackend.Store(0)
 	if backend := int(b.ollamaBackendPort.Load()); backend > 0 {
@@ -126,7 +134,6 @@ func (b *Broker) blockManagedOllamaFacade(reason string, excludedPorts ...int) i
 	}
 	fallback := b.setOllamaProxyFallback(excludedPorts...)
 	b.reportPortOwnershipBlocked(reason)
-	b.markOllamaPortReady()
 	return fallback
 }
 
@@ -321,7 +328,26 @@ func needsOllamaPortGate(method string, params json.RawMessage) bool {
 // can't deadlock the very reader that would deliver its response.
 func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 	b.engineConfigMu.Lock()
-	defer b.engineConfigMu.Unlock()
+	retry := false
+	defer func() {
+		b.engineConfigMu.Unlock()
+		if retry {
+			// The owner releases ollamaMoveInFlight before this deferred retry.
+			if p := b.getProxy(); p != nil {
+				if ready, port := p.Status(); ready {
+					boundPort = port
+				}
+			}
+			go b.reconcileCurrentOllamaPorts(boundPort)
+		}
+	}()
+	call := func(fn func()) bool {
+		if b.ollamaPortIOUnlockedLocked(fn) {
+			return true
+		}
+		retry = true
+		return false
+	}
 	if b.loadEngineSettingsLocked() != nil {
 		b.markOllamaPortReady()
 		return
@@ -337,7 +363,12 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 		}
 		if boundPort != managedOllamaFacadePort {
 			body, _ := json.Marshal(map[string]int{"port": managedOllamaFacadePort})
-			if _, rpcErr, err := p.Call(context.Background(), "set-port", body); err != nil || rpcErr != nil {
+			var rpcErr *RPCError
+			var err error
+			if !call(func() { _, rpcErr, err = p.Call(context.Background(), "set-port", body) }) {
+				return
+			}
+			if err != nil || rpcErr != nil {
 				b.blockManagedOllamaFacade("the proxy could not bind the compatibility port")
 				slog.Warn("failed to bind managed Ollama facade", "err", err, "rpcErr", rpcErr)
 			}
@@ -346,34 +377,66 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 
 		// Commit the pending stopped-engine move only after :11434 is ours.
 		if backend := b.takePendingManagedOllamaBackend(boundPort); backend != 0 {
-			defer b.ollamaMoveInFlight.Store(false)
+			releaseMove := true
+			defer func() {
+				if releaseMove {
+					b.ollamaMoveInFlight.Store(false)
+				}
+			}()
 			em := b.getEngineMgr()
-			params, _ := json.Marshal(map[string]any{"engine": "ollama", "port": backend})
+			sourcePort := b.ollamaBackendSourcePort()
 			var rpcErr *RPCError
 			var err error
+			fenced := true
+			state := b.ollamaPortReconcileStateLocked()
 			if em == nil {
 				err = fmt.Errorf("engine manager unavailable")
 			} else {
-				_, rpcErr, err = em.Call(context.Background(), "engine:set-port", params)
+				current := call(func() { rpcErr, err, fenced = b.moveManagedOllamaPort(context.Background(), em, backend, state) })
+				if !fenced {
+					retry, releaseMove = false, false
+					b.reportPortOwnershipBlocked("the backend move could not be canceled; ownership is still reconciling")
+					return
+				}
+				if !current {
+					return
+				}
 			}
 			if err != nil || rpcErr != nil {
 				// The RPC may have applied and then lost its response. Keep the
 				// fallback off both candidate ports, vacate :11434 first, then
 				// best-effort restore the original stopped-engine configuration.
-				sourcePort := b.ollamaBackendSourcePort()
-				fallback := b.blockManagedOllamaFacade("the stopped Ollama backend could not be moved", backend)
+				fallback := b.blockManagedOllamaFacadePending("the stopped Ollama backend could not be moved", backend)
 				vacated := false
 				if fallback != 0 {
 					body, _ := json.Marshal(map[string]int{"port": fallback})
-					if _, moveErr, callErr := p.Call(context.Background(), "set-port", body); callErr != nil || moveErr != nil {
+					var moveErr *RPCError
+					var callErr error
+					if !call(func() { _, moveErr, callErr = p.Call(context.Background(), "set-port", body) }) {
+						return
+					}
+					if callErr != nil || moveErr != nil {
 						slog.Warn("failed to vacate managed Ollama facade", "err", callErr, "rpcErr", moveErr)
 					} else {
 						vacated = true
 					}
 				}
 				if vacated && em != nil {
-					rollback, _ := json.Marshal(map[string]any{"engine": "ollama", "port": sourcePort})
-					if _, rollbackErr, callErr := em.Call(context.Background(), "engine:set-port", rollback); callErr != nil || rollbackErr != nil {
+					var rollbackErr *RPCError
+					var callErr error
+					state = b.ollamaPortReconcileStateLocked()
+					current := call(func() {
+						rollbackErr, callErr, fenced = b.moveManagedOllamaPort(context.Background(), em, sourcePort, state)
+					})
+					if !fenced {
+						retry, releaseMove = false, false
+						b.reportPortOwnershipBlocked("the backend rollback could not be canceled; ownership is still reconciling")
+						return
+					}
+					if !current {
+						return
+					}
+					if callErr != nil || rollbackErr != nil {
 						slog.Warn("failed to restore original Ollama backend port", "err", callErr, "rpcErr", rollbackErr)
 					}
 				}
@@ -392,7 +455,10 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 		b.markOllamaPortReady()
 		return
 	}
-	taken := b.runningEnginePorts()
+	var taken map[int]bool
+	if !call(func() { taken = b.runningEnginePorts() }) {
+		return
+	}
 	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
 		taken[aliasPort] = true
 	}
@@ -420,8 +486,13 @@ func (b *Broker) reconcileProxyPortOnReady(boundPort int) {
 		slog.Warn("failed to encode corrective proxy set-port", "err", err)
 		return
 	}
-	if _, rpcErr, err := p.Call(context.Background(), "set-port", body); err != nil || rpcErr != nil {
-		slog.Warn("failed to reconcile proxy port on ready", "err", err, "rpcErr", rpcErr)
+	var rpcErr *RPCError
+	var callErr error
+	if !call(func() { _, rpcErr, callErr = p.Call(context.Background(), "set-port", body) }) {
+		return
+	}
+	if callErr != nil || rpcErr != nil {
+		slog.Warn("failed to reconcile proxy port on ready", "err", callErr, "rpcErr", rpcErr)
 	}
 }
 

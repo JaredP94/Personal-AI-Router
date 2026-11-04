@@ -13,12 +13,12 @@ import (
 // Recovery remains broker-owned: only this process owns the journal and proxy
 // transaction. The worker prepares outside opMu, then checks this generation
 // again at its launch chokepoint. A configure revokes ordinary start grants.
-func (b *Broker) prepareEngineStart(ctx context.Context, engine string) (string, error) {
+func (b *Broker) prepareEngineStart(ctx context.Context, engine, operationID string) (string, error) {
 	b.settingsApplyMu.Lock()
 	defer b.settingsApplyMu.Unlock()
 	b.engineConfigMu.Lock()
 	defer b.engineConfigMu.Unlock()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || !b.managedPortAuthorizedLocked(engine, operationID) {
 		return "", fmt.Errorf("%s", settingsRecoveryError)
 	}
 	if engine == "ollama" || engine == "lmstudio" || engine == "omlx" {
@@ -29,6 +29,9 @@ func (b *Broker) prepareEngineStart(ctx context.Context, engine string) (string,
 		if !b.recoverEngineSettingsLocked(engine) {
 			return "", fmt.Errorf("%s", settingsRecoveryError)
 		}
+	}
+	if ctx.Err() != nil || !b.managedPortAuthorizedLocked(engine, operationID) {
+		return "", fmt.Errorf("%s", settingsRecoveryError)
 	}
 	b.settingsRelayMu.Lock()
 	defer b.settingsRelayMu.Unlock()

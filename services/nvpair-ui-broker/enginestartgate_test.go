@@ -74,7 +74,7 @@ func TestStartGateRetriesRecoveryAndWithdrawsAdvertisement(t *testing.T) {
 			h.b.regCache = relay.NewRegistrationCache()
 			h.b.regCache.Register(noderec.RegisterParams{Service: noderec.ServiceOllama, Port: 12345})
 			h.fail.Store(true)
-			token, err := h.b.prepareEngineStart(context.Background(), "ollama")
+			token, err := h.b.prepareEngineStart(context.Background(), "ollama", "")
 			if err == nil || err.Error() != settingsRecoveryError || token != "" {
 				t.Fatalf("unsafe recovery grant=%q err=%v", token, err)
 			}
@@ -92,7 +92,7 @@ func TestStartGateRetriesRecoveryAndWithdrawsAdvertisement(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			token, err = h.b.prepareEngineStart(context.Background(), "ollama")
+			token, err = h.b.prepareEngineStart(context.Background(), "ollama", "")
 			if err != nil || token == "" || h.b.settingsRecoveryBlocked["ollama"] {
 				t.Fatalf("recovery retry grant=%q err=%v", token, err)
 			}
@@ -109,7 +109,7 @@ func TestStartGateRetriesRecoveryAndWithdrawsAdvertisement(t *testing.T) {
 func TestConfigureRevokesStartGrantAndAuthorizesRollbackWithoutSettingsLocks(t *testing.T) {
 	h := newSettingsHarness(t)
 	request := h.request(t)
-	token, err := h.b.prepareEngineStart(context.Background(), "ollama")
+	token, err := h.b.prepareEngineStart(context.Background(), "ollama", "")
 	if err != nil {
 		t.Fatal(err)
 	}

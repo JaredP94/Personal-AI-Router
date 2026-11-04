@@ -146,8 +146,11 @@ operation ID, engine and candidate port; an unknown operation cannot rebind a pr
 One `engine:settings-request` / `engine:settings-reply` correlation path serves
 both the live `settings/get-engine-allow-lan-bind` read and settings
 `get`, `preview`, `apply`, `rebind`, `rollback`, `prepare-start`, `authorize-start`
-requests. `prepare-start` takes `{engine}` and returns an opaque reconciliation
-generation string; `authorize-start` takes `{engine, requestId}` and returns null
+requests. `prepare-start` takes `{engine, requestId?}` and returns an opaque
+reconciliation generation string. The optional request ID identifies a pending
+managed port move and must still match the broker's captured configuration and
+worker generation; ordinary lifecycle preparation omits it.
+`authorize-start` takes `{engine, requestId}` and returns null
 only for the current generation or that engine's active configure operation ID.
 These use the existing `Request` envelope; no client request or result changes.
 Authorization takes only the relay-state mutex, never the journal/apply locks,
@@ -156,6 +159,20 @@ lock across worker calls; their post-call snapshot refresh reacquires them in th
 usual apply-then-journal order. Replies stay with the captured
 worker, never a replacement process. `engine:settings-cancel` cancels pending
 requests. `engine:settings-projection` supplies full snapshots to the worker.
+
+Managed Ollama moves and their rollback use broker-only
+`internal:set-port {engine, port, operationId}`, returning the existing
+`EngineStatus`. The worker registers each unique operation ID on its reader
+before dispatching the move. On an RPC timeout the broker sends
+`internal:cancel-set-port {operationId}` to that same worker; its null response
+joins the canceled operation, including a queued engine-lock wait. Fallback and
+rollback cannot proceed without that acknowledgement. The worker rechecks
+cancellation and its reconciliation grant after acquiring the engine lock and
+before persistence, even for a stopped engine. Public `engine:set-port` is unchanged.
+The broker holds no journal/apply lock during these calls, including rollback,
+proxy rebinds and conflict lookups. It snapshots state under the journal lock,
+then revalidates after each call; a changed configuration discards the result and
+reconciles current authoritative state rather than overwriting newer choices.
 
 The existing authenticated control channel serves POST
 `/v1/engine-settings/{get,preview,apply}` and GET

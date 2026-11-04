@@ -48,6 +48,18 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 	st.lockOperation()
 	defer st.unlockOperation()
 
+	// Waiting for opMu can outlive the caller or a newer settings apply.
+	// Fence stopped-engine persistence too, not only the restart at doStart.
+	if err := ctx.Err(); err != nil {
+		return EngineStatus{}, err
+	}
+	if err := e.authorizeStart(ctx, engine); err != nil {
+		return EngineStatus{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return EngineStatus{}, err
+	}
+
 	st.mu.Lock()
 	wasRunning := st.running
 	adopted := st.adopted
@@ -69,6 +81,9 @@ func (e *Executor) SetPort(ctx context.Context, engine string, port int) (Engine
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return EngineStatus{}, err
+	}
 	if err := e.persistPort(engine, port); err != nil {
 		if !wasRunning {
 			return EngineStatus{}, err

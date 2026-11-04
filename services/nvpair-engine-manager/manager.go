@@ -12,6 +12,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"sync"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
@@ -63,12 +64,14 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
-	codec         *Codec
-	settingsRelay settingsRelay
-	exec          *Executor
-	peers         *peerDirectory
-	addrs         *reach.Chooser
-	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
+	codec          *Codec
+	settingsRelay  settingsRelay
+	managedPortsMu sync.Mutex
+	managedPorts   map[string]*managedPortMove
+	exec           *Executor
+	peers          *peerDirectory
+	addrs          *reach.Chooser
+	mesh           *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
@@ -272,6 +275,12 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case "engine:set-port":
 		go m.runSetPort(ctx, msg)
+
+	case "internal:set-port":
+		m.startManagedPort(ctx, msg)
+
+	case "internal:cancel-set-port":
+		m.cancelManagedPort(msg)
 
 	case "internal:set-reserved-port":
 		var p struct {

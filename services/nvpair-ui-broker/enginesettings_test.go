@@ -107,7 +107,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 				go func(msg *Message) {
 					var p settings.Request
 					_ = json.Unmarshal(msg.Params, &p)
-					token, err := h.b.prepareEngineStart(context.Background(), p.Engine)
+					token, err := h.b.prepareEngineStart(context.Background(), p.Engine, "")
 					if err == nil {
 						err = h.b.authorizeEngineStart(settings.Request{Engine: p.Engine, RequestID: token})
 					}
