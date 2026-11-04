@@ -359,6 +359,30 @@ describe('engine launch settings panel', () => {
         expect(applySettings).not.toHaveBeenCalled()
     })
 
+    it('does not discard edits made while a requested reload is still in flight', async () => {
+        await render()
+        let finish = (_snapshot: EngineSettingsSnapshot): void => {}
+        getSettings.mockImplementationOnce(
+            () =>
+                new Promise(resolve => {
+                    finish = resolve
+                })
+        )
+        await change('Proxy port', '12000')
+        await click('Reload saved settings')
+        await change('Proxy port', '13000')
+        await act(async () =>
+            finish({
+                ...baseline,
+                sequence: 2,
+                revision: 2,
+                settings: { ...baseline.settings, proxyPort: 14000 }
+            })
+        )
+        expect(field('Proxy port').value).toBe('13000')
+        expect(button('Apply').disabled).toBe(false)
+    })
+
     it('discards a delayed preview when the editor changes', async () => {
         let finish = (_result: EngineSettingsPreview): void => {}
         previewSettings.mockImplementationOnce(

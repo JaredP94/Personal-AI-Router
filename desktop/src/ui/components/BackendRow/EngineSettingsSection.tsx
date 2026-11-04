@@ -149,11 +149,12 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
         )
     }
     async function reload(conflict = false): Promise<void> {
-        generation.current++
+        const id = ++generation.current
         setChecking(false)
         setConfirmation(undefined)
         setErrors({})
         await useEngineSettingsStore.getState().reload(target)
+        if (generation.current !== id) return
         const current = useEngineSettingsStore.getState().entries[key]?.snapshot
         if (current) {
             setBase(current)
