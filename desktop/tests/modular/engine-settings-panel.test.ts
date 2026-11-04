@@ -12,6 +12,7 @@ import { useNodesStore } from '@/ui/stores/nodes.store'
 import type {
     EngineSettingsPreview,
     EngineSettingsRequest,
+    EngineSettingsReceipt,
     EngineSettingsSnapshot,
     EngineSettingsTarget
 } from '@/shared/types/engine-settings'
@@ -52,8 +53,7 @@ const peer: NodeItem = {
 }
 const getSettings = vi.fn<(target: EngineSettingsTarget) => Promise<EngineSettingsSnapshot>>()
 const previewSettings = vi.fn<(request: EngineSettingsRequest) => Promise<EngineSettingsPreview>>()
-const applySettings =
-    vi.fn<(request: EngineSettingsRequest) => Promise<{ revision: number; phase: 'succeeded' }>>()
+const applySettings = vi.fn<(request: EngineSettingsRequest) => Promise<EngineSettingsReceipt>>()
 let deliver = (_snapshot: EngineSettingsSnapshot): void => {}
 let disconnect = (_target: { nodeId: string }): void => {}
 let container: HTMLDivElement
@@ -273,7 +273,7 @@ describe('engine launch settings panel', () => {
                             phase: 'failed',
                             error: 'Requested port is busy.'
                         })
-                        resolve({ revision: 2, phase: 'succeeded' })
+                        resolve({ revision: 2, phase: 'failed' })
                     }
                 })
         )
@@ -285,6 +285,33 @@ describe('engine launch settings panel', () => {
         await act(async () => finish())
         expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1)
         expect(container.textContent).toContain('Requested port is busy.')
+        expect(button('Apply').disabled).toBe(false)
+    })
+
+    it('renders the owning node’s restored-settings failure outcome without losing desired settings', async () => {
+        applySettings.mockImplementationOnce(async request => {
+            deliver({
+                ...baseline,
+                ...request,
+                requestId: request.requestId ?? '',
+                sequence: 2,
+                revision: 2,
+                phase: 'failed',
+                effectiveServerPort: 11435,
+                effectiveProxyPort: 11434,
+                error: 'Engine restart failed; previous settings were restored.'
+            })
+            return { revision: 2, phase: 'failed' }
+        })
+        await render()
+        await change('Server port', '12000')
+        await click('Apply')
+        const alerts = container.querySelectorAll('[role="alert"]')
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0].textContent).toBe(
+            'Engine restart failed; previous settings were restored.'
+        )
+        expect(field('Server port').value).toBe('12000')
         expect(button('Apply').disabled).toBe(false)
     })
 
