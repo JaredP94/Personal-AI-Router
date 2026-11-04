@@ -7,6 +7,27 @@ SPDX-License-Identifier: Apache-2.0
 
 A discovery-aware HTTP reverse proxy for Ollama nodes on the local network. It runs no mDNS browse of its own: its routing targets come from the broker's discovery relay (it sends `discovery:subscribe {services:[ol]}` and replaces its routing overlay from each pushed `discovery:nodes` snapshot) plus user-added manual nodes. It forwards HTTP requests to the selected node, aggregates the model-list routes across candidate nodes, and exposes a bidirectional JSON-RPC 2.0 control channel over stdio (or an IPC socket).
 
+## Anthropic Messages API
+
+`POST /v1/messages` is an inference route, supported with **Ollama
+0.14.0 or newer** (see the engine's [route registration](https://github.com/ollama/ollama/blob/v0.14.0/server/routes.go)).
+The body’s `model` selects eligible owners through the same selection,
+scheduler, failover, and workload path as other inference routes. PAIR performs
+no protocol translation: the request body and response, including SSE with
+`stream: true`, pass through unchanged. SSE is flushed as it arrives;
+the existing first-body deadline and cooldown rules apply, and no attempt is
+retried after response bytes reach the client.
+
+`x-api-key` and `anthropic-version` follow existing request-header forwarding;
+`x-api-key` is not PAIR authentication. Existing proxy authentication and
+loopback/cluster policies are unchanged.
+
+PAIR does not negotiate engine API versions. An older engine without this
+endpoint returns its HTTP error (typically `404`); that status may try the next
+eligible model owner, but only within the existing finite candidate list.
+If none supports the endpoint, the final engine error is returned, not translated
+or redirected to another model. Upgrade the serving engines to use this route.
+
 ## Worker control health
 
 An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
