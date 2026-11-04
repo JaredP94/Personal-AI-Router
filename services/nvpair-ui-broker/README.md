@@ -93,6 +93,16 @@ clears the error; exhaustion leaves it sticky. `nvpair-errors` cannot report its
 own death into itself, so its crash logs to stderr while still being supervised.
 Use the independent worker registry below even when that error sink is absent.
 
+## Engine launch settings
+
+The [node-owned settings API](ENGINE_SETTINGS.md) exposes
+`engine:get-settings`, `engine:preview-settings` and `engine:apply-settings` for
+local engines and verified paired devices. It validates and journals the whole
+change before coordinating the engine lifecycle and the selected one of the
+three existing proxies. The broker, not the desktop, owns revisioning, port
+reservations and recovery. oMLX's app launch remains unchanged; its settings
+permit only the PAIR proxy port.
+
 ## Communication
 
 Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other NVPAIR subprocess. By default the broker reads stdin and writes stdout; with `--ipc <path>` it dials a Unix domain socket or Windows named pipe instead. The parent UI process owns the endpoint in both cases: it either spawns the broker with piped stdio, or sets up the pipe / socket beforehand and points the broker at it via `--ipc`. The broker always talks to exactly one peer.

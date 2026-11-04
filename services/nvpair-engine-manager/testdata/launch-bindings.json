@@ -1,0 +1,135 @@
+[
+  {
+    "name": "separate-flags",
+    "input": "-q23456 --listen-address=127.0.0.1",
+    "invalid": [
+      "-q0",
+      "--listen-address=0.0.0.0"
+    ],
+    "definition": {
+      "fixed_args": [
+        "server",
+        "start"
+      ],
+      "controls": [
+        {
+          "flags": [
+            "--api-port",
+            "-q"
+          ],
+          "value": "{server.port}"
+        },
+        {
+          "flags": [
+            "--listen-address"
+          ],
+          "value": "{server.host}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "environment-only",
+    "input": "ALT_PORT=23456 API_HOST=127.0.0.1",
+    "invalid": [
+      "API_PORT=23456 ALT_PORT=23457",
+      "API_HOST=0.0.0.0"
+    ],
+    "definition": {
+      "fixed_args": [
+        "server",
+        "start"
+      ],
+      "controls": [
+        {
+          "env": [
+            "API_PORT",
+            "ALT_PORT"
+          ],
+          "value": "{server.port}"
+        },
+        {
+          "env": [
+            "API_HOST"
+          ],
+          "value": "{server.host}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "url-address",
+    "input": "-etcp://127.0.0.1:23456",
+    "invalid": [
+      "--endpoint=tcp://0.0.0.0:23456",
+      "--endpoint=127.0.0.1:23456",
+      "--endpoint=tcp://127.0.0.1:0"
+    ],
+    "definition": {
+      "fixed_args": [
+        "server",
+        "start"
+      ],
+      "controls": [
+        {
+          "flags": [
+            "--endpoint",
+            "-e"
+          ],
+          "env": [
+            "ENDPOINT"
+          ],
+          "value": "tcp://{server.host}:{server.port}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "ipv6-address",
+    "host": "::1",
+    "input": "--endpoint=http://[::1]:23456",
+    "invalid": [
+      "--endpoint=http://[::]:23456",
+      "--endpoint=http://[::1]:65536"
+    ],
+    "definition": {
+      "fixed_args": [
+        "server",
+        "start"
+      ],
+      "controls": [
+        {
+          "flags": [
+            "--endpoint"
+          ],
+          "value": "http://[{server.host}]:{server.port}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "reordered-address",
+    "input": "ENDPOINT=\"port=23456;host=127.0.0.1\"",
+    "invalid": [
+      "ENDPOINT=\"port=0;host=127.0.0.1\"",
+      "ENDPOINT=\"port=23456;host=0.0.0.0\""
+    ],
+    "definition": {
+      "fixed_args": [
+        "server",
+        "start"
+      ],
+      "controls": [
+        {
+          "env": [
+            "ENDPOINT"
+          ],
+          "flags": [
+            "--endpoint"
+          ],
+          "value": "port={server.port};host={server.host}"
+        }
+      ]
+    }
+  }
+]

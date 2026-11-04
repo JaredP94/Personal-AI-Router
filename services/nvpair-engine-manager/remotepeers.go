@@ -21,6 +21,7 @@ import (
 
 // ecPeer is a resolved remote-control target.
 type ecPeer struct {
+	verified    bool
 	nodeID      string
 	addresses   []string
 	port        int
@@ -53,6 +54,7 @@ func (d *peerDirectory) set(nodes []noderec.DirectoryNode) {
 		// peers don't collide. A relay DirectoryNode always carries a hostUuid
 		// (the scanner guarantees it), so there is no name fallback.
 		next[n.HostUUID] = ecPeer{
+			verified:    n.IdentityVerification == "verified" && n.ServicePeer(),
 			nodeID:      n.HostUUID,
 			addresses:   addresses,
 			port:        svc.Port,

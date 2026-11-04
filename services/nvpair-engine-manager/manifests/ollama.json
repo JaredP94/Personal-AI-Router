@@ -1,10 +1,17 @@
 {
+  "$schema": "../manifest.schema.json",
   "engine": "ollama",
   "display_name": "Ollama",
   "manifest_version": 1,
   "install": { "mode": "user" },
   "models_dir": "~/.ollama",
   "runtime": {
+    "editable_launch": {
+      "fixed_args": ["serve"],
+      "controls": [
+        { "env": ["OLLAMA_HOST"], "value": "{server.host}:{server.port}" }
+      ]
+    },
     "args": ["serve"],
     "env": { "OLLAMA_HOST": "{host}:{port}" },
     "bind": "127.0.0.1",

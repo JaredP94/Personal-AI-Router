@@ -204,7 +204,12 @@ Requests (caller → service):
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
-| `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
+| `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind); oMLX server settings stay in its app |
+| `engine:get-launch` | `{ engine }` | `LaunchState` (internal broker read) |
+| `engine:preview-launch` | settings `Request` | normalized `Preview` with field errors (internal) |
+| `engine:configured-ports` | — | `{ engines: [{ engine, port }] }`, including stopped engines |
+| `engine:configure-launch` | `{ engine, settings, operationId, resume? }` | `LaunchState` after validation/persistence/rebind/restart (internal) |
+| `engine:remote-get-settings`, `engine:remote-preview-settings`, `engine:remote-apply-settings` | settings `Request` including `nodeId` | target-owned snapshot, preview or receipt via verified pinned peer |
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy. An HTTP action waits 30 s for the engine's response headers unless its manifest declares `timeout_s` (seconds); Ollama's `run_model`, oMLX's `load_model` and `chat`, and LM Studio's `chat` declare 600, because a cold model load or a long prefill sends nothing until it finishes |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
@@ -217,6 +222,17 @@ Requests (caller → service):
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
+
+### Editable launch settings
+
+Use the [broker settings API](../nvpair-ui-broker/ENGINE_SETTINGS.md) for client
+edits, not the internal configure method. Ollama and LM Studio support server
+port, proxy port, arguments and leading environment assignments. oMLX keeps its
+`omlx start` app launch unchanged; only its PAIR proxy port is editable.
+[Launch notation](LAUNCH_TEXT.md) and [manifest bindings](MANIFEST.md) describe
+literal pass-through, managed-networking rejection, private persistence and
+secret-safe diagnostics. Remote settings require verified pinned peers; bare
+manual engines and discovery previews are never settings targets.
 
 ### Tool installs
 

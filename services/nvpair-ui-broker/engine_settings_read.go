@@ -6,49 +6,76 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
-// handleEngineSettingsRead services the worker's narrow live permission read.
-// Capture the worker before dispatch so a response never crosses a respawn.
+// handleEngineSettingsRead demultiplexes the live bind-permission read and
+// engine settings operations through one captured worker and reply path.
 func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
-	var request struct {
-		ID     string `json:"id"`
-		Method string `json:"method"`
-	}
-	if json.Unmarshal(raw, &request) != nil || request.ID == "" {
+	var relay settings.Relay
+	if json.Unmarshal(raw, &relay) != nil || relay.ID == "" {
 		return
 	}
-	em := b.getEngineMgr()
-	if em == nil {
+	worker := b.getEngineMgr()
+	if worker == nil {
 		return
 	}
-	settings := b.getSettings()
+	budget := settings.RelayBudget
+	if relay.Method == "settings/get-engine-allow-lan-bind" {
+		budget = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	b.settingsRelayMu.Lock()
+	if b.settingsCancels == nil {
+		b.settingsCancels = make(map[string]context.CancelFunc)
+	}
+	if len(b.settingsCancels) >= 128 {
+		b.settingsRelayMu.Unlock()
+		cancel()
+		_ = worker.Notify("engine:settings-reply", map[string]string{"id": relay.ID, "error": "too many settings requests"})
+		return
+	}
+	b.settingsCancels[relay.ID] = cancel
+	b.settingsRelayMu.Unlock()
 	go func() {
-		var reply struct {
-			ID     string          `json:"id"`
-			Result json.RawMessage `json:"result"`
-			Error  string          `json:"error,omitempty"`
-		}
-		reply.ID = request.ID
-		switch {
-		case request.Method != "settings/get-engine-allow-lan-bind":
-			reply.Error = "unsupported engine setting read"
-		case settings == nil:
-			reply.Error = "node-settings unavailable"
-		default:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			result, rpcErr, err := settings.Call(ctx, request.Method, nil)
-			switch {
-			case err != nil:
-				reply.Error = "node-settings read failed"
-			case rpcErr != nil:
-				reply.Error = "node-settings read rejected"
-			default:
-				reply.Result = result
+		defer cancel()
+		defer func() { b.settingsRelayMu.Lock(); delete(b.settingsCancels, relay.ID); b.settingsRelayMu.Unlock() }()
+		var result any
+		var err error
+		if relay.Method == "settings/get-engine-allow-lan-bind" {
+			nodeSettings := b.getSettings()
+			if nodeSettings == nil {
+				err = fmt.Errorf("node-settings unavailable")
+			} else {
+				var rpcErr *RPCError
+				result, rpcErr, err = nodeSettings.Call(ctx, relay.Method, nil)
+				if rpcErr != nil {
+					err = fmt.Errorf("node-settings read rejected")
+				}
 			}
+		} else if relay.Method == "rebind" {
+			b.settingsRelayMu.Lock()
+			operation, ok := b.activeSettings[relay.Request.RequestID]
+			b.settingsRelayMu.Unlock()
+			if !ok || operation.Engine != relay.Request.Engine || operation.Port != relay.Request.Settings.ProxyPort {
+				err = fmt.Errorf("unknown settings operation")
+			} else {
+				err = b.rebindSettingsProxy(operation.Engine, operation.Port)
+			}
+		} else {
+			result, err = b.dispatchEngineSettings(ctx, relay.Method, relay.Request, relay.Caller)
 		}
-		_ = em.Notify("engine:settings-reply", reply)
+		reply := struct {
+			ID     string `json:"id"`
+			Result any    `json:"result"`
+			Error  string `json:"error,omitempty"`
+		}{ID: relay.ID, Result: result}
+		if err != nil {
+			reply.Error = err.Error()
+		}
+		_ = worker.Notify("engine:settings-reply", reply)
 	}()
 }

@@ -59,6 +59,9 @@ type remoteClient struct {
 // engine back down — for a delete that means the files are gone, the engine is
 // left stopped, and the caller is told the delete failed.
 func waitsForEngineReadiness(path string) bool {
+	if path == settingsPath+"apply" {
+		return true
+	}
 	// controlDeletePath: LM Studio's delete_model declares restart_after, so the
 	// peer replies only after the post-delete restart is ready.
 	return path == controlLoadPath || path == controlStartPath || path == controlDeletePath

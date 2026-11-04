@@ -86,6 +86,11 @@ func (b *Broker) runAutoAdvertise(ctx context.Context) {
 // /v1/models endpoint (registered separately), which peers fetch during
 // enrichment.
 func (b *Broker) reconcileAdvertise(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if r := b.engineSettings["ollama"]; r != nil && r.Snapshot.Phase == "applying" {
+		return
+	}
 	// During the managed bind -> backend-move transition, engine:status would
 	// probe :11434 and could mistake the proxy (or a remote response forwarded
 	// through it) for an externally started Ollama. Do not query liveness until
@@ -152,6 +157,11 @@ func (b *Broker) runAutoAdvertiseLMStudio(ctx context.Context) {
 // promoted proxy port (never the engine) and hands the engine's loopback port to
 // the LM Studio proxy via node/set-local-backend.
 func (b *Broker) reconcileAdvertiseLMStudio(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if r := b.engineSettings["lmstudio"]; r != nil && r.Snapshot.Phase == "applying" {
+		return
+	}
 	enginePort, probe := b.localEnginePort("lmstudio", defaultLMStudioPort)
 	proxyPort := b.lmstudioProxyListenPort()
 	if proxyPort != 0 && enginePort == proxyPort {
@@ -314,6 +324,11 @@ func (b *Broker) runAutoAdvertiseOMLX(ctx context.Context) {
 // the local oMLX server: it advertises the promoted proxy port (never the engine)
 // and hands the engine's loopback port to the oMLX proxy via node/set-local-backend.
 func (b *Broker) reconcileAdvertiseOMLX(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if r := b.engineSettings["omlx"]; r != nil && r.Snapshot.Phase == "applying" {
+		return
+	}
 	enginePort, probe := b.localEnginePort("omlx", defaultOMLXPort)
 	proxyPort := b.omlxProxyListenPort()
 	if proxyPort != 0 && enginePort == proxyPort {

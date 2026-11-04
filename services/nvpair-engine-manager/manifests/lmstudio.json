@@ -1,4 +1,5 @@
 {
+  "$schema": "../manifest.schema.json",
   "engine": "lmstudio",
   "display_name": "LM Studio",
   "manifest_version": 1,
@@ -15,6 +16,13 @@
     "remove": ["~/.lmstudio/bin", "~/.lmstudio/llmster", "~/.cache/lm-studio/llmster"]
   },
   "runtime": {
+    "editable_launch": {
+      "fixed_args": ["server", "start"],
+      "controls": [
+        { "flags": ["--port", "-p"], "env": ["LMS_SERVER_PORT"], "value": "{server.port}" },
+        { "flags": ["--bind", "--host"], "env": ["LMS_SERVER_HOST"], "value": "{server.host}" }
+      ]
+    },
     "mode": "command",
     "port": 1235,
     "bind": "127.0.0.1",

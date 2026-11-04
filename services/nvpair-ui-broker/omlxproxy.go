@@ -105,7 +105,7 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 			Code string `json:"code"`
 			Port int    `json:"port"`
 		}
-		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" {
+		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.omlxExplicitSettings.Load() {
 			fallback := b.setOMLXProxyFallback(ep.Port)
 			slog.Warn("oMLX proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
 		}
@@ -152,6 +152,9 @@ func (b *Broker) prepareOMLXProxyPort() {
 }
 
 func (b *Broker) prepareOMLXProxyPortWithPortCheck(portAvailable func(int) bool) {
+	if b.prepareExplicitEngineSettings("omlx") {
+		return
+	}
 	if b.omlxProxyStartupPort.Load() != 0 {
 		return
 	}
