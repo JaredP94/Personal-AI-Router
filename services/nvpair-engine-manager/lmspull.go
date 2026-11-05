@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -144,25 +145,35 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 		return "", fmt.Errorf("hold download process: %w", err)
 	}
 	defer unpin()
-	finished := make(chan struct{})
-	var runErr error
-	go func() { runErr = cmd.Wait(); close(finished) }()
+	wait := newDownloadWait(cmd)
+	if err := watchDownloadExit(wait); err != nil {
+		cleanupErr := killAndWaitDownload(context.Background(), process, wait, downloadShutdownReap)
+		current.disown()
+		return "", fmt.Errorf("watch download launcher: %w", errors.Join(err, cleanupErr))
+	}
 	select {
-	case <-finished:
+	case <-wait.exited:
 		if ctx.Err() != nil {
-			return stopLMSDownload(ctx, lmsCancelGracesFrom(ctx), process, finished, current)
+			return stopLMSDownload(ctx, lmsCancelGracesFrom(ctx), process, wait, current)
 		}
 	case <-ctx.Done():
-		return stopLMSDownload(ctx, lmsCancelGracesFrom(ctx), process, finished, current)
+		return stopLMSDownload(ctx, lmsCancelGracesFrom(ctx), process, wait, current)
+	}
+	// A finished launcher can leave orphaned download helpers. Kill those on
+	// normal completion too, before reaping releases the launcher's PID/pgid.
+	cleanupErr := killAndWaitDownload(context.Background(), process, wait, downloadShutdownReap)
+	if err := errors.Join(wait.exitErr, cleanupErr); err != nil {
+		current.disown()
+		return "", err
 	}
 	_, _, text := current.state()
-	if runErr != nil {
-		return "", fmt.Errorf("%w: %s", runErr, lmsErrorDetail(text))
+	if wait.err != nil {
+		return "", fmt.Errorf("%w: %s", wait.err, lmsErrorDetail(text))
 	}
 	return text, nil
 }
 
-func stopLMSDownload(ctx context.Context, g lmsCancelGraces, process *downloadProcess, finished <-chan struct{}, output *lmsDownloadOutput) (string, error) {
+func stopLMSDownload(ctx context.Context, g lmsCancelGraces, process *downloadProcess, wait *downloadWait, output *lmsDownloadOutput) (string, error) {
 	// Shutdown interrupts ordinary cancellation graces and Windows helpers.
 	normal, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -182,13 +193,13 @@ func stopLMSDownload(ctx context.Context, g lmsCancelGraces, process *downloadPr
 			return false
 		}
 	}
-	stop := func() (string, error) { return stopDownloadForShutdown(process, finished, output) }
+	stop := func() (string, error) { return stopDownloadForShutdown(process, wait, output) }
 	if stopping() {
 		return stop()
 	}
 	interrupt := func() error {
 		select {
-		case <-finished:
+		case <-wait.exited:
 			return nil
 		default:
 			return interruptDownload(normal, process)
@@ -200,14 +211,14 @@ func stopLMSDownload(ctx context.Context, g lmsCancelGraces, process *downloadPr
 	}
 	exited := false
 	if err == nil {
-		exited = waitLMSExitUnlessShutdown(normal, finished, g.interrupt)
+		exited = waitLMSExitUnlessShutdown(normal, wait.exited, g.interrupt)
 	}
 	if stopping() {
 		return stop()
 	}
 	if !exited && err == nil {
 		if interrupt() == nil {
-			exited = waitLMSExitUnlessShutdown(normal, finished, g.retry)
+			exited = waitLMSExitUnlessShutdown(normal, wait.exited, g.retry)
 		}
 	}
 	if stopping() {
@@ -215,7 +226,7 @@ func stopLMSDownload(ctx context.Context, g lmsCancelGraces, process *downloadPr
 	}
 	// Launcher exit (including a cancellation acknowledgement) does not prove
 	// its children exited. Always kill and verify the owned group/job.
-	cleanupErr := killAndWaitDownload(normal, process, finished, g.reap)
+	cleanupErr := killAndWaitDownload(normal, process, wait, g.reap)
 	if stopping() {
 		return stop()
 	}
@@ -237,13 +248,13 @@ func stopLMSDownload(ctx context.Context, g lmsCancelGraces, process *downloadPr
 	return "", fmt.Errorf("LM Studio did not confirm download cancellation; the download may still be running in LM Studio")
 }
 
-func stopDownloadForShutdown(process *downloadProcess, finished <-chan struct{}, output *lmsDownloadOutput) (string, error) {
+func stopDownloadForShutdown(process *downloadProcess, wait *downloadWait, output *lmsDownloadOutput) (string, error) {
 	signalCtx, cancel := context.WithTimeout(context.Background(), downloadShutdownSignalBudget)
 	_ = terminateDownload(signalCtx, process)
 	cancel()
-	waitLMSExitUnlessShutdown(context.Background(), finished, downloadShutdownGrace)
+	waitLMSExitUnlessShutdown(context.Background(), wait.exited, downloadShutdownGrace)
 	// Kill even if the launcher exited during grace: the group/job may survive.
-	err := killAndWaitDownload(context.Background(), process, finished, downloadShutdownReap)
+	err := killAndWaitDownload(context.Background(), process, wait, downloadShutdownReap)
 	output.disown()
 	if err != nil {
 		// Only process identity and OS errors, never downloader output.
@@ -253,25 +264,30 @@ func stopDownloadForShutdown(process *downloadProcess, finished <-chan struct{},
 	return "", context.Canceled
 }
 
-// Group/job emptiness and launcher reap share one deadline. No lock is held
-// while waiting; closing finished makes repeated exit checks safe.
-func killAndWaitDownload(parent context.Context, process *downloadProcess, finished <-chan struct{}, reap time.Duration) error {
+// The final group signal must precede launcher reap on Unix: its unreaped
+// zombie anchors the pgid. Only a harmless signal-0 probe may follow reap.
+// Reap and group/job verification share one deadline, with no locks held.
+func killAndWaitDownload(parent context.Context, process *downloadProcess, wait *downloadWait, reap time.Duration) error {
 	killCtx, cancelKill := context.WithTimeout(parent, downloadShutdownSignalBudget)
 	err := killDownload(killCtx, process)
 	cancelKill()
+	var killErr error
 	if err != nil {
-		return fmt.Errorf("kill download process tree: %w", err)
+		killErr = fmt.Errorf("kill download process tree: %w", err)
 	}
+	// Darwin can return EPERM when only zombies remain in the group. Reap
+	// after the final signal attempt, then let disappearance confirm cleanup.
+	wait.reap()
 	ctx, cancel := context.WithTimeout(parent, reap)
 	defer cancel()
-	if err := waitDownloadGroup(ctx, process); err != nil {
-		return err
-	}
 	select {
-	case <-finished:
+	case <-wait.finished:
+		if err := waitDownloadGroup(ctx, process); err != nil {
+			return errors.Join(killErr, err)
+		}
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("download launcher did not exit: %w", ctx.Err())
+		return errors.Join(killErr, fmt.Errorf("download launcher did not exit: %w", ctx.Err()))
 	}
 }
 

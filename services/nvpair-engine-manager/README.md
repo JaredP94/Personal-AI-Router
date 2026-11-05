@@ -726,13 +726,22 @@ ordinary 15/5/10 s graces. Ollama's in-flight HTTP request is cancelled and join
 
 LM Studio download CLIs already start in their own Unix process group; shutdown
 sends SIGTERM to that group, waits up to 500 ms, then always SIGKILLs the group,
-even if the launcher has exited. The group ID remains reserved while any member
-survives. Windows retains the private-console launcher and bounded interrupt
-helper, but assigns the launcher to a kill-on-close job before allowing it to
-spawn the CLI; forced cleanup terminates the entire job, not a PID-based tree.
+even if the launcher has exited. Linux observes exit with `waitid(WEXITED |
+WNOWAIT)`; macOS uses kqueue `EVFILT_PROC/NOTE_EXIT`. Neither reaps the launcher:
+the live launcher or its unreaped zombie anchors its PID and process-group ID
+until the final SIGKILL. Only then does `cmd.Wait` reap it, followed by bounded
+signal-0 verification of group disappearance (`ESRCH`). No further terminating
+or interrupt signal is sent after that final attempt, including when shutdown
+interrupts cancellation.
+Normal completion also kills leftover helpers of the finished download before
+reaping. The existing direct `golang.org/x/sys` dependency supplies both Unix
+exit notifications and Windows job objects.
+Windows retains the private-console launcher and bounded interrupt helper, but
+assigns the launcher to a kill-on-close job before allowing it to spawn the CLI;
+forced cleanup terminates the entire job, not a PID-based tree.
 User cancellation uses the same group/job cleanup before reporting its terminal
-result. Cleanup confirms Unix group disappearance (`ESRCH`) or zero active job
-processes and launcher exit; survivors produce an error (also logged on shutdown).
+result. Cleanup confirms Unix group disappearance or zero active job processes
+and launcher exit; survivors produce an error (also logged on shutdown).
 Signal/kill helpers each get at most 500 ms, and group/job verification shares
 the final 2 s reap deadline: at most 3.5 s per CLI shutdown sequence.
 Inherited-stdio waiting is capped at 1 s. The aggregate download join is 4 s,
