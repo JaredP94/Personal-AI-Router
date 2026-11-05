@@ -125,6 +125,117 @@ afterEach(async () => {
 })
 
 describe('per-model LM Studio Load options', () => {
+    it('shows reload-required beside the collapsed loaded model without opening the editor', async () => {
+        getProfile.mockResolvedValueOnce({
+            ...baseline,
+            loadState: 'reload-required',
+            reason: 'Loaded with different options — reload to apply'
+        })
+        await act(async () =>
+            root.render(
+                createElement(LoadOptions, {
+                    nodeId: 'local',
+                    model: 'owner/model',
+                    engineType: 'lm-studio',
+                    loaded: true
+                })
+            )
+        )
+        expect(container.querySelector('details')?.open).toBe(false)
+        expect(container.textContent).toContain('Loaded with different options — reload to apply')
+        expect(container.querySelector('textarea')).toBeNull()
+    })
+    it('reports unreadable residency without offering an automatic reload', async () => {
+        getProfile.mockResolvedValueOnce({
+            ...baseline,
+            loadState: 'unknown',
+            reason: 'Loaded model options could not be checked.'
+        })
+        await act(async () =>
+            root.render(
+                createElement(LoadOptions, {
+                    nodeId: 'local',
+                    model: 'owner/model',
+                    engineType: 'lm-studio',
+                    loaded: true
+                })
+            )
+        )
+        expect(container.textContent).toContain('Loaded model options could not be checked.')
+        expect(container.querySelectorAll('button')).toHaveLength(0)
+    })
+    it('reports a failed residency request beside a loaded model', async () => {
+        getProfile.mockRejectedValueOnce(new Error('Unavailable'))
+        await act(async () =>
+            root.render(
+                createElement(LoadOptions, {
+                    nodeId: 'local',
+                    model: 'owner/model',
+                    engineType: 'lm-studio',
+                    loaded: true
+                })
+            )
+        )
+        expect(container.textContent).toContain('Loaded model options could not be checked.')
+    })
+    it('fences an old collapsed-row residency read after changing model', async () => {
+        let finish = (_snapshot: LoadProfileSnapshot): void => {}
+        getProfile.mockImplementationOnce(
+            () =>
+                new Promise(resolve => {
+                    finish = resolve
+                })
+        )
+        await act(async () =>
+            root.render(
+                createElement(LoadOptions, {
+                    nodeId: 'local',
+                    model: 'old',
+                    engineType: 'lm-studio',
+                    loaded: true
+                })
+            )
+        )
+        await act(async () =>
+            root.render(
+                createElement(LoadOptions, {
+                    nodeId: 'local',
+                    model: 'new',
+                    engineType: 'lm-studio',
+                    loaded: true
+                })
+            )
+        )
+        await act(async () =>
+            finish({
+                ...baseline,
+                model: 'old',
+                loadState: 'reload-required',
+                reason: 'Stale warning'
+            })
+        )
+        expect(container.textContent).not.toContain('Stale warning')
+    })
+    it('shows changed resident options after Apply and retains the warning when collapsed', async () => {
+        applyProfile.mockResolvedValueOnce({
+            ...baseline,
+            revision: 2,
+            loadText: '--gpu off',
+            loadState: 'reload-required',
+            reason: 'Loaded with different options — reload to apply'
+        })
+        await render()
+        await open()
+        await change('--gpu off')
+        await click('Apply')
+        const details = container.querySelector('details')
+        if (!details) throw new Error('Missing options')
+        await act(async () => {
+            details.open = false
+            details.dispatchEvent(new Event('toggle'))
+        })
+        expect(container.textContent).toContain('Loaded with different options — reload to apply')
+    })
     it('loads lazily and disables editing until the authoritative snapshot arrives', async () => {
         let finish = (_snapshot: LoadProfileSnapshot): void => {}
         getProfile.mockImplementationOnce(

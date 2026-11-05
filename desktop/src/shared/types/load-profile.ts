@@ -20,6 +20,8 @@ export interface LoadProfileSnapshot extends LoadProfileTarget {
     format: string
     editable: boolean
     reason: string
+    /** Advisory residency only; never grants ownership or automatic unload permission. */
+    loadState?: string
 }
 
 export interface LoadProfilePreview {

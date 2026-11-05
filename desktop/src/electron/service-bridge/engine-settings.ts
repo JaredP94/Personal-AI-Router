@@ -23,7 +23,8 @@ export function parseLoadProfile(value: JsonValue | undefined): LoadProfileSnaps
         loadText: text(row.loadText),
         format: text(row.format),
         editable: flag(row.editable),
-        reason: text(row.reason)
+        reason: text(row.reason),
+        loadState: text(row.loadState)
     }
 }
 export function parseLoadProfilePreview(value: JsonValue | undefined): LoadProfilePreview {

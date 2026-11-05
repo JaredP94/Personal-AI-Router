@@ -266,6 +266,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                                 nodeId={nodeId}
                                                 engineType={backendType}
                                                 model={model.name}
+                                                loaded={model.status === 'loaded'}
                                                 disabled={
                                                     usePendingActionsStore
                                                         .getState()

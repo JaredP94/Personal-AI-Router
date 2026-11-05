@@ -220,7 +220,7 @@ func TestLoadProfileListingCancellationIsBoundedAndFenced(t *testing.T) {
 	}
 }
 
-func TestLoadProfileChangedReplacesOnlyOwnedIdentifier(t *testing.T) {
+func TestLoadProfileChangedKeepsResidentUntilExplicitReload(t *testing.T) {
 	e, capture, _ := profileActionExecutor(t)
 	ctx := context.Background()
 	if err := e.Start(ctx, "lmstudio"); err != nil {
@@ -244,8 +244,8 @@ func TestLoadProfileChangedReplacesOnlyOwnedIdentifier(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := profileResidents(t, capture)
-	if len(models) != 2 || string(models[0]["identifier"]) != `"external-keep"` || string(models[1]["identifier"]) != `"keep"` {
-		t.Fatalf("did not replace only the PAIR-owned instance: %s", models)
+	if len(models) != 2 || string(models[0]["identifier"]) != `"keep"` || string(models[1]["identifier"]) != `"external-keep"` {
+		t.Fatalf("restart mutated resident instances: %s", models)
 	}
 	rows := capturedProfileArgs(t, capture)
 	unloads := 0
@@ -257,12 +257,18 @@ func TestLoadProfileChangedReplacesOnlyOwnedIdentifier(t *testing.T) {
 			}
 		}
 	}
-	if unloads != 1 {
-		t.Fatalf("owned unloads = %d, want 1", unloads)
+	if unloads != 0 || len(capturedProfileLoads(t, capture)) != 1 {
+		t.Fatalf("profile change automatically reloaded a resident instance: %v", rows)
 	}
-	last := rows[len(rows)-1]
-	if !reflect.DeepEqual(last, []string{"load", "keep", "--identifier", "keep", "--gpu", "off"}) {
-		t.Fatalf("replacement did not apply changed profile: %v", last)
+	if _, err := e.ModelUnload(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	loads := capturedProfileLoads(t, capture)
+	if !reflect.DeepEqual(loads[len(loads)-1], []string{"load", "keep", "--identifier", "keep", "--gpu", "off"}) {
+		t.Fatalf("explicit reload did not apply changed profile: %v", loads)
 	}
 }
 
@@ -368,6 +374,12 @@ func TestLoadProfileRestoreFailureFailsRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	saveTestProfile(t, e, "keep", "--gpu off")
+	// Restoration only loads a missing instance; a resident is never replaced.
+	st, _ := e.state("lmstudio")
+	cli := st.manifest.Actions["load_model"].Cmd[0]
+	if err := exec.Command(cli, "unload", "keep").Run(); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PAIR_TEST_PROFILE_MODE", "fail")
 	if err := e.Restart(context.Background(), "lmstudio"); err == nil || err.Error() != profiledLoadFailed {
 		t.Fatalf("restore failure not reported: %v", err)

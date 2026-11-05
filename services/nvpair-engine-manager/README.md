@@ -237,11 +237,19 @@ are private node-local `0600` configuration beside `engine-state.json`. Every
 PAIR-initiated LM Studio load, including verified-peer loads and restoration of
 this session's PAIR-loaded models after restart, uses the saved argv. Each load
 first checks the daemon's resident identifiers with bounded `lms ps --json`.
-HTTP-server restart does not unload models: unchanged resident instances are
-reused, and changed tuning replaces only the exact identifier successfully loaded
-by PAIR. Pre-existing external instances are never claimed or automatically
-unloaded; other identifiers for the same model are untouched. Failed or malformed
-listings stop restoration rather than loading blindly. A failure is reported
+HTTP-server restart does not unload models: resident identifiers are reused
+without duplicate loads, even when saved tuning changed. **PAIR never unloads a
+model automatically:** CLI 0.4.1 removes the immutable `instanceReference` from
+its JSON listing; the remaining identifiers are reusable and cannot prove
+ownership. See the linked protocol for the read-only vendor evidence. Explicit
+**Eject**, then **Load**, applies saved options. Profile snapshots add advisory
+`loadState` (`unloaded`, `loaded`, `reload-required`, `unknown`) and a value-free
+`reason`. Desktop shows "Loaded with different options — reload to apply" beside
+the model when submitted tuning differs; unverified or unreadable residency has
+its own visible message. These states never grant unload permission. Load
+observations are cleared on authoritative disappearance and engine stop; separate
+session-local restoration intent can restore a missing model after restart.
+Failed or malformed listings stop restoration rather than loading blindly. A failure is reported
 once without values or a fallback to defaults. Successful deletion
 removes its profile. Orphans are pruned only after successful authoritative
 inventory, retaining edits newer than the inventory's captured generation.

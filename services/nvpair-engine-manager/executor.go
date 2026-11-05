@@ -74,9 +74,12 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
-	// Models successfully loaded by PAIR, restored by doStart after a restart.
-	// Protected by mu; load/unload/delete are serialized with lifecycle via opMu.
+	// Observed load arguments are advisory, never evidence of instance ownership.
+	// Cleared on disappearance/engine stop; protected by mu.
 	loadModels map[string]lmsLoadedModel
+	// Session-local restoration intent survives HTTP-server stop, unlike the
+	// instance observations. Restoring never unloads a resident instance.
+	restoreModels map[string]bool
 }
 
 // lockOperation marks the entire serialized operation, including external I/O.

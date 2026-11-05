@@ -283,6 +283,7 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 				st.healthStop = nil
 			}
 			st.running = false
+			clear(st.loadModels)
 			st.healthy = false
 			st.adopted = false
 			if !pathInstalled {
@@ -371,6 +372,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 		}
 		st.installed = pathInstalled
 		st.running = false
+		clear(st.loadModels)
 		st.healthy = false
 		st.adopted = false
 		st.proc = nil

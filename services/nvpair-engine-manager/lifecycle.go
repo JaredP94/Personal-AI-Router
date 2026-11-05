@@ -416,6 +416,7 @@ func (e *Executor) watch(st *engineState, engine string, proc *managedProc) {
 		if current {
 			st.proc = nil
 			st.running = false
+			clear(st.loadModels)
 			st.healthy = false
 			st.revision++
 			if st.healthStop != nil {
@@ -615,6 +616,7 @@ func (e *Executor) markStopped(st *engineState, engine string) {
 	st.stopping = true
 	st.adopted = false
 	st.proc = nil
+	clear(st.loadModels)
 	st.mu.Unlock()
 	// A deliberately-stopped engine has no live unhealthy/crash condition.
 	e.reporter.clear(unhealthyID(engine))

@@ -19,7 +19,9 @@ const snapshot = {
     revision: 4,
     loadText: '--gpu max',
     format: 'pair-arguments-v1',
-    editable: true
+    editable: true,
+    loadState: 'reload-required',
+    reason: 'Loaded with different options — reload to apply'
 }
 
 describe('LM Studio load profiles bridge', () => {
@@ -37,7 +39,7 @@ describe('LM Studio load profiles bridge', () => {
             loadText: '--gpu max',
             format: 'pair-arguments-v1'
         })
-        expect(result).toEqual({ ...snapshot, reason: '' })
+        expect(result).toEqual(snapshot)
         expect(mocks.callProcess).toHaveBeenCalledWith(
             'broker',
             'engine:apply-load-profile',

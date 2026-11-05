@@ -29,7 +29,7 @@ func TestLoadProfileRelayUsesCapturedWorkerWithoutSettingsLocks(t *testing.T) {
 			b.settingsApplyMu.Unlock()
 			b.engineConfigMu.Unlock()
 			seen <- msg.Method
-			_ = codec.Respond(msg.ID, settings.LoadProfileSnapshot{Engine: "lmstudio", Model: "m", LoadText: "--gpu max", Format: "pair-arguments-v1", Editable: true})
+			_ = codec.Respond(msg.ID, settings.LoadProfileSnapshot{Engine: "lmstudio", Model: "m", LoadText: "--gpu max", Format: "pair-arguments-v1", Editable: true, LoadState: "reload-required", Reason: "Loaded with different options — reload to apply"})
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -40,7 +40,7 @@ func TestLoadProfileRelayUsesCapturedWorkerWithoutSettingsLocks(t *testing.T) {
 			t.Fatalf("relay deadlocked or failed: %v", err)
 		}
 		var snap settings.LoadProfileSnapshot
-		if json.Unmarshal(result, &snap) != nil || snap.NodeID != node || snap.LoadText != "--gpu max" {
+		if json.Unmarshal(result, &snap) != nil || snap.NodeID != node || snap.LoadText != "--gpu max" || snap.LoadState != "reload-required" || snap.Reason != "Loaded with different options — reload to apply" {
 			t.Fatalf("incorrect snapshot: %s", result)
 		}
 	}

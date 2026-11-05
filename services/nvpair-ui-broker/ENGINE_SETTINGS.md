@@ -62,7 +62,11 @@ launch configuration. `engine:get-load-profile`, `engine:preview-load-profile`
 and `engine:apply-load-profile` take `{nodeId?, engine:"lmstudio", model}`;
 preview/apply additionally take `loadText`, `expectedRevision`, optional `format`
 (`pair-arguments-v1`), and apply requires `requestId`. Get/apply return
-`{nodeId,engine,model,revision,loadText,format,editable,reason?}`. Preview returns
+`{nodeId,engine,model,revision,loadText,format,editable,reason?,loadState?}`.
+`loadState` is advisory: `unloaded`, `loaded` (last submitted tuning matches),
+`reload-required` (different or unverified tuning), or `unknown` (listing failed
+or lifecycle observation superseded). `reason` supplies a value-free row message.
+It never establishes instance ownership or permits automatic unload. Preview returns
 `{revision,loadText,format,load_args,errors}`. A stale revision or a reused request
 ID with different input is refused. Apply persists options for the next load;
 it does not interrupt a running model. Clear the text to use vendor defaults.
@@ -108,18 +112,42 @@ Failed, oversized or malformed listings report a value-free error and prevent
 blind loading. Linked-device entries are not local resident instances.
 
 LM Studio's HTTP server stop leaves models in memory. PAIR pins the model key as
-its CLI identifier and records ownership plus the actual tuning arguments only
-after a successful, non-canceled load. An already resident matching identifier
-is reused; a pre-existing external instance is never claimed for restoration.
-After a PAIR-owned engine restart (also after deleting a different model),
-unchanged PAIR-loaded instances remain resident without duplicate loads. If
-tuning changed, only PAIR's recorded identifier is unloaded, then loaded with
-the new options. Other identifiers, even for the same model, are untouched.
-Missing PAIR-loaded instances are restored using current profiles. No-op edits
-whose CLI tuning is unchanged do not replace the instance. Explicit unload/delete
-removes the model from that restoration set; engine ON/OFF intent is unchanged.
-Ownership is session-only. Profiles persist across application and machine
-restarts; this does not introduce automatic loading on a fresh manager session.
+its CLI identifier, reuses an already resident matching identifier, and **never
+unloads a model automatically**, even after a profile change. Identifiers are
+reusable: a TTL expiry or external unload followed by a user load can replace
+PAIR's instance between polls. No remembered identifier proves ownership.
+
+Read-only evidence for the targeted CLI **0.4.1 (43d4b26)**:
+- [`src/subcommands/list.ts`, JSON branch of `ps`](https://github.com/lmstudio-ai/lms/blob/43d4b26/src/subcommands/list.ts#L473-L520)
+  explicitly destructures away `instanceReference` for every model type. The
+  bundled llmster 0.0.27-1 executable has the same code.
+- [`src/subcommands/load.ts`, `loadModel`](https://github.com/lmstudio-ai/lms/blob/43d4b26/src/subcommands/load.ts#L724-L761)
+  prints only the user-selectable identifier, not the immutable reference.
+- The [REST models list](https://lmstudio.ai/docs/developer/rest/list) exposes
+  `loaded_instances[].id`; its example is the model identifier, not an immutable
+  generation token. The [REST load response](https://lmstudio.ai/docs/developer/rest/load)
+  similarly calls that reusable model identifier `instance_id`.
+The SDK internally has an immutable `instanceReference`, but these CLI/REST
+surfaces do not expose it. PAIR does not infer one from an identifier, TTL, config
+or timestamps, and does not add a private SDK protocol dependency.
+
+After a PAIR-managed engine restart (also after deleting a different model),
+resident instances are kept without duplicate loads; missing models in the
+session-local restoration set load using current profiles. That set is intent,
+not ownership. Explicit unload/delete removes that intent. Successful loads
+record submitted tuning only for advisory comparison, cleared when an
+authoritative residency query sees disappearance, on explicit unload/delete,
+or engine stop/exit. Passive observations are lifecycle-revision fenced.
+Unobserved replacement cannot grant unload permission because no automatic
+unload path exists. Profiles persist across PAIR/machine restarts; a fresh
+manager session still does not automatically load models.
+
+Desktop displays **Loaded with different options — reload to apply** next to the
+model after a differing save; unverified residency says **Loaded options are
+unverified — reload to apply**. Failed listing is reported as `unknown`, not as
+unloaded. Use existing **Eject**, then **Load**, to apply saved options explicitly.
+The collapsed row reads advisory state when loaded, after lifecycle activity,
+and after editor reads/saves; it does not introduce another polling loop.
 
 Successful deletion removes its profile before restarting. Orphan policy: prune
 profiles only after a successful authoritative LM Studio model-list query, never
@@ -141,11 +169,13 @@ Model mutation shares a six-minute manager
 budget (including a bounded lifecycle-lock wait), inside seven-minute remote and
 eight-minute broker budgets. Desktop's awaited LM Studio deletion has nine minutes;
 other engines' loading and timeouts are unchanged. Each CLI load has at most four
-minutes (including its ten-second listing and, if needed, thirty-second targeted
-unload); a restart's restoration batch shares five minutes, within its caller's
+minutes (including its ten-second listing); a restart's restoration batch shares
+five minutes, within its caller's
 remaining budget. Each CLI wait has a one-second descendant-pipe cleanup cap,
 strictly within the next outer budget. Cancellation is checked after listing,
-before commands, and before committing ownership, fencing late completions.
+before commands, and before recording submitted tuning, fencing late completions.
+Profile get/apply residency reads share the five-second profile budget, release
+the store mutex before listing, and report `unknown` without undoing a saved edit.
 These budgets assume functioning local storage.
 
 ## Apply deadline

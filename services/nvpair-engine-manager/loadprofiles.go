@@ -366,11 +366,19 @@ func (e *Executor) loadProfileOperation(ctx context.Context, method string, p se
 	defer cancel()
 	switch method {
 	case "get-load-profile":
-		return e.GetLoadProfile(ctx, p)
+		snap, err := e.GetLoadProfile(ctx, p)
+		if err == nil {
+			e.observeLoadProfile(ctx, &snap)
+		}
+		return snap, err
 	case "preview-load-profile":
 		return e.PreviewLoadProfile(ctx, p)
 	case "apply-load-profile":
-		return e.ApplyLoadProfile(ctx, p)
+		snap, err := e.ApplyLoadProfile(ctx, p)
+		if err == nil {
+			e.observeLoadProfile(ctx, &snap)
+		}
+		return snap, err
 	default:
 		return nil, fmt.Errorf("unsupported load options method")
 	}

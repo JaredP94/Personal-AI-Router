@@ -49,6 +49,8 @@ func (b *Broker) relayLoadProfile(ctx context.Context, method string, p settings
 		if json.Unmarshal(result, &snap) != nil || snap.Engine != "lmstudio" || snap.Model != p.Model {
 			return nil, errors.New("Invalid load options response.")
 		}
+		// Preserve the target-owned advisory loadState/reason; the broker
+		// neither infers residency nor authorizes automatic model unloading.
 		snap.NodeID = nodeID
 		return json.Marshal(snap)
 	}

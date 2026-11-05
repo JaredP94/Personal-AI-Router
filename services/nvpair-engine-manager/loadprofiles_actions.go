@@ -19,11 +19,11 @@ import (
 )
 
 const profiledLoadFailed = "LM Studio could not load the model with its saved load options. Check the options before retrying; no default load was attempted."
-const profiledListFailed = "LM Studio could not list loaded model identifiers. This load was not attempted; retry after checking LM Studio."
+const profiledListFailed = "LM Studio could not list loaded model identifiers. No automatic load or unload was attempted; retry after checking LM Studio."
 
-// Only successful PAIR loads confer ownership. A pre-existing identifier is
-// reused without claiming it, even when its model key matches. Keep the actual
-// CLI tuning used, not just a revision: no-op profile edits need no replacement.
+// A successful load records only the tuning PAIR last submitted, NOT instance
+// ownership. CLI 0.4.1 strips the immutable instanceReference from ps --json;
+// its reusable identifier cannot authorize any automatic unload.
 type lmsLoadedModel struct {
 	Identifier string
 	Args       []string
@@ -103,7 +103,6 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 	args = loadCLIArgs(args)
 	st.mu.Lock()
 	port := st.port
-	previous, owned := st.loadModels[model]
 	st.mu.Unlock()
 	act := st.manifest.Actions["load_model"]
 	vars := map[string]string{"model": model, "port": strconv.Itoa(port), "install_dir": st.installDir, "cli": controlCLIPath(st.plat, st.installDir, runtime.GOOS)}
@@ -117,30 +116,20 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 	if err != nil {
 		return nil, err
 	}
+	st.mu.Lock()
+	forgetMissingLMSLoadsLocked(st, instances)
+	st.mu.Unlock()
 	identifier := model
-	if owned {
-		identifier = previous.Identifier
-	}
 	if key, resident := instances[identifier]; resident {
-		if key != model {
+		if key != model || ctx.Err() != nil {
 			return nil, errors.New(profiledLoadFailed)
 		}
-		if !owned || slices.Equal(previous.Args, args) {
-			if ctx.Err() != nil {
-				return nil, errors.New(profiledLoadFailed)
-			}
-			return json.RawMessage("null"), nil
-		}
-		// A changed profile needs a fresh instance, but only the exact identifier
-		// successfully loaded by PAIR may be unloaded; never a model-key wildcard.
-		unloadCtx, stop := context.WithTimeout(ctx, min(e.actionTimeout, 30*time.Second))
-		err = runPrivateLMSCommand(unloadCtx, []string{argv[0], "unload", identifier})
-		stop()
-		if err != nil {
-			return nil, err
-		}
+		// The original PAIR load may have expired and been replaced between
+		// polls. Never unload even if the remembered arguments differ. The
+		// user must explicitly unload/load to apply the saved profile.
+		return json.RawMessage("null"), nil
 	}
-	// Pin identity rather than allowing the CLI to invent a duplicate identifier.
+	// Pin the identifier rather than letting the CLI invent a duplicate.
 	argv = append(argv, "--identifier", identifier)
 	argv = append(argv, args...)
 	if err := runPrivateLMSCommand(ctx, argv); err != nil {
@@ -148,7 +137,7 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	// Late/canceled completion cannot claim ownership or replace the remembered
+	// Late/canceled completion cannot record tuning or replace the remembered
 	// profile. The operation mutex serializes this with all lifecycle mutations.
 	if ctx.Err() != nil {
 		return nil, errors.New(profiledLoadFailed)
@@ -157,6 +146,10 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 		st.loadModels = map[string]lmsLoadedModel{}
 	}
 	st.loadModels[model] = lmsLoadedModel{Identifier: identifier, Args: args}
+	if st.restoreModels == nil {
+		st.restoreModels = map[string]bool{}
+	}
+	st.restoreModels[model] = true
 	return json.RawMessage("null"), nil
 }
 
@@ -194,6 +187,7 @@ func (e *Executor) lmsModelAction(ctx context.Context, st *engineState, action s
 	}
 	st.mu.Lock()
 	delete(st.loadModels, p.Model)
+	delete(st.restoreModels, p.Model)
 	running := st.running
 	st.mu.Unlock()
 	if action == "delete_model" {
@@ -235,8 +229,8 @@ func lockLMSOperation(ctx context.Context, st *engineState) error {
 
 func (e *Executor) restoreLMSModels(ctx context.Context, st *engineState) error {
 	st.mu.Lock()
-	models := make([]string, 0, len(st.loadModels))
-	for model := range st.loadModels {
+	models := make([]string, 0, len(st.restoreModels))
+	for model := range st.restoreModels {
 		models = append(models, model)
 	}
 	st.mu.Unlock()

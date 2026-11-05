@@ -34,19 +34,79 @@ export function LoadOptions({
     nodeId,
     model,
     engineType,
-    disabled = false
+    disabled = false,
+    loaded = false
 }: {
     nodeId: string
     model: string
     engineType: EngineType
     disabled?: boolean
+    loaded?: boolean
 }) {
     const selfId = useConnectionStore(state => state.selfId)
     const node = useNodesStore(state => state.nodes.get(nodeId))
-    const [expanded, setExpanded] = useState(false)
     // Subscribe to provenance changes as well as self identity. The helper's
     // result only controls presentation; Go independently enforces peer trust.
     if (engineType !== 'lm-studio' || !profileTargetAllowed(nodeId, selfId, node)) return null
+    return (
+        <LoadOptionsRow
+            key={JSON.stringify([nodeId, model])}
+            nodeId={nodeId}
+            model={model}
+            disabled={disabled}
+            loaded={loaded}
+        />
+    )
+}
+
+function LoadOptionsRow({
+    nodeId,
+    model,
+    disabled,
+    loaded
+}: {
+    nodeId: string
+    model: string
+    disabled: boolean
+    loaded: boolean
+}) {
+    const [expanded, setExpanded] = useState(false)
+    const [snapshot, setSnapshot] = useState<LoadProfileSnapshot>()
+    const [residencyError, setResidencyError] = useState('')
+    const connected = useConnectionStore(state => state.connected)
+    const offline = useNodesStore(state => state.nodes.get(nodeId)?.status === 'offline')
+    const generation = useRef(0)
+    const acceptSnapshot = useCallback((result: LoadProfileSnapshot): void => {
+        generation.current++
+        setSnapshot(result)
+        setResidencyError('')
+    }, [])
+    useEffect(() => {
+        const id = ++generation.current
+        setSnapshot(undefined)
+        setResidencyError('')
+        if (loaded && connected && !offline && !disabled) {
+            void window.pairApi.engines
+                .getLoadProfile({ nodeId, model, engine: 'lmstudio' })
+                .then(result => {
+                    if (generation.current === id) setSnapshot(result)
+                })
+                .catch(() => {
+                    if (generation.current === id)
+                        setResidencyError(
+                            'Loaded model options could not be checked. Reload saved options to retry.'
+                        )
+                })
+        }
+        return invalidate
+        function invalidate(): void {
+            generation.current++
+        }
+    }, [nodeId, model, loaded, connected, offline, disabled])
+    const residencyMessage =
+        snapshot?.loadState === 'reload-required' || snapshot?.loadState === 'unknown'
+            ? snapshot.reason
+            : residencyError
     return (
         <details
             className="pair-accordion translucent-bg-accordion ml-4"
@@ -54,12 +114,18 @@ export function LoadOptions({
         >
             <summary className="pair-accordion-summary">
                 <Text kind="body/regular/sm">Load options</Text>
+                {residencyMessage && (
+                    <Text kind="body/regular/sm" role="status">
+                        {residencyMessage}
+                    </Text>
+                )}
             </summary>
             {expanded && (
                 <LoadOptionsEditor
                     key={JSON.stringify([nodeId, model])}
                     target={{ nodeId, engine: 'lmstudio', model }}
                     disabled={disabled}
+                    onSnapshot={acceptSnapshot}
                 />
             )}
         </details>
@@ -69,7 +135,15 @@ export function LoadOptions({
 const changedMessage =
     'Load options changed elsewhere. Saved options were reloaded; review them before applying.'
 
-function LoadOptionsEditor({ target, disabled }: { target: LoadProfileTarget; disabled: boolean }) {
+function LoadOptionsEditor({
+    target,
+    disabled,
+    onSnapshot
+}: {
+    target: LoadProfileTarget
+    disabled: boolean
+    onSnapshot: (snapshot: LoadProfileSnapshot) => void
+}) {
     const { nodeId, model } = target
     const connected = useConnectionStore(state => state.connected)
     const offline = useNodesStore(state => state.nodes.get(nodeId)?.status === 'offline')
@@ -113,6 +187,7 @@ function LoadOptionsEditor({ target, disabled }: { target: LoadProfileTarget; di
                 })
                 if (generation.current !== id || !available()) return
                 setSnapshot(result)
+                onSnapshot(result)
                 setDraft(result.loadText)
                 setNeedsRefresh(false)
                 setMessage(conflict ? changedMessage : '')
@@ -128,7 +203,7 @@ function LoadOptionsEditor({ target, disabled }: { target: LoadProfileTarget; di
                 if (generation.current === id) setLoading(false)
             }
         },
-        [nodeId, model, available]
+        [nodeId, model, available, onSnapshot]
     )
     useEffect(() => {
         generation.current++
@@ -184,6 +259,7 @@ function LoadOptionsEditor({ target, disabled }: { target: LoadProfileTarget; di
             })
             if (generation.current !== id || !available()) return
             setSnapshot(result)
+            onSnapshot(result)
             setDraft(result.loadText)
             setMessage('Saved for the next load.')
         } catch (cause) {
