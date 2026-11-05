@@ -31,6 +31,9 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
 	}
+	if engine == "lmstudio" && (action == "load_model" || action == "unload_model" || action == "delete_model") {
+		return e.lmsModelAction(ctx, st, action, act, params)
+	}
 	res, err := e.dispatchAction(ctx, st, engine, action, act, params)
 	if err != nil {
 		return nil, err

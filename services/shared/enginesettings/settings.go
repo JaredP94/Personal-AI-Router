@@ -23,6 +23,8 @@ type Config struct {
 type Request struct {
 	NodeID           string `json:"nodeId,omitempty"`
 	Engine           string `json:"engine"`
+	Model            string `json:"model,omitempty"`
+	LoadText         string `json:"loadText,omitempty"`
 	ExpectedRevision uint64 `json:"expectedRevision"`
 	RequestID        string `json:"requestId,omitempty"`
 	Settings         Config `json:"settings"`

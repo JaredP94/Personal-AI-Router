@@ -74,6 +74,9 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
+	// Models successfully loaded by PAIR, restored by doStart after a restart.
+	// Protected by mu; load/unload/delete are serialized with lifecycle via opMu.
+	loadModels map[string]bool
 }
 
 // lockOperation marks the entire serialized operation, including external I/O.
@@ -99,6 +102,7 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	loadProfilesMu sync.Mutex // disk state only; never held across engine calls or notifications
 	settingsHub    settings.Hub
 	settingsParent func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg            *Registry

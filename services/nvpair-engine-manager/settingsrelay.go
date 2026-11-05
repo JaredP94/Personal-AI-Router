@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,6 +128,16 @@ func (m *Manager) handleSettingsMessage(ctx context.Context, msg *Message) bool 
 		return false
 	}
 	switch msg.Method {
+	case "engine:get-load-profile", "engine:preview-load-profile", "engine:apply-load-profile":
+		go func() {
+			var p settings.Request
+			if !m.parse(msg, &p) {
+				return
+			}
+			result, err := m.exec.loadProfileOperation(ctx, strings.TrimPrefix(msg.Method, "engine:"), p)
+			m.respondOrErr(msg, result, err)
+		}()
+		return true
 	case "engine:configured-ports":
 		go func() {
 			type port struct {
@@ -175,6 +186,9 @@ func (m *Manager) handleSettingsMessage(ctx context.Context, msg *Message) bool 
 		}()
 		return true
 	case "engine:remote-get-settings", "engine:remote-preview-settings", "engine:remote-apply-settings":
+		go m.remoteSettings(ctx, msg)
+		return true
+	case "engine:remote-get-load-profile", "engine:remote-preview-load-profile", "engine:remote-apply-load-profile":
 		go m.remoteSettings(ctx, msg)
 		return true
 	}

@@ -27,8 +27,11 @@
 - ⚠️ nvpair-engine-manager → engine:get-launch
 - ⚠️ nvpair-engine-manager → engine:logs
 - ⚠️ nvpair-engine-manager → engine:preview-launch
+- ⚠️ nvpair-engine-manager → engine:remote-apply-load-profile
 - ⚠️ nvpair-engine-manager → engine:remote-apply-settings
+- ⚠️ nvpair-engine-manager → engine:remote-get-load-profile
 - ⚠️ nvpair-engine-manager → engine:remote-get-settings
+- ⚠️ nvpair-engine-manager → engine:remote-preview-load-profile
 - ⚠️ nvpair-engine-manager → engine:remote-preview-settings
 - ⚠️ nvpair-engine-manager → engine:restart
 - ⚠️ nvpair-engine-manager → internal:cancel-set-port
@@ -135,25 +138,31 @@
 | `errors:clear` | notification (we consume) | ✅ yes |
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
+| `engine:apply-load-profile` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
 | `engine:errors` | request (we call) | ⚠️ not called |
 | `engine:get-installed` | request (we call) | ✅ yes |
 | `engine:get-launch` | request (we call) | ⚠️ not called |
+| `engine:get-load-profile` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:install-tool` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
 | `engine:models` | request (we call) | ✅ yes |
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
+| `engine:preview-load-profile` | request (we call) | ✅ yes |
+| `engine:remote-apply-load-profile` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
+| `engine:remote-get-load-profile` | request (we call) | ⚠️ not called |
 | `engine:remote-get-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-install` | request (we call) | ✅ yes |
 | `engine:remote-install-tool` | request (we call) | ✅ yes |
 | `engine:remote-load-model` | request (we call) | ✅ yes |
+| `engine:remote-preview-load-profile` | request (we call) | ⚠️ not called |
 | `engine:remote-preview-settings` | request (we call) | ⚠️ not called |
 | `engine:remote-pull-model` | request (we call) | ✅ yes |
 | `engine:remote-start` | request (we call) | ✅ yes |
@@ -340,10 +349,13 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `discovery:get-nodes` | request (we call) | ✅ yes |
 | `discovery:subscribe` | request (we call) | ✅ yes |
 | `discovery:unsubscribe` | request (we call) | ⚠️ not called |
+| `engine:apply-load-profile` | request (we call) | ✅ yes |
 | `engine:apply-settings` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
+| `engine:get-load-profile` | request (we call) | ✅ yes |
 | `engine:get-settings` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
+| `engine:preview-load-profile` | request (we call) | ✅ yes |
 | `engine:preview-settings` | request (we call) | ✅ yes |
 | `engine:set-port` | request (we call) | ✅ yes |
 | `engine:set-reserved-port` | request (we call) | ⚠️ not called |

@@ -74,6 +74,7 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, modelsTimeout)
 	defer cancel()
+	profileGeneration := e.loadProfileGeneration()
 
 	type engineResult struct {
 		models    []string
@@ -120,6 +121,11 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 				} else if models, ok := extractStringsResult(raw, listSpec); ok {
 					result.models = models
 					result.modelsOK = true
+					if name == "lmstudio" {
+						if err := e.pruneLoadProfiles(ctx, models, profileGeneration); err != nil {
+							result.statusErr = err
+						}
+					}
 				} else {
 					slog.Debug("engine:models list_models returned an invalid inventory", "engine", name)
 				}

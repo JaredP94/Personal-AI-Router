@@ -75,6 +75,12 @@ export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 11 * 60_000
 // admission; RelayBudget adds one minute. Desktop adds a further minute for IPC.
 export const MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS = (12 + 1 + 1) * 60_000
 
+// Persistence-only model profiles: manager 5s < peer 10s < broker 15s < desktop 20s.
+export const MODULAR_LOAD_PROFILE_TIMEOUT_MS = 20_000
+
+// LM Studio model mutations: engine 6m < peer 7m < broker 8m < desktop 9m.
+export const MODULAR_LMSTUDIO_MODEL_ACTION_TIMEOUT_MS = 9 * 60_000
+
 // Upper bound for a local model load/unload/delete action. A delete on an
 // engine whose manifest declares `restart_after` (LM Studio) does not reply
 // until the engine has stopped and passed its readiness probe again — LM

@@ -9,6 +9,45 @@ import type {
     EngineSettingsTarget
 } from '@/shared/types/engine-settings'
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
+import type { LoadProfileSnapshot, LoadProfilePreview } from '@/shared/types/load-profile'
+
+export function parseLoadProfile(value: JsonValue | undefined): LoadProfileSnapshot {
+    const row = object(value)
+    if (row.engine !== 'lmstudio' || !text(row.model) || !text(row.format))
+        throw new Error('This device does not support LM Studio load options.')
+    return {
+        nodeId: text(row.nodeId),
+        engine: row.engine,
+        model: text(row.model),
+        revision: number(row.revision),
+        loadText: text(row.loadText),
+        format: text(row.format),
+        editable: flag(row.editable),
+        reason: text(row.reason)
+    }
+}
+export function parseLoadProfilePreview(value: JsonValue | undefined): LoadProfilePreview {
+    const row = object(value)
+    if (!text(row.format) || !Array.isArray(row.load_args))
+        throw new Error('Invalid load options preview.')
+    const args: string[] = []
+    for (const value of row.load_args) {
+        if (typeof value !== 'string') throw new Error('Invalid load options preview.')
+        args.push(value)
+    }
+    const errors: Record<string, string> = {}
+    for (const [key, value] of Object.entries(object(row.errors))) {
+        if (typeof value !== 'string') throw new Error('Invalid load options preview.')
+        errors[key] = value
+    }
+    return {
+        revision: number(row.revision),
+        loadText: text(row.loadText),
+        format: text(row.format),
+        load_args: args,
+        errors
+    }
+}
 
 function object(value: JsonValue | undefined): JsonObject {
     if (!value || typeof value !== 'object' || Array.isArray(value))

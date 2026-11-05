@@ -19,13 +19,13 @@ import (
 const settingsPath = "/v1/engine-settings/"
 
 func (s *controlServer) settingsRoutes(mux *http.ServeMux) {
-	for _, method := range []string{"get", "preview", "apply"} {
+	for _, method := range []string{"get", "preview", "apply", "get-load-profile", "preview-load-profile", "apply-load-profile"} {
 		mux.HandleFunc(settingsPath+method, s.requirePinCaller(func(w http.ResponseWriter, r *http.Request, caller string) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if s.exec.settingsParent == nil {
+			if !strings.HasSuffix(method, "-load-profile") && s.exec.settingsParent == nil {
 				http.Error(w, "settings coordinator unavailable", http.StatusServiceUnavailable)
 				return
 			}
@@ -56,7 +56,17 @@ func (s *controlServer) settingsRoutes(mux *http.ServeMux) {
 					}
 				}
 			}()
-			result, err := s.exec.settingsParent(ctx, method, p, caller)
+			var result json.RawMessage
+			var err error
+			if strings.HasSuffix(method, "-load-profile") {
+				var value any
+				value, err = s.exec.loadProfileOperation(ctx, method, p)
+				if err == nil {
+					result, err = json.Marshal(value)
+				}
+			} else {
+				result, err = s.exec.settingsParent(ctx, method, p, caller)
+			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -137,7 +147,11 @@ func (m *Manager) remoteSettings(ctx context.Context, msg *Message) {
 	p.NodeID = ""
 	// Bound the whole call by the peer's relay budget, which its own broker
 	// and relay already stay within.
-	ctx, cancel := context.WithTimeout(ctx, remoteSettingsResponseHeaderTimeout)
+	budget := remoteSettingsResponseHeaderTimeout
+	if strings.HasSuffix(method, "-load-profile") {
+		budget = settings.LoadProfileRemoteBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	result, err := client.postJSON(ctx, settingsPath+method, p.Engine, p)
 	m.respondOrErr(msg, result, err)

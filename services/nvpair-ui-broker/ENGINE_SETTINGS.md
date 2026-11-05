@@ -55,6 +55,59 @@ PAIR-owned proxy port can change. Go rejects server-port, argument and
 environment edits with a message directing the user to the oMLX app. A proxy
 rebind never stops or restarts that app, including adopted running instances.
 
+## Per-model LM Studio load options
+
+The same node-owned settings surface layers model load profiles over the engine
+launch configuration. `engine:get-load-profile`, `engine:preview-load-profile`
+and `engine:apply-load-profile` take `{nodeId?, engine:"lmstudio", model}`;
+preview/apply additionally take `loadText`, `expectedRevision`, optional `format`
+(`pair-arguments-v1`), and apply requires `requestId`. Get/apply return
+`{nodeId,engine,model,revision,loadText,format,editable,reason?}`. Preview returns
+`{revision,loadText,format,load_args,errors}`. A stale revision or a reused request
+ID with different input is refused. Apply persists options for the next load;
+it does not interrupt a running model. Clear the text to use vendor defaults.
+The desktop previews before Apply; validation and persistence remain in Go.
+
+Only long option flags with literal, path-free scalar values are accepted. There
+is no supported-option catalogue: for example `--gpu max --context-length 200000
+--parallel 2` is passed as literal argv. Server addressing, model/path/identifier
+and alias controls, short flags, argument separators, extra positional models,
+file/config/preset/adapter controls and command execution are rejected. PAIR owns
+the model identifier; an explicit vendor identifier override is not supported.
+The CLI still validates vendor tuning semantics and version support at load time.
+Neither submitted text, argv, nor CLI output is copied into standard logs.
+
+The engine manager atomically saves private `lmstudio-load-profiles.json` beside
+`engine-state.json` (file `0600`, newly created parent `0700`). Corrupt or unreadable
+profiles refuse the load rather than trying defaults. A failed profiled CLI load
+returns one value-free error and never falls back. All local and authenticated
+remote model loads share this path. Models successfully loaded by PAIR during the
+current manager session are restored, using current profiles, after a PAIR-owned
+engine restart, including the restart after deleting a different model. Explicit
+unload/delete removes the model from that restoration set; engine ON/OFF intent
+is unchanged. Profiles persist across application and machine restarts; this does
+not introduce automatic model loading on a fresh manager session.
+
+Successful deletion removes its profile before restarting. Orphan policy: prune
+profiles only after a successful authoritative LM Studio model-list query, never
+when the engine is stopped, unavailable or returns malformed inventory. Edits
+newer than an in-flight inventory's captured generation are retained until the
+next successful inventory, fencing stale pruning. Profile reads/writes release
+the store mutex before worker I/O, engine calls or notifications.
+
+The authenticated channel serves POST `/v1/engine-settings/{get,preview,apply}-load-profile`.
+Only currently verified peers may edit; manual/unverified devices are refused,
+and the target never forwards another hop. Persistence calls have a **5-second**
+manager budget, inside the **10-second** peer request, **15-second** broker relay,
+and **20-second** desktop envelope. Canceled lock waits and expired writes are
+fenced before execution/atomic rename; late responses cannot update a replacement
+worker or a newer editor request. Model mutation shares a six-minute manager
+budget (including a bounded lifecycle-lock wait), inside seven-minute remote and
+eight-minute broker budgets. Desktop's awaited LM Studio deletion has nine minutes;
+other engines' loading and timeouts are unchanged. Each CLI load has at most four
+minutes and a restart's restoration batch shares five minutes, within its caller's
+remaining budget. These budgets assume functioning local storage.
+
 ## Apply deadline
 
 `services/shared/enginesettings/timeouts.go` defines the broker `ApplyBudget`:

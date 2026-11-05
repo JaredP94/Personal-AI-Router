@@ -72,6 +72,8 @@ describe('redactSensitiveLogText', () => {
     })
 
     it.each([
+        '{"loadText":"secret',
+        '{"load_args":["secret",',
         '{"launchText":"TOKEN=secret',
         '{"pin":"secret',
         '{"pin":123456',

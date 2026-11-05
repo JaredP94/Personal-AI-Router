@@ -227,6 +227,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 		st.mu.Unlock()
 		go e.runHealth(hctx, st, engine, port, gen)
 	}
+	if engine == "lmstudio" {
+		return e.restoreLMSModels(ctx, st)
+	}
 	return nil
 }
 
