@@ -147,6 +147,13 @@ func (b *Broker) saveEngineSettingsLocked() error {
 }
 
 func (b *Broker) settingsWorkerCall(ctx context.Context, method string, params any, target any) error {
+	// A concurrent snapshot/preview must not hold engineConfigMu beyond the
+	// active Apply's work deadline and consume its reserved finalization time.
+	if deadline := b.settingsApplyWorkDeadline.Load(); deadline != 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, time.Unix(0, deadline))
+		defer cancel()
+	}
 	w := b.getEngineMgr()
 	if w == nil {
 		return fmt.Errorf("engine manager unavailable")
@@ -596,24 +603,34 @@ func (b *Broker) applyEngineSettingsWithinBudget(ctx context.Context, p settings
 	if err := lockSettingsWithin(admissionCtx, &op.mu); err != nil {
 		return settingsReceipt{}, err
 	}
+	// Retain cross-engine validation/acceptance ordering through convergence.
+	if err := lockSettingsWithin(admissionCtx, &b.settingsApplyMu); err != nil {
+		op.mu.Unlock() // No journal admission or mutation: nothing to converge.
+		return settingsReceipt{}, err
+	}
+	defer b.settingsApplyMu.Unlock()
+	b.settingsApplyWorkDeadline.Store(deadline.Add(-timing.cleanup).UnixNano())
+	defer b.settingsApplyWorkDeadline.Store(0)
 	// Convergence's independent cancellation fence is also inside the one budget.
 	fenceBudget := min(portFenceTimeout, timing.cleanup/4)
 	convergenceCtx, cancelConvergence := context.WithDeadline(context.Background(), deadline.Add(-fenceBudget))
 	defer cancelConvergence()
 	finish := b.ownPortOperationWithin(convergenceCtx, p.Engine, op, fenceBudget)
+	journalAdmitted := false
 	defer func() {
+		if !journalAdmitted {
+			op.active.Store(false)
+			op.mu.Unlock()
+			return
+		}
 		if err := finish(); err != nil {
 			resultErr = fmt.Errorf("settings convergence could not be confirmed")
 		}
 	}()
-	// Retain cross-engine validation/acceptance ordering inside port-op.
-	if err := lockSettingsWithin(admissionCtx, &b.settingsApplyMu); err != nil {
-		return settingsReceipt{}, err
-	}
-	defer b.settingsApplyMu.Unlock()
 	if err := lockSettingsWithin(admissionCtx, &b.engineConfigMu); err != nil {
 		return settingsReceipt{}, err
 	}
+	journalAdmitted = true
 	defer b.engineConfigMu.Unlock()
 	ctx = admissionCtx
 	if err := ctx.Err(); err != nil {

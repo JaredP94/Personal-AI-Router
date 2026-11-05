@@ -8,28 +8,85 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 func TestSettingsApplyBudgetIncludesAdmission(t *testing.T) {
+	for _, held := range []string{"port-operation", "apply", "journal"} {
+		t.Run(held, func(t *testing.T) {
+			h := newSettingsHarness(t)
+			request := h.request(t)
+			mu := &h.b.settingsApplyMu
+			if held == "port-operation" {
+				mu = &h.b.portOperation(request.Engine).mu
+			}
+			if held == "journal" {
+				mu = &h.b.engineConfigMu
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			done := make(chan error, 1)
+			go func() {
+				_, err := h.b.applyEngineSettingsWithinBudget(context.Background(), request, "", settingsApplyTiming{total: 200 * time.Millisecond, execution: 100 * time.Millisecond, cleanup: 50 * time.Millisecond})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("busy admission succeeded")
+				}
+			case <-time.After(200 * time.Millisecond * 14 / 12):
+				t.Fatal("admission escaped desktop envelope")
+			}
+			if h.applies.Load() != 0 {
+				t.Fatal("expired admission mutated the engine")
+			}
+		})
+	}
+}
+
+func TestSettingsApplyBudgetIncludesConcurrentSnapshot(t *testing.T) {
 	h := newSettingsHarness(t)
 	request := h.request(t)
-	h.b.settingsApplyMu.Lock()
-	defer h.b.settingsApplyMu.Unlock()
-	done := make(chan error, 1)
+	request.Settings.LaunchText += " --concurrent-read"
+	h.entered, h.release = make(chan struct{}, 1), make(chan struct{})
+	defer close(h.release)
+	const budget = 400 * time.Millisecond
+	done := make(chan settingsReceipt, 1)
 	go func() {
-		_, err := h.b.applyEngineSettingsWithinBudget(context.Background(), request, "", settingsApplyTiming{total: 200 * time.Millisecond, execution: 100 * time.Millisecond, cleanup: 50 * time.Millisecond})
-		done <- err
+		receipt, _ := h.b.applyEngineSettingsWithinBudget(context.Background(), request, "", settingsApplyTiming{total: budget, execution: budget / 2, cleanup: budget / 4})
+		done <- receipt
 	}()
 	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("busy admission succeeded")
-		}
+	case <-h.entered:
 	case <-time.After(time.Second):
-		t.Fatal("admission escaped the Apply budget")
+		t.Fatal("configure not entered")
 	}
-	if h.applies.Load() != 0 {
-		t.Fatal("expired admission mutated the engine")
+	// Block the fixture response to an unrelated snapshot taken while the
+	// worker RPC has released engineConfigMu. It must inherit the work deadline.
+	h.launchMu.Lock()
+	defer h.launchMu.Unlock()
+	read := make(chan error, 1)
+	go func() {
+		_, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "lmstudio"}, "")
+		read <- err
+	}()
+	select {
+	case receipt := <-done:
+		if receipt.Phase != "failed" {
+			t.Fatalf("expired configure: %+v", receipt)
+		}
+	case <-time.After(budget * 14 / 12):
+		t.Fatal("concurrent snapshot pushed Apply past desktop envelope")
+	}
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Fatal("suspended read succeeded")
+		}
+	default:
+		t.Fatal("snapshot outlived Apply work deadline")
 	}
 }
 
@@ -67,7 +124,7 @@ func TestSettingsApplyBudgetIncludesFinalConvergence(t *testing.T) {
 		if err == nil {
 			t.Fatal("unconfirmed convergence reported success")
 		}
-	case <-time.After(budget + 200*time.Millisecond):
+	case <-time.After(budget * 14 / 12):
 		t.Fatal("convergence/fence escaped the Apply budget")
 	}
 	select {
@@ -119,10 +176,10 @@ func TestSettingsApplyBudgetIncludesExecutionAndCallbackJoin(t *testing.T) {
 		if receipt.Phase != "failed" {
 			t.Fatalf("expired operation did not fail safely: %+v", receipt)
 		}
-	case <-time.After(budget + 200*time.Millisecond):
+	case <-time.After(budget * 14 / 12):
 		t.Fatal("execution/join restarted the Apply budget")
 	}
-	if time.Since(started) >= budget+200*time.Millisecond {
+	if time.Since(started) >= budget*14/12 {
 		t.Fatal("result arrived after the outer envelope")
 	}
 	if operation.Context.Err() == nil {

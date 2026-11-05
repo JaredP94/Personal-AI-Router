@@ -64,6 +64,9 @@ execution allowance (including worker rollback) and **20 seconds** for the callb
 join (at most 10 seconds) and final fenced convergence (at most 5 seconds for the
 write plus 5 seconds for its cancellation join). All stages use the original
 absolute deadline; acceptance detaches caller cancellation, not the deadline.
+Concurrent journal reads/preview worker calls inherit the active Apply's work
+deadline so they cannot hold the journal lock into its reserved cleanup time.
+The cross-engine Apply mutex remains owned through final convergence.
 Busy admission expires without accepting a change. Unconfirmed callback joins or
 convergence fail closed rather than advertising an unverified listener.
 `RelayBudget = ApplyBudget + 1 minute` is **13 minutes (780 seconds)**.

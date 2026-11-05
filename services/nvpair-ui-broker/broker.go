@@ -176,31 +176,32 @@ type Broker struct {
 	// Applies serialize end to end. The journal lock is released during engine
 	// restart so unrelated settings reads remain responsive. Port-op comes
 	// first; see portoperation.go for the complete lock/callback discipline.
-	portOperations           sync.Map             // engine -> *enginePortOperation; see portoperation.go
-	settingsPublication      *settingsPublication // guarded by engineConfigMu; full snapshots coalesce
-	settingsPublishing       bool                 // guarded by engineConfigMu
-	settingsApplyMu          sync.Mutex
-	engineConfigMu           sync.Mutex
-	managedPortOperations    map[string]managedPortAuthorization // guarded by engineConfigMu
-	engineSettingsLoaded     bool
-	engineSettingsError      error
-	engineSettingsEpoch      string
-	engineSettings           map[string]*engineSettingsRecord
-	settingsRecoveryBlocked  map[string]bool // guarded by engineConfigMu
-	settingsRelayMu          sync.Mutex
-	settingsCancels          map[string]context.CancelFunc
-	activeSettings           map[string]activeSettingsOperation
-	settingsStartGrants      map[string]string // guarded by settingsRelayMu
-	ollamaExplicitSettings   atomic.Bool
-	lmstudioExplicitSettings atomic.Bool
-	omlxExplicitSettings     atomic.Bool
-	workerStatusMu           sync.Mutex
-	workerEntries            []*workerEntry
-	workerHealthInterval     time.Duration
-	codec                    *Codec
-	closeTransport           func() error
-	cancel                   context.CancelFunc
-	startedAt                time.Time
+	portOperations            sync.Map             // engine -> *enginePortOperation; see portoperation.go
+	settingsPublication       *settingsPublication // guarded by engineConfigMu; full snapshots coalesce
+	settingsPublishing        bool                 // guarded by engineConfigMu
+	settingsApplyWorkDeadline atomic.Int64         // shared by journal reads while Apply owns settingsApplyMu
+	settingsApplyMu           sync.Mutex
+	engineConfigMu            sync.Mutex
+	managedPortOperations     map[string]managedPortAuthorization // guarded by engineConfigMu
+	engineSettingsLoaded      bool
+	engineSettingsError       error
+	engineSettingsEpoch       string
+	engineSettings            map[string]*engineSettingsRecord
+	settingsRecoveryBlocked   map[string]bool // guarded by engineConfigMu
+	settingsRelayMu           sync.Mutex
+	settingsCancels           map[string]context.CancelFunc
+	activeSettings            map[string]activeSettingsOperation
+	settingsStartGrants       map[string]string // guarded by settingsRelayMu
+	ollamaExplicitSettings    atomic.Bool
+	lmstudioExplicitSettings  atomic.Bool
+	omlxExplicitSettings      atomic.Bool
+	workerStatusMu            sync.Mutex
+	workerEntries             []*workerEntry
+	workerHealthInterval      time.Duration
+	codec                     *Codec
+	closeTransport            func() error
+	cancel                    context.CancelFunc
+	startedAt                 time.Time
 	// heartbeatInterval is the period runHeartbeat ticks at. Injected so tests
 	// can drive the stream without waiting out jsonrpc.HeartbeatInterval;
 	// NewBroker defaults it, and heartbeatEvery() falls back again if unset.
