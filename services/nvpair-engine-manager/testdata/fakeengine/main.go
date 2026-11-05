@@ -115,6 +115,7 @@ func main() {
 				if err != nil {
 					os.Exit(2)
 				}
+				_ = os.WriteFile(os.Args[2]+"-pid", []byte(strconv.Itoa(os.Getpid())), 0600)
 				_ = os.WriteFile(os.Args[2], []byte(listener.Addr().String()), 0600)
 				for {
 					conn, err := listener.Accept()
@@ -126,7 +127,9 @@ func main() {
 			}
 			if len(os.Args) > 4 {
 				child := exec.Command(os.Args[0], "shutdown-download-fixture", os.Args[4], "child")
-				child.Stdout, child.Stderr = os.Stdout, os.Stderr
+				if os.Args[3] != "exit-parent" {
+					child.Stdout, child.Stderr = os.Stdout, os.Stderr
+				} // Otherwise redirect the child's stdio away from the launcher.
 				if child.Start() != nil {
 					os.Exit(2)
 				}
@@ -142,8 +145,18 @@ func main() {
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
+			var exitSignal chan os.Signal
+			if os.Args[3] == "exit-parent" {
+				exitSignal = make(chan os.Signal, 1)
+				signal.Notify(exitSignal, os.Interrupt, syscall.SIGTERM)
+			}
 			_ = os.WriteFile(os.Args[2], []byte(strconv.Itoa(os.Getpid())), 0600)
 			fmt.Print("[====] 10%\\r")
+			if exitSignal != nil {
+				<-exitSignal
+				fmt.Println("Download canceled.")
+				os.Exit(0) // Deliberately leave the child for the worker to stop.
+			}
 			for {
 				time.Sleep(time.Hour)
 			}

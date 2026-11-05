@@ -14,35 +14,108 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-func configureDownloadProcess(cmd *exec.Cmd) error {
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	// The broker disables Ctrl+C for its workers; that setting survives even
-	// CREATE_NEW_CONSOLE. A launcher clears it before the CLI inherits it.
-	cmd.Args = append([]string{executable, "--run-download", cmd.Path}, cmd.Args[1:]...)
-	cmd.Path = executable
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NEW_CONSOLE}
-	return nil
+type downloadProcess struct {
+	cmd       *exec.Cmd
+	job, gate windows.Handle
 }
 
-func killDownload(ctx context.Context, cmd *exec.Cmd) error      { return taskkillContext(ctx, cmd, true) }
-func terminateDownload(ctx context.Context, cmd *exec.Cmd) error { return interruptDownload(ctx, cmd) }
+func (p *downloadProcess) close() {
+	_ = windows.CloseHandle(p.gate)
+	_ = windows.CloseHandle(p.job) // KILL_ON_JOB_CLOSE also covers worker crashes.
+}
+
+func configureDownloadProcess(cmd *exec.Cmd) (*downloadProcess, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	p := &downloadProcess{cmd: cmd, job: job}
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+		p.close()
+		return nil, err
+	}
+	p.gate, err = windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		p.close()
+		return nil, err
+	}
+	handle := p.gate
+	if err := windows.SetHandleInformation(handle, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		p.close()
+		return nil, err
+	}
+	// Keep the private-console launcher, but gate CLI creation until the
+	// launcher belongs to its job: no child can escape an assignment race.
+	cmd.Args = append([]string{executable, "--run-download", strconv.FormatUint(uint64(handle), 10), cmd.Path}, cmd.Args[1:]...)
+	cmd.Path = executable
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true, CreationFlags: windows.CREATE_NEW_CONSOLE,
+		AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(handle)},
+	}
+	return p, nil
+}
+
+func killDownload(_ context.Context, process *downloadProcess) error {
+	return windows.TerminateJobObject(process.job, 1)
+}
+func terminateDownload(ctx context.Context, process *downloadProcess) error {
+	return interruptDownload(ctx, process)
+}
+
+// JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, including the entire descendant tree.
+// x/sys exposes its information class but not this structure.
+type downloadJobAccounting struct {
+	totalUserTime, totalKernelTime, periodUserTime, periodKernelTime      int64
+	totalPageFaults, totalProcesses, activeProcesses, terminatedProcesses uint32
+}
+
+func waitDownloadGroup(ctx context.Context, process *downloadProcess) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var accounting downloadJobAccounting
+		if err := windows.QueryInformationJobObject(process.job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil); err != nil {
+			return fmt.Errorf("query download job: %w", err)
+		}
+		if accounting.activeProcesses == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("download job still has %d active processes: %w", accounting.activeProcesses, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
 
 // pinDownloadProcess holds a handle to the launcher so Windows cannot reissue
 // its PID while this worker may still signal it. The handle os.Process owns is
 // released once the launcher is reaped, but cmd.Wait then blocks for up to
-// downloadWaitDelay on pipes a grandchild still holds, and both the interrupt
-// helper and taskkill address the launcher by PID in that gap. Call it before
-// cmd.Wait can reap the launcher.
-func pinDownloadProcess(cmd *exec.Cmd) (func(), error) {
-	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(cmd.Process.Pid))
+// downloadWaitDelay on pipes a grandchild still holds. The interrupt helper
+// addresses that PID, whereas forced cleanup addresses the job. Assign the
+// job before opening the start gate and before cmd.Wait can reap the launcher.
+func pinDownloadProcess(process *downloadProcess) (func(), error) {
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(process.cmd.Process.Pid))
 	if err != nil {
+		return nil, err
+	}
+	if err := windows.AssignProcessToJobObject(process.job, handle); err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, err
+	}
+	if err := windows.SetEvent(process.gate); err != nil {
+		_ = windows.CloseHandle(handle)
 		return nil, err
 	}
 	return func() { _ = windows.CloseHandle(handle) }, nil
@@ -50,7 +123,12 @@ func pinDownloadProcess(cmd *exec.Cmd) (func(), error) {
 
 // runDownloadProcess owns the CLI in a private hidden console. Reset only this
 // launcher's inherited Ctrl+C setting, leaving the broker and worker untouched.
-func runDownloadProcess(argv []string) int {
+func runDownloadProcess(gate windows.Handle, argv []string) int {
+	status, err := windows.WaitForSingleObject(gate, 2000)
+	_ = windows.CloseHandle(gate) // No gate or job handle reaches CLI children.
+	if err != nil || status != windows.WAIT_OBJECT_0 {
+		return 1
+	}
 	ignore := windows.NewLazySystemDLL("kernel32.dll").NewProc("SetConsoleCtrlHandler")
 	if ok, _, err := ignore.Call(0, 0); ok == 0 {
 		fmt.Fprintln(os.Stderr, err)
@@ -115,7 +193,8 @@ func openDownloadLauncher(pid uint32) (windows.Handle, bool) {
 	return handle, true
 }
 
-func interruptDownload(parent context.Context, cmd *exec.Cmd) error {
+func interruptDownload(parent context.Context, process *downloadProcess) error {
+	cmd := process.cmd
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -130,8 +209,12 @@ func interruptDownload(parent context.Context, cmd *exec.Cmd) error {
 // Download launch and console attachment run in helpers so engine-manager's
 // stdio and signal handlers are not affected.
 func handleDownloadProcess() bool {
-	if len(os.Args) >= 3 && os.Args[1] == "--run-download" {
-		os.Exit(runDownloadProcess(os.Args[2:]))
+	if len(os.Args) >= 4 && os.Args[1] == "--run-download" {
+		gate, err := strconv.ParseUint(os.Args[2], 10, 64)
+		if err != nil || gate == 0 {
+			os.Exit(1)
+		}
+		os.Exit(runDownloadProcess(windows.Handle(gate), os.Args[3:]))
 	}
 	if len(os.Args) != 3 || os.Args[1] != "--interrupt-download" {
 		return false

@@ -725,10 +725,16 @@ A shutdown also accelerates a cancellation already waiting on LM Studio's
 ordinary 15/5/10 s graces. Ollama's in-flight HTTP request is cancelled and joined.
 
 LM Studio download CLIs already start in their own Unix process group; shutdown
-sends SIGTERM to that group, waits 500 ms, then SIGKILLs the group if necessary.
-Windows uses the existing private-console launcher, a bounded interrupt helper,
-then `taskkill /T /F` for the launcher and CLI tree. Signal/kill helpers each
-get at most 500 ms, and the final reap gets 2 s: at most 3.5 s per CLI sequence.
+sends SIGTERM to that group, waits up to 500 ms, then always SIGKILLs the group,
+even if the launcher has exited. The group ID remains reserved while any member
+survives. Windows retains the private-console launcher and bounded interrupt
+helper, but assigns the launcher to a kill-on-close job before allowing it to
+spawn the CLI; forced cleanup terminates the entire job, not a PID-based tree.
+User cancellation uses the same group/job cleanup before reporting its terminal
+result. Cleanup confirms Unix group disappearance (`ESRCH`) or zero active job
+processes and launcher exit; survivors produce an error (also logged on shutdown).
+Signal/kill helpers each get at most 500 ms, and group/job verification shares
+the final 2 s reap deadline: at most 3.5 s per CLI shutdown sequence.
 Inherited-stdio waiting is capped at 1 s. The aggregate download join is 4 s,
 regardless of transfer count. Joins abandon only after the fixed deadline; no
 cache data is inspected or removed.

@@ -16,20 +16,28 @@ import (
 )
 
 func TestRunStopsDownloaderBeforeReturning(t *testing.T) {
-	testRunStopsDownloader(t, false, false, false)
+	testRunStopsDownloader(t, false, false, false, false, false)
 }
 func TestRunBoundsDownloaderIgnoringSIGTERM(t *testing.T) {
-	testRunStopsDownloader(t, true, false, false)
+	testRunStopsDownloader(t, true, false, false, false, false)
 }
 func TestRunAcceleratesAlreadyCancelingDownloader(t *testing.T) {
-	testRunStopsDownloader(t, true, true, false)
+	testRunStopsDownloader(t, true, true, false, false, false)
 }
 
 func TestRunStopsDownloaderProcessGroup(t *testing.T) {
-	testRunStopsDownloader(t, true, false, true)
+	testRunStopsDownloader(t, true, false, true, false, false)
 }
 
-func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree bool) {
+func TestRunStopsDownloaderChildAfterLauncherExit(t *testing.T) {
+	testRunStopsDownloader(t, false, false, true, true, false)
+}
+
+func TestCancelStopsDownloaderChildAfterLauncherExit(t *testing.T) {
+	testRunStopsDownloader(t, false, false, true, true, true)
+}
+
+func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree, exitEarly, userCancel bool) {
 	t.Helper()
 	managerConn, brokerConn := net.Pipe()
 	defer managerConn.Close()
@@ -62,6 +70,9 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree bool) {
 	mode := "term"
 	if ignore {
 		mode = "ignore"
+	}
+	if exitEarly {
+		mode = "exit-parent"
 	}
 	go func() {
 		defer close(pullDone)
@@ -111,6 +122,19 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree bool) {
 			t.Fatal(err)
 		}
 		childAddress = string(data)
+		pidData, err := os.ReadFile(childMarker + "-pid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		childPID, err := strconv.Atoi(string(pidData))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if proc, err := os.FindProcess(childPID); err == nil {
+				_ = proc.Kill()
+			}
+		})
 		conn, err := net.DialTimeout("tcp", childAddress, time.Second)
 		if err != nil {
 			t.Fatal("child not alive before shutdown:", err)
@@ -118,6 +142,21 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree bool) {
 		_ = conn.Close()
 	}
 	started := time.Now()
+	if userCancel {
+		if !ex.CancelModelPull("lmstudio", "fixture", "shutdown-pull") {
+			t.Fatal("cancel not accepted")
+		}
+		select {
+		case <-pullDone:
+		case <-time.After(4 * time.Second):
+			t.Fatal("cancel exceeded stop bound")
+		}
+		conn, err := net.DialTimeout("tcp", childAddress, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			t.Error("downloader child alive after cancel returned")
+		}
+	}
 	_ = brokerConn.Close() // the broker's normal worker-stop mechanism
 	select {
 	case err := <-runDone:
@@ -140,16 +179,20 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree bool) {
 			t.Fatal("downloader child alive after Run returned")
 		}
 	}
-	interrupted := false
+	interrupted, cancelled := false, false
 	for len(events) > 0 {
 		ev := <-events
-		if ev.Stage == "cancelled" {
+		if !userCancel && ev.Stage == "cancelled" {
 			t.Fatal("shutdown claimed cancellation succeeded")
 		}
 		interrupted = interrupted || ev.Stage == "interrupted"
+		cancelled = cancelled || ev.Stage == "cancelled"
 	}
-	if !interrupted {
+	if !userCancel && !interrupted {
 		t.Fatal("no interrupted terminal update")
+	}
+	if userCancel && !cancelled {
+		t.Fatal("no confirmed cancellation after process-group cleanup")
 	}
 	ex.pullMu.Lock()
 	remaining := len(ex.pulls)

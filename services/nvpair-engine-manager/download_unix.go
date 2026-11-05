@@ -7,41 +7,64 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
-func configureDownloadProcess(cmd *exec.Cmd) error {
-	configureSysProcAttr(cmd)
-	return nil
-}
+type downloadProcess struct{ cmd *exec.Cmd }
 
-func killDownload(_ context.Context, cmd *exec.Cmd) error {
-	return signalDownload(cmd, syscall.SIGKILL)
+func configureDownloadProcess(cmd *exec.Cmd) (*downloadProcess, error) {
+	configureSysProcAttr(cmd)
+	return &downloadProcess{cmd: cmd}, nil
 }
-func interruptDownload(_ context.Context, cmd *exec.Cmd) error {
-	return signalDownload(cmd, syscall.SIGINT)
+func (*downloadProcess) close() {}
+
+func killDownload(_ context.Context, process *downloadProcess) error {
+	return signalDownload(process.cmd, syscall.SIGKILL)
 }
-func terminateDownload(_ context.Context, cmd *exec.Cmd) error {
-	return signalDownload(cmd, syscall.SIGTERM)
+func interruptDownload(_ context.Context, process *downloadProcess) error {
+	return signalDownload(process.cmd, syscall.SIGINT)
+}
+func terminateDownload(_ context.Context, process *downloadProcess) error {
+	return signalDownload(process.cmd, syscall.SIGTERM)
 }
 func handleDownloadProcess() bool { return false }
 
-// pinDownloadProcess has nothing to hold on Unix: signalDownload addresses the
-// process group, whose ID is not reissued while any member of it remains.
-func pinDownloadProcess(*exec.Cmd) (func(), error) { return func() {}, nil }
+func pinDownloadProcess(*downloadProcess) (func(), error) { return func() {}, nil }
 
-// signalDownload signals the whole download process group. configureSysProcAttr
-// puts the CLI in its own group precisely so a signal reaches the helpers it
-// forks; addressing the leader alone leaves the process doing the downloading
-// running.
-//
-// Setpgid makes the CLI the group's leader, so the group ID is its PID. It is
-// not looked up from that PID, because once the CLI is reaped the PID can name
-// a stranger whose group would be signalled instead.
+// Setpgid makes the launcher PID the group ID. A group ID cannot be reused
+// while any member survives, so signal that group even after launcher reap;
+// never look up a possibly reused launcher PID's current group.
 func signalDownload(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	return syscall.Kill(-cmd.Process.Pid, sig)
+	err := syscall.Kill(-cmd.Process.Pid, sig)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil // The whole group is gone.
+	}
+	return err
+}
+
+func waitDownloadGroup(ctx context.Context, process *downloadProcess) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	pgid := process.cmd.Process.Pid
+	for {
+		err := syscall.Kill(-pgid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil && !errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("probe download process group %d: %w", pgid, err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("download process group %d still exists: %w", pgid, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
