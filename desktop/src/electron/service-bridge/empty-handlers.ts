@@ -535,6 +535,16 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             // backend exposes no remote port control.
             void applyEnginePorts(engine, payload.engineType, payload.enginePort, payload.proxyPort)
             break
+        case 'cancelModelPull':
+            if (payload.model && payload.opId)
+                void supervisor.cancelModelPull(
+                    payload.nodeId,
+                    engine,
+                    payload.engineType,
+                    payload.model,
+                    payload.opId
+                )
+            break
         case 'pullModel':
             // Pulls need UI feedback the backend doesn't emit (progress + failure),
             // so the supervisor owns the optimistic-progress + awaited-completion
@@ -663,6 +673,16 @@ function routeRemoteEngineCommand(payload: WsInvokeRequest<'engine:command'>): v
             break
         case 'toggle':
             void toggleRemoteEngine(nodeId, engine, payload.engineType)
+            break
+        case 'cancelModelPull':
+            if (payload.model && payload.opId)
+                void supervisor.cancelModelPull(
+                    nodeId,
+                    engine,
+                    payload.engineType,
+                    payload.model,
+                    payload.opId
+                )
             break
         case 'pullModel':
             if (payload.model) {

@@ -51,7 +51,7 @@ func TestEngineOperationLifetimes(t *testing.T) {
 		{"local restart", "r", false, 11 * time.Minute},
 		{"local uninstall", "u", false, 11 * time.Minute},
 		{"local install", "i", false, 31 * time.Minute},
-		{"local pull", "p", false, 31 * time.Minute},
+		{"local pull", "p", false, 32 * time.Minute},
 		{"peer start", "s", true, 11 * time.Minute},
 		{"peer stop", "x", true, 11 * time.Minute},
 		{"peer install", "i", true, 31 * time.Minute},

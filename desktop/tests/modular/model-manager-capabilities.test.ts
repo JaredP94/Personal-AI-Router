@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EngineCapabilityFlags, EngineType } from '@/shared/types/engines'
 import type { BackendInfo, ModelItem } from '@/ui/types/engine-info'
 import { ModelManager } from '@/ui/components/ModelManager/ModelManager'
+import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
+import type { EngineProgress } from '@/shared/types/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
@@ -122,6 +124,7 @@ describe('ModelManager reported capability gates', () => {
         Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
         Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
         useEngineStatusStore.setState({ statusByNode: new Map() })
+        useEngineProgressStore.setState({ progress: new Map() })
         useConnectionStore.setState({ connected: false, selfId: null })
         useNodesStore.setState({ nodes: new Map() })
         vi.unstubAllGlobals()
@@ -170,6 +173,35 @@ describe('ModelManager reported capability gates', () => {
         report('preview:claim', 'lm-studio', supported)
         render('preview:claim')
         expect(container.textContent).not.toContain('Load options')
+    })
+
+    it('offers Cancel when registration changes only canCancel, without a percent tick', () => {
+        const progress: EngineProgress = {
+            nodeId: 'local',
+            nodeName: 'local',
+            engineType: 'lm-studio',
+            operation: 'pull',
+            model: 'new-model',
+            opId: 'registered',
+            status: 'pulling',
+            canCancel: false
+        }
+        const publish = (canCancel: boolean): void => {
+            act(() =>
+                useEngineProgressStore.setState({
+                    progress: new Map([
+                        ['local:lm-studio:pull:new-model', { ...progress, canCancel }]
+                    ])
+                })
+            )
+        }
+        publish(false)
+        report('local', 'lm-studio', supported)
+        render()
+        expect(labels()).not.toContain('Cancel')
+        publish(true)
+        expect(labels()).toContain('Cancel')
+        act(() => useEngineProgressStore.setState({ progress: new Map() }))
     })
 
     it('requires confirmation before LM Studio delete and sends nothing on cancel', () => {

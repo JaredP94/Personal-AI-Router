@@ -73,7 +73,7 @@ func TestPullEngineErrorBecomesRPCError(t *testing.T) {
 				srv.StartTLS()
 				defer srv.Close()
 				mgr := NewManager(NewCodec(&out), ex, selfMesh)
-				mgr.peers.set([]noderec.DirectoryNode{{HostUUID: "host-peer", ClusterUUID: "pull-peer", IP: "127.0.0.1",
+				mgr.peers.set([]noderec.DirectoryNode{{HostUUID: "host-peer", ClusterUUID: "pull-peer", IP: "127.0.0.1", IdentityVerification: "verified", Trusted: true, PeerRecordID: "peer-record",
 					Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineControl: {Port: portOf(t, srv.URL)}}}})
 				mgr.runRemote(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:remote-pull-model",
 					Params: json.RawMessage(`{"node":"host-peer","engine":"fake","model":"missing-model"}`)})

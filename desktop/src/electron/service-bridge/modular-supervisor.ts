@@ -286,7 +286,11 @@ function pullResultError(result: JsonValue | undefined): string | null {
  * finishes, so this must comfortably exceed a large multi-GB download on a slow
  * link without being unbounded (a hung pull must eventually clear its spinner).
  */
-const PULL_TIMEOUT_MS = 6 * 60 * 60 * 1000
+// Engine-manager: 30 minutes plus bounded CLI stop; broker: 31; desktop: 32.
+const PULL_TIMEOUT_MS = 32 * 60 * 1000
+const LONG_OPERATION_TIMEOUT_MS = 6 * 60 * 60 * 1000
+// Acceptance only: engine-manager 5s < broker 10s < desktop 15s.
+const CANCEL_PULL_TIMEOUT_MS = 15_000
 const DISCOVERY_MODEL_RETRY_MIN_MS = 1_000
 const DISCOVERY_MODEL_RETRY_MAX_MS = 30_000
 
@@ -456,6 +460,7 @@ class ModularSupervisor {
         if (!epoch) return false
         const changed = epoch !== this.currentEpoch
         if (changed) {
+            getModularBridgeState().interruptModelPulls()
             this.currentEpoch = epoch
             this.epochObservation++
             this.releaseWorkloadSnapshot(this.activeResync)
@@ -471,6 +476,7 @@ class ModularSupervisor {
     }
 
     private invalidateEpochRecovery(): void {
+        getModularBridgeState().interruptModelPulls()
         this.resyncLifecycle++
         this.releaseWorkloadSnapshot(this.activeResync)
         this.activeResync = null
@@ -2122,12 +2128,12 @@ class ModularSupervisor {
         const state = getModularBridgeState()
         if (state.isModelPullActive(engineType, model)) return
 
-        state.beginModelPull(engineType, model)
+        const opId = state.beginModelPull(engineType, model)
         try {
             const result = await this.callProcess(
                 'broker',
                 'engine:action',
-                { engine, action: 'pull_model', params: pullModelParams(engine, model) },
+                { engine, action: 'pull_model', params: pullModelParams(engine, model), opId },
                 PULL_TIMEOUT_MS
             )
             const failure = pullResultError(result)
@@ -2153,7 +2159,7 @@ class ModularSupervisor {
                 })
             }
         } finally {
-            state.finishModelPull(engineType, model)
+            state.finishModelPull(engineType, model, opId)
         }
     }
 
@@ -2172,6 +2178,52 @@ class ModularSupervisor {
      * push. Without that context the error lands unattributed and the spinner
      * spins on to the safety-net timeout even though the operation is over.
      */
+    private cancelPullsInFlight = new Set<string>()
+
+    async cancelModelPull(
+        nodeId: string,
+        engine: string,
+        engineType: EngineType,
+        model: string,
+        opId: string
+    ): Promise<void> {
+        const state = getModularBridgeState()
+        if (
+            this.cancelPullsInFlight.has(opId) ||
+            !state.markModelPullCanceling(nodeId, engineType, model, opId)
+        )
+            return
+        this.cancelPullsInFlight.add(opId)
+        try {
+            const remote = nodeId !== state.getSelfId()
+            const result = objectValue(
+                await this.callProcess(
+                    'broker',
+                    remote ? 'engine:remote-cancel-pull' : 'engine:cancel-pull',
+                    { engine, model, opId, ...(remote ? { node: nodeId } : {}) },
+                    CANCEL_PULL_TIMEOUT_MS
+                )
+            )
+            if (result?.accepted === false) {
+                this.reportError(
+                    'The engine is no longer accepting cancellation for this download. Waiting for its final status.',
+                    'warning',
+                    `engine-cancel:${opId}`
+                )
+            }
+        } catch {
+            // A transport failure proves neither rejection nor stop. Keep
+            // Canceling until a terminal update; allow another request meanwhile.
+            this.reportError(
+                'Could not confirm the cancellation request. You can try Cancel again.',
+                'warning',
+                `engine-cancel:${opId}`
+            )
+        } finally {
+            this.cancelPullsInFlight.delete(opId)
+        }
+    }
+
     async deleteModel(engine: string, engineType: EngineType, model: string): Promise<void> {
         const errorContext = { engineType, operation: 'delete', modelName: model } as const
         if (!this.brokerReady) {
@@ -2231,12 +2283,12 @@ class ModularSupervisor {
     ): Promise<void> {
         const state = getModularBridgeState()
         if (state.isRemoteModelPullActive(nodeId, engineType, model)) return
-        state.beginRemoteModelPull(nodeId, engineType, model)
+        const opId = state.beginRemoteModelPull(nodeId, engineType, model)
         try {
             await this.callProcess(
                 'broker',
                 'engine:remote-pull-model',
-                { node: nodeId, engine, model },
+                { node: nodeId, engine, model, opId },
                 PULL_TIMEOUT_MS
             )
             // The peer's /v1/models re-enriches into discovery asynchronously;
@@ -2261,7 +2313,7 @@ class ModularSupervisor {
                 )
             }
         } finally {
-            state.finishRemoteModelPull(nodeId, engineType, model)
+            state.finishRemoteModelPull(nodeId, engineType, model, opId)
         }
     }
 
@@ -2274,14 +2326,14 @@ class ModularSupervisor {
                     'broker',
                     'engine:remote-install-tool',
                     { node: nodeId, tool: 'macmon' },
-                    PULL_TIMEOUT_MS
+                    LONG_OPERATION_TIMEOUT_MS
                 )
             } else {
                 await this.callProcess(
                     'broker',
                     'engine:install-tool',
                     { tool: 'macmon' },
-                    PULL_TIMEOUT_MS
+                    LONG_OPERATION_TIMEOUT_MS
                 )
             }
             return 'installed'
@@ -2324,7 +2376,7 @@ class ModularSupervisor {
                 'broker',
                 'engine:remote-install',
                 { node: nodeId, engine, start },
-                PULL_TIMEOUT_MS
+                LONG_OPERATION_TIMEOUT_MS
             )
             await this.refreshRemoteEngineStatus(nodeId)
         } catch (err) {
@@ -2367,7 +2419,7 @@ class ModularSupervisor {
                 'broker',
                 running ? 'engine:remote-stop' : 'engine:remote-start',
                 { node: nodeId, engine },
-                PULL_TIMEOUT_MS
+                LONG_OPERATION_TIMEOUT_MS
             )
             state.clearPendingRemoteEngineOp(nodeId, engineType)
             state.applyRemoteEngineStatusResult(nodeId, engineType, result)
@@ -2409,7 +2461,7 @@ class ModularSupervisor {
                 'broker',
                 method,
                 { node: nodeId, engine, model },
-                PULL_TIMEOUT_MS
+                LONG_OPERATION_TIMEOUT_MS
             )
             await this.refreshRemoteEngineStatus(nodeId)
         } catch (err) {

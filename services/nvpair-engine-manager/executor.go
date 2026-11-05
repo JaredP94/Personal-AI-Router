@@ -26,6 +26,7 @@ var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
 // probe waits for response headers before treating the engine as hung. It is
 // also the default for an HTTP action that declares no timeout_s.
 const engineResponseHeaderTimeout = 30 * time.Second
+const defaultEngineActionTimeout = 30 * time.Minute
 
 // EngineStatus is the snapshot returned by engine:status and
 // engine:get-installed.
@@ -122,6 +123,8 @@ type Executor struct {
 	// progress fans install/pull progress to transient subscribers (the ec
 	// streaming handlers) in addition to the local engine:install-progress
 	// notification path. See progress.go.
+	pullMu   sync.Mutex
+	pulls    map[string]*activePull
 	progress *progressHub
 	baseDir  string // user-scoped install base
 	// desired persists explicit per-engine ON/OFF intent. Runtime state remains
@@ -175,7 +178,7 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 		baseDir:             baseDir,
 		desired:             newDesiredStateStore(baseDir),
 		detectTimeout:       30 * time.Second,
-		actionTimeout:       30 * time.Minute,
+		actionTimeout:       defaultEngineActionTimeout,
 		engineNativeTimeout: defaultEngineNativeTimeout,
 		loadedPollInterval:  defaultLoadedPollSeconds * time.Second,
 		loadedPoke:          make(chan struct{}, 1),
@@ -312,6 +315,7 @@ func (e *Executor) emitInstallFrame(engine, stage string, pct int, errMsg string
 func (e *Executor) emitPullProgress(ev ProgressEvent) {
 	params := map[string]any{
 		"engine": ev.Engine, "op": ev.Op, "stage": ev.Stage, "message": ev.Message,
+		"model": ev.Model, "opId": ev.OpID, "canCancel": ev.CanCancel,
 	}
 	if wirePercentIncluded(ev.Percent) {
 		params["percent"] = ev.Percent

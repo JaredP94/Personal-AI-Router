@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { randomUUID } from 'node:crypto'
 import type { EngineInitialState } from '@/shared/types/engine-api'
 import type {
     EngineModels,
@@ -1622,27 +1623,6 @@ class ModularBridgeState {
      */
     private remoteEngineFacts = new Map<string, RemoteEngineFacts>()
     /**
-     * The model of an in-flight remote pull keyed by {@link remoteOpKey}. The
-     * backend's `engine:remote-progress` frames carry **no** `model` field
-     * (`nvpair-engine-manager/remote.go` `remoteProgress`), so we stamp the model
-     * we dispatched with here and backfill it onto every incoming frame — that
-     * keeps the optimistic entry, the streamed percent updates, and the terminal
-     * clear all on one {@link engineProgressKey}. Cleared by
-     * {@link finishRemoteModelPull}.
-     */
-    private remotePullModels = new Map<string, string>()
-    /**
-     * The model of an in-flight local pull keyed by `engineType`. The backend's
-     * `engine:pull-progress` frames (the local counterpart of
-     * `engine:remote-progress`) carry **no** `model` field
-     * (`nvpair-engine-manager/executor.go` `emitPullProgress`), so we stamp the
-     * model we dispatched here and backfill it onto every incoming frame — one
-     * active local pull per engine, matching the backend's engine-scoped
-     * progress hub. Set by {@link beginModelPull}, cleared by
-     * {@link finishModelPull}.
-     */
-    private localPullModels = new Map<EngineType, string>()
-    /**
      * The authoritative set of live inbound invites awaiting the local user's PIN
      * entry, keyed by `inviteId`. The cluster-manager pushes `cluster:invite-received`
      * exactly once per invite (always `pending`) and has no list-pending RPC, so
@@ -1927,6 +1907,14 @@ class ModularBridgeState {
      * authoritative empty snapshot is applied rather than merged.
      */
     replaceWorkers(workers: WorkerStatus[]): void {
+        const previous = this.workers.find(worker => worker.name === 'engine-manager')
+        const current = workers.find(worker => worker.name === 'engine-manager')
+        if (
+            current &&
+            ((current.state !== 'running' && current.state !== 'degraded') ||
+                (previous?.pid !== undefined && previous.pid !== current.pid))
+        )
+            this.interruptModelPulls()
         this.workers = [...workers]
         emitBridgePush('workers:update', [...this.workers])
     }
@@ -2205,43 +2193,24 @@ class ModularBridgeState {
         this.clearRemoteEngineOp(nodeId, engineType)
     }
 
-    beginRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
-        const node = this.nodes.get(nodeId)
-        const progress: EngineProgress = {
-            engineType,
-            nodeId,
-            nodeName: node?.name ?? nodeId,
-            operation: 'pull',
-            model,
-            status: 'pulling'
-        }
-        // Remember the model so the model-less `engine:remote-progress` frames can
-        // be re-associated with this exact entry (see remotePullModels).
-        this.remotePullModels.set(this.remoteOpKey(nodeId, engineType), model)
-        this.activePulls.set(engineProgressKey(progress), progress)
-        emitBridgePush('engines:progress-changed', progress)
+    beginRemoteModelPull(nodeId: string, engineType: EngineType, model: string): string {
+        return this.beginPull(nodeId, engineType, model)
     }
 
-    /** Whether an optimistic remote pull entry for this model is still in flight. */
     isRemoteModelPullActive(nodeId: string, engineType: EngineType, model: string): boolean {
-        return this.activePulls.has(
+        const p = this.activePulls.get(
             engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         )
+        return !!p && p.status !== 'cancelled' && p.status !== 'interrupted'
     }
 
-    /**
-     * Clear the optimistic remote pull entry once the awaited
-     * `engine:remote-pull-model` RPC settles. The backend emits **no** terminal
-     * `engine:remote-progress` for a pull (the peer's terminal stream frame
-     * becomes the JSON-RPC reply, never a notification —
-     * `nvpair-engine-manager/controlstream.go`), so this awaited-completion clear
-     * is the only signal that removes the spinner.
-     */
-    finishRemoteModelPull(nodeId: string, engineType: EngineType, model: string): void {
-        this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
-        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-        if (!this.activePulls.delete(key)) return
-        emitBridgePush('engines:progress-cleared', { key })
+    finishRemoteModelPull(
+        nodeId: string,
+        engineType: EngineType,
+        model: string,
+        opId: string
+    ): void {
+        this.finishPull(nodeId, engineType, model, opId)
     }
 
     applyRemoteEngineProgress(params: JsonValue | undefined): void {
@@ -2250,76 +2219,32 @@ class ModularBridgeState {
         const nodeId = stringValue(obj.node)
         const engineType = engineManagerEngineType(stringValue(obj.engine))
         if (!nodeId || !engineType) return
-
         const op = stringValue(obj.op)
-        const operation = op === 'pull' || op === 'pull_model' ? 'pull' : 'install'
-        const stage = stringValue(obj.stage) || 'working'
-        // `engine:remote-progress` carries no `model`, so for a pull we backfill
-        // the model captured at dispatch — otherwise the frame would emit under a
-        // different key than the optimistic entry and never update/clear it.
-        const model =
-            stringValue(obj.model) ||
-            (operation === 'pull'
-                ? (this.remotePullModels.get(this.remoteOpKey(nodeId, engineType)) ?? '')
-                : '')
-
-        if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
-            const progressKey =
-                operation === 'pull' && model
-                    ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                    : `${nodeId}:${engineType}:${operation}`
-            emitBridgePush('engines:progress-cleared', { key: progressKey })
-            if (operation === 'pull') {
-                this.remotePullModels.delete(this.remoteOpKey(nodeId, engineType))
-                if (model) {
-                    this.activePulls.delete(
-                        engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                    )
-                }
-            }
-            if (stage === 'already-installed' || stage === 'failed') {
-                this.clearRemoteEngineOp(nodeId, engineType)
-            }
-            if (stage === 'done' && operation === 'install') {
-                this.clearRemoteEngineOp(nodeId, engineType)
-            }
+        if (op === 'pull' || op === 'pull_model') {
+            this.applyPullProgress(nodeId, obj)
             return
         }
-
+        const stage = stringValue(obj.stage) || 'working'
+        if (stage === 'done' || stage === 'already-installed' || stage === 'failed') {
+            emitBridgePush('engines:progress-cleared', { key: `${nodeId}:${engineType}:install` })
+            this.clearRemoteEngineOp(nodeId, engineType)
+            return
+        }
         if (
-            operation === 'install' &&
             this.pendingRemoteEngineOps.get(this.remoteOpKey(nodeId, engineType)) !== 'installing'
         ) {
             this.pendingRemoteEngineOps.set(this.remoteOpKey(nodeId, engineType), 'installing')
             this.emitRemoteEngineStatus(nodeId, engineType)
         }
-        if (operation === 'install') {
-            this.armPendingRemoteOpTimer(nodeId, engineType, 'installing')
-        }
-
-        const node = this.nodes.get(nodeId)
-        const pullKey =
-            operation === 'pull' && model
-                ? engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-                : ''
-        const existingPull = pullKey ? this.activePulls.get(pullKey) : undefined
-        const percent =
-            operation === 'pull'
-                ? mergePullProgressPercent(numberValue(obj.percent), existingPull?.percent)
-                : measuredPercent(obj.percent)
-        const progress: EngineProgress = {
+        this.armPendingRemoteOpTimer(nodeId, engineType, 'installing')
+        emitBridgePush('engines:progress-changed', {
             engineType,
             nodeId,
-            nodeName: node?.name ?? nodeId,
-            operation,
+            nodeName: this.nodes.get(nodeId)?.name ?? nodeId,
+            operation: 'install',
             status: stage,
-            percent,
-            model: model || undefined
-        }
-        if (operation === 'pull' && model) {
-            this.activePulls.set(engineProgressKey(progress), progress)
-        }
-        emitBridgePush('engines:progress-changed', progress)
+            percent: measuredPercent(obj.percent)
+        })
     }
 
     private armPendingRemoteOpTimer(
@@ -2550,7 +2475,6 @@ class ModularBridgeState {
     private dropRemoteEngineFacts(nodeId: string): void {
         for (const engine of PROXY_ENGINES) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
-            this.remotePullModels.delete(this.remoteOpKey(nodeId, engine))
         }
     }
 
@@ -2892,85 +2816,131 @@ class ModularBridgeState {
         emitBridgePush('engines:progress-changed', progress)
     }
 
-    /**
-     * Emit an optimistic `pulling` progress entry for a model the user just asked
-     * to download. This indeterminate entry makes the UI's spinner row appear the
-     * instant the modal closes instead of looking like nothing happened; the
-     * backend then streams live percent via `engine:pull-progress`
-     * ({@link applyLocalEngineProgress}), which updates this same entry
-     * in place. Cleared by {@link finishModelPull} when the supervisor's awaited
-     * pull resolves.
-     */
-    beginModelPull(engineType: EngineType, model: string): void {
-        const nodeId = this.selfId
-        if (!nodeId) return
-        const node = this.nodes.get(nodeId)
+    beginModelPull(engineType: EngineType, model: string): string {
+        return this.beginPull(this.selfId ?? '', engineType, model)
+    }
+
+    private beginPull(nodeId: string, engineType: EngineType, model: string): string {
+        const opId = randomUUID()
         const progress: EngineProgress = {
             engineType,
             nodeId,
-            nodeName: node?.name ?? nodeId,
+            nodeName: this.nodes.get(nodeId)?.name ?? nodeId,
             operation: 'pull',
             model,
+            opId,
+            canCancel: false,
             status: 'pulling'
         }
-        // Remember the model so the model-less `engine:pull-progress` frames can
-        // be re-associated with this exact entry (see localPullModels).
-        this.localPullModels.set(engineType, model)
         this.activePulls.set(engineProgressKey(progress), progress)
         emitBridgePush('engines:progress-changed', progress)
+        return opId
     }
 
-    /**
-     * Project a `nvpair-engine-manager` `engine:pull-progress` for the local node
-     * — the local counterpart of `engine:remote-progress`: live
-     * download progress for a model pull driven via `engine:action`
-     * `pull_model`. The frame carries `{ engine, op, stage, percent, message }`
-     * and **no** `model`, so we backfill the model captured at dispatch and
-     * refresh the optimistic entry in place. Clearing stays with the awaited pull
-     * ({@link finishModelPull}), so this only advances percent/stage: it ignores
-     * the terminal error sentinel (`percent: -1`) and the non-download frames'
-     * `percent: 0` so the rendered bar never jumps backwards.
-     */
     applyLocalEngineProgress(params: JsonValue | undefined): void {
-        const nodeId = this.selfId
-        if (!nodeId) return
         const obj = objectValue(params)
-        if (!obj) return
-        const engineType = engineManagerEngineType(stringValue(obj.engine))
-        if (!engineType) return
+        if (obj && this.selfId) this.applyPullProgress(this.selfId, obj)
+    }
 
-        const model = this.localPullModels.get(engineType)
-        if (!model) return
+    private applyPullProgress(nodeId: string, obj: JsonObject): void {
+        const engineType = engineManagerEngineType(stringValue(obj.engine))
+        const model = stringValue(obj.model)
+        const opId = stringValue(obj.opId)
+        if (!engineType || !model || !opId) return
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
-        if (!existing) return
-
-        const percent = numberValue(obj.percent)
+        // An old frame cannot resurrect a row after a retry or notice expiry.
+        if (
+            !existing ||
+            existing.opId !== opId ||
+            existing.status === 'cancelled' ||
+            existing.status === 'interrupted'
+        )
+            return
+        const stage = stringValue(obj.stage)
+        if (stage === 'done' || stage === 'error') {
+            this.clearPull(key, opId)
+            return
+        }
         const progress: EngineProgress = {
             ...existing,
-            status: stringValue(obj.stage) || existing.status,
-            percent: mergePullProgressPercent(percent, existing.percent)
+            status:
+                stage === 'cancelled' || stage === 'interrupted'
+                    ? stage
+                    : existing.status === 'canceling'
+                      ? 'canceling'
+                      : stage || existing.status,
+            canCancel: stage !== 'cancelled' && stage !== 'interrupted' && obj.canCancel === true,
+            percent: mergePullProgressPercent(numberValue(obj.percent), existing.percent)
         }
         this.activePulls.set(key, progress)
         emitBridgePush('engines:progress-changed', progress)
+        if (stage === 'cancelled' || stage === 'interrupted') {
+            setTimeout(() => this.clearPull(key, opId), 8_000).unref()
+        }
     }
 
-    /** Whether an optimistic pull entry for this model is still in flight. */
-    isModelPullActive(engineType: EngineType, model: string): boolean {
-        const nodeId = this.selfId
-        if (!nodeId) return false
-        return this.activePulls.has(
-            engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-        )
-    }
-
-    /** Clear the optimistic pull entry once the pull completes, fails, or times out. */
-    finishModelPull(engineType: EngineType, model: string): void {
-        const nodeId = this.selfId
-        if (!nodeId) return
-        this.localPullModels.delete(engineType)
+    markModelPullCanceling(
+        nodeId: string,
+        engineType: EngineType,
+        model: string,
+        opId: string
+    ): boolean {
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-        if (!this.activePulls.delete(key)) return
+        const existing = this.activePulls.get(key)
+        if (
+            !existing ||
+            existing.opId !== opId ||
+            !existing.canCancel ||
+            existing.status === 'cancelled' ||
+            existing.status === 'interrupted'
+        )
+            return false
+        const progress = { ...existing, status: 'canceling' }
+        this.activePulls.set(key, progress)
+        emitBridgePush('engines:progress-changed', progress)
+        return true
+    }
+
+    isModelPullActive(engineType: EngineType, model: string): boolean {
+        return this.isRemoteModelPullActive(this.selfId ?? '', engineType, model)
+    }
+
+    finishModelPull(engineType: EngineType, model: string, opId: string): void {
+        this.finishPull(this.selfId ?? '', engineType, model, opId)
+    }
+
+    private finishPull(nodeId: string, engineType: EngineType, model: string, opId: string): void {
+        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
+        const current = this.activePulls.get(key)
+        // A timed-out call is not confirmation that a requested stop finished.
+        if (
+            current?.status === 'canceling' ||
+            current?.status === 'cancelled' ||
+            current?.status === 'interrupted'
+        )
+            return
+        this.clearPull(key, opId)
+    }
+
+    /** Broker/worker lifetime loss is not confirmation that a cancel succeeded. */
+    interruptModelPulls(nodeId?: string): void {
+        for (const progress of this.activePulls.values()) {
+            if (nodeId !== undefined && progress.nodeId !== nodeId) continue
+            if (progress.status === 'cancelled' || progress.status === 'interrupted') continue
+            const interrupted = { ...progress, status: 'interrupted', canCancel: false }
+            this.activePulls.set(engineProgressKey(progress), interrupted)
+            emitBridgePush('engines:progress-changed', interrupted)
+            setTimeout(
+                () => this.clearPull(engineProgressKey(progress), progress.opId ?? ''),
+                8_000
+            ).unref()
+        }
+    }
+
+    private clearPull(key: string, opId: string): void {
+        if (this.activePulls.get(key)?.opId !== opId) return
+        this.activePulls.delete(key)
         emitBridgePush('engines:progress-cleared', { key })
     }
 
@@ -3134,6 +3104,12 @@ class ModularBridgeState {
         if (notification.method !== 'discovery:nodes-changed') return
 
         const nodes = brokerNodesValue(notification.params)
+        const verified = new Set(nodes.filter(node => isPairPeer(node)).map(node => node.id))
+        for (const progress of this.activePulls.values()) {
+            if (progress.nodeId !== this.selfId && !verified.has(progress.nodeId)) {
+                this.interruptModelPulls(progress.nodeId)
+            }
+        }
         const nextBrokerNodeIds = new Set(nodes.map(node => node.id))
         for (const nodeId of Array.from(this.brokerNodeIds)) {
             if (!nextBrokerNodeIds.has(nodeId)) {

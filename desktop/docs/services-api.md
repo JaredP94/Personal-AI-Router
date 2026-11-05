@@ -139,6 +139,7 @@
 | `errors:report` | notification (we consume) | ✅ yes |
 | `engine:action` | request (we call) | ✅ yes |
 | `engine:apply-load-profile` | request (we call) | ✅ yes |
+| `engine:cancel-pull` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:configured-ports` | request (we call) | ⚠️ not called |
 | `engine:describe` | request (we call) | ⚠️ not called |
@@ -155,6 +156,7 @@
 | `engine:preview-load-profile` | request (we call) | ✅ yes |
 | `engine:remote-apply-load-profile` | request (we call) | ⚠️ not called |
 | `engine:remote-apply-settings` | request (we call) | ⚠️ not called |
+| `engine:remote-cancel-pull` | request (we call) | ✅ yes |
 | `engine:remote-delete-model` | request (we call) | ✅ yes |
 | `engine:remote-get-installed` | request (we call) | ✅ yes |
 | `engine:remote-get-load-profile` | request (we call) | ⚠️ not called |
@@ -270,6 +272,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `engine:install-progress` | notification (TUI consumes) | ✅ yes |
 | `engine:models-changed` | notification (TUI consumes) | ✅ yes |
 | `engine:pull-progress` | notification (TUI consumes) | ✅ yes |
+| `engine:remote-progress` | notification (TUI consumes) | ✅ yes |
 | `engine:state-changed` | notification (TUI consumes) | ✅ yes |
 | `errors:update` | notification (TUI consumes) | ✅ yes |
 | `nodes:changed` | notification (TUI consumes) | ✅ yes |
@@ -284,9 +287,11 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `discovery:get-nodes` | request (TUI sends) | ✅ yes |
 | `discovery:subscribe` | request (TUI sends) | ✅ yes |
 | `engine:action` | request (TUI sends) | ✅ yes |
+| `engine:cancel-pull` | request (TUI sends) | ✅ yes |
 | `engine:get-installed` | request (TUI sends) | ✅ yes |
 | `engine:install` | request (TUI sends) | ✅ yes |
 | `engine:models` | request (TUI sends) | ✅ yes |
+| `engine:remote-cancel-pull` | request (TUI sends) | ✅ yes |
 | `engine:remote-delete-model` | request (TUI sends) | ✅ yes |
 | `engine:remote-get-installed` | request (TUI sends) | ✅ yes |
 | `engine:remote-pull-model` | request (TUI sends) | ✅ yes |
@@ -330,6 +335,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `app:ready` | notification (we consume) | ✅ yes |
 | `broker:epoch` | notification (we consume) | ✅ yes |
 | `discovery:nodes-changed` | notification (we consume) | ✅ yes |
+| `engine:remote-progress` | notification (we consume) | ✅ yes |
 | `engine:restore-enabled` | notification (we consume) | ➖ ignored |
 | `engine:settings-changed` | notification (we consume) | ✅ yes |
 | `engine:settings-projection` | notification (we consume) | ➖ ignored |
@@ -349,14 +355,18 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `discovery:get-nodes` | request (we call) | ✅ yes |
 | `discovery:subscribe` | request (we call) | ✅ yes |
 | `discovery:unsubscribe` | request (we call) | ⚠️ not called |
+| `engine:action` | request (we call) | ✅ yes |
 | `engine:apply-load-profile` | request (we call) | ✅ yes |
 | `engine:apply-settings` | request (we call) | ✅ yes |
+| `engine:cancel-pull` | request (we call) | ✅ yes |
 | `engine:configure-launch` | request (we call) | ⚠️ not called |
 | `engine:get-load-profile` | request (we call) | ✅ yes |
 | `engine:get-settings` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:preview-load-profile` | request (we call) | ✅ yes |
 | `engine:preview-settings` | request (we call) | ✅ yes |
+| `engine:remote-cancel-pull` | request (we call) | ✅ yes |
+| `engine:remote-pull-model` | request (we call) | ✅ yes |
 | `engine:set-port` | request (we call) | ✅ yes |
 | `engine:set-reserved-port` | request (we call) | ⚠️ not called |
 | `engine:start` | request (we call) | ✅ yes |
@@ -392,19 +402,13 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `workloads:unsubscribe` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (broker.go, 6 sites)`
 - `proxy:*  (broker.go)`
-- `method (var)  (clustermanager.go)`
-- `method (var)  (errors.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
 - `omlx-proxy:*  (omlxproxy.go)`
-- `method (var)  (proxy.go)`
-- `method (var)  (rpcworker.go, 2 sites)`
 - `WorkerRunning (var)  (supervisor.go, 2 sites)`
 - `WorkerDegraded (var)  (supervisor.go)`
 - `WorkerRestarting (var)  (supervisor.go)`
 - `state (var)  (supervisor.go)`
-- `method (var)  (workloadmanager.go, 2 sites)`
 
 ## nvpair-workload-manager
 

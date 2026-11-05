@@ -42,6 +42,10 @@ func gracefulSignal(cmd *exec.Cmd) error {
 }
 
 func taskkill(cmd *exec.Cmd, force bool) error {
+	return taskkillContext(context.Background(), cmd, force)
+}
+
+func taskkillContext(parent context.Context, cmd *exec.Cmd, force bool) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
@@ -49,7 +53,7 @@ func taskkill(cmd *exec.Cmd, force bool) error {
 	if force {
 		args = append([]string{"/F"}, args...)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskkillTimeout)
+	ctx, cancel := context.WithTimeout(parent, taskkillTimeout)
 	defer cancel()
 	kc := exec.CommandContext(ctx, "taskkill", args...)
 	configureSysProcAttr(kc) // hide taskkill's own console window

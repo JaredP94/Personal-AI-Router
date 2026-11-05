@@ -57,7 +57,29 @@ func modelFromParams(params json.RawMessage) string {
 // the hub as it advances, and returns the action's final JSON result. When
 // params is empty it defaults to {"name","model"} (covering Ollama's `name` body
 // key and the {model} CLI placeholder), so a caller can pass just a model name.
-func (e *Executor) PullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (json.RawMessage, error) {
+func (e *Executor) PullModelStream(ctx context.Context, engine, model string, params json.RawMessage, operationID ...string) (json.RawMessage, error) {
+	if fromParams := modelFromParams(params); fromParams != "" {
+		model = fromParams
+	}
+	st, err := e.state(engine)
+	if err != nil {
+		return nil, err
+	}
+	act, ok := st.manifest.Actions[pullModelAction]
+	if !ok {
+		return nil, fmt.Errorf("engine %q has no action %q", engine, pullModelAction)
+	}
+	id := ""
+	if len(operationID) > 0 {
+		id = operationID[0]
+	}
+	canCancel := engine == "ollama" && act.HTTP != nil || act.ModelResolution == modelResolutionLMSGet
+	return e.trackedPull(ctx, engine, model, id, canCancel, func(ctx context.Context) (json.RawMessage, error) {
+		return e.pullModelStream(ctx, engine, model, params)
+	})
+}
+
+func (e *Executor) pullModelStream(ctx context.Context, engine, model string, params json.RawMessage) (json.RawMessage, error) {
 	st, err := e.state(engine)
 	if err != nil {
 		return nil, err
@@ -73,13 +95,16 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
 
-	// CLI action (e.g. lms get): no structured line progress; emit a start
+	if act.ModelResolution == modelResolutionLMSGet {
+		return e.pullLMSModel(ctx, st, engine, model)
+	}
+
+	// CLI action without a progress adapter: emit a start
 	// marker and return the final result via the existing runner.
 	if len(act.Cmd) > 0 {
 		st.mu.Lock()
 		port := st.port
 		st.mu.Unlock()
-		e.emitPullProgress(ProgressEvent{Engine: engine, Op: "pull", Stage: "pulling", Message: model})
 		return e.runCmdAction(ctx, st, act, port, params)
 	}
 
@@ -141,9 +166,12 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 			continue
 		}
 		lastStage, lastPct = ev.Stage, ev.Percent
-		e.emitPullProgress(ev)
+		e.emitPullUpdate(ctx, ev)
 	}
 	if err := sc.Err(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("pull %q: %w", model, err)
 	}
 	return last, nil

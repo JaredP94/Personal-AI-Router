@@ -60,7 +60,9 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         const parts: string[] = []
         for (const [key, p] of state.progress) {
             if (key.startsWith(prefix)) {
-                parts.push(`${p.model ?? ''}:${p.status}:${p.percent ?? ''}`)
+                parts.push(
+                    `${p.model ?? ''}:${p.opId ?? ''}:${p.status}:${p.percent ?? ''}:${p.canCancel ?? false}`
+                )
             }
         }
         return parts.join('|')
@@ -111,6 +113,8 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             }
 
             results.push({
+                opId: p.opId,
+                canCancel: p.canCancel,
                 rawModel: p.model,
                 label: displayName(p.model),
                 status: p.status,
@@ -227,11 +231,36 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     transientModel={transientModel}
                     displayName={displayName}
                     pullProgress={transientPullProgress}
+                    onCancel={
+                        transientPullProgress?.opId
+                            ? () =>
+                                  window.pairApi.engines.cancelModelPull(
+                                      backendType,
+                                      nodeId,
+                                      transientModel.name,
+                                      transientPullProgress.opId ?? ''
+                                  )
+                            : undefined
+                    }
                 />
             )}
 
             {incomingSyncs.map(p => (
-                <IncomingSyncPullRow key={p.rawModel} row={p} />
+                <IncomingSyncPullRow
+                    key={p.rawModel}
+                    row={p}
+                    onCancel={
+                        p.opId
+                            ? () =>
+                                  window.pairApi.engines.cancelModelPull(
+                                      backendType,
+                                      nodeId,
+                                      p.rawModel,
+                                      p.opId ?? ''
+                                  )
+                            : undefined
+                    }
+                />
             ))}
 
             {!isBusy && (

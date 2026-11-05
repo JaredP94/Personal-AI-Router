@@ -115,6 +115,13 @@ jobs:
                   done
                   exit "$failed"
 
+            - name: Race-test downloader lifecycle and repeated shutdown regressions
+              working-directory: services/nvpair-engine-manager
+              shell: bash
+              run: |
+                  go test -race -count=1 -timeout=5m ./...
+                  go test -race -count=10 -timeout=3m -run '^(TestDownloadExitNotificationKeepsLauncherUnreaped|TestDownloadCleanupDoesNotSignalAfterReap|TestLMSCompletionStopsDownloaderChildAfterLauncherExit|TestRunStopsDownloaderBeforeReturning|TestRunBoundsDownloaderIgnoringSIGTERM|TestRunAcceleratesAlreadyCancelingDownloader|TestRunStopsDownloaderProcessGroup|TestRunStopsDownloaderChildAfterLauncherExit|TestCancelStopsDownloaderChildAfterLauncherExit)$' .
+
     cross-process:
         name: Cross-process tests (${{ matrix.os }})
         runs-on: ${{ matrix.os }}

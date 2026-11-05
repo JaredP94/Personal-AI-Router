@@ -152,7 +152,7 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 	// synchronously before the next frame, so the directory is populated by the
 	// time the remote request is read.
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,"identityVerification":"verified","peerRecordId":"b-record",`+
 		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
 	nextSeq := 1
 	writeStampedRawNotification(t, aStdin, &nextSeq, snapshot)
@@ -228,7 +228,7 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 	waitForMethod(t, aMsgs, "engine:ready", 10*time.Second)
 
 	snapshot := fmt.Sprintf(`{"jsonrpc":"2.0","method":"discovery:nodes","params":{"nodes":[`+
-		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,`+
+		`{"hostUuid":"nodeB","name":"nodeB","ip":"127.0.0.1","clusterUuid":%q,"trusted":true,"identityVerification":"verified","peerRecordId":"b-record",`+
 		`"services":{"ec":{"port":%d}},"lastSeen":0}]}}`, uuidB, portB)
 	nextSeq := 1
 	writeStampedRawNotification(t, aStdin, &nextSeq, snapshot)

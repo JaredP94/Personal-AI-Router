@@ -9,6 +9,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
     bridgeState: {
+        interruptModelPulls: vi.fn(),
         handleNotification: vi.fn(),
         getSelfId: vi.fn(() => null),
         getProxyPort: vi.fn(() => null)

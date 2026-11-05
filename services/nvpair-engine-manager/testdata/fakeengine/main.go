@@ -13,15 +13,19 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -99,6 +103,74 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "shutdown-download-fixture":
+			if len(os.Args) < 4 {
+				os.Exit(2)
+			}
+			if os.Args[3] == "ignore" || os.Args[3] == "child" {
+				signal.Ignore(os.Interrupt, syscall.SIGTERM)
+			}
+			if os.Args[3] == "child" {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					os.Exit(2)
+				}
+				_ = os.WriteFile(os.Args[2]+"-pid", []byte(strconv.Itoa(os.Getpid())), 0600)
+				_ = os.WriteFile(os.Args[2], []byte(listener.Addr().String()), 0600)
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						os.Exit(2)
+					}
+					_ = conn.Close()
+				}
+			}
+			if len(os.Args) > 4 {
+				child := exec.Command(os.Args[0], "shutdown-download-fixture", os.Args[4], "child")
+				if os.Args[3] != "exit-parent" {
+					child.Stdout, child.Stderr = os.Stdout, os.Stderr
+				} // Otherwise redirect the child's stdio away from the launcher.
+				if child.Start() != nil {
+					os.Exit(2)
+				}
+				defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					if _, err := os.Stat(os.Args[4]); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						os.Exit(2)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			var exitSignal chan os.Signal
+			if os.Args[3] == "exit-parent" {
+				exitSignal = make(chan os.Signal, 1)
+				signal.Notify(exitSignal, os.Interrupt, syscall.SIGTERM)
+			}
+			_ = os.WriteFile(os.Args[2], []byte(strconv.Itoa(os.Getpid())), 0600)
+			fmt.Print("[====] 10%\\r")
+			if exitSignal != nil {
+				<-exitSignal
+				fmt.Println("Download canceled.")
+				os.Exit(0) // Deliberately leave the child for the worker to stop.
+			}
+			for {
+				time.Sleep(time.Hour)
+			}
+		case "download-cancel-fixture":
+			interrupts := make(chan os.Signal, 1)
+			signal.Notify(interrupts, os.Interrupt)
+			fmt.Print("[====] 10%\r")
+			<-interrupts
+			fmt.Print("Continue to download in the background?")
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if strings.TrimSpace(line) == "n" && (len(os.Args) < 3 || os.Args[2] != "unconfirmed") {
+				fmt.Println("Download canceled.")
+			}
+			os.Exit(1)
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func callToolRemote(t *testing.T, srv *httptest.Server, mesh *clustertrust.Mesh,
 	defer m.remoteHTTP.CloseIdle()
 	defer m.readyHTTP.CloseIdle()
 	m.peers.set([]noderec.DirectoryNode{{
-		HostUUID: "host-server", Name: "server", IP: "127.0.0.1", ClusterUUID: "uuid-server",
+		HostUUID: "host-server", Name: "server", IP: "127.0.0.1", ClusterUUID: "uuid-server", IdentityVerification: "verified", Trusted: true, PeerRecordID: "server-record",
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 			noderec.ServiceEngineControl: {Port: listenerPort(t, srv)},
 		},
@@ -134,6 +135,62 @@ func TestRemoteStreamErrorWithoutCodeMapsToServerError(t *testing.T) {
 	}
 }
 
+func TestRemoteDownloadInterruptedOnPeerWorkerExitOrInventoryLoss(t *testing.T) {
+	for _, loss := range []string{"worker exit", "inventory loss"} {
+		t.Run(loss, func(t *testing.T) {
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+			srv, mesh := newToolControlPeer(t, ex, true)
+			srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = w.Write([]byte(`{"type":"progress","engine":"ollama","model":"model","op":"pull","stage":"downloading"}` + "\n"))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			})
+			managerConn, clientConn := net.Pipe()
+			defer managerConn.Close()
+			defer clientConn.Close()
+			_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+			m := NewManager(NewCodec(managerConn), ex, mesh)
+			defer m.remoteHTTP.CloseIdle()
+			defer m.readyHTTP.CloseIdle()
+			m.updateDownloadPeers([]noderec.DirectoryNode{{HostUUID: "host-server", IP: "127.0.0.1", ClusterUUID: "uuid-server", IdentityVerification: "verified", Trusted: true, PeerRecordID: "record", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineControl: {Port: listenerPort(t, srv)}}}})
+			id := json.RawMessage("1")
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				m.runRemote(context.Background(), &Message{ID: &id, Method: "engine:remote-pull-model", Params: json.RawMessage(`{"node":"host-server","engine":"ollama","model":"model","opId":"pull"}`)})
+			}()
+			codec := NewCodec(clientConn)
+			first, err := codec.Read()
+			if err != nil || first.Method != "engine:remote-progress" {
+				t.Fatalf("first progress: %v %v", first, err)
+			}
+			if loss == "worker exit" {
+				srv.CloseClientConnections()
+			} else {
+				m.updateDownloadPeers(nil)
+			}
+			terminal, err := codec.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var p remoteProgress
+			if json.Unmarshal(terminal.Params, &p) != nil || p.Stage != "interrupted" || p.OpID != "pull" {
+				t.Fatalf("not interrupted: %s", terminal.Params)
+			}
+			response, err := codec.Read()
+			if err != nil || response.Error == nil {
+				t.Fatalf("response: %v %v", response, err)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("pull did not return")
+			}
+		})
+	}
+}
+
 func TestRunRemoteRequiresNode(t *testing.T) {
 	var out bytes.Buffer
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
@@ -158,7 +215,7 @@ func TestRunRemoteNotClustered(t *testing.T) {
 	// pinned dial can't be built.
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	m.peers.set([]noderec.DirectoryNode{{
-		HostUUID: "uuid-b", Name: "nodeB", IP: "192.168.1.42", ClusterUUID: "cuuid-b",
+		HostUUID: "uuid-b", Name: "nodeB", IP: "192.168.1.42", ClusterUUID: "cuuid-b", IdentityVerification: "verified", Trusted: true, PeerRecordID: "b-record",
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 			noderec.ServiceEngineControl: {Port: 14323},
 		},

@@ -18,6 +18,23 @@ starting the dashboard, broker, or worker fleet.
 This file is the component reference. For task-oriented usage instructions, see
 [Using the PAIR terminal interface](../../docs/terminal-interface.mdx).
 
+## Download progress and cancellation
+
+The Engines tab displays each local or verified peer download by model and
+operation ID. `c` targets the newest cancellable download on the selected
+engine/node; after it finishes, `c` can target the preceding download.
+The row stays **canceling** after acceptance and through late byte progress;
+only the transfer's terminal update confirms stop. A transport error allows a
+retry without claiming success. Broker epoch changes, engine-manager restart or
+PID replacement, peer stream loss, and loss from verified inventory retire the
+old operation IDs as interrupted: “Download interrupted — retry to resume”.
+Late old updates cannot retire a replacement. Confirmed cancellation says partial data is kept
+so the download can resume. PAIR removes no cache files.
+Ollama and LM Studio have adapters; oMLX's supported manifest has no pull action.
+Pulls wait up to 32 min and cancel acceptance 15 s, outside the broker's 31 min
+and 10 s bounds respectively. See the
+[engine-manager lifecycle](../nvpair-engine-manager/README.md#model-download-cancellation).
+
 ## What it does
 
 `nvpair-tui` is a JSON-RPC 2.0 client of `nvpair-ui-broker` (newline-delimited
@@ -34,7 +51,7 @@ Tabs:
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
 | **Proxies** | Ollama, LM Studio and oMLX reverse proxies: status, cache-affinity selection rate, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
 | **Workloads** | Live cluster workloads (`workloads:subscribe` / `workloads:upsert` / `workloads:remove`), with separate origin and destination columns. |
-| **Engines** | Local and paired-peer engines (`n` selects target): local install (`i`, then `s` to start), peer install and start (`i`), start (`s`), stop (`x`), models (`m`), pull (`p`), confirmed model delete (`d`). Local-only: restart (`r`), confirmed uninstall (`u`), update/reinstall (`U`), engine server port (`e`). Capability-gated keys appear only when supported. |
+| **Engines** | Local and paired-peer engines (`n` selects target): local install (`i`, then `s` to start), peer install and start (`i`), start (`s`), stop (`x`), models (`m`), pull (`p`), confirmed model delete (`d`), cancel newest active pull on the selected engine (`c`). Local-only: restart (`r`), confirmed uninstall (`u`), update/reinstall (`U`), engine server port (`e`). Capability-gated keys appear only when supported. |
 | **Cluster** | Pairing + membership: invite by address (`i`, shows the six-digit PIN — the first invite auto-founds a cluster of one), accept (`a`) / decline (`d`) an inbound invite, confirm member removal (`r`) or leave (`L`). |
 | **Manual** | User-added nodes: add by address (`a`), confirm removal (`r`). |
 | **Settings** | The node-settings store (force-ports, cluster auto-sync, cluster id/name). |

@@ -72,13 +72,15 @@ describe('remote pull progress', () => {
             }
         })
 
-        state.beginRemoteModelPull('remote-node', 'lm-studio', 'demo-model')
+        const opId = state.beginRemoteModelPull('remote-node', 'lm-studio', 'demo-model')
         state.applyRemoteEngineProgress({
             node: 'remote-node',
             engine: 'lmstudio',
             op: 'pull',
             stage: 'pulling',
-            message: 'demo-model'
+            message: 'demo-model',
+            model: 'demo-model',
+            opId
         })
 
         expect(progressEvents.at(-1)?.percent).toBeUndefined()
@@ -93,17 +95,99 @@ describe('remote pull progress', () => {
             }
         })
 
-        state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        const opId = state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
         state.applyRemoteEngineProgress({
             node: 'remote-node',
             engine: 'ollama',
             op: 'pull',
             stage: 'pulling',
             percent: 42,
-            message: 'llama3.1:8b'
+            message: 'llama3.1:8b',
+            model: 'llama3.1:8b',
+            opId
         })
 
         expect(progressEvents.at(-1)?.percent).toBe(42)
+    })
+})
+
+describe('interrupted downloads', () => {
+    it('worker exit mid-cancel interrupts local and remote pulls and allows retry', () => {
+        const state = getModularBridgeState()
+        state.setSelfId('restart-local')
+        state.interruptModelPulls()
+        const events: string[] = []
+        unsubscribe = subscribePush(event => {
+            if (event.channel === 'engines:progress-changed') events.push(event.payload.status)
+        })
+        for (const node of ['restart-local', 'restart-peer']) {
+            const opId = state.beginRemoteModelPull(node, 'ollama', 'restart-model')
+            state.applyRemoteEngineProgress({
+                node,
+                engine: 'ollama',
+                model: 'restart-model',
+                opId,
+                op: 'pull',
+                canCancel: true
+            })
+            state.markModelPullCanceling(node, 'ollama', 'restart-model', opId)
+        }
+        state.replaceWorkers([
+            {
+                name: 'engine-manager',
+                state: 'restarting',
+                attempts: 1,
+                restartOnHang: false,
+                since: 'now'
+            }
+        ])
+        expect(events.filter(status => status === 'interrupted')).toHaveLength(2)
+        expect(state.isModelPullActive('ollama', 'restart-model')).toBe(false)
+        expect(state.isRemoteModelPullActive('restart-peer', 'ollama', 'restart-model')).toBe(false)
+        const replacement = state.beginModelPull('ollama', 'restart-model')
+        state.applyLocalEngineProgress({
+            engine: 'ollama',
+            model: 'restart-model',
+            opId: 'old',
+            stage: 'interrupted'
+        })
+        expect(state.isModelPullActive('ollama', 'restart-model')).toBe(true)
+        state.finishModelPull('ollama', 'restart-model', replacement)
+    })
+
+    it('treats interrupted as terminal and fences late progress and completion', () => {
+        const state = getModularBridgeState()
+        const node = 'interrupted-peer'
+        const opId = state.beginRemoteModelPull(node, 'ollama', 'model')
+        state.applyRemoteEngineProgress({
+            node,
+            engine: 'ollama',
+            model: 'model',
+            opId,
+            op: 'pull',
+            stage: 'interrupted'
+        })
+        state.applyRemoteEngineProgress({
+            node,
+            engine: 'ollama',
+            model: 'model',
+            opId,
+            op: 'pull',
+            stage: 'downloading'
+        })
+        expect(state.isRemoteModelPullActive(node, 'ollama', 'model')).toBe(false)
+        const replacement = state.beginRemoteModelPull(node, 'ollama', 'model')
+        state.finishRemoteModelPull(node, 'ollama', 'model', opId)
+        state.applyRemoteEngineProgress({
+            node,
+            engine: 'ollama',
+            model: 'model',
+            opId,
+            op: 'pull',
+            stage: 'interrupted'
+        })
+        expect(state.isRemoteModelPullActive(node, 'ollama', 'model')).toBe(true)
+        state.finishRemoteModelPull(node, 'ollama', 'model', replacement)
     })
 })
 

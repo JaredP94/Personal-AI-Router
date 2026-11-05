@@ -153,8 +153,8 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(pulls) != 1 {
-		t.Fatalf("expected exactly one pulling marker for a CLI pull, got %d: %+v", len(pulls), pulls)
+	if len(pulls) != 2 || pulls[1]["stage"] != "done" {
+		t.Fatalf("expected a start and terminal update, got %+v", pulls)
 	}
 	if pulls[0]["op"] != "pull" || pulls[0]["stage"] != "pulling" || pulls[0]["message"] != "demo:1b" {
 		t.Fatalf("unexpected CLI pull marker: %+v", pulls[0])
@@ -201,9 +201,10 @@ func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(pulls) != 1 {
-		t.Fatalf("expected exactly one terminal error frame, got %d: %+v", len(pulls), pulls)
+	if len(pulls) != 2 || pulls[0]["stage"] != "pulling" {
+		t.Fatalf("expected start then error: %+v", pulls)
 	}
+	pulls = pulls[1:]
 	if pulls[0]["op"] != "pull" || pulls[0]["stage"] != "error" {
 		t.Fatalf("expected a terminal error frame, got %+v", pulls[0])
 	}

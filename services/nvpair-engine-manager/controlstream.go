@@ -36,16 +36,18 @@ const maxControlBody = 1 << 20 // 1 MiB
 // streamFrame is one NDJSON frame on the ec streaming endpoints. Type is
 // "progress", "result", or "error". Percent is omitted when indeterminate (0).
 type streamFrame struct {
-	Type    string          `json:"type"`
-	OpID    string          `json:"opId,omitempty"`
-	Engine  string          `json:"engine,omitempty"`
-	Op      string          `json:"op,omitempty"`
-	Stage   string          `json:"stage,omitempty"`
-	Percent int             `json:"percent,omitempty"`
-	Message string          `json:"message,omitempty"`
-	Code    int             `json:"code,omitempty"`
-	Status  *EngineStatus   `json:"status,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
+	Type      string          `json:"type"`
+	OpID      string          `json:"opId,omitempty"`
+	Model     string          `json:"model,omitempty"`
+	CanCancel bool            `json:"canCancel,omitempty"`
+	Engine    string          `json:"engine,omitempty"`
+	Op        string          `json:"op,omitempty"`
+	Stage     string          `json:"stage,omitempty"`
+	Percent   int             `json:"percent,omitempty"`
+	Message   string          `json:"message,omitempty"`
+	Code      int             `json:"code,omitempty"`
+	Status    *EngineStatus   `json:"status,omitempty"`
+	Result    json.RawMessage `json:"result,omitempty"`
 }
 
 // installRequest is the POST /v1/engines/install body.
@@ -147,18 +149,24 @@ func (s *controlServer) handlePull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"engine" is required`, http.StatusBadRequest)
 		return
 	}
-	if req.Model == "" && len(req.Params) == 0 {
+	if model := modelFromParams(req.Params); model != "" {
+		req.Model = model
+	}
+	if req.OpID == "" {
+		req.OpID = newOpID()
+	}
+	if req.Model == "" {
 		http.Error(w, `"model" or "params" is required`, http.StatusBadRequest)
 		return
 	}
 	s.streamOp(w, r, req.OpID, req.Engine, "pull", func(ctx context.Context) (streamFrame, error) {
-		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params)
+		res, err := s.exec.PullModelStream(ctx, req.Engine, req.Model, req.Params, req.OpID)
 		if err != nil {
 			model := req.Model
 			if model == "" {
 				model = modelFromParams(req.Params)
 			}
-			msg := s.exec.reportPullFailed(req.Engine, model, err)
+			msg := formatEnginePullError(s.exec.engineDisplayName(req.Engine), err)
 			return streamFrame{}, fmt.Errorf("%s", msg)
 		}
 		return streamFrame{Type: "result", OpID: req.OpID, Engine: req.Engine, Op: "pull", Result: res}, nil
@@ -185,9 +193,12 @@ func (s *controlServer) streamOp(w http.ResponseWriter, r *http.Request, opID, e
 
 	enc := json.NewEncoder(w)
 	writeProgress := func(ev ProgressEvent) {
+		if ev.Op != op || (op == "pull" && ev.OpID != opID) {
+			return
+		}
 		f := streamFrame{
 			Type: "progress", OpID: opID, Engine: ev.Engine, Op: ev.Op,
-			Stage: ev.Stage, Message: ev.Message,
+			Stage: ev.Stage, Message: ev.Message, Model: ev.Model, CanCancel: ev.CanCancel,
 		}
 		if wirePercentIncluded(ev.Percent) {
 			f.Percent = ev.Percent

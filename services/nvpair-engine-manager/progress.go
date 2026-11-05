@@ -10,11 +10,14 @@ import "sync"
 // engine:install-progress notification path (this node's own UI) and the ec
 // streaming handlers that relay live progress to a remote initiator.
 type ProgressEvent struct {
-	Engine  string `json:"engine"`
-	Op      string `json:"op"` // "install" | "pull"
-	Stage   string `json:"stage,omitempty"`
-	Percent int    `json:"percent"`
-	Message string `json:"message,omitempty"`
+	Model     string `json:"model,omitempty"`
+	OpID      string `json:"opId,omitempty"`
+	CanCancel bool   `json:"canCancel,omitempty"`
+	Engine    string `json:"engine"`
+	Op        string `json:"op"` // "install" | "pull"
+	Stage     string `json:"stage,omitempty"`
+	Percent   int    `json:"percent"`
+	Message   string `json:"message,omitempty"`
 }
 
 // wirePercentIncluded reports whether an install or pull progress percent should
@@ -32,12 +35,9 @@ func wirePercentIncluded(pct int) bool {
 // advisory, and the terminal result is delivered out-of-band (as the stream's
 // final frame / the RPC response), not through the hub.
 //
-// Subscriptions are scoped by engine, not by operation id: a subscriber watching
-// "ollama" sees every ollama frame, so if a local pull and a remote ec pull of
-// the same engine run concurrently, the remote initiator's stream may interleave
-// the local pull's advisory frames. That's intentional and harmless — each
-// stream's authoritative terminal result is the out-of-band final frame, never a
-// hub frame — and installs (emitInstallProgress) already have this property.
+// Subscriptions are scoped by engine. Pull streaming handlers additionally
+// filter by operation ID before relaying a frame; concurrent models never
+// receive each other's progress. Terminal results travel out-of-band as well.
 type progressHub struct {
 	mu   sync.Mutex
 	next int

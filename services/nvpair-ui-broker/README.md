@@ -425,6 +425,16 @@ ServiceError = { id, message, timestamp, nodeId?, severity?, action?, engineType
 
 **Opt-in** (`engine:subscribe`). The notifications `nvpair-engine-manager` emits — `engine:ready`, `engine:state-changed` (full `EngineStatus`), `engine:models-changed` (`{engine, models}`, pushed when an engine's set of models loaded in memory changes), `engine:install-progress`, `engine:pull-progress` (live progress for a local model pull), `engine:remote-progress` (live progress for a remote install/pull) — re-emitted verbatim (their method names are already `engine:`-prefixed). Off by default.
 
+The broker owns relayed download lifetimes, tagged internally by broker epoch
+and engine-manager launch instance. Losing that worker publishes local
+`engine:pull-progress` or `engine:remote-progress` with `stage:"interrupted"`,
+the original `opId`, engine/model/node, and the retired `instanceId`. This is
+not cancellation confirmation. Old-instance notifications cannot change a
+replacement's downloads. Clients also interrupt rows on broker epoch changes
+and worker restart/PID changes, allowing retry after a pending cancel.
+Peer stream loss or verified-inventory removal is reported as interruption by
+engine-manager.
+
 Install progress is relayed without filling absent fields: an omitted `percent`
 means an unmeasured stage, not zero percent or the previous download percentage.
 
@@ -721,6 +731,16 @@ Forwards a client-originated service error into `nvpair-errors`, letting a clien
 Opt into / out of the `engine:<event>` stream (off by default). Acks `{ subscribed: bool }`. No baseline is replayed — call `engine:get-installed` for the initial snapshot.
 
 #### `engine:<method>` (generic relay)
+
+Model pulls carry `opId` through unchanged. `engine:cancel-pull` and
+`engine:remote-cancel-pull` return `{ accepted: bool }` without waiting for stop;
+the original pull's terminal update confirms the outcome. Pull progress carries
+`model`, `opId` and adapter-reported `canCancel`. Engine-manager owns tracking,
+confirmation and verified pinned-peer admission; the broker neither deletes
+cache files nor synthesizes stopped state. Cancel acceptance is bounded by
+`engineCancelRelayTimeout` (10 s), between engine-manager's 5 s and clients'
+15 s. `enginePullRelayTimeout` (31 min) bounds pull replies, outside the worker's
+30 min action plus bounded stop and inside the clients' 32 min envelope.
 
 Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim and its response relayed straight back. This covers the whole engine control plane: `engine:get-installed`, `engine:describe`, `engine:status`, `engine:install`, `engine:uninstall`, `engine:start`, `engine:stop`, `engine:restart`, `engine:set-port`, `engine:action`, `engine:logs`, `engine:errors`, `engine:models`. (`engine:set-port` persists the engine's server port as a manifest override that survives a restart — see the `nvpair-engine-manager` README.) Lifecycle ops run for minutes (reporting progress via the `engine:install-progress` / `engine:state-changed` push events), so the relay imposes **no broker-side timeout** — fire the request and watch the event stream for the outcome. Error `-32000 "engine-manager not available"` when no engine-manager is supervised.
 

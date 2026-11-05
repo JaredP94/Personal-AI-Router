@@ -45,19 +45,21 @@ type engineStatus struct {
 // remote status method on selection and after lifecycle replies. Model inventory
 // uses normalized local snapshots or peer discovery, with capability-gated actions.
 type enginesView struct {
-	client      *rpc.Client
-	table       table.Model
-	order       []string
-	byName      map[string]engineStatus
-	status      string
-	input       textinput.Model
-	pulling     bool
-	pullEngine  string
-	pullNode    string
-	editingPort bool
-	portEngine  string
-	models      modelsPane
-	confirm     *confirmPrompt
+	client         *rpc.Client
+	table          table.Model
+	order          []string
+	byName         map[string]engineStatus
+	status         string
+	input          textinput.Model
+	pulling        bool
+	pullEngine     string
+	pullNode       string
+	editingPort    bool
+	portEngine     string
+	models         modelsPane
+	confirm        *confirmPrompt
+	downloads      []engineDownload
+	downloadWorker *workerStatus
 
 	// Empty target means local; peers are always keyed by hostUuid, never name.
 	target         string
@@ -159,8 +161,18 @@ func (v *enginesView) SetSize(w, h int) {
 
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case epochChangedMsg:
+		v.interruptDownloads(nil)
+		v.downloadWorker = nil
+		return nil
+	case workersLoadedMsg:
+		if msg.err == nil {
+			v.applyDownloadWorkers(msg.workers)
+		}
+		return nil
 	case discoverySnapshotMsg:
 		v.discovered = msg.nodes
+		v.interruptMissingPeerDownloads()
 		v.peerModelsChanged()
 		return nil
 	case clusterNodesMsg:
@@ -214,6 +226,17 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
+	case downloadCancelMsg:
+		i := v.downloadIndex(msg.id)
+		if i >= 0 {
+			if msg.err != nil {
+				v.status = "Cancellation acceptance could not be confirmed; press c to retry."
+			} else if !msg.accepted {
+				v.status = "Canceling — awaiting the engine's final status."
+			}
+		}
+		return nil
+
 	case modelOpMsg:
 		return v.modelOperationDone(msg)
 
@@ -235,11 +258,26 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case NotificationMsg:
+		if msg.Msg.Method == "engine:pull-progress" || msg.Msg.Method == "engine:remote-progress" {
+			var p downloadProgress
+			if decodeParams(msg.Msg.Params, &p) == nil && p.Model != "" {
+				return v.applyDownloadProgress(p)
+			}
+		}
 		switch msg.Msg.Method {
+		case "workers:update":
+			var p struct {
+				Workers []workerStatus `json:"workers"`
+			}
+			if decodeParams(msg.Msg.Params, &p) == nil {
+				v.applyDownloadWorkers(p.Workers)
+			}
+			return nil
 		case "discovery:nodes-changed":
 			var nodes []availableNode
 			if decodeParams(msg.Msg.Params, &nodes) == nil {
 				v.discovered = nodes
+				v.interruptMissingPeerDownloads()
 				v.peerModelsChanged()
 			}
 			return nil
@@ -289,30 +327,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			} else if p.Percent > 0 {
 				v.status += fmt.Sprintf(" (%d%%)", p.Percent)
 			}
-		case "engine:pull-progress":
-			var p struct {
-				Engine  string `json:"engine"`
-				Stage   string `json:"stage"`
-				Percent int    `json:"percent"`
-				Message string `json:"message"`
-			}
-			_ = decodeParams(msg.Msg.Params, &p)
-			// Terminal stages carry no meaningful percent (success is implicitly
-			// 100%; error uses -1), so render them as outcomes rather than a
-			// misleading "success (0%)". A late failure that arrives after the
-			// synchronous call timed out still surfaces here.
-			switch p.Stage {
-			case "success":
-				v.status = fmt.Sprintf("pull %s: done", p.Engine)
-			case "error":
-				detail := p.Message
-				if detail == "" {
-					detail = "failed"
-				}
-				v.status = fmt.Sprintf("pull %s failed: %s", p.Engine, detail)
-			default:
-				v.status = fmt.Sprintf("pull %s: %s (%d%%)", p.Engine, p.Stage, p.Percent)
-			}
+
 		}
 		return nil
 
@@ -327,6 +342,9 @@ func (v *enginesView) CapturingInput() bool {
 }
 
 func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if !v.CapturingInput() && key.Matches(msg, engCancelPullKey) {
+		return v.cancelDownload()
+	}
 	if v.confirm.open() {
 		return v.confirm.Update(msg)
 	}
@@ -433,6 +451,8 @@ func (v *enginesView) submitPull() tea.Cmd {
 		v.status = "model name required"
 		return nil
 	}
+	id := downloadID()
+	v.downloads = append(v.downloads, engineDownload{id: id, node: node, engine: engine, model: model, status: "pulling"})
 	v.status = fmt.Sprintf("pull %s: %s...", engine, model)
 	method := "engine:action"
 	params := pullParams(engine, model)
@@ -440,8 +460,9 @@ func (v *enginesView) submitPull() tea.Cmd {
 		method = "engine:remote-pull-model"
 		params = map[string]any{"node": node, "engine": engine, "model": model}
 	}
-	return callWithTimeout(v.client, method, params, longOpTimeout, func(_ *rpc.Message, err error) tea.Msg {
-		return modelOpMsg{node: node, action: "pull", model: model, engine: engine, err: err}
+	params["opId"] = id
+	return callWithTimeout(v.client, method, params, pullOpTimeout, func(_ *rpc.Message, err error) tea.Msg {
+		return modelOpMsg{node: node, action: "pull", model: model, engine: engine, opID: id, err: err}
 	})
 }
 
@@ -598,6 +619,9 @@ func (v *enginesView) View() string {
 	if v.confirm.open() {
 		out += "\n" + v.confirm.View()
 	}
+	if downloads := v.downloadsView(); downloads != "" {
+		out += "\n" + downloads
+	}
 	if v.pulling {
 		out += "\npull model: " + v.input.View()
 	}
@@ -615,6 +639,12 @@ func (v *enginesView) Help() []key.Binding {
 		return v.confirm.Help()
 	}
 	bindings := []key.Binding{engTargetKey, engStartKey, engStopKey}
+	for _, p := range v.downloads {
+		if p.node == v.target && p.engine == v.selectedEngine() && p.canCancel {
+			bindings = append(bindings, engCancelPullKey)
+			break
+		}
+	}
 	e := v.byName[v.selectedEngine()]
 	// Keep the toggle visible to close an already-open unavailable pane.
 	if e.Capabilities.ListModels || v.models.open {

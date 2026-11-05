@@ -45,17 +45,20 @@ func newPeerDirectory() *peerDirectory {
 func (d *peerDirectory) set(nodes []noderec.DirectoryNode) {
 	next := make(map[string]ecPeer, len(nodes))
 	for _, n := range nodes {
+		key := n.RecordKey()
+		if key == "" {
+			continue
+		}
 		svc, ok := n.Services[noderec.ServiceEngineControl]
 		addresses := n.CandidateIPs()
 		if !ok || len(addresses) == 0 || svc.Port == 0 {
 			continue
 		}
-		// Key by the stable hostUuid so a target survives a rename and same-named
-		// peers don't collide. A relay DirectoryNode always carries a hostUuid
-		// (the scanner guarantees it), so there is no name fallback.
-		next[n.HostUUID] = ecPeer{
+		// Use broker provenance, not an unverified host UUID claim. A preview
+		// must not overwrite a verified peer with the same claimed host UUID.
+		next[key] = ecPeer{
 			verified:    n.IdentityVerification == "verified" && n.ServicePeer(),
-			nodeID:      n.HostUUID,
+			nodeID:      key,
 			addresses:   addresses,
 			port:        svc.Port,
 			clusterUUID: n.ClusterUUID,

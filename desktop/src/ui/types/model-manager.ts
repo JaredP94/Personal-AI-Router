@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export type IncomingSyncRow = {
+    opId?: string
+    canCancel?: boolean
     rawModel: string
     label: string
     status: string
