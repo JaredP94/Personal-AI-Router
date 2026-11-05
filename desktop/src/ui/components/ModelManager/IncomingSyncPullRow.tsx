@@ -5,7 +5,15 @@ import { Flex, Text } from '@nvidia/foundations-react-core'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
 
-export function IncomingSyncPullRow({ row }: { row: IncomingSyncRow }) {
+import { ModelDownloadControls } from './ModelDownloadControls'
+
+export function IncomingSyncPullRow({
+    row,
+    onCancel
+}: {
+    row: IncomingSyncRow
+    onCancel?: () => void
+}) {
     return (
         <Flex
             align="center"
@@ -15,12 +23,14 @@ export function IncomingSyncPullRow({ row }: { row: IncomingSyncRow }) {
             title={row.rawModel}
         >
             <Flex align="center" gap="2" className="min-w-0">
-                <span
-                    className="spinner-element"
-                    role="status"
-                    aria-label=""
-                    style={{ margin: 0 }}
-                />
+                {row.status !== 'cancelled' && (
+                    <span
+                        className="spinner-element"
+                        role="status"
+                        aria-label=""
+                        style={{ margin: 0 }}
+                    />
+                )}
                 <Flex align="center" wrap="wrap" gap="1" className="min-w-0">
                     <Text kind="body/semibold/sm" className="truncate">
                         {row.label}
@@ -33,6 +43,7 @@ export function IncomingSyncPullRow({ row }: { row: IncomingSyncRow }) {
                     </Text>
                 </Flex>
             </Flex>
+            <ModelDownloadControls {...row} onCancel={onCancel} />
         </Flex>
     )
 }

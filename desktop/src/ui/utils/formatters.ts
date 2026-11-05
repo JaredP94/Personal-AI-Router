@@ -99,6 +99,8 @@ function formatPullProgressDetail(p: PullProgressFields): string {
  */
 export function formatPullProgressLabel(p: PullProgressFields): string {
     const status = (p.status ?? '').trim()
+    if (status === 'canceling') return 'Canceling'
+    if (status === 'cancelled') return 'Canceled · Partial data is kept so the download can resume.'
     if (/\d+\s*%/.test(status)) return status
 
     const detail = formatPullProgressDetail(p)
