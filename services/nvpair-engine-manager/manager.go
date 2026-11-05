@@ -77,7 +77,9 @@ type Manager struct {
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
-	cancel     context.CancelFunc
+	// settingsHTTP waits as long as a peer's settings relay may take.
+	settingsHTTP *clustertrust.PeerClientPool
+	cancel       context.CancelFunc
 }
 
 func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
@@ -96,6 +98,9 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		}),
 		readyHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
 			ResponseHeaderTimeout: remoteReadyResponseHeaderTimeout,
+		}),
+		settingsHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
+			ResponseHeaderTimeout: remoteSettingsResponseHeaderTimeout,
 		}),
 		cancel: func() {},
 	}
@@ -135,6 +140,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.exec.StopAll()
 	m.remoteHTTP.CloseIdle()
 	m.readyHTTP.CloseIdle()
+	m.settingsHTTP.CloseIdle()
 	return err
 }
 

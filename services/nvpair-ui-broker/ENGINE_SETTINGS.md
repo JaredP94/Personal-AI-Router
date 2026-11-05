@@ -70,6 +70,10 @@ The cross-engine Apply mutex remains owned through final convergence.
 Busy admission expires without accepting a change. Unconfirmed callback joins or
 convergence fail closed rather than advertising an unverified listener.
 `RelayBudget = ApplyBudget + 1 minute` is **13 minutes (780 seconds)**.
+For a paired device, the requesting engine manager waits up to `RelayBudget` for
+the peer's settings response headers, and bounds the whole call by it. The peer's
+broker answers within `ApplyBudget`, so the requester gets a definite result rather
+than a timeout while the accepted change continues.
 Desktop `MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS` adds another minute:
 **14 minutes (840 seconds)**, strictly outside relay and broker deadlines.
 These operation budgets assume schedulable processes and functioning local storage;

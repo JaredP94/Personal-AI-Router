@@ -135,6 +135,10 @@ func (m *Manager) remoteSettings(ctx context.Context, msg *Message) {
 	}
 	method := strings.TrimSuffix(strings.TrimPrefix(msg.Method, "engine:remote-"), "-settings")
 	p.NodeID = ""
+	// Bound the whole call by the peer's relay budget, which its own broker
+	// and relay already stay within.
+	ctx, cancel := context.WithTimeout(ctx, remoteSettingsResponseHeaderTimeout)
+	defer cancel()
 	result, err := client.postJSON(ctx, settingsPath+method, p.Engine, p)
 	m.respondOrErr(msg, result, err)
 }
