@@ -60,7 +60,9 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         const parts: string[] = []
         for (const [key, p] of state.progress) {
             if (key.startsWith(prefix)) {
-                parts.push(`${p.model ?? ''}:${p.status}:${p.percent ?? ''}`)
+                parts.push(
+                    `${p.model ?? ''}:${p.opId ?? ''}:${p.status}:${p.percent ?? ''}:${p.canCancel ?? false}`
+                )
             }
         }
         return parts.join('|')

@@ -28,6 +28,7 @@ func TestDownloadCancelAcceptedIsNotStopped(t *testing.T) {
 	v.downloads = []engineDownload{{id: "one", engine: "ollama", model: "a", canCancel: true, status: "downloading"}}
 	v.downloads[0].status = "canceling"
 	v.Update(downloadCancelMsg{id: "one", accepted: true})
+	v.Update(downloadCancelMsg{id: "one", accepted: false})
 	if len(v.downloads) != 1 || v.downloads[0].status != "canceling" {
 		t.Fatal("acceptance retired download")
 	}

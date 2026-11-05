@@ -221,7 +221,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			if msg.err != nil {
 				v.status = "Cancellation acceptance could not be confirmed; press c to retry."
 			} else if !msg.accepted {
-				v.downloads[i].status = "pulling"
+				v.status = "Canceling — awaiting the engine's final status."
 			}
 		}
 		return nil
@@ -618,7 +618,13 @@ func (v *enginesView) Help() []key.Binding {
 	if v.confirm.open() {
 		return v.confirm.Help()
 	}
-	bindings := []key.Binding{engTargetKey, engStartKey, engStopKey, engCancelPullKey}
+	bindings := []key.Binding{engTargetKey, engStartKey, engStopKey}
+	for _, p := range v.downloads {
+		if p.node == v.target && p.engine == v.selectedEngine() && p.canCancel {
+			bindings = append(bindings, engCancelPullKey)
+			break
+		}
+	}
 	e := v.byName[v.selectedEngine()]
 	// Keep the toggle visible to close an already-open unavailable pane.
 	if e.Capabilities.ListModels || v.models.open {

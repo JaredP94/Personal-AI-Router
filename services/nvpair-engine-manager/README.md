@@ -670,7 +670,9 @@ No PAIR download queue or cache-file cleanup is introduced.
 Cancel returns once accepted, **not** once stopped. Clients keep **Canceling**
 until the original pull reports `cancelled`, `done`, or `error`. A successful
 cancelled pull returns `{"status":"cancelled"}` and emits `stage:"cancelled"`.
-Errors are not cancellation confirmations. Callbacks and worker calls run
+Errors or an inactive/unknown operation on a retry are not cancellation
+confirmations; clients retain Canceling until the original terminal update.
+Callbacks and worker calls run
 outside the tracking lock. Remote pull streams filter by operation ID, and
 the initiating manager publishes authoritative terminal state even if a lossy
 progress subscription dropped its last frame.

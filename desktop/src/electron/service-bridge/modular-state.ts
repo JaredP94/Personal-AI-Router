@@ -2887,20 +2887,6 @@ class ModularBridgeState {
         return true
     }
 
-    rejectModelPullCancel(
-        nodeId: string,
-        engineType: EngineType,
-        model: string,
-        opId: string
-    ): void {
-        const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
-        const existing = this.activePulls.get(key)
-        if (!existing || existing.opId !== opId || existing.status !== 'canceling') return
-        const progress = { ...existing, status: 'pulling' }
-        this.activePulls.set(key, progress)
-        emitBridgePush('engines:progress-changed', progress)
-    }
-
     isModelPullActive(engineType: EngineType, model: string): boolean {
         return this.isRemoteModelPullActive(this.selfId ?? '', engineType, model)
     }

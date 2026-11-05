@@ -2202,8 +2202,13 @@ class ModularSupervisor {
                     CANCEL_PULL_TIMEOUT_MS
                 )
             )
-            if (result?.accepted === false)
-                state.rejectModelPullCancel(nodeId, engineType, model, opId)
+            if (result?.accepted === false) {
+                this.reportError(
+                    'The engine is no longer accepting cancellation for this download. Waiting for its final status.',
+                    'warning',
+                    `engine-cancel:${opId}`
+                )
+            }
         } catch {
             // A transport failure proves neither rejection nor stop. Keep
             // Canceling until a terminal update; allow another request meanwhile.
