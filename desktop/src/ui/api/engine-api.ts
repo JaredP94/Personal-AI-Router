@@ -25,7 +25,17 @@ import type {
     EngineSettingsReceipt
 } from '@/shared/types/engine-settings'
 
+import type {
+    LoadProfileTarget,
+    LoadProfileRequest,
+    LoadProfileSnapshot,
+    LoadProfilePreview
+} from '@/shared/types/load-profile'
+
 export interface IEngineApi {
+    getLoadProfile(target: LoadProfileTarget): Promise<LoadProfileSnapshot>
+    previewLoadProfile(request: LoadProfileRequest): Promise<LoadProfilePreview>
+    applyLoadProfile(request: LoadProfileRequest): Promise<LoadProfileSnapshot>
     getSettings(target: EngineSettingsTarget): Promise<EngineSettingsSnapshot>
     previewSettings(request: EngineSettingsRequest): Promise<EngineSettingsPreview>
     applySettings(request: EngineSettingsRequest): Promise<EngineSettingsReceipt>
@@ -86,6 +96,9 @@ function fireCommand(transport: ServiceTransport, payload: EngineCommandPayload)
 
 export function createEngineApi(transport: ServiceTransport): IEngineApi {
     return {
+        getLoadProfile: target => transport.invoke('engines:get-load-profile', target),
+        previewLoadProfile: request => transport.invoke('engines:preview-load-profile', request),
+        applyLoadProfile: request => transport.invoke('engines:apply-load-profile', request),
         getSettings: target => transport.invoke('engines:get-settings', target),
         previewSettings: request => transport.invoke('engines:preview-settings', request),
         applySettings: request => transport.invoke('engines:apply-settings', request),

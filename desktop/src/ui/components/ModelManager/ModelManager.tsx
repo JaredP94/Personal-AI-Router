@@ -17,6 +17,7 @@ import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
 
 import ModelRow from './ModelRow'
+import { LoadOptions } from './LoadOptions'
 import { IncomingSyncPullRow } from './IncomingSyncPullRow'
 import { TransientModelStatusRow } from './TransientModelStatusRow'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
@@ -259,6 +260,24 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                 <ModelRow
                                     key={model.name}
                                     model={model}
+                                    loadOptions={
+                                        model.downloaded && backendType === 'lm-studio' ? (
+                                            <LoadOptions
+                                                nodeId={nodeId}
+                                                engineType={backendType}
+                                                model={model.name}
+                                                disabled={
+                                                    usePendingActionsStore
+                                                        .getState()
+                                                        .getModelPending(
+                                                            nodeId,
+                                                            backendType,
+                                                            model.name
+                                                        ) !== undefined
+                                                }
+                                            />
+                                        ) : undefined
+                                    }
                                     isRunning={isRunning}
                                     capabilities={caps}
                                     reported={reported}

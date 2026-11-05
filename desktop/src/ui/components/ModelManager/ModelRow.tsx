@@ -28,6 +28,7 @@ function pendingLabel(action: EngineCommandType): string | null {
 
 function ModelRowInner({
     model,
+    loadOptions,
     isRunning,
     capabilities,
     reported,
@@ -82,6 +83,7 @@ function ModelRowInner({
                     onExpiryChange={onExpiryChange}
                 />
             </Stack>
+            {loadOptions}
             <Divider style={{ borderColor: '#ffffff22' }} />
         </Stack>
     )

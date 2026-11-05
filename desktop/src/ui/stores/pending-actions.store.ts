@@ -33,6 +33,7 @@ import type { EngineProcessStatus, EngineType } from '@/shared/types/engines'
 import type { ServiceStatus } from '@/shared/types/ipc-channels'
 import { isEngineType } from '@/shared/utils/engines'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import { MODULAR_LMSTUDIO_MODEL_ACTION_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 /** Re-enable a control after this long if no superseding push ever arrives. */
 const PENDING_TIMEOUT_MS = 60_000
@@ -90,6 +91,15 @@ interface PendingAction {
  * gated on what that peer reported.
  */
 function timeoutFor(command: EngineCommandType, engineType: EngineType, nodeId: string): number {
+    if (
+        engineType === 'lm-studio' &&
+        (command === 'loadModel' ||
+            (command === 'deleteModel' &&
+                useEngineStatusStore.getState().getStatus(nodeId, engineType).capabilities
+                    .deleteRestartsEngine))
+    ) {
+        return MODULAR_LMSTUDIO_MODEL_ACTION_TIMEOUT_MS + 60_000
+    }
     if (command === 'loadModel' && engineType === 'ollama') {
         return OLLAMA_LOAD_PENDING_TIMEOUT_MS
     }

@@ -190,16 +190,45 @@ stopping, restarting, and uninstalling an engine, and pulling a model. Operation
 it does not have, such as deleting a model or updating an engine, need the
 desktop application on that machine.
 
-PAIR does **not** warm models. Starting an engine does not pre-load models into
-memory, and it holds nothing ready in advance. Depending on the engine, a model
-loads when you load it explicitly or when a request needs it. The first request
-to a cold model can therefore take longer.
+A fresh PAIR session does **not** pre-load models into memory. Depending on the
+engine, a model loads when you load it explicitly or when a request needs it.
+The first request to a cold model can therefore take longer. Within the current
+session, a PAIR-managed LM Studio engine restart restores models previously
+loaded through PAIR, using their saved load options; an ejected or deleted model
+is not restored.
 
 You can **delete** individual models from **Engine settings** when that engine
 exposes delete. That is not the same as uninstalling the engine. **Delete**
 removes one model's files through the engine, while **Uninstall** removes the
 NVPAIR-installed engine and leaves every model in place. PAIR has no action that
 uninstalls every model at once.
+
+### LM Studio Load options
+
+In an LM Studio model row, expand **Load options** on this device or a verified
+paired device. Enter long `lms load` flags, without the executable, `load`, or
+the model name. For example:
+
+```text
+--gpu max --context-length 200000 --parallel 2
+```
+
+Choose **Apply**. Go first previews and validates the arguments; errors stay in
+the editor and nothing is saved until validation succeeds. The node stores its
+own revisioned profile privately. Applying does not interrupt the current model:
+options take effect the **next time PAIR loads that model on that node**,
+including a remote load or restoration after an engine restart. Clear the text
+and Apply to return to engine defaults. Other devices keep their own profiles.
+
+There is no fixed list of tuning options. The installed LM Studio version still
+checks their meaning at load time. PAIR rejects short flags, server addressing,
+model names/paths, identifier or alias overrides, file/config/preset/adapter and
+execution controls. PAIR retains the model identity used for routing. A failed
+profiled load is reported, never silently retried with defaults. Use **Reload
+saved options** if another editor changed the profile or an Apply response was
+lost. Profiles survive PAIR and machine restarts; deleting a model removes its
+profile, and a successful authoritative model inventory prunes profiles for
+models no longer present. An unavailable engine never triggers that pruning.
 
 Applications need a **running** engine plus an available model. Copy API URLs
 from **Endpoints** after an engine is running. Do not assume a fixed port such as

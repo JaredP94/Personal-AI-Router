@@ -137,6 +137,24 @@ describe('pending-actions store: model actions', () => {
         vi.useRealTimers()
     })
 
+    it.each<'loadModel' | 'deleteModel'>(['loadModel', 'deleteModel'])(
+        'keeps LM Studio %s pending beyond its profiled mutation budget',
+        command => {
+            const store = usePendingActionsStore.getState()
+            reportEngineStatus('node-1', 'lm-studio', capabilities({ deleteRestartsEngine: true }))
+            store.begin({
+                command,
+                engineType: 'lm-studio',
+                nodeId: 'node-1',
+                model: 'publisher/demo'
+            })
+            vi.advanceTimersByTime(9 * 60_000)
+            expect(store.getModelPending('node-1', 'lm-studio', 'publisher/demo')).toBe(command)
+            vi.advanceTimersByTime(61_000)
+            expect(store.getModelPending('node-1', 'lm-studio', 'publisher/demo')).toBeUndefined()
+        }
+    )
+
     it('clears the spinner as soon as a failed delete is reported', () => {
         const store = usePendingActionsStore.getState()
         store.begin({
@@ -212,7 +230,7 @@ describe('pending-actions store: model actions', () => {
                 .getModelPending('node-1', 'lm-studio', 'publisher/demo')
         ).toBe('deleteModel')
 
-        vi.advanceTimersByTime(60_000)
+        vi.advanceTimersByTime(8 * 60_000)
         expect(
             usePendingActionsStore
                 .getState()
@@ -310,7 +328,7 @@ describe('pending-actions store: model actions', () => {
         ).toBeUndefined()
     })
 
-    it('leaves the default net in place for LM Studio loads', () => {
+    it('eventually clears a profiled LM Studio load if no outcome arrives', () => {
         usePendingActionsStore.getState().begin({
             command: 'loadModel',
             engineType: 'lm-studio',
@@ -318,7 +336,7 @@ describe('pending-actions store: model actions', () => {
             model: 'publisher/demo'
         })
 
-        vi.advanceTimersByTime(61_000)
+        vi.advanceTimersByTime(10 * 60_000 + 1_000)
         expect(
             usePendingActionsStore
                 .getState()
