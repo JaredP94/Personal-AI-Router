@@ -431,7 +431,9 @@ initiating `engine:remote-pull-model` call propagates as a JSON-RPC error.
 The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
-relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
+relay). That directory uses the broker's canonical record key: verified peers
+use their host UUID, while previews retain separate opaque record keys and
+cannot shadow a verified target by claiming the same host UUID. The manager dials that peer's `ec` surface over pin-based cluster mTLS, and — for
 `remote-install` / `remote-install-tool` / `remote-pull-model` — uses a caller-supplied pull `opId` or mints one,
 relays each streamed progress frame up as `engine:remote-progress`, and settles
 the request with the terminal result. Each NDJSON progress or terminal frame is

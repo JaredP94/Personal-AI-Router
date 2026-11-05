@@ -29,7 +29,7 @@ func TestRemoteCancelRequiresVerifiedPeer(t *testing.T) {
 			for _, method := range []string{"engine:remote-pull-model", "engine:remote-cancel-pull"} {
 				out.Reset()
 				id := json.RawMessage("1")
-				m.runRemote(context.Background(), &Message{ID: &id, Method: method, Params: json.RawMessage(`{"node":"claimed","engine":"ollama","model":"a","opId":"one"}`)})
+				m.runRemote(context.Background(), &Message{ID: &id, Method: method, Params: json.RawMessage(`{"node":"preview:claimed","engine":"ollama","model":"a","opId":"one"}`)})
 				if !strings.Contains(out.String(), "verified peer") {
 					t.Fatalf("unverified request was not refused: %s", out.String())
 				}
