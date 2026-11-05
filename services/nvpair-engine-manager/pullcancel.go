@@ -70,7 +70,10 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model, opID string, 
 	e.emitPullUpdate(ctx, ProgressEvent{Stage: "pulling", Message: model})
 	result, err := run(ctx)
 	stage, message := "done", ""
-	if p.requested.Load() && errors.Is(err, context.Canceled) {
+	if e.shuttingDown.Load() {
+		stage, message = "interrupted", "Download interrupted — retry to resume"
+		result, err = json.RawMessage(`{"status":"interrupted"}`), nil
+	} else if p.requested.Load() && errors.Is(err, context.Canceled) {
 		stage = "cancelled"
 		message = "Partial data is kept so the download can resume."
 		result, err = json.RawMessage(`{"status":"cancelled"}`), nil

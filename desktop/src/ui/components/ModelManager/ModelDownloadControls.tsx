@@ -14,7 +14,8 @@ export function ModelDownloadControls({
     status?: string
     onCancel?: () => void
 }) {
-    if (!canCancel || !opId || !onCancel || status === 'cancelled') return null
+    if (!canCancel || !opId || !onCancel || status === 'cancelled' || status === 'interrupted')
+        return null
     return (
         <Button
             size="small"

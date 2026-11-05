@@ -45,20 +45,21 @@ type engineStatus struct {
 // remote status method on selection and after lifecycle replies. Model inventory
 // uses normalized local snapshots or peer discovery, with capability-gated actions.
 type enginesView struct {
-	client      *rpc.Client
-	table       table.Model
-	order       []string
-	byName      map[string]engineStatus
-	status      string
-	input       textinput.Model
-	pulling     bool
-	pullEngine  string
-	pullNode    string
-	editingPort bool
-	portEngine  string
-	models      modelsPane
-	confirm     *confirmPrompt
-	downloads   []engineDownload
+	client         *rpc.Client
+	table          table.Model
+	order          []string
+	byName         map[string]engineStatus
+	status         string
+	input          textinput.Model
+	pulling        bool
+	pullEngine     string
+	pullNode       string
+	editingPort    bool
+	portEngine     string
+	models         modelsPane
+	confirm        *confirmPrompt
+	downloads      []engineDownload
+	downloadWorker *workerStatus
 
 	// Empty target means local; peers are always keyed by hostUuid, never name.
 	target         string
@@ -160,8 +161,18 @@ func (v *enginesView) SetSize(w, h int) {
 
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case epochChangedMsg:
+		v.interruptDownloads(nil)
+		v.downloadWorker = nil
+		return nil
+	case workersLoadedMsg:
+		if msg.err == nil {
+			v.applyDownloadWorkers(msg.workers)
+		}
+		return nil
 	case discoverySnapshotMsg:
 		v.discovered = msg.nodes
+		v.interruptMissingPeerDownloads()
 		v.peerModelsChanged()
 		return nil
 	case clusterNodesMsg:
@@ -254,10 +265,19 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		switch msg.Msg.Method {
+		case "workers:update":
+			var p struct {
+				Workers []workerStatus `json:"workers"`
+			}
+			if decodeParams(msg.Msg.Params, &p) == nil {
+				v.applyDownloadWorkers(p.Workers)
+			}
+			return nil
 		case "discovery:nodes-changed":
 			var nodes []availableNode
 			if decodeParams(msg.Msg.Params, &nodes) == nil {
 				v.discovered = nodes
+				v.interruptMissingPeerDownloads()
 				v.peerModelsChanged()
 			}
 			return nil

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -129,6 +130,62 @@ func TestRemoteStreamErrorWithoutCodeMapsToServerError(t *testing.T) {
 			response := callToolRemote(t, srv, mesh, tc.method, tc.params)
 			if response.Error == nil || response.Error.Code != -32000 || response.Error.Message != tc.message {
 				t.Fatalf("error = %+v, want -32000 and unchanged message %q", response.Error, tc.message)
+			}
+		})
+	}
+}
+
+func TestRemoteDownloadInterruptedOnPeerWorkerExitOrInventoryLoss(t *testing.T) {
+	for _, loss := range []string{"worker exit", "inventory loss"} {
+		t.Run(loss, func(t *testing.T) {
+			ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+			srv, mesh := newToolControlPeer(t, ex, true)
+			srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = w.Write([]byte(`{"type":"progress","engine":"ollama","model":"model","op":"pull","stage":"downloading"}` + "\n"))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			})
+			managerConn, clientConn := net.Pipe()
+			defer managerConn.Close()
+			defer clientConn.Close()
+			_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+			m := NewManager(NewCodec(managerConn), ex, mesh)
+			defer m.remoteHTTP.CloseIdle()
+			defer m.readyHTTP.CloseIdle()
+			m.updateDownloadPeers([]noderec.DirectoryNode{{HostUUID: "host-server", IP: "127.0.0.1", ClusterUUID: "uuid-server", IdentityVerification: "verified", Trusted: true, PeerRecordID: "record", Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceEngineControl: {Port: listenerPort(t, srv)}}}})
+			id := json.RawMessage("1")
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				m.runRemote(context.Background(), &Message{ID: &id, Method: "engine:remote-pull-model", Params: json.RawMessage(`{"node":"host-server","engine":"ollama","model":"model","opId":"pull"}`)})
+			}()
+			codec := NewCodec(clientConn)
+			first, err := codec.Read()
+			if err != nil || first.Method != "engine:remote-progress" {
+				t.Fatalf("first progress: %v %v", first, err)
+			}
+			if loss == "worker exit" {
+				srv.CloseClientConnections()
+			} else {
+				m.updateDownloadPeers(nil)
+			}
+			terminal, err := codec.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var p remoteProgress
+			if json.Unmarshal(terminal.Params, &p) != nil || p.Stage != "interrupted" || p.OpID != "pull" {
+				t.Fatalf("not interrupted: %s", terminal.Params)
+			}
+			response, err := codec.Read()
+			if err != nil || response.Error == nil {
+				t.Fatalf("response: %v %v", response, err)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("pull did not return")
 			}
 		})
 	}

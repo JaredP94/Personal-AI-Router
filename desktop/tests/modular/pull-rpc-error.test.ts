@@ -21,6 +21,31 @@ afterEach(() => {
 })
 
 describe('pull RPC error completion', () => {
+    it('broker epoch change interrupts canceling downloads and permits retry', () => {
+        const state = getModularBridgeState()
+        state.setSelfId('epoch-local')
+        supervisor.noteEpoch('download-before')
+        const opId = state.beginModelPull('ollama', 'epoch-model')
+        state.applyLocalEngineProgress({
+            engine: 'ollama',
+            model: 'epoch-model',
+            opId,
+            canCancel: true
+        })
+        state.markModelPullCanceling('epoch-local', 'ollama', 'epoch-model', opId)
+        supervisor.noteEpoch('download-after')
+        expect(state.isModelPullActive('ollama', 'epoch-model')).toBe(false)
+        const replacement = state.beginModelPull('ollama', 'epoch-model')
+        state.applyLocalEngineProgress({
+            engine: 'ollama',
+            model: 'epoch-model',
+            opId,
+            stage: 'interrupted'
+        })
+        expect(state.isModelPullActive('ollama', 'epoch-model')).toBe(true)
+        state.finishModelPull('ollama', 'epoch-model', replacement)
+    })
+
     for (const target of ['local', 'peer']) {
         it(`clears ${target} pending pull without refreshing inventory on an engine RPC error`, async () => {
             const state = getModularBridgeState()

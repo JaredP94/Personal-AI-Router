@@ -65,6 +65,8 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
+	remotePullMu   sync.Mutex
+	remotePulls    map[string]*remotePull
 	codec          *Codec
 	settingsRelay  settingsRelay
 	managedPortsMu sync.Mutex
@@ -137,6 +139,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	err := m.readLoop(ctx)
 	// Cancel first so any in-flight start aborts at its readiness wait,
 	// then stop engines so the parent's exit doesn't orphan them.
+	m.exec.shuttingDown.Store(true)
 	cancel()
 	m.exec.StopAll()
 	m.remoteHTTP.CloseIdle()
@@ -456,7 +459,7 @@ func (m *Manager) applyDiscovery(msg *Message) {
 		slog.Debug("invalid discovery:nodes snapshot", "err", err)
 		return
 	}
-	m.peers.set(res.Nodes)
+	m.updateDownloadPeers(res.Nodes)
 }
 
 func (m *Manager) parse(msg *Message, v any) bool {

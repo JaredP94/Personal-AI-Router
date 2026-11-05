@@ -25,7 +25,10 @@ operation ID. `c` targets the newest cancellable download on the selected
 engine/node; after it finishes, `c` can target the preceding download.
 The row stays **canceling** after acceptance and through late byte progress;
 only the transfer's terminal update confirms stop. A transport error allows a
-retry without claiming success. Confirmed cancellation says partial data is kept
+retry without claiming success. Broker epoch changes, engine-manager restart or
+PID replacement, peer stream loss, and loss from verified inventory retire the
+old operation IDs as interrupted: “Download interrupted — retry to resume”.
+Late old updates cannot retire a replacement. Confirmed cancellation says partial data is kept
 so the download can resume. PAIR removes no cache files.
 Ollama and LM Studio have adapters; oMLX's supported manifest has no pull action.
 Pulls wait up to 32 min and cancel acceptance 15 s, outside the broker's 31 min

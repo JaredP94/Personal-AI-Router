@@ -178,6 +178,10 @@ type ProxyStatusResult struct {
 // client connection in listen mode so future per-session caches (auth
 // tokens, watched-resource cursors, etc.) don't bleed across clients.
 type Broker struct {
+	downloadMu       sync.Mutex
+	downloadSerial   uint64
+	downloadInstance *downloadInstance
+	downloads        map[string]brokerDownload
 	// Applies serialize end to end. The journal lock is released during engine
 	// restart so unrelated settings reads remain responsive. Port-op comes
 	// first; see portoperation.go for the complete lock/callback discipline.
@@ -639,6 +643,14 @@ func (b *Broker) getErrors() *errorsProcess {
 }
 
 func (b *Broker) setEngineMgr(w *rpcWorker) {
+	if w == nil {
+		b.interruptDownloads()
+	}
+	b.downloadMu.Lock()
+	if w != nil && b.downloadInstance != nil {
+		b.downloadInstance.worker = w
+	}
+	b.downloadMu.Unlock()
 	b.workersMu.Lock()
 	b.engineMgr = w
 	b.workersMu.Unlock()
@@ -989,7 +1001,8 @@ func (b *Broker) spawnEngineMgr() (supervisedHandle, error) {
 		args = append(args, "--reserved-port", fmt.Sprintf("%d", aliasPort))
 	}
 	args = append(args, b.clusterDirArgs()...)
-	w, err := startRPCWorker("engine-manager", b.engineMgrPath, args, b.forwardEngineNotification)
+	instance := b.beginDownloadInstance()
+	w, err := startRPCWorker("engine-manager", b.engineMgrPath, args, func(method string, params json.RawMessage) { b.forwardDownloadInstance(instance, method, params) })
 	if err != nil {
 		return nil, err
 	}
@@ -3664,7 +3677,9 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	if cancel != nil {
 		defer cancel()
 	}
+	b.trackDownload(em, msg)
 	result, rpcErr, err := em.CallNoTimeout(ctx, method, msg.Params)
+	b.settleDownload(em, msg, err, rpcErr)
 	switch {
 	case err != nil:
 		if e := b.codec.RespondError(id, -32000, fmt.Sprintf("engine call failed: %v", err)); e != nil {

@@ -98,7 +98,7 @@ export interface EngineProgress {
     operation: EngineOperationType
     /** Set for model operations (pull, load, unload, delete). */
     model?: string
-    /** 'started' | 'downloading' | 'complete' | 'error' | engine-specific status string. */
+    /** Includes terminal 'cancelled' and 'interrupted' (retry allowed, no stop confirmation). */
     status: string
     percent?: number
     completed?: number

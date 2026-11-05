@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"time"
 
 	settings "nvpair-shared/enginesettings"
@@ -149,17 +150,28 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 		if opID == "" {
 			opID = newOpID()
 		}
+		ctx, finish, err := m.trackRemotePull(ctx, opID, peer.nodeID)
+		if err != nil {
+			m.codec.RespondError(msg.ID, -32000, err.Error())
+			return
+		}
+		defer finish()
 		body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
 		terminal, err := client.stream(ctx, controlPullPath, body, m.remoteProgressFn(opID, peer.nodeID))
 		stage, message := "done", ""
 		if err != nil {
-			stage, message = "error", err.Error()
+			var frameError *remoteFrameError
+			if errors.As(err, &frameError) && ctx.Err() == nil {
+				stage, message = "error", err.Error()
+			} else {
+				stage, message = "interrupted", "Download interrupted — retry to resume"
+			}
 		} else {
 			var result struct {
 				Status string `json:"status"`
 			}
-			if json.Unmarshal(terminal.Result, &result) == nil && result.Status == "cancelled" {
-				stage = "cancelled"
+			if json.Unmarshal(terminal.Result, &result) == nil && (result.Status == "cancelled" || result.Status == "interrupted") {
+				stage = result.Status
 			}
 		}
 		// Hub progress is lossy; the terminal stream result is authoritative.

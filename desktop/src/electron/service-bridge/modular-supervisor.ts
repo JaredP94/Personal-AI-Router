@@ -460,6 +460,7 @@ class ModularSupervisor {
         if (!epoch) return false
         const changed = epoch !== this.currentEpoch
         if (changed) {
+            getModularBridgeState().interruptModelPulls()
             this.currentEpoch = epoch
             this.epochObservation++
             this.releaseWorkloadSnapshot(this.activeResync)
@@ -475,6 +476,7 @@ class ModularSupervisor {
     }
 
     private invalidateEpochRecovery(): void {
+        getModularBridgeState().interruptModelPulls()
         this.resyncLifecycle++
         this.releaseWorkloadSnapshot(this.activeResync)
         this.activeResync = null

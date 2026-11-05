@@ -23,7 +23,7 @@ export function IncomingSyncPullRow({
             title={row.rawModel}
         >
             <Flex align="center" gap="2" className="min-w-0">
-                {row.status !== 'cancelled' && (
+                {row.status !== 'cancelled' && row.status !== 'interrupted' && (
                     <span
                         className="spinner-element"
                         role="status"

@@ -1907,6 +1907,14 @@ class ModularBridgeState {
      * authoritative empty snapshot is applied rather than merged.
      */
     replaceWorkers(workers: WorkerStatus[]): void {
+        const previous = this.workers.find(worker => worker.name === 'engine-manager')
+        const current = workers.find(worker => worker.name === 'engine-manager')
+        if (
+            current &&
+            ((current.state !== 'running' && current.state !== 'degraded') ||
+                (previous?.pid !== undefined && previous.pid !== current.pid))
+        )
+            this.interruptModelPulls()
         this.workers = [...workers]
         emitBridgePush('workers:update', [...this.workers])
     }
@@ -2193,7 +2201,7 @@ class ModularBridgeState {
         const p = this.activePulls.get(
             engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         )
-        return !!p && p.status !== 'cancelled'
+        return !!p && p.status !== 'cancelled' && p.status !== 'interrupted'
     }
 
     finishRemoteModelPull(
@@ -2842,7 +2850,13 @@ class ModularBridgeState {
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const existing = this.activePulls.get(key)
         // An old frame cannot resurrect a row after a retry or notice expiry.
-        if (!existing || existing.opId !== opId || existing.status === 'cancelled') return
+        if (
+            !existing ||
+            existing.opId !== opId ||
+            existing.status === 'cancelled' ||
+            existing.status === 'interrupted'
+        )
+            return
         const stage = stringValue(obj.stage)
         if (stage === 'done' || stage === 'error') {
             this.clearPull(key, opId)
@@ -2851,17 +2865,17 @@ class ModularBridgeState {
         const progress: EngineProgress = {
             ...existing,
             status:
-                stage === 'cancelled'
+                stage === 'cancelled' || stage === 'interrupted'
                     ? stage
                     : existing.status === 'canceling'
                       ? 'canceling'
                       : stage || existing.status,
-            canCancel: stage !== 'cancelled' && obj.canCancel === true,
+            canCancel: stage !== 'cancelled' && stage !== 'interrupted' && obj.canCancel === true,
             percent: mergePullProgressPercent(numberValue(obj.percent), existing.percent)
         }
         this.activePulls.set(key, progress)
         emitBridgePush('engines:progress-changed', progress)
-        if (stage === 'cancelled') {
+        if (stage === 'cancelled' || stage === 'interrupted') {
             setTimeout(() => this.clearPull(key, opId), 8_000).unref()
         }
     }
@@ -2878,7 +2892,8 @@ class ModularBridgeState {
             !existing ||
             existing.opId !== opId ||
             !existing.canCancel ||
-            existing.status === 'cancelled'
+            existing.status === 'cancelled' ||
+            existing.status === 'interrupted'
         )
             return false
         const progress = { ...existing, status: 'canceling' }
@@ -2899,8 +2914,28 @@ class ModularBridgeState {
         const key = engineProgressKey({ nodeId, engineType, operation: 'pull', model })
         const current = this.activePulls.get(key)
         // A timed-out call is not confirmation that a requested stop finished.
-        if (current?.status === 'canceling' || current?.status === 'cancelled') return
+        if (
+            current?.status === 'canceling' ||
+            current?.status === 'cancelled' ||
+            current?.status === 'interrupted'
+        )
+            return
         this.clearPull(key, opId)
+    }
+
+    /** Broker/worker lifetime loss is not confirmation that a cancel succeeded. */
+    interruptModelPulls(nodeId?: string): void {
+        for (const progress of this.activePulls.values()) {
+            if (nodeId !== undefined && progress.nodeId !== nodeId) continue
+            if (progress.status === 'cancelled' || progress.status === 'interrupted') continue
+            const interrupted = { ...progress, status: 'interrupted', canCancel: false }
+            this.activePulls.set(engineProgressKey(progress), interrupted)
+            emitBridgePush('engines:progress-changed', interrupted)
+            setTimeout(
+                () => this.clearPull(engineProgressKey(progress), progress.opId ?? ''),
+                8_000
+            ).unref()
+        }
     }
 
     private clearPull(key: string, opId: string): void {
@@ -3069,6 +3104,12 @@ class ModularBridgeState {
         if (notification.method !== 'discovery:nodes-changed') return
 
         const nodes = brokerNodesValue(notification.params)
+        const verified = new Set(nodes.filter(node => isPairPeer(node)).map(node => node.id))
+        for (const progress of this.activePulls.values()) {
+            if (progress.nodeId !== this.selfId && !verified.has(progress.nodeId)) {
+                this.interruptModelPulls(progress.nodeId)
+            }
+        }
         const nextBrokerNodeIds = new Set(nodes.map(node => node.id))
         for (const nodeId of Array.from(this.brokerNodeIds)) {
             if (!nextBrokerNodeIds.has(nodeId)) {

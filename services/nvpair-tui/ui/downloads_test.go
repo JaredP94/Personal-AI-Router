@@ -5,6 +5,7 @@ package ui
 
 import (
 	"encoding/json"
+	"nvpair-tui/rpc"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,35 @@ func TestDownloadCancelAcceptedIsNotStopped(t *testing.T) {
 	v.applyDownloadProgress(downloadProgress{OpID: "one", Engine: "ollama", Model: "a", Stage: "cancelled"})
 	if len(v.downloads) != 0 || !strings.Contains(v.status, "Partial data is kept") {
 		t.Fatalf("confirmation not rendered: %s", v.status)
+	}
+}
+
+func TestDownloadInterruptedOnEpochWorkerRestartAndPeerLoss(t *testing.T) {
+	for _, event := range []struct {
+		name    string
+		message interface{}
+	}{
+		{"epoch", epochChangedMsg{}},
+		{"worker exit", workersLoadedMsg{workers: []workerStatus{{Name: "engine-manager", State: "restarting"}}}},
+		{"worker replaced", workersLoadedMsg{workers: []workerStatus{{Name: "engine-manager", State: "running", PID: 2}}}},
+		{"peer lost", discoverySnapshotMsg{}},
+		{"peer interrupted", NotificationMsg{Msg: &rpc.Message{Method: "engine:remote-progress", Params: json.RawMessage(`{"node":"peer","engine":"ollama","model":"a","opId":"old","stage":"interrupted"}`)}}},
+	} {
+		t.Run(event.name, func(t *testing.T) {
+			v := newEnginesView(nil)
+			v.target = "peer"
+			v.downloadWorker = &workerStatus{Name: "engine-manager", State: "running", PID: 1}
+			v.downloads = []engineDownload{{id: "old", node: "peer", engine: "ollama", model: "a", status: "canceling"}}
+			v.Update(event.message)
+			if len(v.downloads) != 0 || v.status != "Download interrupted — retry to resume" {
+				t.Fatalf("stuck cancel: %+v %s", v.downloads, v.status)
+			}
+			v.downloads = []engineDownload{{id: "new", node: "peer", engine: "ollama", model: "a", status: "pulling"}}
+			v.applyDownloadProgress(downloadProgress{OpID: "old", Node: "peer", Engine: "ollama", Model: "a", Stage: "interrupted"})
+			if len(v.downloads) != 1 || v.downloads[0].id != "new" {
+				t.Fatal("old interruption overwrote retry")
+			}
+		})
 	}
 }
 

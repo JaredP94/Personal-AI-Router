@@ -62,7 +62,7 @@ func (v *enginesView) applyDownloadProgress(p downloadProgress) tea.Cmd {
 	if active.node != p.Node || active.engine != p.Engine || active.model != p.Model {
 		return nil
 	}
-	terminal := p.Stage == "done" || p.Stage == "error" || p.Stage == "cancelled"
+	terminal := p.Stage == "done" || p.Stage == "error" || p.Stage == "cancelled" || p.Stage == "interrupted"
 	status := p.Stage
 	if active.status == "canceling" && !terminal {
 		status = "canceling"
@@ -70,6 +70,9 @@ func (v *enginesView) applyDownloadProgress(p downloadProgress) tea.Cmd {
 	active.status, active.percent, active.canCancel = status, p.Percent, p.CanCancel
 	if p.Node == v.target {
 		v.status = fmt.Sprintf("pull %s %s: %s", p.Engine, p.Model, status)
+		if p.Stage == "interrupted" {
+			v.status = "Download interrupted — retry to resume"
+		}
 		if p.Stage == "cancelled" {
 			v.status += ". Partial data is kept so the download can resume."
 		}
@@ -85,6 +88,46 @@ func (v *enginesView) applyDownloadProgress(p downloadProgress) tea.Cmd {
 	}
 	return nil
 }
+
+// Invalidate only operations owned by the lost service/peer. Removing the old
+// IDs fences queued acceptance, progress and completion messages after a retry.
+func (v *enginesView) interruptDownloads(node *string) {
+	for i := len(v.downloads) - 1; i >= 0; i-- {
+		if node == nil || v.downloads[i].node == *node {
+			v.retireDownload(i)
+			v.status = "Download interrupted — retry to resume"
+		}
+	}
+}
+func (v *enginesView) interruptMissingPeerDownloads() {
+	verified := make(map[string]bool)
+	for _, n := range v.discovered {
+		if n.IdentityVerification == "verified" {
+			verified[n.HostUUID] = true
+		}
+	}
+	missing := make(map[string]bool)
+	for _, p := range v.downloads {
+		if p.node != "" && !verified[p.node] {
+			missing[p.node] = true
+		}
+	}
+	for node := range missing {
+		v.interruptDownloads(&node)
+	}
+}
+func (v *enginesView) applyDownloadWorkers(workers []workerStatus) {
+	for _, current := range workers {
+		if current.Name != "engine-manager" {
+			continue
+		}
+		if (current.State != "running" && current.State != "degraded") || (v.downloadWorker != nil && v.downloadWorker.PID != current.PID) {
+			v.interruptDownloads(nil)
+		}
+		v.downloadWorker = &current
+	}
+}
+
 func (v *enginesView) cancelDownload() tea.Cmd {
 	for i := len(v.downloads) - 1; i >= 0; i-- {
 		p := v.downloads[i]

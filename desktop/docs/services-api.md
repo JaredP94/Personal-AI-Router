@@ -335,6 +335,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `app:ready` | notification (we consume) | ✅ yes |
 | `broker:epoch` | notification (we consume) | ✅ yes |
 | `discovery:nodes-changed` | notification (we consume) | ✅ yes |
+| `engine:remote-progress` | notification (we consume) | ✅ yes |
 | `engine:restore-enabled` | notification (we consume) | ➖ ignored |
 | `engine:settings-changed` | notification (we consume) | ✅ yes |
 | `engine:settings-projection` | notification (we consume) | ➖ ignored |
@@ -401,19 +402,13 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `workloads:unsubscribe` | request (we call) | ⚠️ not called |
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
-- `method (var)  (broker.go, 6 sites)`
 - `proxy:*  (broker.go)`
-- `method (var)  (clustermanager.go)`
-- `method (var)  (errors.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
 - `omlx-proxy:*  (omlxproxy.go)`
-- `method (var)  (proxy.go)`
-- `method (var)  (rpcworker.go, 2 sites)`
 - `WorkerRunning (var)  (supervisor.go, 2 sites)`
 - `WorkerDegraded (var)  (supervisor.go)`
 - `WorkerRestarting (var)  (supervisor.go)`
 - `state (var)  (supervisor.go)`
-- `method (var)  (workloadmanager.go, 2 sites)`
 
 ## nvpair-workload-manager
 

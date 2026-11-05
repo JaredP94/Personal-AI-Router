@@ -425,6 +425,16 @@ ServiceError = { id, message, timestamp, nodeId?, severity?, action?, engineType
 
 **Opt-in** (`engine:subscribe`). The notifications `nvpair-engine-manager` emits — `engine:ready`, `engine:state-changed` (full `EngineStatus`), `engine:models-changed` (`{engine, models}`, pushed when an engine's set of models loaded in memory changes), `engine:install-progress`, `engine:pull-progress` (live progress for a local model pull), `engine:remote-progress` (live progress for a remote install/pull) — re-emitted verbatim (their method names are already `engine:`-prefixed). Off by default.
 
+The broker owns relayed download lifetimes, tagged internally by broker epoch
+and engine-manager launch instance. Losing that worker publishes local
+`engine:pull-progress` or `engine:remote-progress` with `stage:"interrupted"`,
+the original `opId`, engine/model/node, and the retired `instanceId`. This is
+not cancellation confirmation. Old-instance notifications cannot change a
+replacement's downloads. Clients also interrupt rows on broker epoch changes
+and worker restart/PID changes, allowing retry after a pending cancel.
+Peer stream loss or verified-inventory removal is reported as interruption by
+engine-manager.
+
 Install progress is relayed without filling absent fields: an omitted `percent`
 means an unmeasured stage, not zero percent or the previous download percentage.
 

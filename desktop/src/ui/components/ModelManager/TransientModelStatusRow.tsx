@@ -22,7 +22,7 @@ export function TransientModelStatusRow({
     return (
         <Flex align="center" justify="between" gap="2" className="mt-2 min-w-0">
             <Flex align="center" gap="1" className="min-w-0">
-                {pullProgress?.status !== 'cancelled' && (
+                {pullProgress?.status !== 'cancelled' && pullProgress?.status !== 'interrupted' && (
                     <span
                         className="spinner-element"
                         role="status"

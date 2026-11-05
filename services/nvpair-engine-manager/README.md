@@ -408,7 +408,7 @@ TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `engine:pull-progress{engine, model, opId, canCancel, op, stage, percent?, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
-stage/percent; terminal states are `done`, `cancelled`, or `error`, and
+stage/percent; terminal states are `done`, `cancelled`, `interrupted`, or `error`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
 UI converges even if its synchronous call already timed out),
 `engine:remote-progress{opId, node, engine, model?, canCancel?, op, stage, percent?, message}`
@@ -670,7 +670,7 @@ different models are independent; a duplicate model in flight is refused.
 No PAIR download queue or cache-file cleanup is introduced.
 
 Cancel returns once accepted, **not** once stopped. Clients keep **Canceling**
-until the original pull reports `cancelled`, `done`, or `error`. A successful
+until the original pull reports `cancelled`, `done`, `interrupted`, or `error`. A successful
 cancelled pull returns `{"status":"cancelled"}` and emits `stage:"cancelled"`.
 Errors or an inactive/unknown operation on a retry are not cancellation
 confirmations; clients retain Canceling until the original terminal update.
@@ -715,6 +715,25 @@ Its prompt write is bounded at 1 s. A remote initiator adds
 `enginePullRelayTimeout` is 31 min and desktop/TUI pull envelopes are 32 min.
 A cancelled or superseded operation's late progress, reply or notice timer
 cannot overwrite a newer row.
+
+### Interrupted downloads
+
+The broker owns relayed download lifetimes and tags each operation internally
+with its worker instance (broker epoch plus launch counter). Worker exit or
+replacement publishes `stage:"interrupted"` through the usual local/remote
+progress notification, with `instanceId` identifying the retired owner.
+The old worker's notifications are fenced from its replacement. Engine-manager
+shutdown also reports interruption, even if cancellation was pending.
+A peer stream lost before its terminal result is interrupted, not cancelled;
+removing a peer from verified discovery cancels the initiating stream and emits
+the same terminal state. A peer's explicit engine error remains an error.
+
+Desktop and TUI additionally invalidate in-flight operation IDs on broker epoch
+change, engine-manager restart/PID replacement in `workers:update`, and verified
+peer loss. They display “Download interrupted — retry to resume” and allow retry.
+This does not claim a cancellation succeeded or that engine-managed partials
+are retained indefinitely. Late interruption, progress, completion and notice
+expiry cannot overwrite a newer operation ID.
 
 ## CLI flags
 
