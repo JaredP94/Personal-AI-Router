@@ -165,13 +165,16 @@ port assignments retain port-operation ownership through their post-call refresh
 worker, never a replacement process. `engine:settings-cancel` cancels pending
 requests. `engine:settings-projection` supplies full snapshots to the worker.
 
-Managed Ollama moves and their rollback use broker-only
+Managed Ollama moves and their rollback, and the LM Studio startup move, use broker-only
 `internal:set-port {engine, port, operationId}`, returning the existing
 `EngineStatus`. The worker registers each unique operation ID on its reader
 before dispatching the move. On an RPC timeout the broker sends
 `internal:cancel-set-port {operationId}` to that same worker; its null response
-joins the canceled operation, including a queued engine-lock wait. Fallback and
-rollback cannot proceed without that acknowledgement. The worker rechecks
+joins the canceled operation, including a queued engine-lock wait. The move
+and its cancellation acknowledgement each have a five-second deadline; cancellation
+uses a separate context so an expired caller cannot skip the join. Fallback and
+rollback cannot proceed without that acknowledgement. An unconfirmed cancellation
+quarantines and terminates the captured manager and leaves ownership gated. The worker rechecks
 cancellation and its reconciliation grant after acquiring the engine lock and
 before persistence, even for a stopped engine. Public `engine:set-port` is unchanged.
 The broker holds no journal/apply lock during managed Ollama calls, including
@@ -191,7 +194,10 @@ Never acquire port-op while holding `engineConfigMu` or `settingsApplyMu`.
 Reverse worker callbacks (`prepare-start`, `authorize-start`, `rebind`, `rollback`)
 never acquire port-op. Rebind and rollback are delegated writes under the active
 parent Apply/restoration operation, validated against its operation ID. The parent
-seals callback admission and joins in-flight callbacks before releasing ownership.
+seals callback admission, cancels in-flight callbacks and joins them for at most
+ten seconds before releasing ownership. Callbacks retain the captured proxy and
+cannot publish startup intent after admission is sealed. The join excludes reply
+notification delivery; that delivery owns no port-operation writes.
 Ready/error notification readers only dispatch operations off the reader goroutine;
 they never wait on port-op and can continue delivering worker replies.
 
@@ -199,10 +205,19 @@ The final step of every port operation compares the proxy's actual port with the
 current accepted journal port (or the managed startup choice before explicit
 settings exist) and corrects any mismatch, even on early/stale-result exits.
 Ready observations never replace an explicit accepted proxy port in the journal.
-Unversioned proxy writes join the worker response or worker exit without a local
-timeout, preventing a delayed bind from escaping its operation; an unresponsive
-proxy therefore requires a manual worker restart. Failed convergence withdraws
-availability rather than advertising an unverified port.
+Every proxy write carries a unique `operationId` on `set-port` and uses the
+caller's context capped at five seconds. A timeout or cancellation sends
+`internal:cancel-set-port {operationId}` to the same proxy, with a separate
+five-second cancellation-join deadline. Each proxy registers writes on its reader
+before dispatch, checks cancellation after listener-lock admission and before
+binding, and acknowledges cancellation only after that operation has finished.
+A late reply cannot update the broker's port. A proxy that cannot acknowledge is
+quarantined and terminated; late ready notifications cannot revive it and settings
+recovery stays blocked until a replacement is available. The parent callback join
+has a ten-second cap (one write plus one cancellation join); an unjoined callback
+also quarantines its captured proxy. Final convergence retains the same bounded,
+fenced write path. Failed convergence withdraws availability rather than advertising
+an unverified port. No client request or result shape changes.
 
 The existing authenticated control channel serves POST
 `/v1/engine-settings/{get,preview,apply}` and GET

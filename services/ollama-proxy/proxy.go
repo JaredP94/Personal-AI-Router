@@ -43,6 +43,7 @@ import (
 	"nvpair-shared/nodeactivity"
 	"nvpair-shared/noderec"
 	"nvpair-shared/prefixhash"
+	"nvpair-shared/proxyport"
 	"nvpair-shared/reach"
 	"nvpair-shared/routingmetrics"
 	"nvpair-shared/schedulerwire"
@@ -348,9 +349,10 @@ func (sc *statusCapture) FlushError() error {
 }
 
 type Proxy struct {
-	codec     *Codec
-	discovery *Discovery
-	cancel    context.CancelFunc
+	portWrites proxyport.Operations
+	codec      *Codec
+	discovery  *Discovery
+	cancel     context.CancelFunc
 
 	// httpMu guards port, the servers, the split listener, and ln across a
 	// live set-port rebind. The HTTP handlers never read port (they route by
@@ -895,8 +897,15 @@ func (p *Proxy) shutdown(ctx context.Context) {
 // naturally. A fresh `ready` notification announces the new port so the
 // orchestrator/UI learn where the proxy is now listening.
 func (p *Proxy) setPort(newPort int) error {
+	return p.setPortContext(context.Background(), newPort)
+}
+
+func (p *Proxy) setPortContext(ctx context.Context, newPort int) error {
 	p.httpMu.Lock()
 	defer p.httpMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if newPort == p.port {
 		return nil
@@ -904,6 +913,10 @@ func (p *Proxy) setPort(newPort int) error {
 	newLn, err := net.Listen("tcp", fmt.Sprintf(":%d", newPort))
 	if err != nil {
 		return fmt.Errorf("failed to bind port %d: %w", newPort, err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = newLn.Close()
+		return err
 	}
 	oldSplit := p.split
 	p.ln = newLn
@@ -2511,6 +2524,9 @@ func (p *Proxy) readLoop(ctx context.Context) error {
 }
 
 func (p *Proxy) handleMessage(msg *Message) {
+	if p.portWrites.Handle(msg, p.codec, p.setPortContext, func(port int) any { return ReadyParams{Version: Version, Port: port} }) {
+		return
+	}
 	if msg.Method == applog.SetLevelMethod {
 		resolved, err := applog.HandleSetLevelParams(msg.Params)
 		if msg.IsRequest() {
@@ -2600,26 +2616,6 @@ func (p *Proxy) handleMessage(msg *Message) {
 		log.Printf("priority snapshot set (%d nodes, %d ranks): %v", count, len(params.Ranks), params.Nodes)
 		if err := p.codec.Respond(msg.ID, map[string]int{"count": count}); err != nil {
 			log.Printf("failed to respond to node/set-priority: %v", err)
-		}
-
-	case "set-port":
-		var params struct {
-			Port int `json:"port"`
-		}
-		if err := json.Unmarshal(msg.Params, &params); err != nil {
-			p.codec.RespondError(msg.ID, -32602, "invalid params: expected {\"port\": <int>}")
-			return
-		}
-		if params.Port < 1 || params.Port > 65535 {
-			p.codec.RespondError(msg.ID, -32602, "port must be between 1 and 65535")
-			return
-		}
-		if err := p.setPort(params.Port); err != nil {
-			p.codec.RespondError(msg.ID, -32000, err.Error())
-			return
-		}
-		if err := p.codec.Respond(msg.ID, ReadyParams{Version: Version, Port: params.Port}); err != nil {
-			log.Printf("failed to respond to set-port: %v", err)
 		}
 
 	case "node/add-manual":

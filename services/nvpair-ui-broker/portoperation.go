@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -65,7 +66,7 @@ func (b *Broker) finishPortOperation(engine string) error {
 	if !ready || actual == port {
 		return nil
 	}
-	_, rpcErr, err := writeProxyPort(p, settingsJSON(map[string]int{"port": port}))
+	_, rpcErr, err := writeProxyPort(context.Background(), p, settingsJSON(map[string]int{"port": port}))
 	if err != nil {
 		return err
 	}

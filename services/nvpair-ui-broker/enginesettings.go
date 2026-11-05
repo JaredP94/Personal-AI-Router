@@ -40,6 +40,8 @@ type activeSettingsOperation struct {
 	Port         int
 	PreviousPort int
 	Callbacks    *sync.WaitGroup
+	Context      context.Context
+	Proxy        *proxyProcess
 }
 
 func settingsID() string                     { var id [16]byte; _, _ = rand.Read(id[:]); return hex.EncodeToString(id[:]) }
@@ -356,13 +358,16 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	}
 	b.setProxyLocalBackend(b.settingsProxy(engine), engine, record.Snapshot.EffectiveServerPort, false)
 	id := settingsID()
+	callbackProxy := b.settingsProxy(engine)
 	b.settingsRelayMu.Lock()
 	if b.activeSettings == nil {
 		b.activeSettings = make(map[string]activeSettingsOperation)
 	}
 	delete(b.settingsStartGrants, engine)
 	callbacks := &sync.WaitGroup{}
-	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort, PreviousPort: record.Previous.ProxyPort, Callbacks: callbacks}
+	callbackCtx, cancelCallbacks := context.WithCancel(ctx)
+	defer cancelCallbacks()
+	b.activeSettings[id] = activeSettingsOperation{Engine: engine, Port: record.Snapshot.Settings.ProxyPort, PreviousPort: record.Previous.ProxyPort, Callbacks: callbacks, Context: callbackCtx, Proxy: callbackProxy}
 	b.settingsRelayMu.Unlock()
 	configure := settings.Configure{Engine: engine, Settings: record.Snapshot.Settings, OperationID: id, Resume: record.Resume}
 
@@ -380,13 +385,25 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 		return launch, err
 	}()
 
-	// Seal callback admission, then join any in-flight unversioned proxy
-	// writes before accepting the outcome or releasing port-op ownership.
+	// Seal admission and cancel callbacks, then bound their cancellation joins.
+	// Notification delivery is not part of the borrowed port operation.
 	b.settingsRelayMu.Lock()
 	delete(b.activeSettings, id)
 	b.settingsRelayMu.Unlock()
 	b.engineConfigMu.Unlock()
-	callbacks.Wait()
+	cancelCallbacks()
+	joined := make(chan struct{})
+	go func() { callbacks.Wait(); close(joined) }()
+	joinTimer := time.NewTimer(proxyCallTimeout + portFenceTimeout)
+	select {
+	case <-joined:
+	case <-joinTimer.C:
+		if callbackProxy != nil {
+			callbackProxy.retirePortWrites()
+		}
+		err = fmt.Errorf("proxy callback cancellation could not be confirmed")
+	}
+	joinTimer.Stop()
 	b.engineConfigMu.Lock()
 
 	if err != nil {
@@ -420,6 +437,12 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	proxyReady := false
 	if proxy := b.settingsProxy(engine); proxy != nil {
 		proxyReady, record.Snapshot.EffectiveProxyPort = proxy.Status()
+		proxy.readyMu.Lock()
+		retired := proxy.portWritesRetired
+		proxy.readyMu.Unlock()
+		if retired {
+			b.finishSettingsRecoveryLocked(engine, false)
+		}
 	}
 	// An unsuccessful apply can leave the previous engine running. Restore
 	// discovery from observed runtime state, independent of the apply result.
@@ -638,7 +661,14 @@ func (b *Broker) handleEngineSettings(msg *Message) {
 }
 
 func (b *Broker) rebindSettingsProxy(ctx context.Context, engine string, port int) error {
-	p := b.settingsProxy(engine)
+	if err := b.rebindSettingsProxyOn(ctx, b.settingsProxy(engine), engine, port); err != nil {
+		return err
+	}
+	b.settingsStartupPort(engine, port)
+	return nil
+}
+
+func (b *Broker) rebindSettingsProxyOn(ctx context.Context, p *proxyProcess, engine string, port int) error {
 	if p == nil {
 		return fmt.Errorf("proxy unavailable")
 	}
@@ -646,15 +676,14 @@ func (b *Broker) rebindSettingsProxy(ctx context.Context, engine string, port in
 	// explicit rebind. The accepted journal restores these choices after restart.
 	b.setExplicitSettings(engine, true)
 	b.disableManagedSettingsFacade(engine)
-	_, rpcErr, err := writeProxyPort(p, settingsJSON(map[string]int{"port": port}))
+	_, rpcErr, err := writeProxyPort(ctx, p, settingsJSON(map[string]int{"port": port}))
 	if err != nil {
 		return err
 	}
 	if rpcErr != nil {
 		return fmt.Errorf("%s", rpcErr.Message)
 	}
-	b.settingsStartupPort(engine, port)
-	return nil
+	return ctx.Err()
 }
 
 func (b *Broker) refreshEngineSettings(ctx context.Context) {

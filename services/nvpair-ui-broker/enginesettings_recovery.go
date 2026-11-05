@@ -129,6 +129,15 @@ func (b *Broker) recoverEngineSettingsLocked(engine string) bool {
 		b.finishSettingsRecoveryLocked(engine, false)
 		return false
 	}
+	if proxy := b.settingsProxy(engine); proxy != nil {
+		proxy.readyMu.Lock()
+		retired := proxy.portWritesRetired
+		proxy.readyMu.Unlock()
+		if retired {
+			b.finishSettingsRecoveryLocked(engine, false)
+			return false
+		}
+	}
 	record := b.engineSettings[engine]
 	if record == nil || (record.Snapshot.Phase != "failed" && record.Snapshot.Phase != "applying") {
 		b.finishSettingsRecoveryLocked(engine, true)

@@ -38,12 +38,55 @@ func (b *Broker) moveManagedOllamaPort(ctx context.Context, worker *rpcWorker, p
 	if err == nil {
 		return rpcErr, nil, true
 	}
-	_, fenceErr, fenceCallErr := worker.CallNoTimeout(context.Background(), "internal:cancel-set-port", settingsJSON(map[string]string{"operationId": id}))
-	return rpcErr, err, fenceErr == nil && fenceCallErr == nil
+	return rpcErr, err, cancelManagedPortWrite(worker, id)
+}
+
+// LM Studio's startup move uses the same worker-owned cancellation join as
+// Ollama. It already owns LM Studio port-op, so only this captured worker may
+// authorize its prepare-start callback; it must never recursively recover.
+func (b *Broker) moveManagedLMStudioPort(ctx context.Context, worker *rpcWorker, port int) (json.RawMessage, *RPCError, error, bool) {
+	id := settingsID()
+	b.engineConfigMu.Lock()
+	if b.managedPortOperations == nil {
+		b.managedPortOperations = make(map[string]managedPortAuthorization)
+	}
+	b.managedPortOperations[id] = managedPortAuthorization{Engine: "lmstudio", Worker: worker}
+	b.engineConfigMu.Unlock()
+	defer func() {
+		b.engineConfigMu.Lock()
+		delete(b.managedPortOperations, id)
+		b.engineConfigMu.Unlock()
+	}()
+	result, rpcErr, err := worker.Call(ctx, "internal:set-port", settingsJSON(struct {
+		Engine      string `json:"engine"`
+		Port        int    `json:"port"`
+		OperationID string `json:"operationId"`
+	}{"lmstudio", port, id}))
+	if err == nil {
+		return result, rpcErr, nil, true
+	}
+	return result, rpcErr, err, cancelManagedPortWrite(worker, id)
+}
+
+func cancelManagedPortWrite(worker *rpcWorker, id string) bool {
+	fenceCtx, cancel := context.WithTimeout(context.Background(), portFenceTimeout)
+	defer cancel()
+	_, fenceErr, fenceCallErr := worker.CallNoTimeout(fenceCtx, "internal:cancel-set-port", settingsJSON(map[string]string{"operationId": id}))
+	if fenceErr == nil && fenceCallErr == nil {
+		return true
+	}
+	// An unconfirmed join cannot be allowed to persist after a later Apply.
+	// Quarantine the captured peer and stop its owned process; keep gates shut.
+	worker.peer.Close()
+	if worker.cmd != nil && worker.cmd.Process != nil {
+		_ = worker.cmd.Process.Kill()
+	}
+	return false
 }
 
 type managedPortAuthorization struct {
 	Engine string
+	Worker *rpcWorker
 	State  ollamaPortReconcileState
 }
 
@@ -52,7 +95,13 @@ func (b *Broker) managedPortAuthorizedLocked(engine, id string) bool {
 		return true
 	}
 	operation, ok := b.managedPortOperations[id]
-	return ok && operation.Engine == engine && operation.State == b.ollamaPortReconcileStateLocked()
+	if !ok || operation.Engine != engine {
+		return false
+	}
+	if engine == "lmstudio" {
+		return operation.Worker == b.getEngineMgr()
+	}
+	return operation.State == b.ollamaPortReconcileStateLocked()
 }
 
 // Only values that invalidate the plan belong here; snapshot sequence/health

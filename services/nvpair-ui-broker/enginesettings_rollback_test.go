@@ -21,7 +21,7 @@ func TestSettingsRollbackRelayRestoresOnlyCapturedProxyPort(t *testing.T) {
 	if err := h.b.rebindSettingsProxy(context.Background(), "omlx", candidate); err != nil {
 		t.Fatal(err)
 	}
-	h.b.activeSettings = map[string]activeSettingsOperation{"operation": {Engine: "omlx", Port: candidate, PreviousPort: previous}}
+	h.b.activeSettings = map[string]activeSettingsOperation{"operation": {Engine: "omlx", Port: candidate, PreviousPort: previous, Proxy: h.b.getOMLXProxy()}}
 	for _, tc := range []struct {
 		name, token, engine string
 		port                int

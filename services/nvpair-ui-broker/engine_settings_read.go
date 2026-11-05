@@ -65,9 +65,16 @@ func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
 			operation, ok := b.activeSettings[relay.Request.RequestID]
 			if ok && operation.Callbacks != nil {
 				operation.Callbacks.Add(1)
-				defer operation.Callbacks.Done()
 			}
 			b.settingsRelayMu.Unlock()
+			stopCancel := func() bool { return false }
+			if ok && operation.Context != nil {
+				stopCancel = context.AfterFunc(operation.Context, cancel)
+				if operation.Context.Err() != nil {
+					cancel()
+				}
+			}
+			defer stopCancel()
 			if !ok || operation.Engine != relay.Request.Engine || operation.Port != relay.Request.Settings.ProxyPort {
 				err = fmt.Errorf("unknown settings operation")
 			} else {
@@ -76,9 +83,22 @@ func (b *Broker) handleEngineSettingsRead(raw json.RawMessage) {
 					// Only the broker's captured previous port is authorized;
 					// the worker cannot nominate an arbitrary recovery binding.
 					port = operation.PreviousPort
-					b.settingsStartupPort(operation.Engine, port)
 				}
-				err = b.rebindSettingsProxy(ctx, operation.Engine, port)
+				err = b.rebindSettingsProxyOn(ctx, operation.Proxy, operation.Engine, port)
+				if err == nil {
+					// A bounded parent join may have sealed this callback while
+					// it was descheduled. Never publish intent after that fence.
+					b.settingsRelayMu.Lock()
+					if _, active := b.activeSettings[relay.Request.RequestID]; active && ctx.Err() == nil {
+						b.settingsStartupPort(operation.Engine, port)
+					} else {
+						err = fmt.Errorf("settings operation is no longer active")
+					}
+					b.settingsRelayMu.Unlock()
+				}
+			}
+			if ok && operation.Callbacks != nil {
+				operation.Callbacks.Done()
 			}
 		} else {
 			result, err = b.dispatchEngineSettings(ctx, relay.Method, relay.Request, relay.Caller)

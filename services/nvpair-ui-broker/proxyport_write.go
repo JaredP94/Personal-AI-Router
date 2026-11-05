@@ -9,24 +9,68 @@ import (
 	"fmt"
 )
 
-// Unversioned proxy writes must join their reply (or worker exit), not merely
-// a local timeout: otherwise a late bind could outlive port-op ownership.
-// Reverse configure callbacks borrow the parent operation; the parent joins
-// those callbacks before its final convergence and before releasing port-op.
-func writeProxyPort(p *proxyProcess, params json.RawMessage) (json.RawMessage, *RPCError, error) {
+// A canceled call is not a canceled write. Join the operation-ID fence on the
+// captured worker before releasing port-op; if it cannot acknowledge, retire
+// that worker rather than accepting more writes or late ready notifications.
+func writeProxyPort(ctx context.Context, p *proxyProcess, params json.RawMessage) (json.RawMessage, *RPCError, error) {
 	if p == nil || p.peer == nil {
 		return nil, nil, fmt.Errorf("proxy unavailable")
 	}
-	result, rpcErr, err := p.peer.Call(context.Background(), "set-port", params)
-	if err == nil && rpcErr == nil {
+	p.readyMu.Lock()
+	retired := p.portWritesRetired
+	p.readyMu.Unlock()
+	if retired {
+		return nil, nil, fmt.Errorf("proxy port writes unavailable")
+	}
+	var request map[string]json.RawMessage
+	if json.Unmarshal(params, &request) != nil || request == nil {
+		return nil, nil, fmt.Errorf("invalid proxy port request")
+	}
+	id := settingsID()
+	request["operationId"] = settingsJSON(id)
+	callCtx, cancel := context.WithTimeout(ctx, proxyCallTimeout)
+	defer cancel()
+	result, rpcErr, err := p.peer.Call(callCtx, "set-port", settingsJSON(request))
+	if err == nil {
+		err = callCtx.Err()
+	}
+	if err != nil {
+		fenceCtx, fenceCancel := context.WithTimeout(context.Background(), portFenceTimeout)
+		defer fenceCancel()
+		_, fenceErr, fenceCallErr := p.peer.Call(fenceCtx, "internal:cancel-set-port", settingsJSON(map[string]string{"operationId": id}))
+		if fenceErr != nil || fenceCallErr != nil {
+			p.retirePortWrites()
+		}
+		return nil, rpcErr, err
+	}
+	if rpcErr == nil {
 		var ready proxyReadyParams
 		if json.Unmarshal(result, &ready) == nil && ready.Port > 0 {
 			p.readyMu.Lock()
+			if p.portWritesRetired {
+				p.readyMu.Unlock()
+				return nil, nil, fmt.Errorf("proxy port writes unavailable")
+			}
 			p.port = ready.Port
 			p.readyMu.Unlock()
 		}
 	}
 	return result, rpcErr, err
+}
+
+// Cancellation has its own short budget: the caller may already be canceled.
+// Use the normal control-plane deadline, not an engine restart budget.
+const portFenceTimeout = proxyCallTimeout
+
+func (p *proxyProcess) retirePortWrites() {
+	p.readyMu.Lock()
+	p.portWritesRetired = true
+	p.ready = false
+	p.readyMu.Unlock()
+	p.peer.Close()
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
 }
 
 // Error readers only enqueue this operation; they never acquire port-op.

@@ -373,7 +373,7 @@ func (b *Broker) reconcileProxyPortOnReadyInOperation(boundPort int) {
 			body, _ := json.Marshal(map[string]int{"port": managedOllamaFacadePort})
 			var rpcErr *RPCError
 			var err error
-			if !call(func() { _, rpcErr, err = writeProxyPort(p, body) }) {
+			if !call(func() { _, rpcErr, err = writeProxyPort(context.Background(), p, body) }) {
 				return
 			}
 			if err != nil || rpcErr != nil {
@@ -420,7 +420,7 @@ func (b *Broker) reconcileProxyPortOnReadyInOperation(boundPort int) {
 					body, _ := json.Marshal(map[string]int{"port": fallback})
 					var moveErr *RPCError
 					var callErr error
-					if !call(func() { _, moveErr, callErr = writeProxyPort(p, body) }) {
+					if !call(func() { _, moveErr, callErr = writeProxyPort(context.Background(), p, body) }) {
 						return
 					}
 					if callErr != nil || moveErr != nil {
@@ -497,7 +497,7 @@ func (b *Broker) reconcileProxyPortOnReadyInOperation(boundPort int) {
 	}
 	var rpcErr *RPCError
 	var callErr error
-	if !call(func() { _, rpcErr, callErr = writeProxyPort(p, body) }) {
+	if !call(func() { _, rpcErr, callErr = writeProxyPort(context.Background(), p, body) }) {
 		return
 	}
 	if callErr != nil || rpcErr != nil {

@@ -87,7 +87,7 @@ func TestEngineSettingsRelayDemultiplexesPermissionAndRebind(t *testing.T) {
 		_ = requests.Respond(request.ID, map[string]bool{"value": true})
 	}()
 	_, port := h.b.getOMLXProxy().Status()
-	h.b.activeSettings = map[string]activeSettingsOperation{"operation": {Engine: "omlx", Port: port}}
+	h.b.activeSettings = map[string]activeSettingsOperation{"operation": {Engine: "omlx", Port: port, Proxy: h.b.settingsProxy("omlx")}}
 	for _, request := range []settings.Relay{
 		{ID: "permission", Method: "settings/get-engine-allow-lan-bind"},
 		{ID: "proxy", Method: "rebind", Request: settings.Request{Engine: "omlx", RequestID: "operation", Settings: settings.Config{ProxyPort: port}}},
