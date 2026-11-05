@@ -93,6 +93,14 @@ clears the error; exhaustion leaves it sticky. `nvpair-errors` cannot report its
 own death into itself, so its crash logs to stderr while still being supervised.
 Use the independent worker registry below even when that error sink is absent.
 
+## Model load profiles
+
+LM Studio per-model `engine:get-load-profile`, `engine:preview-load-profile` and
+`engine:apply-load-profile` use the same local/verified-peer settings transport.
+Go owns validation, private persistence and revision checks; the broker holds no
+settings lock across worker calls. See the [load-profile protocol](ENGINE_SETTINGS.md#per-model-lm-studio-load-options)
+for request shapes, rejection rules, pruning and nested operation deadlines.
+
 ## Engine launch settings
 
 The [node-owned settings API](ENGINE_SETTINGS.md) exposes

@@ -19,7 +19,8 @@ import type {
 import {
     MODULAR_CLUSTER_MANAGER_PORT,
     MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
-    MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
+    MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS,
+    MODULAR_LOAD_PROFILE_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { getEngineHubModels, lookupEngineHubModel } from '@/electron/model-hub'
@@ -39,7 +40,9 @@ import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from '
 import {
     parseEngineSettings,
     parseEngineSettingsPreview,
-    parseEngineSettingsReceipt
+    parseEngineSettingsReceipt,
+    parseLoadProfile,
+    parseLoadProfilePreview
 } from './engine-settings'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
@@ -1293,6 +1296,33 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'cluster:abandon-if-solo': () => handleClusterAbandonIfSolo(),
 
     'engines:get-initial': () => getModularBridgeState().getEngineInitialState(),
+    'engines:get-load-profile': async payload =>
+        parseLoadProfile(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:get-load-profile',
+                payload ? { ...payload } : undefined,
+                MODULAR_LOAD_PROFILE_TIMEOUT_MS
+            )
+        ),
+    'engines:preview-load-profile': async payload =>
+        parseLoadProfilePreview(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:preview-load-profile',
+                payload ? { ...payload } : undefined,
+                MODULAR_LOAD_PROFILE_TIMEOUT_MS
+            )
+        ),
+    'engines:apply-load-profile': async payload =>
+        parseLoadProfile(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:apply-load-profile',
+                payload ? { ...payload } : undefined,
+                MODULAR_LOAD_PROFILE_TIMEOUT_MS
+            )
+        ),
     'engines:get-settings': async payload =>
         parseEngineSettings(
             await getModularSupervisor().callProcess(

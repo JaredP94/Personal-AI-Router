@@ -55,6 +55,129 @@ PAIR-owned proxy port can change. Go rejects server-port, argument and
 environment edits with a message directing the user to the oMLX app. A proxy
 rebind never stops or restarts that app, including adopted running instances.
 
+## Per-model LM Studio load options
+
+The same node-owned settings surface layers model load profiles over the engine
+launch configuration. `engine:get-load-profile`, `engine:preview-load-profile`
+and `engine:apply-load-profile` take `{nodeId?, engine:"lmstudio", model}`;
+preview/apply additionally take `loadText`, `expectedRevision`, optional `format`
+(`pair-arguments-v1`), and apply requires `requestId`. Get/apply return
+`{nodeId,engine,model,revision,loadText,format,editable,reason?,loadState?}`.
+`loadState` is advisory: `unloaded`, `loaded` (last submitted tuning matches),
+`reload-required` (different or unverified tuning), or `unknown` (listing failed
+or lifecycle observation superseded). `reason` supplies a value-free row message.
+It never establishes instance ownership or permits automatic unload. Preview returns
+`{revision,loadText,format,load_args,errors}`. A stale revision or a reused request
+ID with different input is refused. Apply persists options for the next load;
+it does not interrupt a running model. Clear the text to use vendor defaults.
+The desktop previews before Apply; validation and persistence remain in Go.
+
+Load profiles use a short **allowlist**, derived from `lms load --help` in
+LM Studio CLI **0.4.1 (43d4b26)**, bundled with **llmster 0.0.27-1** from the
+manifest's rolling installer (not a pinned vendor version):
+
+| Option | Accepted value |
+| --- | --- |
+| `--gpu` | `off`, `max`, or a decimal ratio from 0 through 1 |
+| `--context-length`, `--parallel`, `--ttl` | decimal integer 1–2147483647 (TTL in seconds) |
+| `--auto`, `--speculative-draft-mtp` | explicit `true` or `false` |
+| `--speculative-draft-max-tokens` | decimal integer 1–2147483647 |
+| `--speculative-draft-min-tokens` | decimal integer 0–2147483647, no greater than an explicit maximum |
+| `--speculative-draft-min-continue-probability` | decimal ratio from 0 through 1 |
+
+Both `--flag value` and `--flag=value` are accepted. Booleans require values
+in PAIR text; the CLI adapter emits `--auto` only for true and maps false MTP
+to `--no-speculative-draft-mtp`. Auto=true conflicts with explicit GPU/context
+options. Speculative token/probability settings require MTP=true. Draft-model
+selection is not allowed. The CLI still checks model/runtime support at load time.
+
+Unlike opaque engine launch arguments, load options are per-model and run on
+every load: this narrower surface makes a short allowlist practical, and a leaked
+control would be repeated on every load. Unknown options (including
+`--engine-cwd` and `--no-engine-cwd`), abbreviations, short flags, repeated
+options, a bare `--`, positional arguments, non-ASCII text, and invalid typed
+values are rejected. One error identifies the offending option, never its value.
+PAIR owns model identity; server, resource/file/directory and execution controls
+are unavailable. Previously saved options that no longer validate are reported
+as invalid, never silently applied, discarded or replaced with defaults.
+Neither submitted text, argv, nor CLI output is copied into standard logs.
+
+The engine manager atomically saves private `lmstudio-load-profiles.json` beside
+`engine-state.json` (file `0600`, newly created parent `0700`). Corrupt or unreadable
+profiles refuse the load rather than trying defaults. A failed profiled CLI load
+returns one value-free error and never falls back. All local and authenticated
+remote model loads share this path. Before every load or restart restoration,
+PAIR queries `lms ps --json` with a ten-second deadline and a 1 MiB output limit.
+Failed, oversized or malformed listings report a value-free error and prevent
+blind loading. Linked-device entries are not local resident instances.
+
+LM Studio's HTTP server stop leaves models in memory. PAIR pins the model key as
+its CLI identifier, reuses an already resident matching identifier, and **never
+unloads a model automatically**, even after a profile change. Identifiers are
+reusable: a TTL expiry or external unload followed by a user load can replace
+PAIR's instance between polls. No remembered identifier proves ownership.
+
+Read-only evidence for the targeted CLI **0.4.1 (43d4b26)**:
+- [`src/subcommands/list.ts`, JSON branch of `ps`](https://github.com/lmstudio-ai/lms/blob/43d4b26/src/subcommands/list.ts#L473-L520)
+  explicitly destructures away `instanceReference` for every model type. The
+  bundled llmster 0.0.27-1 executable has the same code.
+- [`src/subcommands/load.ts`, `loadModel`](https://github.com/lmstudio-ai/lms/blob/43d4b26/src/subcommands/load.ts#L724-L761)
+  prints only the user-selectable identifier, not the immutable reference.
+- The [REST models list](https://lmstudio.ai/docs/developer/rest/list) exposes
+  `loaded_instances[].id`; its example is the model identifier, not an immutable
+  generation token. The [REST load response](https://lmstudio.ai/docs/developer/rest/load)
+  similarly calls that reusable model identifier `instance_id`.
+The SDK internally has an immutable `instanceReference`, but these CLI/REST
+surfaces do not expose it. PAIR does not infer one from an identifier, TTL, config
+or timestamps, and does not add a private SDK protocol dependency.
+
+After a PAIR-managed engine restart (also after deleting a different model),
+resident instances are kept without duplicate loads; missing models in the
+session-local restoration set load using current profiles. That set is intent,
+not ownership. Explicit unload/delete removes that intent. Successful loads
+record submitted tuning only for advisory comparison, cleared when an
+authoritative residency query sees disappearance, on explicit unload/delete,
+or engine stop/exit. Passive observations are lifecycle-revision fenced.
+Unobserved replacement cannot grant unload permission because no automatic
+unload path exists. Profiles persist across PAIR/machine restarts; a fresh
+manager session still does not automatically load models.
+
+Desktop displays **Loaded with different options — reload to apply** next to the
+model after a differing save; unverified residency says **Loaded options are
+unverified — reload to apply**. Failed listing is reported as `unknown`, not as
+unloaded. Use existing **Eject**, then **Load**, to apply saved options explicitly.
+The collapsed row reads advisory state when loaded, after lifecycle activity,
+and after editor reads/saves; it does not introduce another polling loop.
+
+Successful deletion removes its profile before restarting. Orphan policy: prune
+profiles only after a successful authoritative LM Studio model-list query, never
+when the engine is stopped, unavailable or returns malformed inventory. Edits
+newer than an in-flight inventory's captured generation are retained until the
+next successful inventory, fencing stale pruning. Profile reads/writes release
+the store mutex before worker I/O, engine calls or notifications.
+
+The authenticated channel serves POST `/v1/engine-settings/{get,preview,apply}-load-profile`.
+Only currently verified peers may edit; manual/unverified devices are refused,
+and the target never forwards another hop. Persistence calls have a **5-second**
+manager budget, inside the **10-second** peer request, **15-second** broker relay,
+and **20-second** desktop envelope. Canceled lock waits and expired writes are
+fenced before execution/atomic rename; late responses cannot update a replacement
+worker or a newer editor request. Captured-worker identity is checked again
+before returning a profile response. CLI output goes directly to the null device,
+so a descendant retaining an output descriptor cannot prolong the CLI wait.
+Model mutation shares a six-minute manager
+budget (including a bounded lifecycle-lock wait), inside seven-minute remote and
+eight-minute broker budgets. Desktop's awaited LM Studio deletion has nine minutes;
+other engines' loading and timeouts are unchanged. Each CLI load has at most four
+minutes (including its ten-second listing); a restart's restoration batch shares
+five minutes, within its caller's
+remaining budget. Each CLI wait has a one-second descendant-pipe cleanup cap,
+strictly within the next outer budget. Cancellation is checked after listing,
+before commands, and before recording submitted tuning, fencing late completions.
+Profile get/apply residency reads share the five-second profile budget, release
+the store mutex before listing, and report `unknown` without undoing a saved edit.
+These budgets assume functioning local storage.
+
 ## Apply deadline
 
 `services/shared/enginesettings/timeouts.go` defines the broker `ApplyBudget`:

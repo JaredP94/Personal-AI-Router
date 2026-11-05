@@ -15,6 +15,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 // remoteParam is the shared input for the engine:remote-* methods. Fields not
@@ -55,6 +57,11 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 	var p remoteParam
 	if !m.parse(msg, &p) {
 		return
+	}
+	if p.Engine == "lmstudio" && (msg.Method == "engine:remote-load-model" || msg.Method == "engine:remote-unload-model" || msg.Method == "engine:remote-delete-model") {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, settings.LMStudioModelRemoteBudget)
+		defer cancel()
 	}
 	if p.Node == "" {
 		m.codec.RespondError(msg.ID, -32602, "node is required")

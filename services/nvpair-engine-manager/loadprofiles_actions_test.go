@@ -1,0 +1,531 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	settings "nvpair-shared/enginesettings"
+)
+
+func profileActionExecutor(t *testing.T) (*Executor, string, string) {
+	t.Helper()
+	capture := filepath.Join(t.TempDir(), "argv.jsonl")
+	t.Setenv("PAIR_TEST_PROFILE_CAPTURE", capture)
+	bin := filepath.Join(t.TempDir(), "profile-cli"+filepath.Ext(fakeEngineBin))
+	if output, err := exec.Command("go", "build", "-o", bin, "./testdata/fakeprofilecli").CombinedOutput(); err != nil {
+		t.Fatalf("build profile CLI fixture: %v %s", err, output)
+	}
+	root := t.TempDir()
+	m := deleteModelRestartManifest(t, root, fakeEngineBin)
+	m.Engine = "lmstudio"
+	m.Actions["load_model"] = Action{Cmd: []string{bin, "load", "{model}"}}
+	m.Actions["unload_model"] = Action{Cmd: []string{bin, "unload", "{model}"}}
+	ex := newTestExecutor(t, m)
+	t.Cleanup(func() { _ = ex.Stop("lmstudio") })
+	return ex, capture, root
+}
+func saveTestProfile(t *testing.T, e *Executor, model, text string) {
+	t.Helper()
+	snap, err := e.GetLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.ApplyLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: model, LoadText: text, ExpectedRevision: snap.Revision, RequestID: fmt.Sprintf("%s-%d", model, snap.Revision)})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+func capturedProfileArgs(t *testing.T, path string) [][]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := [][]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var row []string
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, row)
+	}
+	return result
+}
+func capturedProfileLoads(t *testing.T, path string) [][]string {
+	t.Helper()
+	loads := [][]string{}
+	for _, row := range capturedProfileArgs(t, path) {
+		if len(row) > 0 && row[0] == "load" {
+			loads = append(loads, row)
+		}
+	}
+	return loads
+}
+
+func profileResidents(t *testing.T, capture string) []map[string]json.RawMessage {
+	t.Helper()
+	data, err := os.ReadFile(capture + ".models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &models); err != nil {
+		t.Fatal(err)
+	}
+	return models
+}
+
+func TestLoadProfileListingOutputIsBounded(t *testing.T) {
+	var output lmsPSOutput
+	// LimitReader hides strings.Reader's WriterTo, exercising the same generic
+	// copy used by exec for a child stdout pipe. No promoted ReadFrom may bypass
+	// the writer's byte limit.
+	source := io.LimitReader(strings.NewReader(strings.Repeat("x", 2*1024*1024)), 2*1024*1024)
+	if _, err := io.Copy(&output, source); err == nil || output.buffer.Len() > 1024*1024 {
+		t.Fatal("listing stdout was not bounded")
+	}
+}
+
+func TestLoadProfileRestartKeepsResidentInstance(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	ctx := context.Background()
+	if err := e.Start(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu max")
+	if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	// A new revision with equivalent CLI tuning must not force replacement.
+	saveTestProfile(t, e, "keep", "--gpu=max")
+	if err := e.Restart(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(profileResidents(t, capture)); got != 1 {
+		t.Fatalf("HTTP restart duplicated resident instance: %d", got)
+	}
+}
+
+func TestLoadProfileRestartRestoresMissingInstance(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	ctx := context.Background()
+	if err := e.Start(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu max")
+	if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capture+".models", []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu off")
+	if err := e.Restart(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(profileResidents(t, capture)); got != 1 {
+		t.Fatalf("missing model not restored: %d", got)
+	}
+	for _, row := range capturedProfileArgs(t, capture) {
+		if row[0] == "unload" {
+			t.Fatalf("unloaded a nonresident instance: %v", row)
+		}
+	}
+	rows := capturedProfileLoads(t, capture)
+	if len(rows) != 2 || !reflect.DeepEqual(rows[1], []string{"load", "keep", "--identifier", "keep", "--gpu", "off"}) {
+		t.Fatalf("restore omitted current profile: %v", rows)
+	}
+}
+
+func TestLoadProfileExistingExternalIdentifierIsNotClaimed(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	ctx := context.Background()
+	data := []byte(`[{"identifier":"keep","modelKey":"keep","deviceIdentifier":null}]`)
+	if err := os.WriteFile(capture+".models", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Start(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu max")
+	if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu off")
+	if err := e.Restart(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	rows := capturedProfileArgs(t, capture)
+	if !reflect.DeepEqual(rows, [][]string{{"ps", "--json"}}) {
+		t.Fatalf("external instance was claimed or mutated: %v", rows)
+	}
+	st, _ := e.state("lmstudio")
+	st.mu.Lock()
+	owned := len(st.loadModels)
+	st.mu.Unlock()
+	if owned != 0 {
+		t.Fatal("external instance was added to PAIR's restoration set")
+	}
+}
+
+func TestLoadProfileListingCancellationIsBoundedAndFenced(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "hold-list")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := e.ModelLoad(ctx, "lmstudio", "keep"); done <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(capture + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("listing did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != profiledListFailed {
+			t.Fatalf("canceled listing: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("listing retained a descendant's output pipe")
+	}
+	if rows := capturedProfileArgs(t, capture); !reflect.DeepEqual(rows, [][]string{{"ps", "--json"}}) {
+		t.Fatalf("late listing caused model mutation: %v", rows)
+	}
+	st, _ := e.state("lmstudio")
+	st.mu.Lock()
+	owned := len(st.loadModels)
+	st.mu.Unlock()
+	if owned != 0 {
+		t.Fatal("canceled listing claimed model ownership")
+	}
+}
+
+func TestLoadProfileChangedKeepsResidentUntilExplicitReload(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	ctx := context.Background()
+	if err := e.Start(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu max")
+	if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(capture + ".models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same model also has an external instance, which must survive.
+	data = append(data[:len(data)-1], []byte(`,{"identifier":"external-keep","modelKey":"keep","deviceIdentifier":null}]`)...)
+	if err := os.WriteFile(capture+".models", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu off")
+	if err := e.Restart(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	models := profileResidents(t, capture)
+	if len(models) != 2 || string(models[0]["identifier"]) != `"keep"` || string(models[1]["identifier"]) != `"external-keep"` {
+		t.Fatalf("restart mutated resident instances: %s", models)
+	}
+	rows := capturedProfileArgs(t, capture)
+	unloads := 0
+	for _, row := range rows {
+		if row[0] == "unload" {
+			unloads++
+			if !reflect.DeepEqual(row, []string{"unload", "keep"}) {
+				t.Fatalf("unloaded another identifier: %v", row)
+			}
+		}
+	}
+	if unloads != 0 || len(capturedProfileLoads(t, capture)) != 1 {
+		t.Fatalf("profile change automatically reloaded a resident instance: %v", rows)
+	}
+	if _, err := e.ModelUnload(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	loads := capturedProfileLoads(t, capture)
+	if !reflect.DeepEqual(loads[len(loads)-1], []string{"load", "keep", "--identifier", "keep", "--gpu", "off"}) {
+		t.Fatalf("explicit reload did not apply changed profile: %v", loads)
+	}
+}
+
+func TestLoadProfileListingFailureDoesNotLoadBlindly(t *testing.T) {
+	for _, mode := range []string{"fail-list", "malformed-list", "oversized-list"} {
+		t.Run(mode, func(t *testing.T) {
+			e, capture, _ := profileActionExecutor(t)
+			ctx := context.Background()
+			if err := e.Start(ctx, "lmstudio"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PAIR_TEST_PROFILE_MODE", mode)
+			if err := e.Restart(ctx, "lmstudio"); err == nil || !strings.Contains(err.Error(), "list") || strings.Contains(err.Error(), "echoed-private-value") {
+				t.Fatalf("listing failure not safely reported: %v", err)
+			}
+			if got := len(profileResidents(t, capture)); got != 1 {
+				t.Fatalf("blind load after listing failure: %d", got)
+			}
+		})
+	}
+}
+
+func TestLoadProfileEveryLocalRemoteAndRestartLoad(t *testing.T) {
+	e, capture, root := profileActionExecutor(t)
+	ctx := context.Background()
+	if err := e.Start(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu max --context-length 200000 --parallel 2")
+	if result, err := e.ModelLoad(ctx, "lmstudio", "keep"); err != nil || string(result) != "null" {
+		t.Fatalf("load returned private output: %s %v", result, err)
+	}
+	if err := e.Restart(ctx, "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	// The authenticated route uses the same model-load adapter as a remote peer.
+	request := httptest.NewRequest(http.MethodPost, controlLoadPath, strings.NewReader(`{"engine":"lmstudio","model":"keep"}`))
+	response := httptest.NewRecorder()
+	(&controlServer{exec: e}).handleLoad(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("remote load: %s", response.Body.String())
+	}
+	if err := os.MkdirAll(filepath.Join(root, "gone"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "gone", "--gpu off")
+	if _, err := e.ModelLoad(ctx, "lmstudio", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ModelDelete(ctx, "lmstudio", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	rows := capturedProfileLoads(t, capture)
+	keep := []string{"load", "keep", "--identifier", "keep", "--gpu", "max", "--context-length", "200000", "--parallel", "2"}
+	if len(rows) != 2 {
+		t.Fatalf("load count = %d, want 2 (resident loads must be reused)", len(rows))
+	}
+	if !reflect.DeepEqual(rows[0], keep) || !reflect.DeepEqual(rows[1], []string{"load", "gone", "--identifier", "gone", "--gpu", "off"}) {
+		t.Fatalf("load did not apply profile: %v", rows)
+	}
+	snap, err := e.GetLoadProfile(ctx, settings.Request{Engine: "lmstudio", Model: "gone"})
+	if err != nil || snap.LoadText != "" {
+		t.Fatal("delete did not remove profile")
+	}
+}
+func TestLoadProfileFailureHasNoFallbackAndNoPrivateOutput(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	saveTestProfile(t, e, "private-model", "--gpu max")
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "fail")
+	_, err := e.ModelLoad(context.Background(), "lmstudio", "private-model")
+	if err == nil || strings.Contains(err.Error(), "echoed-private-value") || strings.Contains(err.Error(), "private-model") {
+		t.Fatalf("unsafe failure: %v", err)
+	}
+	if rows := capturedProfileLoads(t, capture); len(rows) != 1 || rows[0][4] != "--gpu" {
+		t.Fatal("failed profile fell back or was omitted")
+	}
+}
+func TestLoadProfileBooleanCLIArguments(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	for i, text := range []string{"--auto true", "--auto=false", "--speculative-draft-mtp=true", "--speculative-draft-mtp false"} {
+		model := fmt.Sprintf("m%d", i)
+		saveTestProfile(t, e, model, text)
+		if _, err := e.ModelLoad(context.Background(), "lmstudio", model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := [][]string{{"load", "m0", "--identifier", "m0", "--auto"}, {"load", "m1", "--identifier", "m1"}, {"load", "m2", "--identifier", "m2", "--speculative-draft-mtp"}, {"load", "m3", "--identifier", "m3", "--no-speculative-draft-mtp"}}
+	if got := capturedProfileLoads(t, capture); !reflect.DeepEqual(got, want) {
+		t.Fatalf("boolean adapter: %v", got)
+	}
+}
+
+func TestLoadProfileRestoreFailureFailsRestart(t *testing.T) {
+	e, _, _ := profileActionExecutor(t)
+	if err := e.Start(context.Background(), "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu max")
+	if _, err := e.ModelLoad(context.Background(), "lmstudio", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	saveTestProfile(t, e, "keep", "--gpu off")
+	// Restoration only loads a missing instance; a resident is never replaced.
+	st, _ := e.state("lmstudio")
+	cli := st.manifest.Actions["load_model"].Cmd[0]
+	if err := exec.Command(cli, "unload", "keep").Run(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "fail")
+	if err := e.Restart(context.Background(), "lmstudio"); err == nil || err.Error() != profiledLoadFailed {
+		t.Fatalf("restore failure not reported: %v", err)
+	}
+}
+func TestLoadProfileCanceledApplyCannotPersistLate(t *testing.T) {
+	e := &Executor{baseDir: t.TempDir()}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	e.loadProfilesMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.ApplyLoadProfile(ctx, settings.Request{Engine: "lmstudio", Model: "m", LoadText: "--gpu max", RequestID: "canceled"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled write succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lock wait was unbounded")
+	}
+	e.loadProfilesMu.Unlock()
+	snap, err := e.GetLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: "m"})
+	if err != nil || snap.Revision != 0 || snap.LoadText != "" {
+		t.Fatal("late canceled write persisted")
+	}
+}
+func TestLoadProfileRunningCLIWaitIsBounded(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	saveTestProfile(t, e, "m", "--ttl 60")
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "hold")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := e.ModelLoad(ctx, "lmstudio", "m"); done <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(capture + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("hanging CLI fixture did not become ready")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled CLI load succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CLI wait retained a descendant's output pipe after cancellation")
+	}
+	rows := capturedProfileLoads(t, capture)
+	if len(rows) != 1 || rows[0][4] != "--ttl" {
+		t.Fatal("hanging CLI fixture was not invoked")
+	}
+}
+
+func TestLoadProfileInventoryPrunesOnlyAfterSuccessfulQuery(t *testing.T) {
+	e, _, _ := profileActionExecutor(t)
+	st, _ := e.state("lmstudio")
+	st.manifest.Actions["list_models"] = Action{HTTP: &ActionHTTP{Method: "GET", Path: "/api/tags"}, Result: &ActionResult{Array: "models", Field: "name"}}
+	saveTestProfile(t, e, "llama3.2:1b", "--gpu max")
+	saveTestProfile(t, e, "gone", "--parallel 2")
+	// A stopped engine contributes no authoritative inventory, so retain both.
+	_, _ = e.modelsResult(context.Background())
+	snap, _ := e.GetLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: "gone"})
+	if snap.LoadText == "" {
+		t.Fatal("unknown inventory pruned configuration")
+	}
+	if err := e.Start(context.Background(), "lmstudio"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.modelsResult(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = e.GetLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: "gone"})
+	if snap.LoadText != "" {
+		t.Fatal("authoritative inventory did not prune absent model")
+	}
+	snap, _ = e.GetLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: "llama3.2:1b"})
+	if snap.LoadText != "--gpu max" {
+		t.Fatal("inventory pruned a present model")
+	}
+}
+
+func TestLoadProfilePersistenceFailurePreservesPreviousChoice(t *testing.T) {
+	e, _, _ := profileActionExecutor(t)
+	saveTestProfile(t, e, "keep", "--gpu max")
+	path := filepath.Join(e.baseDir, "lmstudio-load-profiles.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: "keep", LoadText: "--gpu off", RequestID: "blocked", ExpectedRevision: 1}); err == nil {
+		t.Fatal("failed save reported success")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".saved", path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(data, after) {
+		t.Fatal("failed persistence changed previous profile")
+	}
+}
+
+func TestLoadProfileQueuedLoadCancellationIsFenced(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	st, _ := e.state("lmstudio")
+	st.lockOperation()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := e.ModelLoad(ctx, "lmstudio", "m"); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled queued load succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued load wait unbounded")
+	}
+	st.unlockOperation()
+	if _, err := os.Stat(capture); !os.IsNotExist(err) {
+		t.Fatal("canceled queued load executed late")
+	}
+}
+
+func TestLoadProfilesOtherEnginesRejected(t *testing.T) {
+	e, _, _ := profileActionExecutor(t)
+	for _, engine := range []string{"ollama", "omlx"} {
+		if _, err := e.ApplyLoadProfile(context.Background(), settings.Request{Engine: engine, Model: "m", LoadText: "--gpu max", RequestID: "one"}); err == nil {
+			t.Fatalf("accepted %s", engine)
+		}
+	}
+}

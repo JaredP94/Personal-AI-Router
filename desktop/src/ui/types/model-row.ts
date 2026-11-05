@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ReactNode } from 'react'
 import type { ModelItem } from '@/ui/types/engine-info'
 import type { EngineCapabilityFlags, EngineProgress, ModelExpiry } from '@/shared/types/engines'
 import type { EngineCaps } from '@/ui/types/engine-manifest'
@@ -14,6 +15,7 @@ export type ModelRowDropdownControl = {
 
 export interface ModelRowProps {
     model: ModelItem
+    loadOptions?: ReactNode
     isRunning: boolean
     /** Static UI metadata (which controls exist at all). */
     capabilities: EngineCaps

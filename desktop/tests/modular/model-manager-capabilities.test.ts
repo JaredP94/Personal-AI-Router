@@ -9,6 +9,8 @@ import type { EngineCapabilityFlags, EngineType } from '@/shared/types/engines'
 import type { BackendInfo, ModelItem } from '@/ui/types/engine-info'
 import { ModelManager } from '@/ui/components/ModelManager/ModelManager'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
+import { useConnectionStore } from '@/ui/stores/connection.store'
+import { useNodesStore } from '@/ui/stores/nodes.store'
 
 const MODEL: ModelItem = {
     name: 'publisher/demo',
@@ -61,7 +63,7 @@ function report(nodeId: string, engineType: EngineType, flags: EngineCapabilityF
     act(() => useEngineStatusStore.setState({ statusByNode }))
 }
 
-function render(nodeId = 'local', engineType: EngineType = 'lm-studio'): void {
+function render(nodeId = 'local', engineType: EngineType = 'lm-studio', downloaded = true): void {
     const backend: BackendInfo = {
         type: engineType,
         displayName: engineType === 'lm-studio' ? 'LM Studio' : 'oMLX',
@@ -69,7 +71,7 @@ function render(nodeId = 'local', engineType: EngineType = 'lm-studio'): void {
         processStatus: 'running',
         port: 1234,
         proxyPort: 54301,
-        models: [MODEL]
+        models: [{ ...MODEL, downloaded }]
     }
     act(() => root.render(createElement(ModelManager, { backend, nodeId })))
 }
@@ -108,6 +110,7 @@ describe('ModelManager reported capability gates', () => {
         })
         vi.stubGlobal('pairApi', { engines: { deleteModel, pullModel } })
         useEngineStatusStore.setState({ statusByNode: new Map() })
+        useConnectionStore.setState({ connected: true, selfId: 'local' })
         container = document.createElement('div')
         document.body.appendChild(container)
         root = createRoot(container)
@@ -119,7 +122,54 @@ describe('ModelManager reported capability gates', () => {
         Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
         Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
         useEngineStatusStore.setState({ statusByNode: new Map() })
+        useConnectionStore.setState({ connected: false, selfId: null })
+        useNodesStore.setState({ nodes: new Map() })
         vi.unstubAllGlobals()
+    })
+
+    it('includes Load options in downloaded local LM Studio model rows only', () => {
+        report('local', 'lm-studio', supported)
+        render()
+        expect(container.textContent).toContain('Load options')
+        render('local', 'lm-studio', false)
+        expect(container.textContent).not.toContain('Load options')
+        report('local', 'omlx', supported)
+        render('local', 'omlx')
+        expect(container.textContent).not.toContain('Load options')
+    })
+
+    it('includes Load options for a verified peer model, but not an unverified preview', () => {
+        useNodesStore.setState({
+            nodes: new Map([
+                [
+                    'peer',
+                    {
+                        id: 'peer',
+                        hostUuid: 'peer',
+                        peerRecordId: 'proof',
+                        identityVerification: 'verified',
+                        name: 'Peer',
+                        ipAddress: '192.0.2.10',
+                        port: 14318,
+                        allIpAddresses: [],
+                        status: 'active',
+                        os: 'Linux',
+                        topology: {
+                            gpus: [],
+                            cpu: { model: '', cores: 0, threads: 0 },
+                            ram: 0,
+                            storage: []
+                        }
+                    }
+                ]
+            ])
+        })
+        report('peer', 'lm-studio', supported)
+        render('peer')
+        expect(container.textContent).toContain('Load options')
+        report('preview:claim', 'lm-studio', supported)
+        render('preview:claim')
+        expect(container.textContent).not.toContain('Load options')
     })
 
     it('requires confirmation before LM Studio delete and sends nothing on cancel', () => {

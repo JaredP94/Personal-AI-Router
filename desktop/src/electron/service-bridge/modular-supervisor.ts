@@ -36,6 +36,7 @@ import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_MODEL_ACTION_TIMEOUT_MS,
+    MODULAR_LMSTUDIO_MODEL_ACTION_TIMEOUT_MS,
     MODULAR_STARTUP_READY_TIMEOUT_MS,
     isModularLogLevel,
     type ModularLogLevel
@@ -2187,7 +2188,9 @@ class ModularSupervisor {
                 'broker',
                 'engine:action',
                 { engine, action: 'delete_model', params: deleteModelParams(engine, model) },
-                MODULAR_MODEL_ACTION_TIMEOUT_MS
+                engine === 'lmstudio'
+                    ? MODULAR_LMSTUDIO_MODEL_ACTION_TIMEOUT_MS
+                    : MODULAR_MODEL_ACTION_TIMEOUT_MS
             )
         } catch (err) {
             const detail = getErrorString(err)

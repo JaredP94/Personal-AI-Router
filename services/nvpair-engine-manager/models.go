@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -115,16 +116,30 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 				return
 			}
 			if listSpec != nil {
+				var profileGeneration uint64
+				if name == "lmstudio" {
+					profileGeneration = e.loadProfileGeneration()
+				}
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
 					slog.Debug("engine:models list_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, listSpec); ok {
 					result.models = models
 					result.modelsOK = true
+					if name == "lmstudio" {
+						if err := e.pruneLoadProfiles(ctx, models, profileGeneration); err != nil {
+							result.statusErr = err
+						}
+					}
 				} else {
 					slog.Debug("engine:models list_models returned an invalid inventory", "engine", name)
 				}
 			}
 			if loadedSpec != nil {
+				// Capture before I/O; late inventory must not erase a newer load.
+				state, _ := e.state(name)
+				state.mu.Lock()
+				revision := state.revision
+				state.mu.Unlock()
 				if raw, err := e.Action(ctx, name, "loaded_models", nil); err != nil {
 					slog.Debug("engine:models loaded_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, loadedSpec); ok {
@@ -133,6 +148,17 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 					// "unknown". An action or shape error leaves loadedOK false.
 					result.loaded = models
 					result.loadedOK = true
+					if name == "lmstudio" && ctx.Err() == nil {
+						state.mu.Lock()
+						if state.revision == revision && state.opDone == nil {
+							for model := range state.loadModels {
+								if !slices.Contains(models, model) {
+									delete(state.loadModels, model)
+								}
+							}
+						}
+						state.mu.Unlock()
+					}
 				} else {
 					slog.Debug("engine:models loaded_models returned an invalid inventory", "engine", name)
 				}

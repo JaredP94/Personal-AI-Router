@@ -74,6 +74,12 @@ type engineState struct {
 	healthStop context.CancelFunc
 	// startCancel lets StopAll unblock doStart before waiting on opMu.
 	startCancel context.CancelFunc
+	// Observed load arguments are advisory, never evidence of instance ownership.
+	// Cleared on disappearance/engine stop; protected by mu.
+	loadModels map[string]lmsLoadedModel
+	// Session-local restoration intent survives HTTP-server stop, unlike the
+	// instance observations. Restoring never unloads a resident instance.
+	restoreModels map[string]bool
 }
 
 // lockOperation marks the entire serialized operation, including external I/O.
@@ -99,6 +105,7 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	loadProfilesMu sync.Mutex // disk state only; never held across engine calls or notifications
 	settingsHub    settings.Hub
 	settingsParent func(context.Context, string, settings.Request, string) (json.RawMessage, error)
 	reg            *Registry

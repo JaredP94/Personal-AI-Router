@@ -32,6 +32,12 @@ import type {
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import type {
+    LoadProfileTarget,
+    LoadProfileRequest,
+    LoadProfileSnapshot,
+    LoadProfilePreview
+} from '@/shared/types/load-profile'
+import type {
     EngineSettingsTarget,
     EngineSettingsRequest,
     EngineSettingsSnapshot,
@@ -132,6 +138,9 @@ export interface WsInvokeChannelMap {
 
     // Engines
     'engines:get-initial': { request: void; response: EngineInitialState }
+    'engines:get-load-profile': { request: LoadProfileTarget; response: LoadProfileSnapshot }
+    'engines:preview-load-profile': { request: LoadProfileRequest; response: LoadProfilePreview }
+    'engines:apply-load-profile': { request: LoadProfileRequest; response: LoadProfileSnapshot }
     'engines:get-settings': { request: EngineSettingsTarget; response: EngineSettingsSnapshot }
     'engines:preview-settings': { request: EngineSettingsRequest; response: EngineSettingsPreview }
     'engines:apply-settings': { request: EngineSettingsRequest; response: EngineSettingsReceipt }

@@ -212,6 +212,10 @@ Requests (caller → service):
 | `engine:configured-ports` | — | `{ engines: [{ engine, port }] }`, including stopped engines |
 | `engine:configure-launch` | `{ engine, settings, operationId, resume? }` | `LaunchState` after validation/persistence/rebind/restart (internal) |
 | `engine:remote-get-settings`, `engine:remote-preview-settings`, `engine:remote-apply-settings` | settings `Request` including `nodeId` | target-owned snapshot, preview or receipt via verified pinned peer |
+| `engine:get-load-profile` | `{engine:"lmstudio",model}` | revisioned per-model load options snapshot |
+| `engine:preview-load-profile` | `{engine:"lmstudio",model,loadText,expectedRevision,format?}` | normalized literal argv (`load_args`) and value-free field errors, no mutation |
+| `engine:apply-load-profile` | `{engine:"lmstudio",model,loadText,expectedRevision,requestId,format?}` | atomically persisted snapshot; affects the next load, not the current resident model |
+| `engine:remote-get-load-profile`, `engine:remote-preview-load-profile`, `engine:remote-apply-load-profile` | same request plus remote `nodeId` | verified-peer settings transport; no manual/unverified targets |
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy. An HTTP action waits 30 s for the engine's response headers unless its manifest declares `timeout_s` (seconds); Ollama's `run_model`, oMLX's `load_model` and `chat`, and LM Studio's `chat` declare 600, because a cold model load or a long prefill sends nothing until it finishes |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
@@ -224,6 +228,38 @@ Requests (caller → service):
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
+
+### Per-model LM Studio load options
+
+The [load-profile protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md#per-model-lm-studio-load-options)
+layers literal per-model options on the existing engine settings flow. Profiles
+are private node-local `0600` configuration beside `engine-state.json`. Every
+PAIR-initiated LM Studio load, including verified-peer loads and restoration of
+this session's PAIR-loaded models after restart, uses the saved argv. Each load
+first checks the daemon's resident identifiers with bounded `lms ps --json`.
+HTTP-server restart does not unload models: resident identifiers are reused
+without duplicate loads, even when saved tuning changed. **PAIR never unloads a
+model automatically:** CLI 0.4.1 removes the immutable `instanceReference` from
+its JSON listing; the remaining identifiers are reusable and cannot prove
+ownership. See the linked protocol for the read-only vendor evidence. Explicit
+**Eject**, then **Load**, applies saved options. Profile snapshots add advisory
+`loadState` (`unloaded`, `loaded`, `reload-required`, `unknown`) and a value-free
+`reason`. Desktop shows "Loaded with different options — reload to apply" beside
+the model when submitted tuning differs; unverified or unreadable residency has
+its own visible message. These states never grant unload permission. Load
+observations are cleared on authoritative disappearance and engine stop; separate
+session-local restoration intent can restore a missing model after restart.
+Failed or malformed listings stop restoration rather than loading blindly. A failure is reported
+once without values or a fallback to defaults. Successful deletion
+removes its profile. Orphans are pruned only after successful authoritative
+inventory, retaining edits newer than the inventory's captured generation.
+Unknown/stopped/malformed inventories never prune. Apply changes only the next
+load. Only the documented typed load-tuning allowlist is accepted, in long
+`--flag value` or `--flag=value` form. Unknown options (including engine working
+directories) and previously saved invalid options fail visibly without changing
+the saved file. This intentionally differs from opaque engine launch arguments:
+per-model options run on every load and have a narrower practical catalogue.
+No load behavior changes for other engines.
 
 ### Editable launch settings
 

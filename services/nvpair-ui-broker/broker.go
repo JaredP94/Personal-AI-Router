@@ -3276,6 +3276,9 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to proxy:unsubscribe: %v", err)
 		}
 
+	case "engine:get-load-profile", "engine:preview-load-profile", "engine:apply-load-profile":
+		go b.handleLoadProfile(msg)
+
 	case "engine:get-settings", "engine:preview-settings", "engine:apply-settings":
 		go b.handleEngineSettings(msg)
 
@@ -3635,7 +3638,13 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	// read loop allocates a fresh Message per request so these are stable.
 	id := msg.ID
 	method := msg.Method
-	result, rpcErr, err := em.CallNoTimeout(context.Background(), method, msg.Params)
+	callCtx := context.Background()
+	if isLMStudioModelMutation(method, msg.Params) {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(callCtx, settings.LMStudioModelRelayBudget)
+		defer cancel()
+	}
+	result, rpcErr, err := em.CallNoTimeout(callCtx, method, msg.Params)
 	switch {
 	case err != nil:
 		if e := b.codec.RespondError(id, -32000, fmt.Sprintf("engine call failed: %v", err)); e != nil {
