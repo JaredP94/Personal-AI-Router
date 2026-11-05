@@ -55,6 +55,23 @@ PAIR-owned proxy port can change. Go rejects server-port, argument and
 environment edits with a message directing the user to the oMLX app. A proxy
 rebind never stops or restarts that app, including adopted running instances.
 
+## Apply deadline
+
+`services/shared/enginesettings/timeouts.go` defines the broker `ApplyBudget`:
+**12 minutes (720 seconds)** starting before admission, not after validation.
+Admission/validation have at most **40 seconds**, leaving the existing **11-minute**
+execution allowance (including worker rollback) and **20 seconds** for the callback
+join (at most 10 seconds) and final fenced convergence (at most 5 seconds for the
+write plus 5 seconds for its cancellation join). All stages use the original
+absolute deadline; acceptance detaches caller cancellation, not the deadline.
+Busy admission expires without accepting a change. Unconfirmed callback joins or
+convergence fail closed rather than advertising an unverified listener.
+`RelayBudget = ApplyBudget + 1 minute` is **13 minutes (780 seconds)**.
+Desktop `MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS` adds another minute:
+**14 minutes (840 seconds)**, strictly outside relay and broker deadlines.
+These operation budgets assume schedulable processes and functioning local storage;
+transport-wide stdout backpressure remains a separate concern.
+
 ## State, progress and recovery
 
 `Snapshot` contains node/engine identity, `revision`, `appliedRevision`,
@@ -164,6 +181,11 @@ broker lifecycle relays hold neither journal nor apply lock across worker calls;
 port assignments retain port-operation ownership through their post-call refresh. Replies stay with the captured
 worker, never a replacement process. `engine:settings-cancel` cancels pending
 requests. `engine:settings-projection` supplies full snapshots to the worker.
+The broker captures immutable full projections under the journal lock and a single
+ordered sender publishes them with neither settings mutex held by the sender.
+A blocked sink cannot retain `settingsApplyMu` or `engineConfigMu`. At most one
+pending full projection is retained; slow sinks may coalesce intermediate states,
+but delivered sequences remain increasing per engine for desktop and worker.
 
 Managed Ollama moves and their rollback, and the LM Studio startup move, use broker-only
 `internal:set-port {engine, port, operationId}`, returning the existing

@@ -18,7 +18,8 @@ import type {
 } from '@/shared/types/telemetry'
 import {
     MODULAR_CLUSTER_MANAGER_PORT,
-    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
+    MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { getEngineHubModels, lookupEngineHubModel } from '@/electron/model-hub'
@@ -1314,7 +1315,7 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
                 'broker',
                 'engine:apply-settings',
                 payload ? { ...payload, settings: { ...payload.settings } } : undefined,
-                MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+                MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
             )
         ),
     'engine:command': payload => handleEngineCommand(payload),

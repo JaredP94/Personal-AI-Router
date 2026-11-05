@@ -71,6 +71,10 @@ export const MODULAR_STARTUP_READY_TIMEOUT_MS = 15_000
 // Keep the desktop JSON-RPC envelope bounded but outside that backend budget.
 export const MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS = 11 * 60_000
 
+// services/shared/enginesettings/timeouts.go: ApplyBudget is 12 minutes from
+// admission; RelayBudget adds one minute. Desktop adds a further minute for IPC.
+export const MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS = (12 + 1 + 1) * 60_000
+
 // Upper bound for a local model load/unload/delete action. A delete on an
 // engine whose manifest declares `restart_after` (LM Studio) does not reply
 // until the engine has stopped and passed its readiness probe again — LM

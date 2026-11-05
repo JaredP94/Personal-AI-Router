@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Lock order: port-op -> engineConfigMu, NEVER the reverse. The per-engine
@@ -33,16 +34,23 @@ func (b *Broker) beginPortOperation(engine string) func() {
 }
 
 func (b *Broker) ownPortOperation(engine string, op *enginePortOperation) func() {
+	finish := b.ownPortOperationWithin(context.Background(), engine, op, portFenceTimeout)
+	return func() { _ = finish() }
+}
+
+func (b *Broker) ownPortOperationWithin(ctx context.Context, engine string, op *enginePortOperation, fenceBudget time.Duration) func() error {
 	op.active.Store(true)
-	return func() {
+	return func() error {
 		defer op.mu.Unlock()
 		defer op.active.Store(false)
-		if err := b.finishPortOperation(engine); err != nil {
+		if err := b.finishPortOperationWithin(ctx, engine, fenceBudget); err != nil {
 			b.engineConfigMu.Lock()
 			b.finishSettingsRecoveryLocked(engine, false)
 			b.engineConfigMu.Unlock()
 			slog.Warn("proxy port convergence failed; engine remains unavailable", "engine", engine)
+			return err
 		}
+		return nil
 	}
 }
 
@@ -52,6 +60,10 @@ func (b *Broker) ownPortOperation(engine string, op *enginePortOperation) func()
 // discarded stale results and rollback. Never import an accidental bind into
 // persisted settings. Call even when reconciliation otherwise returns early.
 func (b *Broker) finishPortOperation(engine string) error {
+	return b.finishPortOperationWithin(context.Background(), engine, portFenceTimeout)
+}
+
+func (b *Broker) finishPortOperationWithin(ctx context.Context, engine string, fenceBudget time.Duration) error {
 	b.engineConfigMu.Lock()
 	port := b.proxyStartupPort(engine)
 	if r := b.engineSettings[engine]; r != nil && r.Explicit {
@@ -66,7 +78,7 @@ func (b *Broker) finishPortOperation(engine string) error {
 	if !ready || actual == port {
 		return nil
 	}
-	_, rpcErr, err := writeProxyPort(context.Background(), p, settingsJSON(map[string]int{"port": port}))
+	_, rpcErr, err := writeProxyPortWithFence(ctx, p, settingsJSON(map[string]int{"port": port}), fenceBudget)
 	if err != nil {
 		return err
 	}

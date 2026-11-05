@@ -7,12 +7,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // A canceled call is not a canceled write. Join the operation-ID fence on the
 // captured worker before releasing port-op; if it cannot acknowledge, retire
 // that worker rather than accepting more writes or late ready notifications.
 func writeProxyPort(ctx context.Context, p *proxyProcess, params json.RawMessage) (json.RawMessage, *RPCError, error) {
+	return writeProxyPortWithFence(ctx, p, params, portFenceTimeout)
+}
+
+func writeProxyPortWithFence(ctx context.Context, p *proxyProcess, params json.RawMessage, fenceBudget time.Duration) (json.RawMessage, *RPCError, error) {
 	if p == nil || p.peer == nil {
 		return nil, nil, fmt.Errorf("proxy unavailable")
 	}
@@ -35,7 +40,7 @@ func writeProxyPort(ctx context.Context, p *proxyProcess, params json.RawMessage
 		err = callCtx.Err()
 	}
 	if err != nil {
-		fenceCtx, fenceCancel := context.WithTimeout(context.Background(), portFenceTimeout)
+		fenceCtx, fenceCancel := context.WithTimeout(context.Background(), fenceBudget)
 		defer fenceCancel()
 		_, fenceErr, fenceCallErr := p.peer.Call(fenceCtx, "internal:cancel-set-port", settingsJSON(map[string]string{"operationId": id}))
 		if fenceErr != nil || fenceCallErr != nil {

@@ -32,7 +32,9 @@ vi.mock('@/electron/service-bridge/modular-state', () => ({
 vi.mock('@/electron/model-hub', () => ({ getEngineHubModels: vi.fn() }))
 
 import { handleServiceBridgeInvoke } from '@/electron/service-bridge/empty-handlers'
-import { MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS } from '@/shared/constants/modular-runtime'
 
 const baseline = {
     nodeId: 'local-node',
@@ -60,8 +62,8 @@ describe('unified settings bridge', () => {
     })
 
     // Applying settings can stop, rebind, and restart an engine, so it needs
-    // the lifecycle deadline rather than the default request timeout.
-    it('sends one node-owned apply with a lifecycle deadline', async () => {
+    // the Apply deadline rather than the shorter lifecycle request timeout.
+    it('sends one node-owned apply with an end-to-end deadline', async () => {
         const receipt = await handleServiceBridgeInvoke('engines:apply-settings', {
             nodeId: 'local-node',
             engine: 'ollama',
@@ -78,7 +80,7 @@ describe('unified settings bridge', () => {
                 expectedRevision: 4,
                 settings: { serverPort: 11434, proxyPort: 1235, launchText: 'managed serve' }
             }),
-            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+            MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
         )
         expect(mocks.supervisor.callProxy).not.toHaveBeenCalled()
         expect(mocks.supervisor.callProcess.mock.calls.map(call => call[1])).toEqual([
@@ -101,8 +103,25 @@ describe('unified settings bridge', () => {
                 nodeId: 'remote-node',
                 settings: { ...baseline.settings, proxyPort: 12000 }
             }),
-            MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+            MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
         )
+    })
+
+    it('keeps the desktop Apply deadline outside broker and relay budgets', () => {
+        const source = readFileSync(
+            resolve(process.cwd(), '../services/shared/enginesettings/timeouts.go'),
+            'utf8'
+        )
+        // Read the actual Go definitions, so this assertion cannot pass against
+        // a second, independently maintained relay timeout in TypeScript.
+        expect(source).toMatch(/ConfigureBudget\s*=\s*10\*time.Minute \+ 30\*time.Second/)
+        expect(source).toMatch(/OperationBudget\s*=\s*ConfigureBudget \+ 30\*time.Second/)
+        expect(source).toMatch(/ApplyBudget\s*=\s*OperationBudget \+ time.Minute/)
+        expect(source).toMatch(/RelayBudget\s*=\s*ApplyBudget \+ time.Minute/)
+        const brokerBudgetMs = (10 * 60 + 30 + 30 + 60) * 1000
+        const relayBudgetMs = brokerBudgetMs + 60_000
+        expect(MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS).toBeGreaterThan(relayBudgetMs)
+        expect(MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS).toBe(14 * 60_000)
     })
 
     it('validates full snapshots and reports unsupported older devices', async () => {

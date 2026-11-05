@@ -176,7 +176,9 @@ type Broker struct {
 	// Applies serialize end to end. The journal lock is released during engine
 	// restart so unrelated settings reads remain responsive. Port-op comes
 	// first; see portoperation.go for the complete lock/callback discipline.
-	portOperations           sync.Map // engine -> *enginePortOperation; see portoperation.go
+	portOperations           sync.Map             // engine -> *enginePortOperation; see portoperation.go
+	settingsPublication      *settingsPublication // guarded by engineConfigMu; full snapshots coalesce
+	settingsPublishing       bool                 // guarded by engineConfigMu
 	settingsApplyMu          sync.Mutex
 	engineConfigMu           sync.Mutex
 	managedPortOperations    map[string]managedPortAuthorization // guarded by engineConfigMu

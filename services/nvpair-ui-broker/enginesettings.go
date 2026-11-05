@@ -236,19 +236,49 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 	return snapshot, nil
 }
 
+type settingsPublication struct {
+	all    []settings.Snapshot
+	codec  *Codec
+	worker *rpcWorker
+}
+
+// Capture under engineConfigMu; the single sender takes immutable projections
+// off the lock before either Notify. A slow sink retains at most one pending
+// full projection. Coalescing never reverses any engine's sequence.
 func (b *Broker) publishSettingsLocked() {
 	all := make([]settings.Snapshot, 0, len(b.engineSettings))
 	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
 		if record := b.engineSettings[engine]; record != nil {
 			record.Snapshot.Sequence++
 			all = append(all, record.Snapshot)
-			if b.codec != nil {
-				_ = b.codec.Notify("engine:settings-changed", record.Snapshot)
-			}
 		}
 	}
-	if worker := b.getEngineMgr(); worker != nil {
-		_ = worker.Notify("engine:settings-projection", all)
+	b.settingsPublication = &settingsPublication{all: all, codec: b.codec, worker: b.getEngineMgr()}
+	if !b.settingsPublishing {
+		b.settingsPublishing = true
+		go b.sendSettingsPublications()
+	}
+}
+
+func (b *Broker) sendSettingsPublications() {
+	for {
+		b.engineConfigMu.Lock()
+		publication := b.settingsPublication
+		b.settingsPublication = nil
+		if publication == nil {
+			b.settingsPublishing = false
+			b.engineConfigMu.Unlock()
+			return
+		}
+		b.engineConfigMu.Unlock()
+		if publication.codec != nil {
+			for _, snapshot := range publication.all {
+				_ = publication.codec.Notify("engine:settings-changed", snapshot)
+			}
+		}
+		if publication.worker != nil {
+			_ = publication.worker.Notify("engine:settings-projection", publication.all)
+		}
 	}
 }
 
@@ -352,6 +382,10 @@ func (b *Broker) previewSettingsLocked(ctx context.Context, p settings.Request) 
 // restart. settingsApplyMu, which the caller also holds, is what keeps a
 // second apply out of this window.
 func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, record *engineSettingsRecord) error {
+	return b.runSettingsOperationWithJoinLocked(ctx, engine, record, proxyCallTimeout+portFenceTimeout)
+}
+
+func (b *Broker) runSettingsOperationWithJoinLocked(ctx context.Context, engine string, record *engineSettingsRecord, joinBudget time.Duration) error {
 	service := engineSettingsService(engine)
 	if b.regCache != nil {
 		b.unregisterService(service)
@@ -394,7 +428,7 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 	cancelCallbacks()
 	joined := make(chan struct{})
 	go func() { callbacks.Wait(); close(joined) }()
-	joinTimer := time.NewTimer(proxyCallTimeout + portFenceTimeout)
+	joinTimer := time.NewTimer(joinBudget)
 	select {
 	case <-joined:
 	case <-joinTimer.C:
@@ -525,15 +559,63 @@ func (b *Broker) previewEngineSettings(ctx context.Context, p settings.Request, 
 // engine onto it. RequestID makes it idempotent: replaying one returns the
 // original receipt, and reusing it for different settings is refused.
 func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, caller string) (settingsReceipt, error) {
-	ctx, cancel := context.WithTimeout(ctx, settings.CallBudget)
+	return b.applyEngineSettingsWithinBudget(ctx, p, caller, settingsApplyTiming{
+		total: settings.ApplyBudget, execution: settings.OperationBudget,
+		cleanup: 2 * (proxyCallTimeout + portFenceTimeout),
+	})
+}
+
+// Unexported timing seam keeps deadline regressions testable without real minutes.
+// Admission may consume only the time left after reserving execution (including
+// worker rollback) and cleanup (callback join plus fenced final convergence).
+type settingsApplyTiming struct{ total, execution, cleanup time.Duration }
+
+func lockSettingsWithin(ctx context.Context, mu *sync.Mutex) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if mu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (b *Broker) applyEngineSettingsWithinBudget(ctx context.Context, p settings.Request, caller string, timing settingsApplyTiming) (receipt settingsReceipt, resultErr error) {
+	deadline := time.Now().Add(timing.total)
+	admissionCtx, cancel := context.WithDeadline(ctx, deadline.Add(-timing.execution-timing.cleanup))
 	defer cancel()
-	finish := b.beginPortOperation(p.Engine)
-	defer finish()
+	op := b.portOperation(p.Engine)
+	if err := lockSettingsWithin(admissionCtx, &op.mu); err != nil {
+		return settingsReceipt{}, err
+	}
+	// Convergence's independent cancellation fence is also inside the one budget.
+	fenceBudget := min(portFenceTimeout, timing.cleanup/4)
+	convergenceCtx, cancelConvergence := context.WithDeadline(context.Background(), deadline.Add(-fenceBudget))
+	defer cancelConvergence()
+	finish := b.ownPortOperationWithin(convergenceCtx, p.Engine, op, fenceBudget)
+	defer func() {
+		if err := finish(); err != nil {
+			resultErr = fmt.Errorf("settings convergence could not be confirmed")
+		}
+	}()
 	// Retain cross-engine validation/acceptance ordering inside port-op.
-	b.settingsApplyMu.Lock()
+	if err := lockSettingsWithin(admissionCtx, &b.settingsApplyMu); err != nil {
+		return settingsReceipt{}, err
+	}
 	defer b.settingsApplyMu.Unlock()
-	b.engineConfigMu.Lock()
+	if err := lockSettingsWithin(admissionCtx, &b.engineConfigMu); err != nil {
+		return settingsReceipt{}, err
+	}
 	defer b.engineConfigMu.Unlock()
+	ctx = admissionCtx
 	if err := ctx.Err(); err != nil {
 		return settingsReceipt{}, err
 	}
@@ -598,10 +680,11 @@ func (b *Broker) applyEngineSettings(ctx context.Context, p settings.Request, ca
 	}
 	b.publishSettingsLocked()
 	// Once accepted, completion is target-owned. Losing the requesting UI or
-	// peer cannot abandon half a port swap. The operation has its own deadline.
-	operationCtx, operationCancel := context.WithTimeout(context.Background(), settings.OperationBudget)
+	// peer cannot abandon half a port swap. Keep the ORIGINAL admission deadline,
+	// reserving the last twenty seconds for joins and fenced convergence.
+	operationCtx, operationCancel := context.WithDeadline(context.Background(), deadline.Add(-timing.cleanup))
 	defer operationCancel()
-	if err := b.runSettingsOperationLocked(operationCtx, p.Engine, record); err == nil && b.settingsRecoveryBlocked[p.Engine] {
+	if err := b.runSettingsOperationWithJoinLocked(operationCtx, p.Engine, record, min(proxyCallTimeout+portFenceTimeout, timing.cleanup/2)); err == nil && b.settingsRecoveryBlocked[p.Engine] {
 		b.finishSettingsRecoveryLocked(p.Engine, true)
 	}
 	return record.Receipts[p.RequestID], nil

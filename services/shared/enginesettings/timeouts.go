@@ -12,6 +12,10 @@ import "time"
 const (
 	ConfigureBudget = 10*time.Minute + 30*time.Second
 	OperationBudget = ConfigureBudget + 30*time.Second
-	CallBudget      = OperationBudget + time.Minute
-	RelayBudget     = CallBudget + time.Minute
+	// ApplyBudget is the broker end-to-end deadline, starting before admission.
+	// It includes validation, execution/rollback, callback joins and convergence.
+	ApplyBudget = OperationBudget + time.Minute // 12 minutes
+	CallBudget  = ApplyBudget
+	// Leave one minute outside the broker ApplyBudget for relay transport.
+	RelayBudget = ApplyBudget + time.Minute // 13 minutes
 )
