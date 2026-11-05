@@ -141,7 +141,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	// then stop engines so the parent's exit doesn't orphan them.
 	m.exec.shuttingDown.Store(true)
 	cancel()
-	m.exec.StopAll()
+	m.exec.shutdown()
 	m.remoteHTTP.CloseIdle()
 	m.readyHTTP.CloseIdle()
 	m.settingsHTTP.CloseIdle()
@@ -237,7 +237,7 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case prepareShutdownMethod:
 		go func() {
-			m.exec.StopAll()
+			m.exec.shutdown()
 			m.codec.Respond(msg.ID, nil)
 		}()
 

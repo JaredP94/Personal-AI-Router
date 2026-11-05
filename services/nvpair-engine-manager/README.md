@@ -709,12 +709,36 @@ acceptance `pullCancelAcceptTimeout` (5 s), broker
 `engineCancelRelayTimeout` (10 s), desktop/TUI cancel envelope (15 s).
 These do not wait for engine stop. Transfer execution uses
 `defaultEngineActionTimeout` (30 min); LM Studio stop uses interrupt/retry/reap
-graces of 15/5/10 s, a 5 s stdio wait and bounded platform signal helpers.
+graces of 15/5/10 s, a 1 s inherited-stdio wait and bounded platform signal helpers.
 Its prompt write is bounded at 1 s. A remote initiator adds
 `remotePullReturnMargin` (50 s) for peer shutdown; broker
 `enginePullRelayTimeout` is 31 min and desktop/TUI pull envelopes are 32 min.
 A cancelled or superseded operation's late progress, reply or notice timer
 cannot overwrite a newer row.
+
+### Download shutdown bound
+
+Both stdin EOF in `Manager.Run` and `engine:prepare-shutdown` close the
+download-registration gate, cancel every active transfer, and join their stop
+sequences concurrently with engine `StopAll` (not serially afterward).
+A shutdown also accelerates a cancellation already waiting on LM Studio's
+ordinary 15/5/10 s graces. Ollama's in-flight HTTP request is cancelled and joined.
+
+LM Studio download CLIs already start in their own Unix process group; shutdown
+sends SIGTERM to that group, waits 500 ms, then SIGKILLs the group if necessary.
+Windows uses the existing private-console launcher, a bounded interrupt helper,
+then `taskkill /T /F` for the launcher and CLI tree. Signal/kill helpers each
+get at most 500 ms, and the final reap gets 2 s: at most 3.5 s per CLI sequence.
+Inherited-stdio waiting is capped at 1 s. The aggregate download join is 4 s,
+regardless of transfer count. Joins abandon only after the fixed deadline; no
+cache data is inspected or removed.
+
+The outward budgets are download stop sequence **3.5 s < aggregate join 4 s <
+broker prepare-shutdown 5 s < engine-manager worker EOF grace 6 s** (see
+`nvpair-ui-broker/stopwait.go`). Engine stopping runs alongside download
+stopping, preserving the existing 6 s worker allowance, 10 s broker teardown
+and 15 s desktop/TUI parent allowance. Shutdown emits `interrupted`, never
+claims a pending cancel succeeded.
 
 ### Interrupted downloads
 

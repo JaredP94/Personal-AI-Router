@@ -102,7 +102,7 @@ func (e *Executor) pullLMSModel(ctx context.Context, st *engineState, engine, mo
 
 // The acceptance RPC never waits on these graces. Even a hung CLI must release
 // this adapter in bounded time. WaitDelay bounds inherited stdio after reap.
-const downloadWaitDelay = 5 * time.Second
+const downloadWaitDelay = time.Second
 
 type lmsCancelGraces struct{ interrupt, retry, reap time.Duration }
 type lmsCancelGracesKey struct{}
@@ -152,7 +152,7 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 		select {
 		case runErr = <-finished:
 		default:
-			return stopLMSDownload(lmsCancelGracesFrom(ctx), cmd, finished, &reaped, current)
+			return stopLMSDownload(ctx, lmsCancelGracesFrom(ctx), cmd, finished, &reaped, current)
 		}
 	}
 	_, _, text := current.state()
@@ -162,22 +162,55 @@ func runLMSDownloadCommand(ctx context.Context, argv []string, output *lmsDownlo
 	return text, nil
 }
 
-func stopLMSDownload(g lmsCancelGraces, cmd *exec.Cmd, finished <-chan error, reaped *atomic.Bool, output *lmsDownloadOutput) (string, error) {
+func stopLMSDownload(ctx context.Context, g lmsCancelGraces, cmd *exec.Cmd, finished <-chan error, reaped *atomic.Bool, output *lmsDownloadOutput) (string, error) {
+	// A shutdown can arrive during an already accepted cancellation. It must
+	// interrupt both the long normal graces and bounded Windows signal helpers.
+	normal, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	shutdown := pullShutdown(ctx)
+	go func() {
+		select {
+		case <-shutdown:
+			cancel()
+		case <-normal.Done():
+		}
+	}()
+	stopping := func() bool {
+		select {
+		case <-shutdown:
+			return true
+		default:
+			return false
+		}
+	}
+	stop := func() (string, error) { return stopDownloadForShutdown(cmd, finished, output) }
+	if stopping() {
+		return stop()
+	}
 	interrupt := func() error {
 		if reaped.Load() {
 			return nil
 		}
-		return interruptDownload(cmd)
+		return interruptDownload(normal, cmd)
 	}
 	err := interrupt()
+	if stopping() {
+		return stop()
+	}
 	exited := false
 	if err == nil {
-		exited, _ = waitLMSExit(finished, g.interrupt)
+		exited = waitLMSExitUnlessShutdown(normal, finished, g.interrupt)
+	}
+	if stopping() && !exited {
+		return stop()
 	}
 	if !exited && err == nil {
 		if interrupt() == nil {
-			exited, _ = waitLMSExit(finished, g.retry)
+			exited = waitLMSExitUnlessShutdown(normal, finished, g.retry)
 		}
+	}
+	if stopping() && !exited {
+		return stop()
 	}
 	if exited {
 		canceled, complete, text := output.state()
@@ -190,12 +223,50 @@ func stopLMSDownload(g lmsCancelGraces, cmd *exec.Cmd, finished <-chan error, re
 		return "", fmt.Errorf("LM Studio exited without confirming download cancellation")
 	}
 	if !reaped.Load() {
-		_ = killDownload(cmd)
+		_ = killDownload(normal, cmd)
 	}
-	_, _ = waitLMSExit(finished, g.reap)
+	exited = waitLMSExitUnlessShutdown(normal, finished, g.reap)
+	if stopping() && !exited {
+		return stop()
+	}
 	output.disown()
 	return "", fmt.Errorf("LM Studio did not confirm download cancellation; the download may still be running in LM Studio")
 }
+func stopDownloadForShutdown(cmd *exec.Cmd, finished <-chan error, output *lmsDownloadOutput) (string, error) {
+	// Do not signal a completed command: its PID may already have been reused.
+	select {
+	case <-finished:
+		output.disown()
+		return "", context.Canceled
+	default:
+	}
+	signalCtx, cancel := context.WithTimeout(context.Background(), downloadShutdownSignalBudget)
+	_ = terminateDownload(signalCtx, cmd)
+	cancel()
+	exited, _ := waitLMSExit(finished, downloadShutdownGrace)
+	if !exited {
+		killCtx, cancel := context.WithTimeout(context.Background(), downloadShutdownSignalBudget)
+		_ = killDownload(killCtx, cmd)
+		cancel()
+		_, _ = waitLMSExit(finished, downloadShutdownReap)
+	}
+	output.disown()
+	return "", context.Canceled
+}
+
+func waitLMSExitUnlessShutdown(ctx context.Context, finished <-chan error, grace time.Duration) bool {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-finished:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func waitLMSExit(finished <-chan error, grace time.Duration) (bool, error) {
 	timer := time.NewTimer(grace)
 	defer timer.Stop()

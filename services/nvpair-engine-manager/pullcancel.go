@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -20,6 +21,9 @@ type activePull struct {
 	cancel            context.CancelFunc
 	requested         atomic.Bool
 	canCancel         bool
+	shutdown          chan struct{}
+	done              chan struct{}
+	shutdownOnce      sync.Once
 }
 type activePullKey struct{}
 
@@ -53,9 +57,14 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model, opID string, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, e.actionTimeout)
 	defer cancel()
-	p := &activePull{engine: engine, model: model, id: opID, cancel: cancel, canCancel: canCancel}
+	p := &activePull{engine: engine, model: model, id: opID, cancel: cancel, canCancel: canCancel, shutdown: make(chan struct{}), done: make(chan struct{})}
+	defer close(p.done)
 	ctx = context.WithValue(ctx, activePullKey{}, p)
 	e.pullMu.Lock()
+	if e.shuttingDown.Load() {
+		e.pullMu.Unlock()
+		return nil, context.Canceled
+	}
 	if e.pulls == nil {
 		e.pulls = make(map[string]*activePull)
 	}

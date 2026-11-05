@@ -31,7 +31,8 @@ func configureDownloadProcess(cmd *exec.Cmd) error {
 	return nil
 }
 
-func killDownload(cmd *exec.Cmd) error { return taskkill(cmd, true) }
+func killDownload(ctx context.Context, cmd *exec.Cmd) error      { return taskkillContext(ctx, cmd, true) }
+func terminateDownload(ctx context.Context, cmd *exec.Cmd) error { return interruptDownload(ctx, cmd) }
 
 // pinDownloadProcess holds a handle to the launcher so Windows cannot reissue
 // its PID while this worker may still signal it. The handle os.Process owns is
@@ -114,12 +115,12 @@ func openDownloadLauncher(pid uint32) (windows.Handle, bool) {
 	return handle, true
 }
 
-func interruptDownload(cmd *exec.Cmd) error {
+func interruptDownload(parent context.Context, cmd *exec.Cmd) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	helper := exec.CommandContext(ctx, executable, "--interrupt-download", strconv.Itoa(cmd.Process.Pid))
 	configureSysProcAttr(helper)

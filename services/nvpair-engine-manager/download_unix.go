@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"os/exec"
 	"syscall"
 )
@@ -15,9 +16,16 @@ func configureDownloadProcess(cmd *exec.Cmd) error {
 	return nil
 }
 
-func killDownload(cmd *exec.Cmd) error      { return signalDownload(cmd, syscall.SIGKILL) }
-func interruptDownload(cmd *exec.Cmd) error { return signalDownload(cmd, syscall.SIGINT) }
-func handleDownloadProcess() bool           { return false }
+func killDownload(_ context.Context, cmd *exec.Cmd) error {
+	return signalDownload(cmd, syscall.SIGKILL)
+}
+func interruptDownload(_ context.Context, cmd *exec.Cmd) error {
+	return signalDownload(cmd, syscall.SIGINT)
+}
+func terminateDownload(_ context.Context, cmd *exec.Cmd) error {
+	return signalDownload(cmd, syscall.SIGTERM)
+}
+func handleDownloadProcess() bool { return false }
 
 // pinDownloadProcess has nothing to hold on Unix: signalDownload addresses the
 // process group, whose ID is not reissued while any member of it remains.
