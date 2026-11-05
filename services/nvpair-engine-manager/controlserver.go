@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/listen"
 )
 
 // controlEnginesPath returns this node's engine install/run status.
@@ -90,7 +91,7 @@ func (s *controlServer) handleEngines(w http.ResponseWriter, r *http.Request) {
 // peers' remote calls being unavailable) must not take the process down.
 func serveControl(ctx context.Context, port int, exec *Executor, mesh *clustertrust.Mesh) {
 	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listen.TCP(addr)
 	if err != nil {
 		slog.Warn("engine-manager control endpoint disabled (bind failed)", "addr", addr, "err", err)
 		return

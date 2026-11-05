@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	settings "nvpair-shared/enginesettings"
+	"nvpair-shared/listen"
 )
 
 func TestSettingsRollbackNeverWidensPreviousBind(t *testing.T) {
@@ -102,7 +103,7 @@ func TestSettingsRollbackPersistenceFailureLeavesEngineStopped(t *testing.T) {
 // These regressions catch returning after stop without compensating for every
 // failed apply stage. All engines and files belong to the test, never the host.
 func TestSettingsApplyRestoresPreviousState(t *testing.T) {
-	for _, point := range []string{"persist", "rebind", "start", "readiness", "rollback"} {
+	for _, point := range []string{"persist", "rebind", "foreign-loopback", "start", "readiness", "rollback"} {
 		t.Run(point, func(t *testing.T) {
 			e := settingsExecutor(t, false)
 			request := settingsRequest(t, e)
@@ -163,6 +164,18 @@ func TestSettingsApplyRestoresPreviousState(t *testing.T) {
 						return fmt.Errorf("private-value")
 					}
 					port = originalProxy
+				}
+				if point == "foreign-loopback" && !rollback {
+					foreign, bindErr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+					if bindErr != nil {
+						t.Fatal(bindErr)
+					}
+					defer foreign.Close()
+					candidate, bindErr := listen.TCP(fmt.Sprintf(":%d", port))
+					if bindErr == nil {
+						candidate.Close()
+					}
+					return bindErr
 				}
 				_ = proxy.Close()
 				proxy, err = net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))

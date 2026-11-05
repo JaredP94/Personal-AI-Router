@@ -38,6 +38,7 @@ import (
 	"nvpair-shared/errors"
 	"nvpair-shared/inferencemetrics"
 	"nvpair-shared/jsonrpc"
+	"nvpair-shared/listen"
 	"nvpair-shared/netmon"
 	"nvpair-shared/netpick"
 	"nvpair-shared/nodeactivity"
@@ -665,7 +666,7 @@ var modelListClient = &http.Client{
 // notification before the process exits. The caller is responsible for
 // closing the returned listener if it doesn't hand it to serveHTTP.
 func (p *Proxy) listen() (net.Listener, error) {
-	return net.Listen("tcp", fmt.Sprintf(":%d", p.port))
+	return listen.TCP(fmt.Sprintf(":%d", p.port))
 }
 
 // serveHTTP takes the already-bound base listener and drives the two proxy
@@ -910,7 +911,7 @@ func (p *Proxy) setPortContext(ctx context.Context, newPort int) error {
 	if newPort == p.port {
 		return nil
 	}
-	newLn, err := net.Listen("tcp", fmt.Sprintf(":%d", newPort))
+	newLn, err := listen.TCP(fmt.Sprintf(":%d", newPort))
 	if err != nil {
 		return fmt.Errorf("failed to bind port %d: %w", newPort, err)
 	}

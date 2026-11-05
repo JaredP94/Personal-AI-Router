@@ -6,11 +6,42 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
 	settings "nvpair-shared/enginesettings"
 )
+
+func TestSettingsForeignLoopbackPortRejectedWithoutMutation(t *testing.T) {
+	h := newSettingsHarness(t)
+	request := h.request(t)
+	before := request.Settings
+	foreign, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer foreign.Close()
+	request.Settings.ProxyPort = foreign.Addr().(*net.TCPAddr).Port
+	if tcpPortAvailable(request.Settings.ProxyPort) {
+		t.Error("broker probe accepted foreign loopback owner")
+	}
+	_, err = h.b.applyEngineSettings(context.Background(), request, "")
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("occupied-port apply accepted: %v", err)
+	}
+	if h.applies.Load() != 0 {
+		t.Fatal("occupied-port apply mutated engine")
+	}
+	snapshot, err := h.b.getEngineSettings(context.Background(), settings.Request{Engine: "ollama"}, "")
+	if err != nil || snapshot.Settings != before {
+		t.Fatalf("occupied-port apply lost previous settings: %+v, %v", snapshot, err)
+	}
+	if ready, port := h.b.getProxy().Status(); !ready || port != before.ProxyPort {
+		t.Fatalf("previous proxy binding lost: %v %d", ready, port)
+	}
+}
 
 func TestSettingsRollbackRelayRestoresOnlyCapturedProxyPort(t *testing.T) {
 	h := newSettingsHarness(t)

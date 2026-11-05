@@ -40,6 +40,26 @@ workers and exposes a newline-delimited JSON-RPC 2.0 API over stdio (or a Unix
 socket / Windows named pipe via `--ipc`). For supported platforms and engines,
 see the [root README](../README.md#what-is-supported).
 
+## TCP port ownership
+
+All wildcard TCP service listeners and the broker's port preflight use
+`shared/listen`. A port already held on `127.0.0.1` or `::1` is a conflict,
+not a successful service start. This includes a separately running Ollama app
+on `127.0.0.1:11434`. Proxy port changes bind the replacement before releasing
+the old listener, so a conflict leaves the previous port serving; settings
+apply rejects an occupied port or restores the previous configuration if the
+conflict appears during the change.
+
+The helper reserves IPv4 loopback, available IPv6 loopback, then the original
+wildcard address, feeding all sockets into one listener. Darwin and Windows
+permit overlapping specific and wildcard listeners; both sockets remain owned.
+Linux rejects overlapping TCP listeners, so it releases overlapping loopback
+preflights immediately before its authoritative wildcard bind (retaining IPv6
+loopback for an IPv4-only wildcard). No socket-sharing options are added.
+The original wildcard interface scope, transport split, and in-flight
+connection draining are unchanged. Windows is compile/vet checked; this
+change's runtime validation covers Darwin and Linux only.
+
 ## Architecture
 
 This tree builds 14 service executables: `nvpair-ui-broker`, 12 supervised
