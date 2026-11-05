@@ -15,9 +15,11 @@
 // Linux does not permit overlapping listening sockets even with SO_REUSEADDR.
 // There the loopback reservations are preflights: release the overlapping ones
 // immediately before the wildcard bind, which atomically excludes any competing
-// listener (including one that wins the preflight race). An IPv4-only wildcard
-// still keeps the non-overlapping IPv6 loopback socket. Thus Linux's wildcard
-// itself owns the covered loopbacks; Darwin and Windows retain explicit sockets.
+// listener (including one that wins the preflight race). Go may choose a
+// dual-stack socket even for "0.0.0.0"; inspect the actual wildcard Addr, not the
+// input spelling. If it is IPv4-only, reacquire the non-overlapping IPv6 loopback
+// socket after the wildcard. Thus Linux's wildcard itself owns covered loopbacks;
+// Darwin and Windows retain explicit sockets.
 package listen
 
 import (
@@ -67,21 +69,23 @@ func TCP(address string) (net.Listener, error) {
 		sockets = append(sockets, loop6)
 	}
 	if runtime.GOOS == "linux" {
-		_ = loop4.Close()
-		if loop6 != nil && (ip == nil || ip.To4() == nil) {
-			_ = loop6.Close()
-			sockets = nil
-		} else if loop6 != nil {
-			sockets = []net.Listener{loop6}
-		} else {
-			sockets = nil
+		for _, socket := range sockets {
+			_ = socket.Close()
 		}
+		sockets = nil
 	}
 	wildcard, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return nil, fmt.Errorf("reserve wildcard %s: %w", net.JoinHostPort(host, port), err)
 	}
 	sockets = append(sockets, wildcard)
+	if runtime.GOOS == "linux" && loop6 != nil && wildcard.Addr().(*net.TCPAddr).IP.To4() != nil {
+		loop6, err = net.Listen("tcp6", loop6Address)
+		if err != nil {
+			return nil, fmt.Errorf("reserve loopback %s: %w", loop6Address, err)
+		}
+		sockets = append(sockets, loop6)
+	}
 	l := &listener{addr: wildcard.Addr(), sockets: sockets, accepted: make(chan acceptResult), done: make(chan struct{})}
 	for _, socket := range sockets {
 		l.pumps.Go(func() { l.pump(socket) })

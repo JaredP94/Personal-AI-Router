@@ -54,8 +54,10 @@ The helper reserves IPv4 loopback, available IPv6 loopback, then the original
 wildcard address, feeding all sockets into one listener. Darwin and Windows
 permit overlapping specific and wildcard listeners; both sockets remain owned.
 Linux rejects overlapping TCP listeners, so it releases overlapping loopback
-preflights immediately before its authoritative wildcard bind (retaining IPv6
-loopback for an IPv4-only wildcard). No socket-sharing options are added.
+preflights immediately before its authoritative wildcard bind, then reacquires
+IPv6 loopback only if the actual wildcard socket is IPv4-only. Go can choose a
+dual-stack wildcard even for `0.0.0.0`; the input spelling does not determine
+the socket family. No socket-sharing options are added.
 The original wildcard interface scope, transport split, and in-flight
 connection draining are unchanged. Windows is compile/vet checked; this
 change's runtime validation covers Darwin and Linux only.
