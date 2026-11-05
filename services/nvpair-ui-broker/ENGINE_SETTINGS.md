@@ -102,12 +102,24 @@ The engine manager atomically saves private `lmstudio-load-profiles.json` beside
 `engine-state.json` (file `0600`, newly created parent `0700`). Corrupt or unreadable
 profiles refuse the load rather than trying defaults. A failed profiled CLI load
 returns one value-free error and never falls back. All local and authenticated
-remote model loads share this path. Models successfully loaded by PAIR during the
-current manager session are restored, using current profiles, after a PAIR-owned
-engine restart, including the restart after deleting a different model. Explicit
-unload/delete removes the model from that restoration set; engine ON/OFF intent
-is unchanged. Profiles persist across application and machine restarts; this does
-not introduce automatic model loading on a fresh manager session.
+remote model loads share this path. Before every load or restart restoration,
+PAIR queries `lms ps --json` with a ten-second deadline and a 1 MiB output limit.
+Failed, oversized or malformed listings report a value-free error and prevent
+blind loading. Linked-device entries are not local resident instances.
+
+LM Studio's HTTP server stop leaves models in memory. PAIR pins the model key as
+its CLI identifier and records ownership plus the actual tuning arguments only
+after a successful, non-canceled load. An already resident matching identifier
+is reused; a pre-existing external instance is never claimed for restoration.
+After a PAIR-owned engine restart (also after deleting a different model),
+unchanged PAIR-loaded instances remain resident without duplicate loads. If
+tuning changed, only PAIR's recorded identifier is unloaded, then loaded with
+the new options. Other identifiers, even for the same model, are untouched.
+Missing PAIR-loaded instances are restored using current profiles. No-op edits
+whose CLI tuning is unchanged do not replace the instance. Explicit unload/delete
+removes the model from that restoration set; engine ON/OFF intent is unchanged.
+Ownership is session-only. Profiles persist across application and machine
+restarts; this does not introduce automatic loading on a fresh manager session.
 
 Successful deletion removes its profile before restarting. Orphan policy: prune
 profiles only after a successful authoritative LM Studio model-list query, never
@@ -129,8 +141,12 @@ Model mutation shares a six-minute manager
 budget (including a bounded lifecycle-lock wait), inside seven-minute remote and
 eight-minute broker budgets. Desktop's awaited LM Studio deletion has nine minutes;
 other engines' loading and timeouts are unchanged. Each CLI load has at most four
-minutes and a restart's restoration batch shares five minutes, within its caller's
-remaining budget. These budgets assume functioning local storage.
+minutes (including its ten-second listing and, if needed, thirty-second targeted
+unload); a restart's restoration batch shares five minutes, within its caller's
+remaining budget. Each CLI wait has a one-second descendant-pipe cleanup cap,
+strictly within the next outer budget. Cancellation is checked after listing,
+before commands, and before committing ownership, fencing late completions.
+These budgets assume functioning local storage.
 
 ## Apply deadline
 

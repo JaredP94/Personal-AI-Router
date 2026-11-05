@@ -76,7 +76,7 @@ type engineState struct {
 	startCancel context.CancelFunc
 	// Models successfully loaded by PAIR, restored by doStart after a restart.
 	// Protected by mu; load/unload/delete are serialized with lifecycle via opMu.
-	loadModels map[string]bool
+	loadModels map[string]lmsLoadedModel
 }
 
 // lockOperation marks the entire serialized operation, including external I/O.

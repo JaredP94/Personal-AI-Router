@@ -68,7 +68,7 @@ func TestLoadProfileVerifiedPeerEditAndLoad(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("paired load status %d", response.StatusCode)
 	}
-	if args := capturedProfileArgs(t, capture); len(args) != 1 || args[0][2] != "--gpu" || args[0][3] != "max" {
+	if args := capturedProfileLoads(t, capture); len(args) != 1 || args[0][2] != "--identifier" || args[0][3] != "keep" || args[0][4] != "--gpu" || args[0][5] != "max" {
 		t.Fatal("remote load omitted saved options")
 	}
 	// A saved identity claim is insufficient without current mutual trust.

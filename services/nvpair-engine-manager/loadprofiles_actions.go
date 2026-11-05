@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,20 +19,91 @@ import (
 )
 
 const profiledLoadFailed = "LM Studio could not load the model with its saved load options. Check the options before retrying; no default load was attempted."
+const profiledListFailed = "LM Studio could not list loaded model identifiers. This load was not attempted; retry after checking LM Studio."
+
+// Only successful PAIR loads confer ownership. A pre-existing identifier is
+// reused without claiming it, even when its model key matches. Keep the actual
+// CLI tuning used, not just a revision: no-op profile edits need no replacement.
+type lmsLoadedModel struct {
+	Identifier string
+	Args       []string
+}
+
+type lmsPSOutput struct{ buffer bytes.Buffer }
+
+func (b *lmsPSOutput) Write(p []byte) (int, error) {
+	if len(p) > 1024*1024-b.buffer.Len() {
+		return 0, errors.New(profiledListFailed)
+	}
+	return b.buffer.Write(p)
+}
+
+func (e *Executor) listLMSInstances(ctx context.Context, cli string) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, min(e.actionTimeout, 10*time.Second))
+	defer cancel()
+	command := exec.CommandContext(ctx, cli, "ps", "--json")
+	configureSysProcAttr(command)
+	command.WaitDelay = time.Second
+	var output lmsPSOutput
+	command.Stdout = &output
+	// stderr is discarded; stdout is bounded private structured data, never logs.
+	if err := command.Run(); err != nil || ctx.Err() != nil {
+		return nil, errors.New(profiledListFailed)
+	}
+	var instances []struct {
+		Identifier       string  `json:"identifier"`
+		ModelKey         string  `json:"modelKey"`
+		DeviceIdentifier *string `json:"deviceIdentifier"`
+	}
+	if json.Unmarshal(output.buffer.Bytes(), &instances) != nil || instances == nil {
+		return nil, errors.New(profiledListFailed)
+	}
+	result := map[string]string{}
+	for _, instance := range instances {
+		if !validProfileModel(instance.Identifier) || !validProfileModel(instance.ModelKey) {
+			return nil, errors.New(profiledListFailed)
+		}
+		// lms ps also includes linked devices; those aren't local resident loads.
+		if instance.DeviceIdentifier != nil {
+			continue
+		}
+		if _, duplicate := result[instance.Identifier]; duplicate {
+			return nil, errors.New(profiledListFailed)
+		}
+		result[instance.Identifier] = instance.ModelKey
+	}
+	return result, nil
+}
+
+func runPrivateLMSCommand(ctx context.Context, argv []string) error {
+	if ctx.Err() != nil {
+		return errors.New(profiledLoadFailed)
+	}
+	// Nil streams go directly to the null device: never capture private vendor
+	// diagnostics or wait for output pipes inherited by a vendor descendant.
+	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	configureSysProcAttr(command)
+	command.WaitDelay = time.Second
+	if err := command.Run(); err != nil || ctx.Err() != nil {
+		return errors.New(profiledLoadFailed)
+	}
+	return nil
+}
 
 func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string) (json.RawMessage, error) {
 	if !validProfileModel(model) {
 		return nil, errors.New(profiledLoadFailed)
 	}
-	budget := min(e.actionTimeout, 4*time.Minute)
-	ctx, cancel := context.WithTimeout(ctx, budget)
+	ctx, cancel := context.WithTimeout(ctx, min(e.actionTimeout, 4*time.Minute))
 	defer cancel()
 	args, err := e.loadProfileArgs(ctx, model)
 	if err != nil {
 		return nil, err
 	}
+	args = loadCLIArgs(args)
 	st.mu.Lock()
 	port := st.port
+	previous, owned := st.loadModels[model]
 	st.mu.Unlock()
 	act := st.manifest.Actions["load_model"]
 	vars := map[string]string{"model": model, "port": strconv.Itoa(port), "install_dir": st.installDir, "cli": controlCLIPath(st.plat, st.installDir, runtime.GOOS)}
@@ -39,24 +111,52 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 	if err != nil || len(argv) == 0 {
 		return nil, errors.New(profiledLoadFailed)
 	}
-	argv = append(argv, loadCLIArgs(args)...)
-	// Nil output streams go directly to the null device: do not capture private
-	// diagnostics or wait for output pipes inherited by a vendor descendant.
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	configureSysProcAttr(command)
-	command.WaitDelay = time.Second
-	if err = command.Run(); err != nil {
-		return nil, errors.New(profiledLoadFailed)
+	// server stop stops HTTP only, not resident instances. Query the daemon
+	// before *every* load (including remote/restart loads), and fail closed.
+	instances, err := e.listLMSInstances(ctx, argv[0])
+	if err != nil {
+		return nil, err
 	}
+	identifier := model
+	if owned {
+		identifier = previous.Identifier
+	}
+	if key, resident := instances[identifier]; resident {
+		if key != model {
+			return nil, errors.New(profiledLoadFailed)
+		}
+		if !owned || slices.Equal(previous.Args, args) {
+			if ctx.Err() != nil {
+				return nil, errors.New(profiledLoadFailed)
+			}
+			return json.RawMessage("null"), nil
+		}
+		// A changed profile needs a fresh instance, but only the exact identifier
+		// successfully loaded by PAIR may be unloaded; never a model-key wildcard.
+		unloadCtx, stop := context.WithTimeout(ctx, min(e.actionTimeout, 30*time.Second))
+		err = runPrivateLMSCommand(unloadCtx, []string{argv[0], "unload", identifier})
+		stop()
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Pin identity rather than allowing the CLI to invent a duplicate identifier.
+	argv = append(argv, "--identifier", identifier)
+	argv = append(argv, args...)
+	if err := runPrivateLMSCommand(ctx, argv); err != nil {
+		return nil, err
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	// Late/canceled completion cannot claim ownership or replace the remembered
+	// profile. The operation mutex serializes this with all lifecycle mutations.
 	if ctx.Err() != nil {
 		return nil, errors.New(profiledLoadFailed)
 	}
-	st.mu.Lock()
 	if st.loadModels == nil {
-		st.loadModels = map[string]bool{}
+		st.loadModels = map[string]lmsLoadedModel{}
 	}
-	st.loadModels[model] = true
-	st.mu.Unlock()
+	st.loadModels[model] = lmsLoadedModel{Identifier: identifier, Args: args}
 	return json.RawMessage("null"), nil
 }
 
@@ -140,6 +240,9 @@ func (e *Executor) restoreLMSModels(ctx context.Context, st *engineState) error 
 		models = append(models, model)
 	}
 	st.mu.Unlock()
+	if len(models) == 0 {
+		return nil
+	}
 	slices.Sort(models)
 	// A batch shares one deadline; an arbitrary number of models cannot extend
 	// restart beyond the caller's lifecycle budget.

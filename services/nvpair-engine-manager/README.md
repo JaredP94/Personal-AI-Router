@@ -235,8 +235,14 @@ The [load-profile protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md#per-model-lm-
 layers literal per-model options on the existing engine settings flow. Profiles
 are private node-local `0600` configuration beside `engine-state.json`. Every
 PAIR-initiated LM Studio load, including verified-peer loads and restoration of
-this session's PAIR-loaded models after restart, uses the saved argv. A failure
-is reported once without values or a fallback to defaults. Successful deletion
+this session's PAIR-loaded models after restart, uses the saved argv. Each load
+first checks the daemon's resident identifiers with bounded `lms ps --json`.
+HTTP-server restart does not unload models: unchanged resident instances are
+reused, and changed tuning replaces only the exact identifier successfully loaded
+by PAIR. Pre-existing external instances are never claimed or automatically
+unloaded; other identifiers for the same model are untouched. Failed or malformed
+listings stop restoration rather than loading blindly. A failure is reported
+once without values or a fallback to defaults. Successful deletion
 removes its profile. Orphans are pruned only after successful authoritative
 inventory, retaining edits newer than the inventory's captured generation.
 Unknown/stopped/malformed inventories never prune. Apply changes only the next
