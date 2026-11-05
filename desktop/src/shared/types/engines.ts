@@ -88,6 +88,10 @@ export type EngineProcessStatus = (typeof EngineProcessStatuses)[number]
 export type EngineOperationType = (typeof EngineOperationTypes)[number]
 
 export interface EngineProgress {
+    /** One transfer identity; fences retries and stale completion. */
+    opId?: string
+    /** Reported by the engine's progress adapter after registration. */
+    canCancel?: boolean
     engineType: EngineType
     nodeId: string
     nodeName: string

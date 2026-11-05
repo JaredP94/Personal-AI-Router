@@ -46,6 +46,7 @@ type opParam struct {
 }
 
 type actionParam struct {
+	OpID   string          `json:"opId,omitempty"`
 	Engine string          `json:"engine"`
 	Action string          `json:"action"`
 	Params json.RawMessage `json:"params,omitempty"`
@@ -301,12 +302,23 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		}
 		m.codec.Respond(msg.ID, map[string]int{"port": p.Port})
 
+	case "engine:cancel-pull":
+		var p cancelPullRequest
+		if !m.parse(msg, &p) {
+			return
+		}
+		if p.Engine == "" || p.Model == "" || p.OpID == "" {
+			m.codec.RespondError(msg.ID, -32602, "engine, model and opId are required")
+			return
+		}
+		m.codec.Respond(msg.ID, map[string]bool{"accepted": m.exec.CancelModelPull(p.Engine, p.Model, p.OpID)})
+
 	case "engine:action":
 		go m.runAction(ctx, msg)
 
 	case "engine:remote-get-installed", "engine:remote-install", "engine:remote-install-tool", "engine:remote-pull-model",
 		"engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model",
-		"engine:remote-start", "engine:remote-stop":
+		"engine:remote-start", "engine:remote-stop", "engine:remote-cancel-pull":
 		go m.runRemote(ctx, msg)
 
 	default:
@@ -410,15 +422,11 @@ func (m *Manager) runAction(ctx context.Context, msg *Message) {
 	var err error
 	if p.Action == pullModelAction {
 		model := modelFromParams(p.Params)
-		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params)
+		res, err = m.exec.PullModelStream(ctx, p.Engine, model, p.Params, p.OpID)
 		if err != nil {
-			// A pull can fail after the client's synchronous call has already
-			// timed out (long downloads), so the RPC error alone can't reach a
-			// UI that stopped waiting. Emit one terminal engine:pull-progress
-			// error frame so a local subscriber converges off "pulling" even in
-			// that case, mirroring install's failed progress step.
-			userMsg := m.exec.reportPullFailed(p.Engine, model, err)
-			m.exec.emitPullProgress(ProgressEvent{Engine: p.Engine, Op: "pull", Stage: "error", Percent: -1, Message: userMsg})
+			// trackedPull already emitted the attributed terminal state. Do
+			// not publish another, model-less error against a concurrent pull.
+			userMsg := formatEnginePullError(m.exec.engineDisplayName(p.Engine), err)
 			m.codec.RespondError(msg.ID, -32000, userMsg)
 			return
 		}

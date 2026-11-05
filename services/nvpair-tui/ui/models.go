@@ -39,6 +39,7 @@ type modelsLoadedMsg struct {
 
 type modelOpMsg struct {
 	node, engine, model, action string
+	opID                        string
 	err                         error
 }
 
@@ -204,6 +205,16 @@ func (v *enginesView) confirmDeleteModel() tea.Cmd {
 }
 
 func (v *enginesView) modelOperationDone(msg modelOpMsg) tea.Cmd {
+	if msg.action == "pull" && msg.opID != "" {
+		i := v.downloadIndex(msg.opID)
+		if i < 0 {
+			return nil
+		}
+		if v.downloads[i].status == "canceling" {
+			return nil
+		}
+		v.retireDownload(i)
+	}
 	if msg.node != v.target {
 		return nil
 	}

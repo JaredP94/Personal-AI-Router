@@ -14,6 +14,15 @@ The source of truth is:
 - `src/ui/api/pair-api.ts` for the renderer-facing API;
 - `src/shared/types/ipc-channels.ts` for Electron-native IPC.
 
+## Model download controls
+
+`engines.cancelModelPull(engineType, nodeId, model, opId)` is a fire-and-forget
+command. Use the row's reported operation ID and `canCancel`, never just the
+model name. `EngineProgress` includes `opId`, `model` and `canCancel`.
+The row remains **Canceling** after acceptance until a terminal update confirms
+the outcome. Confirmed cancellation briefly notes that partial data is kept so
+the download can resume; the command does not delete files.
+
 ## Transport
 
 ```mermaid

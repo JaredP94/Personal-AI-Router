@@ -105,7 +105,7 @@ func TestModelPullFrozenTargetAndStaleReply(t *testing.T) {
 	v.table.SetCursor(1)
 	cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	next := v.Update(engineKey("n"))
-	reply := engineRequest(t, cmd, c, "engine:remote-pull-model", `{"node":"peer-uuid","engine":"lmstudio","model":"alpha"}`, `{"opId":"p","result":null}`)
+	reply := engineRequest(t, cmd, c, "engine:remote-pull-model", downloadParams(t, `{"node":"peer-uuid","engine":"lmstudio","model":"alpha"}`, v.downloads[0].id), `{"opId":"p","result":null}`)
 	if cmd := v.Update(reply); cmd != nil || strings.Contains(v.status, "ok") {
 		t.Fatalf("stale operation affected another target: %s", v.status)
 	}

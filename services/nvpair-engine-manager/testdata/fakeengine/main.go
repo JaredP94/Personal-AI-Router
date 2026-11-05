@@ -13,12 +13,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,6 +101,17 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "download-cancel-fixture":
+			interrupts := make(chan os.Signal, 1)
+			signal.Notify(interrupts, os.Interrupt)
+			fmt.Print("[====] 10%\r")
+			<-interrupts
+			fmt.Print("Continue to download in the background?")
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if strings.TrimSpace(line) == "n" && (len(os.Args) < 3 || os.Args[2] != "unconfirmed") {
+				fmt.Println("Download canceled.")
+			}
+			os.Exit(1)
 		case "captureargs": // record exact argv for launch-text round-trip tests
 			if len(os.Args) < 3 {
 				os.Exit(2)

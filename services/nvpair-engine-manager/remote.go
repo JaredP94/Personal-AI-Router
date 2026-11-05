@@ -15,13 +15,17 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"time"
 
 	settings "nvpair-shared/enginesettings"
 )
 
+const remotePullReturnMargin = 50 * time.Second
+
 // remoteParam is the shared input for the engine:remote-* methods. Fields not
 // relevant to a given method are ignored.
 type remoteParam struct {
+	OpID   string          `json:"opId,omitempty"`
 	Node   string          `json:"node"`
 	Engine string          `json:"engine,omitempty"`
 	Tool   string          `json:"tool,omitempty"`
@@ -34,13 +38,15 @@ type remoteParam struct {
 // remoteProgress is the engine:remote-progress notification payload the broker
 // forwards to a subscribed UI.
 type remoteProgress struct {
-	OpID    string `json:"opId"`
-	Node    string `json:"node"`
-	Engine  string `json:"engine,omitempty"`
-	Op      string `json:"op,omitempty"`
-	Stage   string `json:"stage,omitempty"`
-	Percent int    `json:"percent,omitempty"`
-	Message string `json:"message,omitempty"`
+	Model     string `json:"model,omitempty"`
+	CanCancel bool   `json:"canCancel,omitempty"`
+	OpID      string `json:"opId"`
+	Node      string `json:"node"`
+	Engine    string `json:"engine,omitempty"`
+	Op        string `json:"op,omitempty"`
+	Stage     string `json:"stage,omitempty"`
+	Percent   int    `json:"percent,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 // newOpID mints a random correlation id for a remote operation.
@@ -63,6 +69,18 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 		ctx, cancel = context.WithTimeout(ctx, settings.LMStudioModelRemoteBudget)
 		defer cancel()
 	}
+	// Include peer resolution and transport in the same bounded operation.
+	// The return margin covers the peer's bounded CLI stop after its action
+	// deadline, while remaining below the broker's 31-minute envelope.
+	if msg.Method == "engine:remote-cancel-pull" || msg.Method == "engine:remote-pull-model" {
+		budget := pullCancelAcceptTimeout
+		if msg.Method == "engine:remote-pull-model" {
+			budget = m.exec.actionTimeout + remotePullReturnMargin
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
 	if p.Node == "" {
 		m.codec.RespondError(msg.ID, -32602, "node is required")
 		return
@@ -70,6 +88,10 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 	peer, ok := m.peers.lookup(p.Node)
 	if !ok {
 		m.codec.RespondError(msg.ID, -32000, "node "+p.Node+" is not a discovered ec peer")
+		return
+	}
+	if !peer.verified {
+		m.codec.RespondError(msg.ID, -32000, "remote operations require a verified peer")
 		return
 	}
 	client, err := m.remoteClient(ctx, peer)
@@ -116,18 +138,46 @@ func (m *Manager) runRemote(ctx context.Context, msg *Message) {
 			m.codec.RespondError(msg.ID, -32602, "engine is required")
 			return
 		}
-		if p.Model == "" && len(p.Params) == 0 {
+		if model := modelFromParams(p.Params); model != "" {
+			p.Model = model
+		}
+		if p.Model == "" {
 			m.codec.RespondError(msg.ID, -32602, "model or params is required")
 			return
 		}
-		opID := newOpID()
+		opID := p.OpID
+		if opID == "" {
+			opID = newOpID()
+		}
 		body := pullRequest{OpID: opID, Engine: p.Engine, Model: p.Model, Params: p.Params}
 		terminal, err := client.stream(ctx, controlPullPath, body, m.remoteProgressFn(opID, peer.nodeID))
+		stage, message := "done", ""
+		if err != nil {
+			stage, message = "error", err.Error()
+		} else {
+			var result struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(terminal.Result, &result) == nil && result.Status == "cancelled" {
+				stage = "cancelled"
+			}
+		}
+		// Hub progress is lossy; the terminal stream result is authoritative.
+		// Publish its state before replying, even if the hub's last frame dropped.
+		_ = m.codec.Notify("engine:remote-progress", remoteProgress{OpID: opID, Node: peer.nodeID, Engine: p.Engine, Model: p.Model, Op: "pull", Stage: stage, Message: message})
 		if err != nil {
 			m.codec.RespondError(msg.ID, -32000, err.Error())
 			return
 		}
 		m.codec.Respond(msg.ID, map[string]any{"opId": opID, "result": terminal.Result})
+
+	case "engine:remote-cancel-pull":
+		if p.Engine == "" || p.Model == "" || p.OpID == "" {
+			m.codec.RespondError(msg.ID, -32602, "engine, model and opId are required")
+			return
+		}
+		res, err := client.postJSON(ctx, controlCancelPullPath, p.Engine, cancelPullRequest{Engine: p.Engine, Model: p.Model, OpID: p.OpID})
+		m.respondOrErr(msg, res, err)
 
 	case "engine:remote-load-model", "engine:remote-unload-model", "engine:remote-delete-model":
 		if p.Engine == "" {
@@ -176,7 +226,7 @@ func (m *Manager) remoteProgressFn(opID, node string) func(streamFrame) {
 	return func(f streamFrame) {
 		p := remoteProgress{
 			OpID: opID, Node: node, Engine: f.Engine, Op: f.Op,
-			Stage: f.Stage, Message: f.Message,
+			Stage: f.Stage, Message: f.Message, Model: f.Model, CanCancel: f.CanCancel,
 		}
 		if wirePercentIncluded(f.Percent) {
 			p.Percent = f.Percent

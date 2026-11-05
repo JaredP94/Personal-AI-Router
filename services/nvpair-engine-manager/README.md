@@ -216,14 +216,16 @@ Requests (caller → service):
 | `engine:preview-load-profile` | `{engine:"lmstudio",model,loadText,expectedRevision,format?}` | normalized literal argv (`load_args`) and value-free field errors, no mutation |
 | `engine:apply-load-profile` | `{engine:"lmstudio",model,loadText,expectedRevision,requestId,format?}` | atomically persisted snapshot; affects the next load, not the current resident model |
 | `engine:remote-get-load-profile`, `engine:remote-preview-load-profile`, `engine:remote-apply-load-profile` | same request plus remote `nodeId` | verified-peer settings transport; no manual/unverified targets |
-| `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy. An HTTP action waits 30 s for the engine's response headers unless its manifest declares `timeout_s` (seconds); Ollama's `run_model`, oMLX's `load_model` and `chat`, and LM Studio's `chat` declare 600, because a cold model load or a long prefill sends nothing until it finishes |
+| `engine:cancel-pull` | `{ engine, model, opId }` | `{ accepted: bool }` immediately; confirmation via the pull's terminal state update |
+| `engine:action` | `{ engine, action, params, opId? }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy. An HTTP action waits 30 s for the engine's response headers unless its manifest declares `timeout_s` (seconds); Ollama's `run_model`, oMLX's `load_model` and `chat`, and LM Studio's `chat` declare 600, because a cold model load or a long prefill sends nothing until it finishes |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
 | `engine:models` | — | `{ models: [string], modelsByEngine: { <engine>: [string] }, loadedByEngine: { <engine>: [string] } }` — the flat de-duplicated union of every running engine's models, the per-engine breakdown keyed by engine name, and the per-engine set of models currently **loaded in memory** (all normalized from each engine's `list_models` / `loaded_models` action `result` spec). `modelsByEngine` carries a key for every running engine whose inventory was successfully queried, including an empty list = "running, no models available"; a missing key means not running / not queryable / invalid response. `loadedByEngine` uses the same known-empty distinction for residency and also omits engines with no loaded endpoint. The `/v1/models` HTTP surface returns the same shape. |
 | `engine:remote-get-installed` | `{ node }` | `{ engines: [EngineStatus] }` fetched from the remote node over `ec` mTLS |
 | `engine:remote-install` | `{ node, engine, start? }` | `{ opId, status: EngineStatus }` after the remote install (live progress via `engine:remote-progress`) |
 | `engine:remote-install-tool` | `{ node, tool }` | `{ opId, result: { tool, installed: true } }`, or the remote tool's typed error |
-| `engine:remote-pull-model` | `{ node, engine, model?, params? }` | `{ opId, result }` after a successful remote pull (live progress via `engine:remote-progress`); engine-level failures, including HTTP 200 streams containing `error`, return a JSON-RPC error |
+| `engine:remote-cancel-pull` | `{ node, engine, model, opId }` | peer's `{ accepted: bool }`; requires verified inventory and pinned mTLS |
+| `engine:remote-pull-model` | `{ node, engine, model?, params?, opId? }` | `{ opId, result }` after a successful remote pull (live progress via `engine:remote-progress`); engine-level failures, including HTTP 200 streams containing `error`, return a JSON-RPC error |
 | `engine:remote-start` | `{ node, engine, port? }` | `EngineStatus` from the remote node (always loopback `127.0.0.1`; no per-call bind override on the remote path) |
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
@@ -403,13 +405,13 @@ loaded (in-memory) models changes (explicit load/unload, JIT auto-load, or
 TTL/idle eviction); `models` is the full `engine:models` shape (incl.
 `loadedByEngine`) so a consumer swaps its whole snapshot,
 `engine:install-progress{engine, stage, percent?, error?}`,
-`engine:pull-progress{engine, op, stage, percent?, message}` (live progress for a
+`engine:pull-progress{engine, model, opId, canCancel, op, stage, percent?, message}` (live progress for a
 local model pull driven via `engine:action{action:"pull_model"}` — the local
 counterpart of `engine:remote-progress`; frames are coalesced to changes in
-stage/percent, the engine's terminal success surfaces as `stage:"success"`, and
+stage/percent; terminal states are `done`, `cancelled`, or `error`, and
 a failed pull emits a terminal `stage:"error", percent:-1, message` frame so a
 UI converges even if its synchronous call already timed out),
-`engine:remote-progress{opId, node, engine, op, stage, percent?, message}`
+`engine:remote-progress{opId, node, engine, model?, canCancel?, op, stage, percent?, message}`
 (relayed live progress for a remote install/pull), and — for the error
 pipeline — `errors:report` / `errors:clear` (consumed by `nvpair-errors`
 via the broker; see below).
@@ -430,12 +432,12 @@ The `engine:remote-*` methods are the client half of remote engine
 management: engine-manager resolves the target `node` in an `ec` peer
 directory (fed by its own `discovery:subscribe{services:[ec]}` to the broker
 relay), dials that peer's `ec` surface over pin-based cluster mTLS, and — for
-`remote-install` / `remote-install-tool` / `remote-pull-model` — mints an `opId`,
+`remote-install` / `remote-install-tool` / `remote-pull-model` — uses a caller-supplied pull `opId` or mints one,
 relays each streamed progress frame up as `engine:remote-progress`, and settles
 the request with the terminal result. Each NDJSON progress or terminal frame is
 limited to 1 MiB; the limit applies per frame so a long operation can report
 progress throughout its lifetime. They fail if this node isn't clustered or the target isn't a
-pinned cluster peer. See "Remote engine management" below.
+verified, pinned cluster peer. Previews and manually added bare engines are refused. See "Remote engine management" below.
 
 `engine:install`, `engine:start`, `engine:stop`, `engine:restart`,
 `engine:set-port`, and `engine:action` run in their own goroutine on the
@@ -629,7 +631,8 @@ Endpoints (all under `/v1`):
 | `GET /v1/engines` | JSON | remote `engine:get-installed` |
 | `POST /v1/engines/install` | NDJSON stream | remote install (+ optional start) with live progress |
 | `POST /v1/tools/install` | NDJSON stream | `{ opId, tool }` → terminal `{ opId, op: "install-tool", result: { tool, installed: true } }` |
-| `POST /v1/models/pull` | NDJSON stream | remote model pull with live progress |
+| `POST /v1/models/pull` | NDJSON stream | `{ engine, model?, params?, opId? }` remote pull with model-attributed progress |
+| `POST /v1/models/cancel-pull` | JSON | `{ engine, model, opId }` → `{ accepted: bool }`, without waiting for transfer stop |
 | `POST /v1/engines/start` | JSON | remote start → `EngineStatus` |
 | `POST /v1/engines/stop` | JSON | remote stop → `EngineStatus` |
 
@@ -655,6 +658,59 @@ relays engine-manager's `discovery:subscribe{services:[ec]}` into the relay
 directory so the peer directory stays current. It does **not** restart
 engine-manager on `cluster:identity-changed` — the surface follows membership on
 its own.
+
+## Model download cancellation
+
+Pulls are attributed by both model and operation ID, locally and remotely.
+The pull accepts an optional caller-generated `opId`; cancel requires that exact
+ID plus engine and model. A stale ID cannot cancel a replacement. Concurrent
+different models are independent; a duplicate model in flight is refused.
+No PAIR download queue or cache-file cleanup is introduced.
+
+Cancel returns once accepted, **not** once stopped. Clients keep **Canceling**
+until the original pull reports `cancelled`, `done`, or `error`. A successful
+cancelled pull returns `{"status":"cancelled"}` and emits `stage:"cancelled"`.
+Errors are not cancellation confirmations. Callbacks and worker calls run
+outside the tracking lock. Remote pull streams filter by operation ID, and
+the initiating manager publishes authoritative terminal state even if a lossy
+progress subscription dropped its last frame.
+
+- **Ollama:** progress comes from `/api/pull`; cancellation closes this pull's
+  streaming request. Other clients sharing a blob may continue their own pull.
+  Ollama retains partial blobs to resume on the next pull and prunes them itself.
+- **LM Studio:** `lms get` percentage redraws are parsed live. An interrupt is
+  followed by declining its background-download prompt. Only the CLI's
+  “Download canceled.” acknowledgement **and process exit** confirm cancellation.
+  Failure to obtain that acknowledgement reports an error, not a stopped transfer.
+  Existing `lms get` retries resume engine-managed partials when supported; PAIR
+  neither removes nor promises indefinite retention of LM Studio's partial files.
+  This follows [the CLI cancellation flow](https://github.com/lmstudio-ai/lms/blob/43d4b2680e3cf679ad19753fcc7af0cb0e4a12a2/src/handleDownloadWithProgressBar.ts);
+  the daemon's storage lifecycle remains the engine's responsibility.
+- **oMLX:** the bundled macOS arm64 manifest has no `pull_model` action, so PAIR
+  exposes no download/Cancel button. [oMLX v0.7.3 admin tasks](https://github.com/jundot/omlx/blob/v0.7.3/omlx/admin/hf_downloader.py)
+  support progress and cancellation in its separate admin interface, but mark a
+  task cancelled before its worker has stopped writing. That is not a confirmed
+  stop contract PAIR can use. oMLX itself cleans incomplete staging files on
+  cancellation while retaining completed files for retry. No admin-task/session
+  integration is added here.
+
+**PAIR never inspects or deletes cache files when cancelling.** Partial data is
+left for the engine to manage; the desktop briefly says “Partial data is kept so
+the download can resume.” This intentionally diverges from
+NVIDIA/Personal-AI-Router#111's snapshot/stillness cleanup: a shared engine cache
+does not establish file ownership, even when a partial appears during our pull.
+
+Timeouts increase outward and are defined once per layer: remote cancel
+acceptance `pullCancelAcceptTimeout` (5 s), broker
+`engineCancelRelayTimeout` (10 s), desktop/TUI cancel envelope (15 s).
+These do not wait for engine stop. Transfer execution uses
+`defaultEngineActionTimeout` (30 min); LM Studio stop uses interrupt/retry/reap
+graces of 15/5/10 s, a 5 s stdio wait and bounded platform signal helpers.
+Its prompt write is bounded at 1 s. A remote initiator adds
+`remotePullReturnMargin` (50 s) for peer shutdown; broker
+`enginePullRelayTimeout` is 31 min and desktop/TUI pull envelopes are 32 min.
+A cancelled or superseded operation's late progress, reply or notice timer
+cannot overwrite a newer row.
 
 ## CLI flags
 

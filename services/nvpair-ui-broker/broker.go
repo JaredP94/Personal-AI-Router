@@ -43,6 +43,11 @@ var Version = "dev"
 const restoreEnabledEnginesMethod = "engine:restore-enabled"
 const prepareEngineShutdownMethod = "engine:prepare-shutdown"
 
+// Acceptance and transfer lifetimes are separate: engine-manager accepts within
+// 5s, this relay waits 10s, desktop 15s. Pull: 30m plus CLI stop < 31m < 32m.
+const engineCancelRelayTimeout = 10 * time.Second
+const enginePullRelayTimeout = 31 * time.Minute
+
 // ReadyParams is the payload of the "app:ready" notification the broker
 // emits on every new connection (or once at startup in stdio mode).
 // The method name uses the external schema's app: namespace; the
@@ -3638,13 +3643,28 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 	// read loop allocates a fresh Message per request so these are stable.
 	id := msg.ID
 	method := msg.Method
-	callCtx := context.Background()
+	ctx := context.Background()
+	var cancel context.CancelFunc
 	if isLMStudioModelMutation(method, msg.Params) {
-		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(callCtx, settings.LMStudioModelRelayBudget)
+		ctx, cancel = context.WithTimeout(ctx, settings.LMStudioModelRelayBudget)
+	}
+	switch method {
+	case "engine:cancel-pull", "engine:remote-cancel-pull":
+		ctx, cancel = context.WithTimeout(ctx, engineCancelRelayTimeout)
+	case "engine:remote-pull-model":
+		ctx, cancel = context.WithTimeout(ctx, enginePullRelayTimeout)
+	case "engine:action":
+		var p struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.Action == "pull_model" {
+			ctx, cancel = context.WithTimeout(ctx, enginePullRelayTimeout)
+		}
+	}
+	if cancel != nil {
 		defer cancel()
 	}
-	result, rpcErr, err := em.CallNoTimeout(callCtx, method, msg.Params)
+	result, rpcErr, err := em.CallNoTimeout(ctx, method, msg.Params)
 	switch {
 	case err != nil:
 		if e := b.codec.RespondError(id, -32000, fmt.Sprintf("engine call failed: %v", err)); e != nil {

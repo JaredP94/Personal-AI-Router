@@ -722,6 +722,16 @@ Opt into / out of the `engine:<event>` stream (off by default). Acks `{ subscrib
 
 #### `engine:<method>` (generic relay)
 
+Model pulls carry `opId` through unchanged. `engine:cancel-pull` and
+`engine:remote-cancel-pull` return `{ accepted: bool }` without waiting for stop;
+the original pull's terminal update confirms the outcome. Pull progress carries
+`model`, `opId` and adapter-reported `canCancel`. Engine-manager owns tracking,
+confirmation and verified pinned-peer admission; the broker neither deletes
+cache files nor synthesizes stopped state. Cancel acceptance is bounded by
+`engineCancelRelayTimeout` (10 s), between engine-manager's 5 s and clients'
+15 s. `enginePullRelayTimeout` (31 min) bounds pull replies, outside the worker's
+30 min action plus bounded stop and inside the clients' 32 min envelope.
+
 Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim and its response relayed straight back. This covers the whole engine control plane: `engine:get-installed`, `engine:describe`, `engine:status`, `engine:install`, `engine:uninstall`, `engine:start`, `engine:stop`, `engine:restart`, `engine:set-port`, `engine:action`, `engine:logs`, `engine:errors`, `engine:models`. (`engine:set-port` persists the engine's server port as a manifest override that survives a restart — see the `nvpair-engine-manager` README.) Lifecycle ops run for minutes (reporting progress via the `engine:install-progress` / `engine:state-changed` push events), so the relay imposes **no broker-side timeout** — fire the request and watch the event stream for the outcome. Error `-32000 "engine-manager not available"` when no engine-manager is supervised.
 
 The broker's prepare-shutdown request and subsequent stdin close join the same

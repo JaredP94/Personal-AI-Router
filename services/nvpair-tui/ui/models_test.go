@@ -233,7 +233,9 @@ func TestModelPullWireAndRefresh(t *testing.T) {
 		if remote {
 			method, params = "engine:remote-pull-model", `{"node":"peer-uuid","engine":"lmstudio","model":"downloaded"}`
 		}
-		reply := engineRequest(t, v.Update(tea.KeyMsg{Type: tea.KeyEnter}), c, method, params, `null`)
+		cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		params = downloadParams(t, params, v.downloads[0].id)
+		reply := engineRequest(t, cmd, c, method, params, `null`)
 		refresh := v.Update(reply)
 		if remote {
 			v.Update(engineRequest(t, refresh, c, "discovery:get-nodes", `null`, `{"nodes":[]}`))
@@ -278,7 +280,7 @@ func TestModelOperationLifetimes(t *testing.T) {
 					if op == "p" {
 						v.input.SetValue("alpha")
 						cmd = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
-						timeout = 31 * time.Minute
+						timeout = 32 * time.Minute
 					} else {
 						cmd = v.Update(engineKey("y"))
 					}

@@ -34,6 +34,9 @@ import (
 var bundledManifests embed.FS
 
 func main() {
+	if handleDownloadProcess() {
+		return
+	}
 	if oneShotRequested(os.Args[1:]) {
 		os.Exit(runOneShot(os.Args[1:]))
 	}

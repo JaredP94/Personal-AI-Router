@@ -63,6 +63,8 @@ export interface IEngineApi {
     ): void
     /** Pull (download) a model on a node. */
     pullModel(engineType: EngineType, nodeId: string, model: string): void
+    /** Ask an engine to stop this transfer; confirmation arrives via progress. */
+    cancelModelPull(engineType: EngineType, nodeId: string, model: string, opId: string): void
     /** Load a model into memory on a node. */
     loadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Unload a model from memory on a node. */
@@ -108,6 +110,8 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             transport.subscribePush('engines:settings-disconnected', callback),
         getInitialState: () => transport.invoke('engines:get-initial'),
 
+        cancelModelPull: (engineType, nodeId, model, opId) =>
+            fireCommand(transport, { command: 'cancelModelPull', engineType, nodeId, model, opId }),
         toggle: (engineType, nodeId) =>
             fireCommand(transport, { command: 'toggle', engineType, nodeId }),
         install: (engineType, nodeId) =>

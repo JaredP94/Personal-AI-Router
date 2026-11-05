@@ -55,6 +55,7 @@ export type EngineCommandType =
     | 'update'
     | 'setPorts'
     | 'pullModel'
+    | 'cancelModelPull'
     | 'loadModel'
     | 'unloadModel'
     | 'deleteModel'
@@ -66,6 +67,7 @@ export interface EngineCommandPayload {
     engineType: EngineType
     nodeId: string
     model?: string
+    opId?: string
     /**
      * `setPorts` only. The engine HTTP server port to apply. Omitted when the
      * server port did not change so the bridge sends only what the user edited.

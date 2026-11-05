@@ -72,13 +72,15 @@ describe('remote pull progress', () => {
             }
         })
 
-        state.beginRemoteModelPull('remote-node', 'lm-studio', 'demo-model')
+        const opId = state.beginRemoteModelPull('remote-node', 'lm-studio', 'demo-model')
         state.applyRemoteEngineProgress({
             node: 'remote-node',
             engine: 'lmstudio',
             op: 'pull',
             stage: 'pulling',
-            message: 'demo-model'
+            message: 'demo-model',
+            model: 'demo-model',
+            opId
         })
 
         expect(progressEvents.at(-1)?.percent).toBeUndefined()
@@ -93,14 +95,16 @@ describe('remote pull progress', () => {
             }
         })
 
-        state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
+        const opId = state.beginRemoteModelPull('remote-node', 'ollama', 'llama3.1:8b')
         state.applyRemoteEngineProgress({
             node: 'remote-node',
             engine: 'ollama',
             op: 'pull',
             stage: 'pulling',
             percent: 42,
-            message: 'llama3.1:8b'
+            message: 'llama3.1:8b',
+            model: 'llama3.1:8b',
+            opId
         })
 
         expect(progressEvents.at(-1)?.percent).toBe(42)

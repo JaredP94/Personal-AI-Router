@@ -292,15 +292,21 @@ the engine simply shows as stopped and then running.
 
 A local `pull_model` streams live download progress: the engine-manager routes
 `engine:action{pull_model}` through its streaming pull path and emits
-`engine:pull-progress` (`{ engine, op, stage, percent, message }`) — the local
-counterpart of `engine:remote-progress`. Personal AI Router consumes it in
-`applyLocalEngineProgress` (`modular-supervisor.ts` → `modular-state.ts`),
-backfilling the dispatched model (the frame carries none) and advancing the
-optimistic pull entry's percent in place, so a local pull shows "Pulling · N%"
-to completion just like a remote pull. The awaited action response owns
-completion (clearing the entry and refreshing the model list); a CLI-driven pull
-(LM Studio) emits a single `pulling` marker and degrades to the indeterminate
-spinner.
+`engine:pull-progress` (`{ engine, model, opId, canCancel, op, stage, percent?, message }`) —
+the local counterpart of `engine:remote-progress`. Both Ollama and LM Studio
+stream model-attributed percentages where measured. The bridge creates an
+optimistic row with a caller-generated operation ID, then accepts only matching
+progress and terminal updates; old replies and notice timers cannot retire a retry.
+`done` and `error` clear the row. The awaited reply refreshes model inventory.
+
+Cancel uses `engine:cancel-pull` locally or `engine:remote-cancel-pull` on a
+verified peer, naming engine, model and operation ID. Its response confirms
+acceptance, not stop. The row stays **Canceling** until a terminal state update,
+including after a request timeout; another cancel request may be sent.
+`cancelled` briefly shows “Partial data is kept so the download can resume.”
+PAIR never deletes cache files. oMLX's manifest has no pull action, so there is
+no PAIR download/Cancel affordance for it. See
+[adapter behaviour and timeouts](../../services/nvpair-engine-manager/README.md#model-download-cancellation).
 
 `engine:models` (and the `em` `GET /v1/models` surface) returns the flat model
 union, the per-engine breakdown (`modelsByEngine`), and the per-engine set of

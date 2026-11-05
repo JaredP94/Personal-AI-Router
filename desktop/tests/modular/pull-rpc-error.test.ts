@@ -40,7 +40,12 @@ describe('pull RPC error completion', () => {
                 expect(call).toHaveBeenCalledExactlyOnceWith(
                     'broker',
                     'engine:action',
-                    { engine: 'ollama', action: 'pull_model', params: { name: model } },
+                    {
+                        engine: 'ollama',
+                        action: 'pull_model',
+                        params: { name: model },
+                        opId: expect.any(String)
+                    },
                     expect.any(Number)
                 )
             } else {
@@ -51,7 +56,7 @@ describe('pull RPC error completion', () => {
                 expect(call).toHaveBeenCalledExactlyOnceWith(
                     'broker',
                     'engine:remote-pull-model',
-                    { node: 'pull-error-peer', engine: 'ollama', model },
+                    { node: 'pull-error-peer', engine: 'ollama', model, opId: expect.any(String) },
                     expect.any(Number)
                 )
             }

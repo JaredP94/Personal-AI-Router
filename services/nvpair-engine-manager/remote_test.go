@@ -30,7 +30,7 @@ func callToolRemote(t *testing.T, srv *httptest.Server, mesh *clustertrust.Mesh,
 	defer m.remoteHTTP.CloseIdle()
 	defer m.readyHTTP.CloseIdle()
 	m.peers.set([]noderec.DirectoryNode{{
-		HostUUID: "host-server", Name: "server", IP: "127.0.0.1", ClusterUUID: "uuid-server",
+		HostUUID: "host-server", Name: "server", IP: "127.0.0.1", ClusterUUID: "uuid-server", IdentityVerification: "verified", Trusted: true, PeerRecordID: "server-record",
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 			noderec.ServiceEngineControl: {Port: listenerPort(t, srv)},
 		},
@@ -158,7 +158,7 @@ func TestRunRemoteNotClustered(t *testing.T) {
 	// pinned dial can't be built.
 	m := NewManager(NewCodec(&out), &Executor{progress: newProgressHub()}, nil)
 	m.peers.set([]noderec.DirectoryNode{{
-		HostUUID: "uuid-b", Name: "nodeB", IP: "192.168.1.42", ClusterUUID: "cuuid-b",
+		HostUUID: "uuid-b", Name: "nodeB", IP: "192.168.1.42", ClusterUUID: "cuuid-b", IdentityVerification: "verified", Trusted: true, PeerRecordID: "b-record",
 		Services: map[noderec.ServiceKey]noderec.ServiceStatus{
 			noderec.ServiceEngineControl: {Port: 14323},
 		},

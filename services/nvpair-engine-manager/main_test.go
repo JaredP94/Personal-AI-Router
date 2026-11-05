@@ -20,6 +20,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	if handleDownloadProcess() {
+		os.Exit(0)
+	}
 	tmp, err := os.MkdirTemp("", "nvpair-em-test-*")
 	if err != nil {
 		panic(err)
