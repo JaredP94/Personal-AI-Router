@@ -113,23 +113,21 @@ func TestLMStudioChildPersistsUnderPrivateBase(t *testing.T) {
 	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	msgs := startMsgReader(stdout)
 	waitForMethod(t, msgs, "ready", 10*time.Second)
-	var port int
-	for attempt := 0; attempt < 8; attempt++ {
-		port = freePort(t)
+	requestID := 0
+	port, err := retryPortBind(t, func() int { return freePort(t) }, func(port int) error {
+		requestID++
 		sendLine(t, stdin, map[string]any{
-			"jsonrpc": "2.0", "id": attempt + 1, "method": "set-port",
+			"jsonrpc": "2.0", "id": requestID, "method": "set-port",
 			"params": map[string]int{"port": port},
 		})
-		resp := waitForResponse(t, msgs, 5*time.Second)
-		if resp.Error == nil {
-			break
+		resp := waitForResponseID(t, msgs, requestID, 5*time.Second)
+		if resp.Error != nil {
+			return resp.Error
 		}
-		if !strings.HasPrefix(resp.Error.Message, "failed to bind port") {
-			t.Fatalf("set-port: %+v", resp.Error)
-		}
-		if attempt == 7 {
-			t.Fatal("all probed ports were taken before bind")
-		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("set-port: %v", err)
 	}
 	base := root
 	if runtime.GOOS == "darwin" {

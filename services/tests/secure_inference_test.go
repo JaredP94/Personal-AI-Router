@@ -60,11 +60,11 @@ type proxyProc struct {
 // port and blocks until it reports ready. Its persisted-port store is isolated
 // into a temp config dir so the test never reads or writes the developer's real
 // config.
-func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc {
+func startProxyProc(t *testing.T, clusterDir string) *proxyProc {
 	t.Helper()
 	cmd := testCommand(t, proxyBin,
 		"--cluster-dir", clusterDir,
-		"--port", strconv.Itoa(listenPort),
+		"--port", "0",
 		"--ignore-persisted-port",
 	)
 	stdin, err := cmd.StdinPipe()
@@ -81,14 +81,36 @@ func startProxyProc(t *testing.T, clusterDir string, listenPort int) *proxyProc 
 	}
 	p := &proxyProc{t: t, cmd: cmd, stdin: stdin, msgs: startMsgReader(stdout), nextID: 1, notifySeq: 1}
 
-	ready := p.pump(func(m jsonrpc.Message) bool { return m.Method == "ready" }, 15*time.Second)
-	var rp struct {
-		Port int `json:"port"`
+	p.pump(func(m jsonrpc.Message) bool { return m.Method == "ready" }, 15*time.Second)
+	// Start with an OS-assigned listener, then select the advertised port via
+	// set-port so a stolen probe can be distinguished from other startup errors.
+	port, err := retryPortBind(t, func() int { return freePort(t) }, func(port int) error {
+		id := p.nextID
+		p.nextID++
+		sendLine(t, stdin, map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": "set-port",
+			"params": map[string]int{"port": port},
+		})
+		resp := p.pump(func(m jsonrpc.Message) bool { return m.Method == "" && idEquals(m.ID, id) }, 15*time.Second)
+		if resp.Error != nil {
+			return resp.Error
+		}
+		var result struct {
+			Port int `json:"port"`
+		}
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			return err
+		}
+		if result.Port != port {
+			return fmt.Errorf("set-port returned %d, want %d", result.Port, port)
+		}
+		return nil
+	})
+	if err != nil {
+		p.stop()
+		t.Fatalf("proxy set-port: %v", err)
 	}
-	if err := json.Unmarshal(ready.Params, &rp); err != nil || rp.Port == 0 {
-		t.Fatalf("proxy ready params = %s (err %v)", ready.Params, err)
-	}
-	p.port = rp.Port
+	p.port = port
 	return p
 }
 
@@ -267,11 +289,11 @@ func TestSecureInferenceClusterMTLS(t *testing.T) {
 	// backend for the A->B path; A routes out to B rather than serving locally.
 	bEngineHost, bEnginePort, bGenerates := startFakeOllama(t)
 
-	proxyB := startProxyProc(t, clusterB, freePort(t))
+	proxyB := startProxyProc(t, clusterB)
 	defer proxyB.stop()
 	proxyB.setLocalBackend("ollama", bEngineHost, bEnginePort, true)
 
-	proxyA := startProxyProc(t, clusterA, freePort(t))
+	proxyA := startProxyProc(t, clusterA)
 	defer proxyA.stop()
 	// Tell A that B runs ollama at B's promoted proxy port, as a trusted member.
 	proxyA.pushOllamaPeer("node-b", "127.0.0.1", bInfo.NodeUUID, proxyB.port, []string{"m:latest"})
