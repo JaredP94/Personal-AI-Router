@@ -12,12 +12,14 @@
 package tests
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -26,6 +28,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,10 +140,7 @@ func TestRemoteEngineGetInstalled(t *testing.T) {
 
 	// Node B: serve the ec surface over mTLS. Give it a live stdin so it stays
 	// up (EOF would shut it down) and drain its stdout so it can't block.
-	portB := freePort(t)
-	_, bCleanup := startEngineManagerServer(t, dirB, portB)
-	t.Cleanup(bCleanup)
-	waitForPort(t, "127.0.0.1", portB, 10*time.Second)
+	portB := startEngineManagerServer(t, dirB)
 
 	setRemoteEngineHome(t, dirA)
 	// Node A: the client. It resolves targets from its ec peer directory, which
@@ -218,10 +219,7 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 	writeActiveAdmission(t, dirB)   // B is clustered, but still does not trust A
 	// Deliberately do NOT pin A into B: B must reject A at the per-request gate.
 
-	portB := freePort(t)
-	_, bCleanup := startEngineManagerServer(t, dirB, portB)
-	t.Cleanup(bCleanup)
-	waitForPort(t, "127.0.0.1", portB, 10*time.Second)
+	portB := startEngineManagerServer(t, dirB)
 
 	aStdin, aMsgs, aCleanup := startEngineManagerStdio(t, dirA)
 	t.Cleanup(aCleanup)
@@ -241,40 +239,94 @@ func TestRemoteEngineRejectsUntrusted(t *testing.T) {
 	t.Logf("unpinned caller correctly refused: %+v", resp.Error)
 }
 
-// startEngineManagerServer launches an engine-manager serving the ec surface on
-// controlPort with the given cluster dir. It keeps stdin open (so the process
-// stays alive) and drains stdout. Returns stdin and a cleanup.
-func startEngineManagerServer(t *testing.T, clusterDir string, controlPort int) (io.WriteCloser, func()) {
+// startEngineManagerServer launches the ec listener on a freshly selected port.
+// The worker survives a bind failure, so wait for its own listener diagnostic,
+// not a successful dial that might reach the process that stole the port.
+func startEngineManagerServer(t *testing.T, clusterDir string) int {
 	t.Helper()
-	cmd := testCommandInDir(t, clusterDir, engineMgrBin,
-		"--control-port", fmt.Sprintf("%d", controlPort),
-		"--cluster-dir", clusterDir,
-		"--log-level", "warn",
-	)
-	cmd.Stderr = os.Stderr
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("engine-manager stdin pipe: %v", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("engine-manager stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start engine-manager (server): %v", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, stdout) }()
-	return stdin, func() {
-		_ = stdin.Close()
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
+	port, err := retryPortBind(t, func() int { return freePort(t) }, func(controlPort int) error {
+		cmd := testCommandInDir(t, clusterDir, engineMgrBin,
+			"--control-port", strconv.Itoa(controlPort),
+			"--cluster-dir", clusterDir,
+			"--log-level", "info",
+		)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return err
 		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		stop := func() {
+			_ = stdin.Close()
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
+			}
+		}
+		go func() { _, _ = io.Copy(io.Discard, stdout) }()
+		started := make(chan error, 1)
+		go func() {
+			reported := false
+			report := func(err error) {
+				if !reported {
+					started <- err
+					reported = true
+				}
+			}
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				line := scanner.Text()
+				fmt.Fprintln(os.Stderr, line)
+				if strings.Contains(line, "] INFO serving engine control surface (mTLS) ") {
+					report(nil)
+				} else if strings.Contains(line, "] WARN engine-manager control endpoint disabled (bind failed) ") {
+					_, raw, ok := strings.Cut(line, " err=")
+					message, err := strconv.Unquote(raw)
+					if !ok || err != nil {
+						report(fmt.Errorf("unrecognized control bind diagnostic: %s", line))
+					} else {
+						report(errors.New(message))
+					}
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				report(err)
+			} else {
+				report(errors.New("engine-manager stderr closed before control listener startup"))
+			}
+		}()
+		timer := time.NewTimer(10 * time.Second)
+		defer timer.Stop()
+		select {
+		case err := <-started:
+			if err != nil {
+				stop()
+				return err
+			}
+			t.Cleanup(stop)
+			return nil
+		case <-timer.C:
+			stop()
+			return errors.New("engine-manager control listener startup timed out")
+		}
+	})
+	if err != nil {
+		t.Fatalf("start engine-manager control listener: %v", err)
 	}
+	return port
 }
 
 // startEngineManagerStdio launches an engine-manager as a JSON-RPC-over-stdio

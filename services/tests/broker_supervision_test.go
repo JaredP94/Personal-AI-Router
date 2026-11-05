@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -483,14 +484,22 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	target := freePort(t)
-	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":860,"method":"proxy:set-port","params":{"port":%d}}`, target) + "\n"
-	if _, err := stdin.Write([]byte(req)); err != nil {
-		t.Fatalf("write proxy:set-port: %v", err)
-	}
-	resp := waitForResponse(t, msgs, 10*time.Second)
-	if resp.Error != nil {
-		t.Fatalf("proxy:set-port errored: %d %s", resp.Error.Code, resp.Error.Message)
+	var resp jsonrpc.Message
+	requestID := 860
+	target, err := retryPortBind(t, func() int { return freePort(t) }, func(port int) error {
+		requestID++
+		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"proxy:set-port","params":{"port":%d}}`, requestID, port) + "\n"
+		if _, err := stdin.Write([]byte(req)); err != nil {
+			return err
+		}
+		resp = waitForResponseID(t, msgs, requestID, 10*time.Second)
+		if resp.Error != nil {
+			return resp.Error
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("proxy:set-port: %v", err)
 	}
 	var sp struct {
 		Port int `json:"port"`
@@ -506,7 +515,7 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 	id = 870
 	deadline = time.Now().Add(10 * time.Second)
 	for {
-		if _, port := proxyStatus(t, stdin, msgs, id); port == target {
+		if ready, port := proxyStatus(t, stdin, msgs, id); ready && port == target {
 			t.Logf("proxy rebound to %d via the broker", target)
 			break
 		}
@@ -515,6 +524,28 @@ func TestBrokerProxySetPortRebinds(t *testing.T) {
 			t.Fatalf("proxy:get-status never reported the rebound port %d", target)
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Status alone is not proof of a live listener: request the model listing
+	// on exactly the requested port. With no engine, the proxy serves its own
+	// inventory-unavailable response rather than a successful upstream listing.
+	client := &http.Client{Timeout: 5 * time.Second}
+	httpResp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/tags", target))
+	if err != nil {
+		t.Fatalf("request rebound proxy: %v", err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("rebound proxy status = %d, want 503 without an engine", httpResp.StatusCode)
+	}
+	var inventory struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&inventory); err != nil {
+		t.Fatalf("decode rebound proxy inventory response: %v", err)
+	}
+	if inventory.Error != "model inventory unavailable" {
+		t.Fatalf("rebound proxy error = %q, want model inventory unavailable", inventory.Error)
 	}
 }
 
