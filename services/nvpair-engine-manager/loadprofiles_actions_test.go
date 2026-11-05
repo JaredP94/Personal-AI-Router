@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -19,47 +20,19 @@ import (
 	settings "nvpair-shared/enginesettings"
 )
 
-func TestLoadProfileCLIHelper(t *testing.T) {
-	capture := os.Getenv("PAIR_TEST_PROFILE_CAPTURE")
-	if capture == "" {
-		return
-	}
-	args := os.Args
-	for i, arg := range args {
-		if arg == "--" {
-			args = args[i+1:]
-			break
-		}
-	}
-	file, err := os.OpenFile(capture, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		os.Exit(2)
-	}
-	_ = json.NewEncoder(file).Encode(args)
-	_ = file.Close()
-	for _, arg := range args {
-		if arg == "--fail-private" {
-			fmt.Fprintln(os.Stderr, "echoed-private-value")
-			os.Exit(1)
-		}
-	}
-	fmt.Println("echoed-private-value")
-	os.Exit(0)
-}
-
 func profileActionExecutor(t *testing.T) (*Executor, string, string) {
 	t.Helper()
 	capture := filepath.Join(t.TempDir(), "argv.jsonl")
 	t.Setenv("PAIR_TEST_PROFILE_CAPTURE", capture)
-	bin, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+	bin := filepath.Join(t.TempDir(), "profile-cli"+filepath.Ext(fakeEngineBin))
+	if output, err := exec.Command("go", "build", "-o", bin, "./testdata/fakeprofilecli").CombinedOutput(); err != nil {
+		t.Fatalf("build profile CLI fixture: %v %s", err, output)
 	}
 	root := t.TempDir()
 	m := deleteModelRestartManifest(t, root, fakeEngineBin)
 	m.Engine = "lmstudio"
-	m.Actions["load_model"] = Action{Cmd: []string{bin, "-test.run=^TestLoadProfileCLIHelper$", "--", "load", "{model}"}}
-	m.Actions["unload_model"] = Action{Cmd: []string{bin, "-test.run=^TestLoadProfileCLIHelper$", "--", "unload", "{model}"}}
+	m.Actions["load_model"] = Action{Cmd: []string{bin, "load", "{model}"}}
+	m.Actions["unload_model"] = Action{Cmd: []string{bin, "unload", "{model}"}}
 	ex := newTestExecutor(t, m)
 	t.Cleanup(func() { _ = ex.Stop("lmstudio") })
 	return ex, capture, root
@@ -185,6 +158,38 @@ func TestLoadProfileCanceledApplyCannotPersistLate(t *testing.T) {
 		t.Fatal("late canceled write persisted")
 	}
 }
+func TestLoadProfileRunningCLIWaitIsBounded(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	saveTestProfile(t, e, "m", "--hold-private")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := e.ModelLoad(ctx, "lmstudio", "m"); done <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(capture + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("hanging CLI fixture did not become ready")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled CLI load succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CLI wait retained a descendant's output pipe after cancellation")
+	}
+	rows := capturedProfileArgs(t, capture)
+	if len(rows) != 1 || rows[0][2] != "--hold-private" {
+		t.Fatal("hanging CLI fixture was not invoked")
+	}
+}
+
 func TestLoadProfileInventoryPrunesOnlyAfterSuccessfulQuery(t *testing.T) {
 	e, _, _ := profileActionExecutor(t)
 	st, _ := e.state("lmstudio")

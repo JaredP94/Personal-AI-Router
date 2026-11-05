@@ -38,7 +38,7 @@ func (b *Broker) relayLoadProfile(ctx context.Context, method string, p settings
 		nodeID = p.NodeID
 	}
 	result, rpcErr, err := worker.CallNoTimeout(ctx, rpcMethod, settingsJSON(p))
-	if err != nil {
+	if err != nil || ctx.Err() != nil || b.getEngineMgr() != worker {
 		return nil, errors.New("Load options request failed. Reload before retrying.")
 	}
 	if rpcErr != nil {

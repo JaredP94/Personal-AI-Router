@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strconv"
@@ -39,8 +40,12 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 		return nil, errors.New(profiledLoadFailed)
 	}
 	argv = append(argv, args...)
-	// Do not retain CLI stdout/stderr: vendors may echo arbitrary private values.
-	if _, err = e.runCommandOutput(ctx, argv); err != nil {
+	// Nil output streams go directly to the null device: do not capture private
+	// diagnostics or wait for output pipes inherited by a vendor descendant.
+	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	configureSysProcAttr(command)
+	command.WaitDelay = time.Second
+	if err = command.Run(); err != nil {
 		return nil, errors.New(profiledLoadFailed)
 	}
 	if ctx.Err() != nil {

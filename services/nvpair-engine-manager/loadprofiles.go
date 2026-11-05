@@ -43,7 +43,7 @@ func validateLoadText(text string) ([]string, error) {
 		}
 		// Prefix matching also rejects abbreviated spellings and names that append
 		// a suffix to a managed control. Vendor argument parsers may accept either.
-		for _, control := range []string{"host", "port", "bind", "address", "listen", "server", "endpoint", "url", "api", "model", "identifier", "alias", "name", "path", "file", "config", "preset", "template", "prompt", "system", "lora", "adapter", "project", "exec", "command", "script", "plugin", "tool", "extension", "help", "version", "list", "directory", "dir", "remote", "log"} {
+		for _, control := range []string{"host", "port", "bind", "address", "listen", "server", "endpoint", "url", "api", "model", "identifier", "alias", "name", "path", "file", "config", "preset", "template", "prompt", "system", "lora", "adapter", "project", "exec", "command", "script", "plugin", "tool", "extension", "help", "version", "list", "directory", "dir", "remote", "log", "input", "output", "include", "require", "import", "export", "mcp", "proxy", "socket", "hook", "module", "resource", "attach", "estimate", "dry-run"} {
 			if strings.Contains(name[2:], control) || strings.HasPrefix(control, name[2:]) {
 				return nil, errors.New(loadProfileValidation)
 			}

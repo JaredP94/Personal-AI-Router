@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,6 +28,7 @@ func TestLoadProfileValidation(t *testing.T) {
 		}
 	}
 	for _, text := range []string{
+		"--estimate-only", "--dry-run", "--input x", "--output x", "--include x", "--require x", "--import x", "--export x", "--mcp x", "--proxy x", "--socket x",
 		"--host localhost", "--port=1234", "--server-port 1234", "--bind 127.0.0.1", "--address localhost", "--api-url x",
 		"--model other", "--model-path x", "--identifier same", "--alias=x", "--name x", "--path x", "other/model", "-- other/model", "-- --identifier x",
 		"-p 1234", "-m other", "-a other", "-c 1234", "-c=1234", "-abc", "--config x", "--preset x", "--lora x", "--adapter x", "--file x", "--prompt-template x", "--exec x", "--command x", "--script x", "--plugin x", "--help", "--version", "@args", "--future @args", "--future /tmp/file", "--future=../file", "--future=https://example.test/file", "--gpu max; touch x", "--future $(touch x)", "--future='$(touch x)'", "--future `touch x`", "--future='a;b'", "--identifierX x", "--HOST=x", "GPU=max --gpu max",
@@ -62,11 +64,11 @@ func TestLoadProfilePersistenceRevisionAndPrivatePermissions(t *testing.T) {
 		t.Fatal("unsafe error or accepted override")
 	}
 	info, err := os.Stat(filepath.Join(e.baseDir, "lmstudio-load-profiles.json"))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("private file: %v %v", info, err)
 	}
 	info, err = os.Stat(e.baseDir)
-	if err != nil || info.Mode().Perm() != 0o700 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
 		t.Fatalf("private directory: %v %v", info, err)
 	}
 }

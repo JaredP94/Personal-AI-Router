@@ -74,7 +74,6 @@ func (e *Executor) ModelsResult(ctx context.Context) ModelsResult {
 func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, modelsTimeout)
 	defer cancel()
-	profileGeneration := e.loadProfileGeneration()
 
 	type engineResult struct {
 		models    []string
@@ -116,6 +115,10 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 				return
 			}
 			if listSpec != nil {
+				var profileGeneration uint64
+				if name == "lmstudio" {
+					profileGeneration = e.loadProfileGeneration()
+				}
 				if raw, err := e.Action(ctx, name, "list_models", nil); err != nil {
 					slog.Debug("engine:models list_models failed", "engine", name, "err", err)
 				} else if models, ok := extractStringsResult(raw, listSpec); ok {

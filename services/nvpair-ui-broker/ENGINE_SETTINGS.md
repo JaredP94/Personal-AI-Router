@@ -72,7 +72,8 @@ Only long option flags with literal, path-free scalar values are accepted. There
 is no supported-option catalogue: for example `--gpu max --context-length 200000
 --parallel 2` is passed as literal argv. Server addressing, model/path/identifier
 and alias controls, short flags, argument separators, extra positional models,
-file/config/preset/adapter controls and command execution are rejected. PAIR owns
+file/config/preset/adapter controls, dry-run/estimate-only controls and command
+execution are rejected. PAIR owns
 the model identifier; an explicit vendor identifier override is not supported.
 The CLI still validates vendor tuning semantics and version support at load time.
 Neither submitted text, argv, nor CLI output is copied into standard logs.
@@ -101,7 +102,10 @@ and the target never forwards another hop. Persistence calls have a **5-second**
 manager budget, inside the **10-second** peer request, **15-second** broker relay,
 and **20-second** desktop envelope. Canceled lock waits and expired writes are
 fenced before execution/atomic rename; late responses cannot update a replacement
-worker or a newer editor request. Model mutation shares a six-minute manager
+worker or a newer editor request. Captured-worker identity is checked again
+before returning a profile response. CLI output goes directly to the null device,
+so a descendant retaining an output descriptor cannot prolong the CLI wait.
+Model mutation shares a six-minute manager
 budget (including a bounded lifecycle-lock wait), inside seven-minute remote and
 eight-minute broker budgets. Desktop's awaited LM Studio deletion has nine minutes;
 other engines' loading and timeouts are unchanged. Each CLI load has at most four

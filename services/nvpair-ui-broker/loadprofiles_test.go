@@ -49,6 +49,26 @@ func TestLoadProfileRelayUsesCapturedWorkerWithoutSettingsLocks(t *testing.T) {
 	}
 }
 
+func TestLoadProfileRelayFencesReplacementWorkerCompletion(t *testing.T) {
+	worker, codec := newTestRPCWorkerPipe(t)
+	replacement, _ := newTestRPCWorkerPipe(t)
+	b := &Broker{nodeID: "local"}
+	b.setEngineMgr(worker)
+	go func() {
+		msg, err := codec.Read()
+		if err != nil {
+			return
+		}
+		b.setEngineMgr(replacement)
+		_ = codec.Respond(msg.ID, settings.LoadProfileSnapshot{Engine: "lmstudio", Model: "m", Format: "pair-arguments-v1", Editable: true})
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := b.relayLoadProfile(ctx, "get-load-profile", settings.Request{Engine: "lmstudio", Model: "m"}); err == nil {
+		t.Fatal("superseded worker published a late snapshot")
+	}
+}
+
 func TestLoadProfileRelayRejectsOtherEnginesAndCancellation(t *testing.T) {
 	b := &Broker{nodeID: "local"}
 	if _, err := b.relayLoadProfile(context.Background(), "apply-load-profile", settings.Request{Engine: "ollama", Model: "m"}); err == nil {
