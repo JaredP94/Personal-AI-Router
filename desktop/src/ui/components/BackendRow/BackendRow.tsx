@@ -11,7 +11,6 @@ import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
-import { useErrorsStore } from '@/ui/stores/errors.store'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import type { EngineCommandType } from '@/shared/types/engine-api'
@@ -21,17 +20,7 @@ import { ModelSection } from '@/ui/components/ModelManager/ModelSection'
 import { BackendHeader } from './BackendHeader'
 import { BackendFooter } from './BackendFooter'
 import { BackendUpdateBanner } from './BackendUpdateBanner'
-import { EditState } from '@/ui/types/engine-edit-state'
-import { PortsSection } from './PortsSection'
-
-/** Strip non-digits and parse; returns NaN for empty/invalid input. */
-function parsePort(raw: string): number {
-    return parseInt((raw || '').replace(/[^0-9]/g, ''), 10)
-}
-
-function isValidPort(port: number): boolean {
-    return Number.isFinite(port) && port >= 1 && port <= 65535
-}
+import { EngineSettingsSection } from './EngineSettingsSection'
 
 /**
  * The transitional status to display while an optimistic lifecycle command is
@@ -69,47 +58,12 @@ export function BackendRow({
     /** False when the service never reported this node/engine pair (placeholder status). */
     statusKnown: boolean
 }) {
-    const [edit, setEdit] = useState<EditState>({
-        serverPort: String(backend.port ?? ''),
-        proxyPort: String(backend.proxyPort ?? '')
-    })
-
-    const addLocalError = useErrorsStore(state => state.addLocalError)
-
-    useEffect(() => {
-        setEdit(prev => ({ ...prev, serverPort: String(backend.port ?? '') }))
-    }, [backend.port])
-
-    useEffect(() => {
-        setEdit(prev => ({ ...prev, proxyPort: String(backend.proxyPort ?? '') }))
-    }, [backend.proxyPort])
-
     const [expanded, setExpanded] = useState(false)
     const [confirmUninstall, setConfirmUninstall] = useState(false)
-    const [confirmPorts, setConfirmPorts] = useState(false)
-
-    // Whether the engine's server port can be edited is reported by the node that
-    // owns it: only when this platform's start inputs actually take the port and
-    // a move would not be refused as an externally adopted engine (oMLX's
-    // bundled start command takes no port at all).
     const reported =
         useEngineStatusStore(
             state => state.statusByNode.get(nodeId)?.get(backend.type)?.capabilities
         ) ?? noEngineCapabilities()
-    const canSetPort = reported.setPort
-
-    const serverPortChanged = useMemo(
-        () => canSetPort && edit.serverPort !== String(backend.port ?? ''),
-        [canSetPort, edit.serverPort, backend.port]
-    )
-
-    const proxyPortChanged = useMemo(
-        () => Boolean(edit.proxyPort) && edit.proxyPort !== String(backend.proxyPort ?? ''),
-        [edit.proxyPort, backend.proxyPort]
-    )
-
-    const portsChanged = serverPortChanged || proxyPortChanged
-
     const installProgress = useEngineProgressStore(s => {
         const installKey = engineProgressKey({
             nodeId,
@@ -199,66 +153,6 @@ export function BackendRow({
         window.pairApi.engines.toggle(backend.type, nodeId)
     }, [backend.type, nodeId])
 
-    // Snap the inputs back to backend truth. After firing an apply we reset here
-    // so the fields always reflect what the service reports: on success the
-    // engine:state-changed / proxy:ready push updates the value; on failure no
-    // push arrives and the input stays at the last-known-good value (the revert).
-    const resetPortsToBackend = useCallback(() => {
-        setEdit({
-            serverPort: String(backend.port ?? ''),
-            proxyPort: String(backend.proxyPort ?? '')
-        })
-    }, [backend.port, backend.proxyPort])
-
-    const validateAndConfirmPorts = useCallback(() => {
-        if (!serverPortChanged && !proxyPortChanged) return
-        if (serverPortChanged && !isValidPort(parsePort(edit.serverPort))) {
-            addLocalError('Enter a valid server port (1–65535).')
-            return
-        }
-        if (proxyPortChanged && !isValidPort(parsePort(edit.proxyPort))) {
-            addLocalError('Enter a valid proxy port (1–65535).')
-            return
-        }
-        // Guard the one collision the backend cannot resolve atomically yet: a
-        // single transaction setting the server and proxy to the same port.
-        if (
-            serverPortChanged &&
-            proxyPortChanged &&
-            parsePort(edit.serverPort) === parsePort(edit.proxyPort)
-        ) {
-            addLocalError('Server and proxy ports must be different.')
-            return
-        }
-        setConfirmPorts(true)
-    }, [serverPortChanged, proxyPortChanged, edit.serverPort, edit.proxyPort, addLocalError])
-
-    const handleApplyPorts = useCallback(() => {
-        const enginePort = serverPortChanged ? parsePort(edit.serverPort) : undefined
-        const proxyPort = proxyPortChanged ? parsePort(edit.proxyPort) : undefined
-        if (enginePort === undefined && proxyPort === undefined) return
-        window.pairApi.engines.setPorts(backend.type, nodeId, { enginePort, proxyPort })
-        resetPortsToBackend()
-    }, [
-        serverPortChanged,
-        proxyPortChanged,
-        edit.serverPort,
-        edit.proxyPort,
-        backend.type,
-        nodeId,
-        resetPortsToBackend
-    ])
-
-    const portsConfirmMessage = useMemo(() => {
-        if (serverPortChanged && proxyPortChanged) {
-            return 'Changing the server and proxy ports will restart the engine and proxy.'
-        }
-        if (serverPortChanged) {
-            return 'Changing the server port will restart the engine.'
-        }
-        return 'Changing the proxy port will restart the proxy.'
-    }, [serverPortChanged, proxyPortChanged])
-
     const handleInstall = useCallback(() => {
         window.pairApi.engines.install(backend.type, nodeId)
     }, [backend.type, nodeId])
@@ -280,8 +174,8 @@ export function BackendRow({
         setExpanded(prev => !prev)
     }, [isUnavailable])
 
-    // Install/start/stop and model actions use the owning peer's flags;
-    // uninstall, update and persistent port edits remain local-only.
+    // Lifecycle and model actions use the owning peer's reported flags;
+    // uninstall and update remain local-only.
     const controlsDisabled = isTransitioning
 
     const content = expanded ? (
@@ -298,16 +192,11 @@ export function BackendRow({
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
 
-            {canShowAccordions && (canSetPort || edit.proxyPort) && (
-                <PortsSection
-                    edit={edit}
-                    portsChanged={portsChanged}
-                    anyLoading={isTransitioning}
-                    isLocalNode={isLocalNode}
-                    canSetPort={canSetPort}
-                    onApplyPorts={validateAndConfirmPorts}
-                    onServerChange={v => setEdit(prev => ({ ...prev, serverPort: v }))}
-                    onProxyChange={v => setEdit(prev => ({ ...prev, proxyPort: v }))}
+            {canShowAccordions && (
+                <EngineSettingsSection
+                    nodeId={nodeId}
+                    engineType={backend.type}
+                    disabled={isTransitioning}
                 />
             )}
 
@@ -351,15 +240,6 @@ export function BackendRow({
                 confirmLabel="Uninstall"
                 confirmColor="danger"
                 onConfirm={handleUninstall}
-            />
-
-            <ConfirmModal
-                open={confirmPorts}
-                onOpenChange={setConfirmPorts}
-                title="Apply ports"
-                message={portsConfirmMessage}
-                confirmLabel="Confirm"
-                onConfirm={handleApplyPorts}
             />
         </>
     )

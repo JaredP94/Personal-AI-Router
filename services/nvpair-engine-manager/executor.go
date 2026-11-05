@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 var winEnvRe = regexp.MustCompile(`%([^%]+)%`)
@@ -65,6 +68,7 @@ type engineState struct {
 	adopted    bool  // started externally; we can't stop it
 	gen        int64 // bumped each start; gates stale health loops
 	port       int
+	bind       string // effective address of the last PAIR-owned launch
 	binPath    string
 	proc       *managedProc
 	healthStop context.CancelFunc
@@ -95,12 +99,14 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
-	reg           *Registry
-	tools         toolEnv
-	toolInstallMu sync.Mutex // serialize tool installs and recheck detection after waiting
-	reporter      *Reporter
-	emit          func(method string, params any)
-	client        *http.Client
+	settingsHub    settings.Hub
+	settingsParent func(context.Context, string, settings.Request, string) (json.RawMessage, error)
+	reg            *Registry
+	tools          toolEnv
+	toolInstallMu  sync.Mutex // serialize tool installs and recheck detection after waiting
+	reporter       *Reporter
+	emit           func(method string, params any)
+	client         *http.Client
 	// actionClients caches one client per non-default response-header
 	// timeout an action declares in timeout_s, so a manifest value is
 	// honored without building a client per call.

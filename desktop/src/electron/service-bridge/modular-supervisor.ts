@@ -26,6 +26,7 @@ import {
     type ProxyEngine
 } from './modular-state'
 import { emitBridgePush } from './broadcaster'
+import { parseEngineSettings } from './engine-settings'
 import { resolvePullCatchError } from './pull-error-handling'
 import { serviceLogLevel } from './service-log-level'
 import { engineManagerEngineName } from './empty-handlers'
@@ -2039,6 +2040,22 @@ class ModularSupervisor {
     }
 
     private handleEngineManagerNotification(notification: JsonRpcNotification): void {
+        if (notification.method === 'engine:settings-changed') {
+            try {
+                emitBridgePush('engines:settings-changed', parseEngineSettings(notification.params))
+            } catch {
+                log.warn({
+                    sublevel: 'engine-manager',
+                    message: 'Invalid engine settings snapshot.'
+                })
+            }
+            return
+        }
+        if (notification.method === 'engine:settings-disconnected') {
+            const nodeId = stringValue(objectValue(notification.params)?.nodeId)
+            if (nodeId) emitBridgePush('engines:settings-disconnected', { nodeId })
+            return
+        }
         if (notification.method === 'engine:ready') {
             void this.hydrateEngineManager()
             return

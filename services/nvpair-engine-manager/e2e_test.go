@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 // TestE2EOverStdio drives the real engine-manager binary end-to-end
@@ -52,7 +54,7 @@ func TestE2EOverStdio(t *testing.T) {
 	}()
 
 	frames := make(chan frame, 128)
-	go readFrames(stdout, frames)
+	go readFramesWithStartAuthority(stdout, frames, NewCodec(e2eWriteStream{Reader: strings.NewReader(""), Writer: stdin}))
 
 	waitNotify(t, frames, "engine:ready", 5*time.Second)
 
@@ -227,7 +229,7 @@ func startE2EManager(t *testing.T, cfg, home string) *e2eManager {
 			_ = manager.cmd.Wait()
 		}
 	})
-	go readFrames(stdout, manager.frames)
+	go readFramesWithStartAuthority(stdout, manager.frames, manager.codec)
 	waitNotify(t, manager.frames, "engine:ready", 5*time.Second)
 	return manager
 }
@@ -295,17 +297,29 @@ func overrideEnv(over map[string]string) []string {
 type frame struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 	Result json.RawMessage `json:"result"`
 	Error  json.RawMessage `json:"error"`
 }
 
 func readFrames(r io.Reader, out chan<- frame) {
+	readFramesWithStartAuthority(r, out, nil)
+}
+
+func readFramesWithStartAuthority(r io.Reader, out chan<- frame, parent *Codec) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		var f frame
 		if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
 			continue
+		}
+		if parent != nil && f.Method == "engine:settings-request" {
+			var relay settings.Relay
+			if json.Unmarshal(f.Params, &relay) == nil && (relay.Method == "prepare-start" || relay.Method == "authorize-start") {
+				_ = parent.Notify("engine:settings-reply", map[string]any{"id": relay.ID, "result": "reconciled-test-generation"})
+				continue
+			}
 		}
 		out <- f
 	}

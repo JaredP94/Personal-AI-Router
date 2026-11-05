@@ -20,7 +20,7 @@ func desiredTestExecutor(t *testing.T, manifest *Manifest, baseDir string) *Exec
 	t.Helper()
 	reg := NewRegistry()
 	reg.engines[manifest.Engine] = manifest
-	return NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	return reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 }
 
 func TestDesiredStateStoresExplicitOffAndLeavesLegacyUnknown(t *testing.T) {
@@ -70,6 +70,31 @@ func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 	}
 	if st, err := third.Status("fake"); err != nil || st.Running {
 		t.Fatalf("OFF status = %+v, err=%v", st, err)
+	}
+}
+
+func TestRestoreEnabledExcludesUnreconciledEngineWithoutChangingIntent(t *testing.T) {
+	baseDir := t.TempDir()
+	exec := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	t.Cleanup(exec.StopAll)
+	if err := exec.desired.set("fake", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.RestoreEnabled(context.Background(), "fake"); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := exec.Status("fake"); err != nil || status.Running {
+		t.Fatalf("excluded engine was restored: %+v, %v", status, err)
+	}
+	if enabled, known, err := exec.desired.get("fake"); err != nil || !known || !enabled {
+		t.Fatal("recovery exclusion overwrote saved ON intent")
+	}
+	// A different engine's failure does not suppress this engine's restore.
+	if err := exec.RestoreEnabled(context.Background(), "other"); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := exec.Status("fake"); err != nil || !status.Running {
+		t.Fatalf("eligible engine was not restored: %+v, %v", status, err)
 	}
 }
 

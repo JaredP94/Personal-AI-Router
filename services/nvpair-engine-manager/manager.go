@@ -12,9 +12,11 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"sync"
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	settings "nvpair-shared/enginesettings"
 	"nvpair-shared/noderec"
 	"nvpair-shared/reach"
 	"nvpair-shared/workerhealth"
@@ -62,25 +64,29 @@ type setPortParam struct {
 // start, stop, restart, action) run in their own goroutine so the read
 // loop never blocks; the codec serializes the concurrent responses.
 type Manager struct {
-	codec         *Codec
-	settingsRelay settingsRelay
-	exec          *Executor
-	peers         *peerDirectory
-	addrs         *reach.Chooser
-	mesh          *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
+	codec          *Codec
+	settingsRelay  settingsRelay
+	managedPortsMu sync.Mutex
+	managedPorts   map[string]*managedPortMove
+	exec           *Executor
+	peers          *peerDirectory
+	addrs          *reach.Chooser
+	mesh           *clustertrust.Mesh // cluster identity + pins for dialing peers' ec surfaces
 	// remoteHTTP / readyHTTP are long-lived per-peer mTLS pools. A throwaway
 	// Transport per engine:remote-* call leaked the idle socket. readyHTTP
 	// uses the longer header budget for start/delete (see waitsForEngineReadiness).
 	remoteHTTP *clustertrust.PeerClientPool
 	readyHTTP  *clustertrust.PeerClientPool
-	cancel     context.CancelFunc
+	// settingsHTTP waits as long as a peer's settings relay may take.
+	settingsHTTP *clustertrust.PeerClientPool
+	cancel       context.CancelFunc
 }
 
 func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager {
 	// cancel defaults to a no-op so the "shutdown" handler is safe even if
 	// handleMessage is reached before Run() installs the real CancelFunc
 	// (e.g. a unit test calling it directly); Run overwrites it.
-	return &Manager{
+	m := &Manager{
 		codec:         codec,
 		settingsRelay: settingsRelay{send: codec.Notify},
 		exec:          exec,
@@ -93,8 +99,15 @@ func NewManager(codec *Codec, exec *Executor, mesh *clustertrust.Mesh) *Manager 
 		readyHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
 			ResponseHeaderTimeout: remoteReadyResponseHeaderTimeout,
 		}),
+		settingsHTTP: clustertrust.NewPeerClientPoolOpts(mesh, clustertrust.PeerClientOptions{
+			ResponseHeaderTimeout: remoteSettingsResponseHeaderTimeout,
+		}),
 		cancel: func() {},
 	}
+	if exec != nil {
+		exec.settingsParent = m.settingsRelay.call
+	}
+	return m
 }
 
 func (m *Manager) Run(ctx context.Context) error {
@@ -118,6 +131,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	// on change (load/unload, JIT auto-load, TTL eviction). Bound to ctx: stops
 	// when the read loop exits below.
 	go m.exec.watchLoaded(ctx)
+	go m.watchPeerSettings(ctx)
 
 	err := m.readLoop(ctx)
 	// Cancel first so any in-flight start aborts at its readiness wait,
@@ -126,6 +140,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.exec.StopAll()
 	m.remoteHTTP.CloseIdle()
 	m.readyHTTP.CloseIdle()
+	m.settingsHTTP.CloseIdle()
 	return err
 }
 
@@ -153,6 +168,9 @@ func (m *Manager) readLoop(ctx context.Context) error {
 }
 
 func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
+	if m.handleSettingsMessage(ctx, msg) {
+		return
+	}
 	if msg.Method == applog.SetLevelMethod {
 		resolved, err := applog.HandleSetLevelParams(msg.Params)
 		if msg.IsRequest() {
@@ -170,17 +188,18 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 		return
 	}
 
-	if msg.Method == "engine:settings-reply" && msg.IsNotification() {
-		m.settingsRelay.reply(msg.Params)
-		return
-	}
 	if msg.Method == noderec.NotifyNodes {
 		m.applyDiscovery(msg)
 		return
 	}
 	if msg.Method == restoreEnabledMethod && msg.IsNotification() {
+		var p settings.RestoreEnabled
+		if len(msg.Params) > 0 && json.Unmarshal(msg.Params, &p) != nil {
+			slog.Warn("invalid enabled-engine restoration gate; restoration skipped")
+			return
+		}
 		go func() {
-			if err := m.exec.RestoreEnabled(ctx); err != nil {
+			if err := m.exec.RestoreEnabled(ctx, p.ExcludedEngines...); err != nil {
 				slog.Warn("one or more enabled engines could not be restored", "err", err)
 			}
 		}()
@@ -262,6 +281,12 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case "engine:set-port":
 		go m.runSetPort(ctx, msg)
+
+	case "internal:set-port":
+		m.startManagedPort(ctx, msg)
+
+	case "internal:cancel-set-port":
+		m.cancelManagedPort(msg)
 
 	case "internal:set-reserved-port":
 		var p struct {

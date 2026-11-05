@@ -84,7 +84,14 @@ They do not imply a WebSocket connection. Browser clients are not supported.
 - `getInitialState()` returns engine statuses, models, active progress, and available
   updates.
 - `toggle`, `install`, `uninstall`, and `update` manage engine lifecycle.
-- `setPorts` applies engine and proxy port changes.
+- `getSettings(target)` returns a revisioned engine settings snapshot.
+- `previewSettings(request)` validates proposed ports and launch text without saving.
+- `applySettings(request)` submits the previewed settings with `expectedRevision`
+  and a unique `requestId`; the receipt acknowledges the operation, not its state.
+- `onSettingsChanged` reports full snapshots, including operation phase and failure.
+- `onSettingsDisconnected` marks a device's settings unavailable.
+- The Settings panel uses these operations for local and verified paired devices;
+  the narrow `setPorts` command remains part of the service command contract.
 - `pullModel`, `loadModel`, `unloadModel`, `deleteModel`, and
   `setModelExpiry` manage models.
 - `searchHub(engineType)` returns the curated model catalog for an engine.

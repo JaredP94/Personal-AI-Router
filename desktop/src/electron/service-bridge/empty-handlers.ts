@@ -18,7 +18,8 @@ import type {
 } from '@/shared/types/telemetry'
 import {
     MODULAR_CLUSTER_MANAGER_PORT,
-    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS
+    MODULAR_ENGINE_LIFECYCLE_CALL_TIMEOUT_MS,
+    MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
 } from '@/shared/constants/modular-runtime'
 import getErrorString from '@/shared/utils/get-error-string'
 import { getEngineHubModels, lookupEngineHubModel } from '@/electron/model-hub'
@@ -35,6 +36,11 @@ import type { ProxyEngine } from './modular-state'
 import type { WorkerStatus } from '@/shared/types/workers'
 import type { JsonObject, JsonValue } from './json-rpc-subprocess'
 import { emptyInvite, parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
+import {
+    parseEngineSettings,
+    parseEngineSettingsPreview,
+    parseEngineSettingsReceipt
+} from './engine-settings'
 
 type BridgeHandler<C extends WsInvokeChannel> = (
     payload?: WsInvokeRequest<C>
@@ -1287,6 +1293,31 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
     'cluster:abandon-if-solo': () => handleClusterAbandonIfSolo(),
 
     'engines:get-initial': () => getModularBridgeState().getEngineInitialState(),
+    'engines:get-settings': async payload =>
+        parseEngineSettings(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:get-settings',
+                payload ? { ...payload } : undefined
+            )
+        ),
+    'engines:preview-settings': async payload =>
+        parseEngineSettingsPreview(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:preview-settings',
+                payload ? { ...payload, settings: { ...payload.settings } } : undefined
+            )
+        ),
+    'engines:apply-settings': async payload =>
+        parseEngineSettingsReceipt(
+            await getModularSupervisor().callProcess(
+                'broker',
+                'engine:apply-settings',
+                payload ? { ...payload, settings: { ...payload.settings } } : undefined,
+                MODULAR_ENGINE_SETTINGS_APPLY_TIMEOUT_MS
+            )
+        ),
     'engine:command': payload => handleEngineCommand(payload),
     'engine:search-hub': payload =>
         payload ? getEngineHubModels(payload.engineType) : { models: [] },

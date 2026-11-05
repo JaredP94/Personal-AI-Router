@@ -39,10 +39,11 @@ type proxyProcess struct {
 	// readyMu guards ready, port, and readyParams, written by the read pump
 	// when the proxy's "ready" notification arrives and read by the broker to
 	// answer proxy:get-status / replay the baseline on a fresh subscribe.
-	readyMu     sync.Mutex
-	ready       bool
-	port        int
-	readyParams json.RawMessage
+	readyMu           sync.Mutex
+	portWritesRetired bool
+	ready             bool
+	port              int
+	readyParams       json.RawMessage
 
 	// Routing totals mirrored from the proxy's proxy/request events, so
 	// proxy:get-status stays answerable locally (no round-trip). The proxy owns
@@ -186,6 +187,10 @@ func (p *proxyProcess) handleNotify(method string, params json.RawMessage) {
 			return
 		}
 		p.readyMu.Lock()
+		if p.portWritesRetired {
+			p.readyMu.Unlock()
+			return
+		}
 		p.ready = true
 		p.port = rp.Port
 		p.readyParams = append(json.RawMessage(nil), params...)

@@ -152,6 +152,15 @@ failing closed if unavailable. It does not authenticate the engine API; remote
 starts stay loopback-only. Disabling it does not rebind existing listeners, and
 user-authored manifest commands remain the operator's responsibility.
 
+Editable launch settings cannot replace PAIR-owned bind addresses, ports or
+proxy wiring through arguments or environment assignments; dedicated port
+fields retain the existing bind policy. Settings on another device require
+verified inventory and pinned cluster mTLS, not an advertised identity or bare
+manual engine. Paired peers may read and edit launch values, so treat them as
+private configuration. Settings files use mode `0600`; custom launch output is
+excluded from exported engine logs, and settings frames are redacted before
+entering desktop logs. oMLX server configuration remains in the oMLX app.
+
 Engine installation executes downloaded vendor software; checksum verification
 depends on the engine manifest and is not universally required. Catalogs,
 updates, model downloads, Docker image pulls, engines, and applications can

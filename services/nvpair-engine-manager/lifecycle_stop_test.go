@@ -64,7 +64,7 @@ func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
 
 	reg := NewRegistry()
 	reg.engines[m.Engine] = m
-	ex := NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir)
+	ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, baseDir))
 	if st, err := ex.Status("fake"); err != nil || !st.Running {
 		t.Fatalf("adopt orphan: status=%+v err=%v", st, err)
 	}

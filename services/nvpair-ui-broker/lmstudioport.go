@@ -146,7 +146,7 @@ func (b *Broker) rebindLMStudioProxy(p *proxyProcess, port int) bool {
 		return false
 	}
 	body, _ := json.Marshal(map[string]int{"port": port})
-	result, rpcErr, err := p.Call(context.Background(), "set-port", body)
+	result, rpcErr, err := writeProxyPort(context.Background(), p, body)
 	if err != nil || rpcErr != nil {
 		slog.Warn("failed to rebind LM Studio proxy", "port", port, "err", err, "rpcErr", rpcErr)
 		return false
@@ -202,6 +202,12 @@ func (b *Broker) prepareManagedLMStudioFacade() {
 }
 
 func (b *Broker) prepareManagedLMStudioFacadeWithPortCheck(portAvailable func(int) bool) {
+	finish := b.beginPortOperation("lmstudio")
+	defer finish()
+	if b.prepareExplicitEngineSettings("lmstudio") {
+		b.markLMStudioPortReady()
+		return
+	}
 	// Ollama's facade is prepared first, so an inherited OLLAMA_HOST alias is
 	// already reserved here and must stay out of LM Studio's backend search.
 	portAvailable = b.availableOffOllamaHostAlias(portAvailable)
@@ -270,8 +276,13 @@ func (b *Broker) prepareManagedLMStudioFacadeWithPortCheck(portAvailable func(in
 		return
 	}
 	if plan.BackendPort != 0 {
-		params, _ = json.Marshal(map[string]any{"engine": "lmstudio", "port": plan.BackendPort})
-		result, rpcErr, err = em.CallNoTimeout(context.Background(), "engine:set-port", params)
+		var fenced bool
+		result, rpcErr, err, fenced = b.moveManagedLMStudioPort(context.Background(), em, plan.BackendPort)
+		if !fenced {
+			// Do not probe/reuse an uncertain backend or open its ownership gate.
+			_, _ = b.blockManagedLMStudioFacade("the backend move could not be canceled", nil, st.Port, plan.BackendPort)
+			return
+		}
 		if err != nil || rpcErr != nil {
 			b.cacheLMStudioPortStatus()
 			_, _ = b.blockManagedLMStudioFacade("the LM Studio backend could not be moved", nil, st.Port, plan.BackendPort)
@@ -348,6 +359,18 @@ func (b *Broker) reconcileLMStudioProxyPortOnReady(boundPort int) {
 }
 
 func (b *Broker) reconcileLMStudioProxyPortOnReadyForGeneration(generation uint64, boundPort int) {
+	finish := b.beginPortOperation("lmstudio")
+	defer finish()
+	b.engineConfigMu.Lock()
+	loadErr := b.loadEngineSettingsLocked()
+	_, explicit := b.explicitEngineSettingsLocked("lmstudio")
+	b.engineConfigMu.Unlock()
+	if loadErr != nil || explicit || b.lmstudioExplicitSettings.Load() {
+		if b.lmstudioProxyGeneration.Load() == generation {
+			b.markLMStudioPortReady()
+		}
+		return
+	}
 	if b.lmstudioProxyGeneration.Load() != generation {
 		return
 	}

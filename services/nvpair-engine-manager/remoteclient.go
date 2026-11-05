@@ -21,11 +21,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 const (
 	remoteResponseHeaderTimeout      = 30 * time.Second
 	remoteReadyResponseHeaderTimeout = 11 * time.Minute
+	// remoteSettingsResponseHeaderTimeout covers a peer's settings call, which
+	// answers only after its broker finishes (ApplyBudget) and its relay
+	// returns (RelayBudget). A shorter wait would report failure while the
+	// accepted change carried on. Desktop's envelope is longer still.
+	remoteSettingsResponseHeaderTimeout = settings.RelayBudget
 	// remoteStreamFrameBytes caps one NDJSON progress or result frame.
 	remoteStreamFrameBytes = 1 << 20
 )
@@ -44,8 +51,11 @@ type remoteClient struct {
 	// readyHTTP serves endpoints whose peer may withhold response headers during
 	// engine readiness or model loading. See waitsForEngineReadiness.
 	readyHTTP *http.Client
-	base      string // https://<ip>:<port>
-	forget    func()
+	// settingsHTTP serves the peer's settings endpoints. See
+	// remoteSettingsResponseHeaderTimeout.
+	settingsHTTP *http.Client
+	base         string // https://<ip>:<port>
+	forget       func()
 }
 
 // waitsForEngineReadiness reports whether a peer may only answer after an
@@ -81,11 +91,16 @@ func (m *Manager) remoteClient(ctx context.Context, peer ecPeer) (*remoteClient,
 	}
 	m.remoteHTTP.DropUnpinned()
 	m.readyHTTP.DropUnpinned()
+	m.settingsHTTP.DropUnpinned()
 	httpClient, ok := m.remoteHTTP.Client(peer.clusterUUID)
 	if !ok {
 		return nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
 	}
 	readyClient, ok := m.readyHTTP.Client(peer.clusterUUID)
+	if !ok {
+		return nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
+	}
+	settingsClient, ok := m.settingsHTTP.Client(peer.clusterUUID)
 	if !ok {
 		return nil, fmt.Errorf("node %q is not a pinned cluster peer", peer.nodeID)
 	}
@@ -99,10 +114,11 @@ func (m *Manager) remoteClient(ctx context.Context, peer ecPeer) (*remoteClient,
 	}
 	hostport := m.addrs.ChooseWithin(ctx, peer.nodeID, candidates)
 	return &remoteClient{
-		http:      httpClient,
-		readyHTTP: readyClient,
-		base:      "https://" + hostport,
-		forget:    func() { m.addrs.Forget(peer.nodeID) },
+		http:         httpClient,
+		readyHTTP:    readyClient,
+		settingsHTTP: settingsClient,
+		base:         "https://" + hostport,
+		forget:       func() { m.addrs.Forget(peer.nodeID) },
 	}, nil
 }
 
@@ -145,7 +161,10 @@ func (c *remoteClient) postJSON(ctx context.Context, path, engine string, body a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := c.http
-	if waitsForEngineReadiness(path) && c.readyHTTP != nil {
+	switch {
+	case strings.HasPrefix(path, settingsPath) && c.settingsHTTP != nil:
+		client = c.settingsHTTP
+	case waitsForEngineReadiness(path) && c.readyHTTP != nil:
 		client = c.readyHTTP
 	}
 	resp, err := client.Do(req)

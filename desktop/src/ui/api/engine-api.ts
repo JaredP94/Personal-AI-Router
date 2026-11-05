@@ -17,8 +17,21 @@ import type {
 } from '@/shared/types/engine-api'
 import type { EngineProgress, EngineType } from '@/shared/types/engines'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
+import type {
+    EngineSettingsTarget,
+    EngineSettingsRequest,
+    EngineSettingsSnapshot,
+    EngineSettingsPreview,
+    EngineSettingsReceipt
+} from '@/shared/types/engine-settings'
 
 export interface IEngineApi {
+    getSettings(target: EngineSettingsTarget): Promise<EngineSettingsSnapshot>
+    previewSettings(request: EngineSettingsRequest): Promise<EngineSettingsPreview>
+    applySettings(request: EngineSettingsRequest): Promise<EngineSettingsReceipt>
+    onSettingsChanged(callback: (snapshot: EngineSettingsSnapshot) => void): () => void
+    onSettingsDisconnected(callback: (target: { nodeId: string }) => void): () => void
+
     /** Fetch initial engine state: statuses, models, progress, and update availability. */
     getInitialState(): Promise<EngineInitialState>
 
@@ -73,6 +86,13 @@ function fireCommand(transport: ServiceTransport, payload: EngineCommandPayload)
 
 export function createEngineApi(transport: ServiceTransport): IEngineApi {
     return {
+        getSettings: target => transport.invoke('engines:get-settings', target),
+        previewSettings: request => transport.invoke('engines:preview-settings', request),
+        applySettings: request => transport.invoke('engines:apply-settings', request),
+        onSettingsChanged: callback =>
+            transport.subscribePush('engines:settings-changed', callback),
+        onSettingsDisconnected: callback =>
+            transport.subscribePush('engines:settings-disconnected', callback),
         getInitialState: () => transport.invoke('engines:get-initial'),
 
         toggle: (engineType, nodeId) =>

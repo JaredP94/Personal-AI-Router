@@ -58,8 +58,9 @@ func (e *Executor) waitDetect(engine string, want bool, timeout time.Duration) b
 // auto-assign a free loopback port); Bind "" => the manifest's
 // runtime.bind (which itself defaults to loopback).
 type startOpts struct {
-	Port int
-	Bind string
+	RequireOwned bool
+	Port         int
+	Bind         string
 }
 
 // effectiveBind picks the listen address substituted as {host}: a per-call
@@ -91,6 +92,10 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 	if err != nil {
 		return err
 	}
+	ctx, err = e.prepareStart(ctx, engine)
+	if err != nil {
+		return err
+	}
 	st.lockOperation()
 	defer st.unlockOperation()
 	if err := e.doStart(ctx, st, engine, opts); err != nil {
@@ -101,6 +106,12 @@ func (e *Executor) StartWith(ctx context.Context, engine string, opts startOpts)
 
 // doStart performs the start. Callers must hold st.opMu.
 func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, opts startOpts) error {
+	if err := e.authorizeStart(ctx, engine); err != nil {
+		return err
+	}
+	if engine == "omlx" && opts.Port > 0 && opts.Port != st.plat.Runtime.Port {
+		return fmt.Errorf("oMLX server settings are managed in the oMLX app; only the PAIR proxy port can be changed")
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	st.mu.Lock()
 	st.startCancel = cancel
@@ -142,6 +153,9 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	presence := e.reconcilePresence(ctx, engine, st, pathInstalled, port, true)
 	if presence.Identified {
+		if opts.RequireOwned {
+			return fmt.Errorf("cannot apply launch settings: another process already owns the server port")
+		}
 		slog.Info("adopting already-running external engine", "engine", engine, "port", port)
 		st.mu.Lock()
 		st.gen++
@@ -179,6 +193,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 
 	st.mu.Lock()
 	st.port = port
+	st.bind = vars["host"]
 	st.stopping = false
 	st.mu.Unlock()
 
@@ -197,6 +212,13 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	e.reporter.clear(exitedID(engine))
 	e.reporter.clear(unhealthyID(engine))
 	e.emitState(engine)
+
+	st.mu.Lock()
+	proc := st.proc
+	st.mu.Unlock()
+	if proc != nil {
+		e.watch(st, engine, proc)
+	}
 
 	if rt.Health != nil {
 		hctx, cancel := context.WithCancel(context.Background())
@@ -221,30 +243,23 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
-	if binPath == "" {
-		b, err := resolvePlaceholders(rt.Bin, vars)
-		if err != nil {
-			return err
-		}
-		binPath = expandPath(b)
-	}
-	vars["bin"] = binPath
-
-	args, err := resolveArgs(rt.Args, vars)
+	launch, err := resolveProcessLaunch(rt, binPath, vars)
 	if err != nil {
 		return err
 	}
-	env := make(map[string]string, len(rt.Env))
-	for k, v := range rt.Env {
-		rv, err := resolvePlaceholders(v, vars)
-		if err != nil {
-			return err
-		}
-		env[k] = rv
+	if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+		return err
 	}
 
-	proc, err := startManagedProc(binPath, args, env, func(stream, line string) {
-		st.logs.append(stream, line)
+	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
+	defer diagnostics.close()
+	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+		_, _ = diagnostics.Write([]byte(line + "\n"))
+		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
+		// out of exported engine logs; report exit/readiness failures separately.
+		if !rt.hasCustomLaunch() {
+			st.logs.append(stream, line)
+		}
 	})
 	if err != nil {
 		werr := fmt.Errorf("start %s: %w", engine, err)
@@ -254,11 +269,24 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 	st.mu.Lock()
 	st.proc = proc
 	st.mu.Unlock()
-	e.watch(st, engine, proc)
 
-	if err := e.waitReady(ctx, rt.Ready, port); err != nil {
-		// Mark stopping so the watcher doesn't report the deliberate kill
-		// as an unexpected "exited" event.
+	readyCtx, readyCancel := context.WithCancel(ctx)
+	defer readyCancel()
+	go func() {
+		select {
+		case <-proc.done:
+			readyCancel()
+		case <-readyCtx.Done():
+		}
+	}()
+	readyErr := e.waitReady(readyCtx, rt.Ready, port)
+	select {
+	case <-proc.done:
+		readyErr = fmt.Errorf("process exited before readiness; check the launch options")
+	default:
+	}
+	if err := readyErr; err != nil {
+		// Clean up the failed start before returning its single readiness error.
 		st.mu.Lock()
 		st.stopping = true
 		st.mu.Unlock()
@@ -266,7 +294,13 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		st.mu.Lock()
 		st.proc = nil
 		st.mu.Unlock()
-		werr := fmt.Errorf("engine %q did not become ready: %w", engine, err)
+		// Custom launches may echo secrets in arbitrary vendor-specific forms.
+		// Return the stable failure only, never their diagnostic payload.
+		failure := err
+		if !rt.hasCustomLaunch() {
+			failure = diagnostics.failure(err)
+		}
+		werr := fmt.Errorf("engine %q did not become ready: %w", engine, failure)
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return werr
@@ -296,16 +330,28 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		}
 		return startErr
 	}
-	for _, cmd := range rt.Start {
-		argv, err := resolveArgs(cmd, vars)
+	for index := range rt.Start {
+		launch, err := resolveRuntimeCommand(rt, index, vars)
 		if err != nil {
 			e.reportStartFailedUnlessShuttingDown(ctx, engine, err)
 			return cleanup(err)
 		}
-		for i := range argv {
-			argv[i] = expandPath(argv[i])
+		if launch.Bin == "" {
+			continue
 		}
-		if err := e.runCommand(ctx, argv); err != nil {
+		if rt.EditableLaunch != nil && index == rt.EditableLaunch.StartIndex {
+			if err := validateEffectiveLaunch(rt, launch, vars["host"], vars["port"]); err != nil {
+				return cleanup(err)
+			}
+		}
+		argv := append([]string{launch.Bin}, launch.Args...)
+		run := e.runCommand
+		if rt.LaunchArgs != nil || rt.LaunchEnv != nil || len(launch.Env) > 0 {
+			run = func(ctx context.Context, argv []string) error {
+				return runPrivateLaunchCommand(ctx, argv, launch.Env, launchDiagnosticArgs(rt))
+			}
+		}
+		if err := run(ctx, argv); err != nil {
 			// The CLI may have detached a daemon before exiting nonzero or
 			// being canceled. An ExitError proves it actually ran; clean up
 			// its possible side effects, but not a command that failed to spawn.
@@ -327,6 +373,32 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		e.reportStartFailedUnlessShuttingDown(ctx, engine, werr)
 		e.emitState(engine)
 		return cleanup(werr)
+	}
+	return nil
+}
+
+// Capture vendor startup diagnostics without interpreting engine options.
+func runPrivateLaunchCommand(ctx context.Context, argv []string, environment map[string]string, privateArgs []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("launch executable is missing")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	diagnostics := newStartupOutput(privateArgs, environment)
+	defer diagnostics.close()
+	cmd.Stdout, cmd.Stderr = diagnostics, diagnostics
+	if len(environment) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range environment {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
+	configureSysProcAttr(cmd)
+	if err := cmd.Run(); err != nil {
+		failure := fmt.Errorf("launch command failed: %w", err)
+		if len(privateArgs) > 0 || len(environment) > 0 {
+			return failure
+		}
+		return diagnostics.failure(failure)
 	}
 	return nil
 }
@@ -696,6 +768,10 @@ func (e *Executor) Restart(ctx context.Context, engine string) error {
 	if err != nil {
 		return err
 	}
+	ctx, err = e.prepareStart(ctx, engine)
+	if err != nil {
+		return err
+	}
 	st.lockOperation()
 	defer st.unlockOperation()
 	if err := e.doStop(st, engine); err != nil {
@@ -928,6 +1004,9 @@ func (e *Executor) reportStartFailed(engine string, err error) {
 }
 
 func (e *Executor) reportStartFailedUnlessShuttingDown(ctx context.Context, engine string, err error) {
+	if ctx.Value(settingsApplyContextKey{}) != nil {
+		return
+	}
 	// CommandContext can surface an exit status instead of context.Canceled on
 	// Windows, so the canceled operation context is the authoritative signal.
 	if e.shuttingDown.Load() && ctx.Err() != nil {

@@ -567,7 +567,13 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 			Port   int    `json:"port"`
 		}
 		if json.Unmarshal(setPort.Params, &request) != nil || request.Engine != "lmstudio" || request.Port != managedLMStudioBackendStart {
-			t.Errorf("engine:set-port params = %s", setPort.Params)
+			t.Errorf("internal:set-port params = %s", setPort.Params)
+		}
+		var operation struct {
+			OperationID string `json:"operationId"`
+		}
+		if json.Unmarshal(setPort.Params, &operation) != nil || operation.OperationID == "" {
+			t.Error("managed LM Studio move has no cancellation ID")
 		}
 		_ = engineCodec.Respond(setPort.ID, ollamaPortStatus{Running: true, Port: managedLMStudioBackendStart})
 	}()
@@ -576,7 +582,7 @@ func TestPrepareManagedLMStudioFacadeMovesDefaultBackend(t *testing.T) {
 		return port == managedLMStudioFacadePort || port == managedLMStudioBackendStart
 	})
 
-	for i, want := range []string{"settings/get-force-ports", "engine:status", "engine:set-port"} {
+	for i, want := range []string{"settings/get-force-ports", "engine:status", "internal:set-port"} {
 		select {
 		case got := <-calls:
 			if got != want {
@@ -694,6 +700,14 @@ func TestManagedLMStudioRestartBindFailureChoosesFallback(t *testing.T) {
 	b.markLMStudioPortReady() // a later supervised proxy generation failed
 
 	b.forwardLMStudioProxyNotification("error", json.RawMessage(`{"code":"bind-failed","port":1234}`))
+	deadline := time.After(2 * time.Second)
+	for b.lmstudioProxyStartupPort.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("queued bind-failure operation did not finish")
+		case <-time.After(time.Millisecond):
+		}
+	}
 	if b.managedLMStudioFacade.Load() {
 		t.Fatal("restart bind failure left managed ownership enabled")
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 )
 
@@ -105,10 +106,13 @@ func (e *Executor) setDesiredEnabled(engine string, enabled bool) error {
 // RestoreEnabled starts only engines with an explicit saved ON state. Each
 // engine rechecks its intent while holding the lifecycle lock so a concurrent
 // explicit OFF always wins.
-func (e *Executor) RestoreEnabled(ctx context.Context) error {
+func (e *Executor) RestoreEnabled(ctx context.Context, excluded ...string) error {
 	var wg sync.WaitGroup
 	errs := make(chan error, len(e.reg.Names()))
 	for _, engine := range e.reg.Names() {
+		if slices.Contains(excluded, engine) {
+			continue
+		}
 		enabled, known, err := e.desired.get(engine)
 		if err != nil {
 			errs <- fmt.Errorf("restore %s: %w", engine, err)
@@ -135,6 +139,10 @@ func (e *Executor) RestoreEnabled(ctx context.Context) error {
 }
 
 func (e *Executor) restoreEnabled(ctx context.Context, engine string) error {
+	ctx, err := e.prepareStart(ctx, engine)
+	if err != nil {
+		return err
+	}
 	st, err := e.state(engine)
 	if err != nil {
 		return err

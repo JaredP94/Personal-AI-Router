@@ -6,8 +6,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
+
+	settings "nvpair-shared/enginesettings"
 )
 
 // Only this read is relayed upward; the worker cannot mutate node settings.
@@ -23,6 +26,37 @@ type settingsRelay struct {
 	mu      sync.Mutex
 	pending map[string]chan settingsReply
 	send    func(string, any) error
+}
+
+func (r *settingsRelay) call(ctx context.Context, method string, request settings.Request, caller string) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, settings.RelayBudget)
+	defer cancel()
+	id := newOpID()
+	ch := make(chan settingsReply, 1)
+	r.mu.Lock()
+	if len(r.pending) >= 64 {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("too many settings requests")
+	}
+	if r.pending == nil {
+		r.pending = make(map[string]chan settingsReply)
+	}
+	r.pending[id] = ch
+	r.mu.Unlock()
+	defer func() { r.mu.Lock(); delete(r.pending, id); r.mu.Unlock() }()
+	if err := r.send("engine:settings-request", settings.Relay{ID: id, Method: method, Request: request, Caller: caller}); err != nil {
+		return nil, err
+	}
+	select {
+	case reply := <-ch:
+		if reply.Error != "" {
+			return nil, fmt.Errorf("%s", reply.Error)
+		}
+		return reply.Result, nil
+	case <-ctx.Done():
+		_ = r.send("engine:settings-cancel", map[string]string{"id": id})
+		return nil, ctx.Err()
+	}
 }
 
 // lanBindAllowed reads through on each non-loopback override. Missing settings,
@@ -67,11 +101,82 @@ func (r *settingsRelay) reply(raw json.RawMessage) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ch := r.pending[reply.ID]; ch != nil {
+	ch := r.pending[reply.ID]
+	r.mu.Unlock()
+	if ch != nil {
 		select {
 		case ch <- reply:
 		default:
 		}
 	}
+}
+
+func (m *Manager) handleSettingsMessage(ctx context.Context, msg *Message) bool {
+	if msg.Method == "engine:settings-reply" && msg.IsNotification() {
+		m.settingsRelay.reply(msg.Params)
+		return true
+	}
+	if msg.Method == "engine:settings-projection" && msg.IsNotification() {
+		var snapshots []settings.Snapshot
+		if json.Unmarshal(msg.Params, &snapshots) == nil {
+			m.exec.settingsHub.Publish(snapshots)
+		}
+		return true
+	}
+	if !msg.IsRequest() {
+		return false
+	}
+	switch msg.Method {
+	case "engine:configured-ports":
+		go func() {
+			type port struct {
+				Engine string `json:"engine"`
+				Port   int    `json:"port"`
+			}
+			ports := []port{}
+			for _, name := range m.exec.reg.Names() {
+				if launch, err := m.exec.LaunchSettings(name); err == nil {
+					ports = append(ports, port{name, launch.ServerPort})
+				}
+			}
+			m.respondOrErr(msg, map[string]any{"engines": ports}, nil)
+		}()
+		return true
+	case "engine:get-launch", "engine:preview-launch", "engine:configure-launch":
+		go func() {
+			var p settings.Request
+			if !m.parse(msg, &p) {
+				return
+			}
+			switch msg.Method {
+			case "engine:get-launch":
+				result, err := m.exec.LaunchSettings(p.Engine)
+				m.respondOrErr(msg, result, err)
+			case "engine:preview-launch":
+				result, err := m.exec.PreviewLaunch(p)
+				m.respondOrErr(msg, result, err)
+			case "engine:configure-launch":
+				configureCtx, cancel := context.WithTimeout(ctx, settings.ConfigureBudget)
+				defer cancel()
+				var configure settings.Configure
+				if !m.parse(msg, &configure) {
+					return
+				}
+				result, err := m.exec.ConfigureLaunch(configureCtx, configure, func(callbackCtx context.Context, rollback bool) error {
+					method := "rebind"
+					if rollback {
+						method = "rollback"
+					}
+					_, err := m.settingsRelay.call(callbackCtx, method, settings.Request{Engine: configure.Engine, RequestID: configure.OperationID, Settings: configure.Settings}, "")
+					return err
+				})
+				m.respondOrErr(msg, result, err)
+			}
+		}()
+		return true
+	case "engine:remote-get-settings", "engine:remote-preview-settings", "engine:remote-apply-settings":
+		go m.remoteSettings(ctx, msg)
+		return true
+	}
+	return false
 }

@@ -63,6 +63,8 @@ func (b *Broker) omlxProxyArgs() []string {
 }
 
 func (b *Broker) spawnOMLXProxy() (supervisedHandle, error) {
+	finish := b.beginPortOperation("omlx")
+	defer finish()
 	generation := b.omlxProxyGeneration.Add(1)
 	pp, err := startProxy(
 		"omlx-proxy",
@@ -105,9 +107,8 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 			Code string `json:"code"`
 			Port int    `json:"port"`
 		}
-		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" {
-			fallback := b.setOMLXProxyFallback(ep.Port)
-			slog.Warn("oMLX proxy bind failed; retrying on fallback", "port", ep.Port, "fallback", fallback)
+		if json.Unmarshal(params, &ep) == nil && ep.Code == "bind-failed" && !b.omlxExplicitSettings.Load() {
+			go b.recoverProxyBindFailure("omlx", generation, ep.Port)
 		}
 	}
 	if b.routeProxyWorkloadMethod(method, params) {
@@ -136,6 +137,8 @@ func (b *Broker) forwardOMLXProxyNotificationForGeneration(generation uint64, me
 }
 
 func (b *Broker) reconcileOMLXProxyPortOnReadyForGeneration(generation uint64, boundPort int) {
+	finish := b.beginPortOperation("omlx")
+	defer finish()
 	if b.omlxProxyGeneration.Load() != generation {
 		return
 	}
@@ -152,6 +155,11 @@ func (b *Broker) prepareOMLXProxyPort() {
 }
 
 func (b *Broker) prepareOMLXProxyPortWithPortCheck(portAvailable func(int) bool) {
+	finish := b.beginPortOperation("omlx")
+	defer finish()
+	if b.prepareExplicitEngineSettings("omlx") {
+		return
+	}
 	if b.omlxProxyStartupPort.Load() != 0 {
 		return
 	}

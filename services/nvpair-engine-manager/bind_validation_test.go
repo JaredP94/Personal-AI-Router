@@ -16,7 +16,7 @@ import (
 
 func TestLiveLANBindSetting(t *testing.T) {
 	var out bytes.Buffer
-	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir()))
 	m := NewManager(NewCodec(&out), ex, nil)
 	var result json.RawMessage
 	var replyError string
@@ -85,7 +85,7 @@ func TestLANBindReadTimeoutFailsClosed(t *testing.T) {
 func TestLoopbackBindDoesNotReadSetting(t *testing.T) {
 	for _, bind := range []string{"127.0.0.1", "127.0.0.2", "::1", "::ffff:127.0.0.1", ""} {
 		var out bytes.Buffer
-		ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+		ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir()))
 		m := NewManager(NewCodec(&out), ex, nil)
 		m.settingsRelay.send = func(string, any) error { t.Fatal("loopback required setting lookup"); return nil }
 		id := json.RawMessage("1")
@@ -99,7 +99,7 @@ func TestLoopbackBindDoesNotReadSetting(t *testing.T) {
 func TestRunOpRejectsNonLoopbackBindByDefault(t *testing.T) {
 	for _, bind := range []string{"0.0.0.0", "192.168.1.5", "::", "::ffff:192.168.1.5"} {
 		var out bytes.Buffer
-		ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+		ex := reconciledTestExecutor(NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir()))
 		m := NewManager(NewCodec(&out), ex, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // An unavailable setting read must fail closed.

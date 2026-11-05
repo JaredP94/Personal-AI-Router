@@ -399,6 +399,15 @@ re-pushes the last order once the proxy re-announces `ready`.
 
 #### `set-port`
 
+Broker-owned writes also include a unique `operationId`. The internal request
+`internal:cancel-set-port {operationId}` cancels that write and returns null only
+after it has finished, including a queued listener-lock wait. Registration happens
+on the reader before dispatch; listener work and cancellation joins run off-reader.
+A canceled queued write cannot bind or persist a port later. The broker bounds
+both the write and cancellation join to five seconds each; an unconfirmed join
+quarantines and terminates that worker instead of reusing it. The port-only
+request and existing result below remain unchanged.
+
 Change the HTTP listen port at runtime and persist the choice. The proxy
 binds the new port first (so a bind failure leaves the current listener
 serving), starts serving on it, then closes the old listener — in-flight

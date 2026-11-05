@@ -204,7 +204,14 @@ Requests (caller → service):
 | `engine:start` | `{ engine, port?, bind? }` | `EngineStatus` (after readiness) |
 | `engine:stop` | `{ engine }` | `EngineStatus` |
 | `engine:restart` | `{ engine }` | `EngineStatus` |
-| `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind) |
+| `engine:set-port` | `{ engine, port }` | `EngineStatus` (after rebind); oMLX server settings stay in its app |
+| `internal:set-port` | `{ engine, port, operationId }` | `EngineStatus` (broker-only managed move, fenced by captured configuration) |
+| `internal:cancel-set-port` | `{ operationId }` | `null` after canceling and joining that managed move |
+| `engine:get-launch` | `{ engine }` | `LaunchState` (internal broker read) |
+| `engine:preview-launch` | settings `Request` | normalized `Preview` with field errors (internal) |
+| `engine:configured-ports` | — | `{ engines: [{ engine, port }] }`, including stopped engines |
+| `engine:configure-launch` | `{ engine, settings, operationId, resume? }` | `LaunchState` after validation/persistence/rebind/restart (internal) |
+| `engine:remote-get-settings`, `engine:remote-preview-settings`, `engine:remote-apply-settings` | settings `Request` including `nodeId` | target-owned snapshot, preview or receipt via verified pinned peer |
 | `engine:action` | `{ engine, action, params }` | the engine's raw response. `action:"pull_model"` is streamed: it emits live `engine:pull-progress` notifications and returns the pull's terminal result (see below). An action whose manifest declares `restart_after` (LM Studio's `delete_model`) restarts a running engine before replying, so the response also means the engine is back and healthy. An HTTP action waits 30 s for the engine's response headers unless its manifest declares `timeout_s` (seconds); Ollama's `run_model`, oMLX's `load_model` and `chat`, and LM Studio's `chat` declare 600, because a cold model load or a long prefill sends nothing until it finishes |
 | `engine:logs` | `{ engine }` | `{ lines: [LogLine] }` |
 | `engine:errors` | — | `{ errors: [ServiceError] }` |
@@ -217,6 +224,27 @@ Requests (caller → service):
 | `engine:remote-stop` | `{ node, engine }` | `EngineStatus` from the remote node |
 | `shutdown` | — | `null` |
 | `log/set-level` | `{ level }` | `{ level }` |
+
+### Editable launch settings
+
+Use the [broker settings API](../nvpair-ui-broker/ENGINE_SETTINGS.md) for client
+edits, not the internal configure method. Ollama and LM Studio support server
+port, proxy port, arguments and leading environment assignments. oMLX keeps its
+`omlx start` app launch unchanged; only its PAIR proxy port is editable.
+[Launch notation](LAUNCH_TEXT.md) and [manifest bindings](MANIFEST.md) describe
+literal pass-through, managed-networking rejection, private persistence and
+secret-safe diagnostics. Remote settings require verified pinned peers; bare
+manual engines and discovery previews are never settings targets.
+
+A failed apply compensates under the same engine operation lock: the exact
+previous override (or its absence), proxy port and running state are restored.
+Override writes use a private temporary file, sync and rename, including during
+restoration. Recovery has a separate bounded 20-second context, so canceling the
+apply cannot cancel compensation. A failed compensation reports restoration
+failure and does not restart the engine; a shutdown that cannot be confirmed is
+reported explicitly. Restarts preserve the previous effective bind address;
+unknown adopted binds narrow to loopback, never a wider manifest default. oMLX
+remains app-managed: proxy recovery never stops or restarts the app.
 
 ### Tool installs
 
@@ -241,6 +269,26 @@ a successful command must leave the tool detectable.
 | `-32010` | `homebrew-missing`: no executable Homebrew candidate was found. Install Homebrew, then run `brew install macmon`. |
 | `-32011` | `unsupported-platform`: the node is not `darwin/arm64`. |
 | `-32012` | `install-failed`: the install command failed or macmon was not detected afterwards. Command failures include only the last 20 stderr lines, capped to the last 4096 bytes; stdout is discarded. |
+
+### Enabled-engine startup gate
+
+The broker-internal `engine:restore-enabled` notification accepts
+`{excludedEngines?: string[]}`. Engines excluded because their settings recovery
+failed are not started by this restoration attempt. Other saved-ON engines still
+restore, and exclusions never change persisted ON/OFF intent. Invalid gate params
+skip the entire attempt. The broker retries reconciliation on its next startup,
+manager worker restart, or an explicit engine start/restart; see
+[settings recovery](../nvpair-ui-broker/ENGINE_SETTINGS.md#state-progress-and-recovery).
+Desktop does not consume or send this internal notification.
+
+Restoration exclusions are not the launch safety boundary: every launch/adoption
+passes `Executor.doStart`, which requires broker authorization. Ordinary starts
+retry recovery via the internal `prepare-start` relay before acquiring the engine
+operation lock, then check the grant via `authorize-start` at `doStart`. Local and
+remote starts fail closed with the same value-free error when recovery fails or
+the broker cannot authorize them. Apply/rollback restarts use their active broker
+operation ID, avoiding recursive recovery while holding that engine lock. See
+[the protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md#internal-worker-and-authenticated-peer-surfaces).
 
 ### Startup cancellation
 
@@ -360,6 +408,11 @@ the op finishes.
 
 `engine:set-port` is the **persistent** port setter (distinct from the
 one-shot `engine:start {port}` override, which reverts on the next restart).
+Canceled or revoked operations queued on the engine lock cannot persist a port,
+including when the engine is stopped. Managed broker moves additionally use the
+internal correlated set/cancel pair above: cancellation is acknowledged only
+when that operation has finished, so a timeout cannot leave a late write behind
+fallback or rollback. See [broker protocol](../nvpair-ui-broker/ENGINE_SETTINGS.md).
 It validates `1-65535` and atomically merges `runtime.port` into the existing
 manifest override in the per-user `engines/` dir, preserving custom detection
 paths, environment, and every unrelated field. If the host's matching platform
