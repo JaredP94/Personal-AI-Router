@@ -111,15 +111,31 @@ func TestLoadProfileEveryLocalRemoteAndRestartLoad(t *testing.T) {
 }
 func TestLoadProfileFailureHasNoFallbackAndNoPrivateOutput(t *testing.T) {
 	e, capture, _ := profileActionExecutor(t)
-	saveTestProfile(t, e, "private-model", "--fail-private")
+	saveTestProfile(t, e, "private-model", "--gpu max")
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "fail")
 	_, err := e.ModelLoad(context.Background(), "lmstudio", "private-model")
 	if err == nil || strings.Contains(err.Error(), "echoed-private-value") || strings.Contains(err.Error(), "private-model") {
 		t.Fatalf("unsafe failure: %v", err)
 	}
-	if rows := capturedProfileArgs(t, capture); len(rows) != 1 || rows[0][2] != "--fail-private" {
+	if rows := capturedProfileArgs(t, capture); len(rows) != 1 || rows[0][2] != "--gpu" {
 		t.Fatal("failed profile fell back or was omitted")
 	}
 }
+func TestLoadProfileBooleanCLIArguments(t *testing.T) {
+	e, capture, _ := profileActionExecutor(t)
+	for i, text := range []string{"--auto true", "--auto=false", "--speculative-draft-mtp=true", "--speculative-draft-mtp false"} {
+		model := fmt.Sprintf("m%d", i)
+		saveTestProfile(t, e, model, text)
+		if _, err := e.ModelLoad(context.Background(), "lmstudio", model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := [][]string{{"load", "m0", "--auto"}, {"load", "m1"}, {"load", "m2", "--speculative-draft-mtp"}, {"load", "m3", "--no-speculative-draft-mtp"}}
+	if got := capturedProfileArgs(t, capture); !reflect.DeepEqual(got, want) {
+		t.Fatalf("boolean adapter: %v", got)
+	}
+}
+
 func TestLoadProfileRestoreFailureFailsRestart(t *testing.T) {
 	e, _, _ := profileActionExecutor(t)
 	if err := e.Start(context.Background(), "lmstudio"); err != nil {
@@ -129,7 +145,8 @@ func TestLoadProfileRestoreFailureFailsRestart(t *testing.T) {
 	if _, err := e.ModelLoad(context.Background(), "lmstudio", "keep"); err != nil {
 		t.Fatal(err)
 	}
-	saveTestProfile(t, e, "keep", "--fail-private")
+	saveTestProfile(t, e, "keep", "--gpu off")
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "fail")
 	if err := e.Restart(context.Background(), "lmstudio"); err == nil || err.Error() != profiledLoadFailed {
 		t.Fatalf("restore failure not reported: %v", err)
 	}
@@ -160,7 +177,8 @@ func TestLoadProfileCanceledApplyCannotPersistLate(t *testing.T) {
 }
 func TestLoadProfileRunningCLIWaitIsBounded(t *testing.T) {
 	e, capture, _ := profileActionExecutor(t)
-	saveTestProfile(t, e, "m", "--hold-private")
+	saveTestProfile(t, e, "m", "--ttl 60")
+	t.Setenv("PAIR_TEST_PROFILE_MODE", "hold")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -185,7 +203,7 @@ func TestLoadProfileRunningCLIWaitIsBounded(t *testing.T) {
 		t.Fatal("CLI wait retained a descendant's output pipe after cancellation")
 	}
 	rows := capturedProfileArgs(t, capture)
-	if len(rows) != 1 || rows[0][2] != "--hold-private" {
+	if len(rows) != 1 || rows[0][2] != "--ttl" {
 		t.Fatal("hanging CLI fixture was not invoked")
 	}
 }

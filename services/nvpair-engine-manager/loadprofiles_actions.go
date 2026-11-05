@@ -28,7 +28,7 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 	defer cancel()
 	args, err := e.loadProfileArgs(ctx, model)
 	if err != nil {
-		return nil, errors.New(loadProfileError)
+		return nil, err
 	}
 	st.mu.Lock()
 	port := st.port
@@ -39,7 +39,7 @@ func (e *Executor) runLMSLoad(ctx context.Context, st *engineState, model string
 	if err != nil || len(argv) == 0 {
 		return nil, errors.New(profiledLoadFailed)
 	}
-	argv = append(argv, args...)
+	argv = append(argv, loadCLIArgs(args)...)
 	// Nil output streams go directly to the null device: do not capture private
 	// diagnostics or wait for output pipes inherited by a vendor descendant.
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)

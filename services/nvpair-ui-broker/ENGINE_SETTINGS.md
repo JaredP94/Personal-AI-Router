@@ -68,14 +68,34 @@ ID with different input is refused. Apply persists options for the next load;
 it does not interrupt a running model. Clear the text to use vendor defaults.
 The desktop previews before Apply; validation and persistence remain in Go.
 
-Only long option flags with literal, path-free scalar values are accepted. There
-is no supported-option catalogue: for example `--gpu max --context-length 200000
---parallel 2` is passed as literal argv. Server addressing, model/path/identifier
-and alias controls, short flags, argument separators, extra positional models,
-file/config/preset/adapter controls, dry-run/estimate-only controls and command
-execution are rejected. PAIR owns
-the model identifier; an explicit vendor identifier override is not supported.
-The CLI still validates vendor tuning semantics and version support at load time.
+Load profiles use a short **allowlist**, derived from `lms load --help` in
+LM Studio CLI **0.4.1 (43d4b26)**, bundled with **llmster 0.0.27-1** from the
+manifest's rolling installer (not a pinned vendor version):
+
+| Option | Accepted value |
+| --- | --- |
+| `--gpu` | `off`, `max`, or a decimal ratio from 0 through 1 |
+| `--context-length`, `--parallel`, `--ttl` | decimal integer 1–2147483647 (TTL in seconds) |
+| `--auto`, `--speculative-draft-mtp` | explicit `true` or `false` |
+| `--speculative-draft-max-tokens` | decimal integer 1–2147483647 |
+| `--speculative-draft-min-tokens` | decimal integer 0–2147483647, no greater than an explicit maximum |
+| `--speculative-draft-min-continue-probability` | decimal ratio from 0 through 1 |
+
+Both `--flag value` and `--flag=value` are accepted. Booleans require values
+in PAIR text; the CLI adapter emits `--auto` only for true and maps false MTP
+to `--no-speculative-draft-mtp`. Auto=true conflicts with explicit GPU/context
+options. Speculative token/probability settings require MTP=true. Draft-model
+selection is not allowed. The CLI still checks model/runtime support at load time.
+
+Unlike opaque engine launch arguments, load options are per-model and run on
+every load: this narrower surface makes a short allowlist practical, and a leaked
+control would be repeated on every load. Unknown options (including
+`--engine-cwd` and `--no-engine-cwd`), abbreviations, short flags, repeated
+options, a bare `--`, positional arguments, non-ASCII text, and invalid typed
+values are rejected. One error identifies the offending option, never its value.
+PAIR owns model identity; server, resource/file/directory and execution controls
+are unavailable. Previously saved options that no longer validate are reported
+as invalid, never silently applied, discarded or replaced with defaults.
 Neither submitted text, argv, nor CLI output is copied into standard logs.
 
 The engine manager atomically saves private `lmstudio-load-profiles.json` beside

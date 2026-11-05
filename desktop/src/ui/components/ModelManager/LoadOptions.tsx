@@ -116,11 +116,13 @@ function LoadOptionsEditor({ target, disabled }: { target: LoadProfileTarget; di
                 setDraft(result.loadText)
                 setNeedsRefresh(false)
                 setMessage(conflict ? changedMessage : '')
-            } catch {
+            } catch (cause) {
                 if (generation.current !== id) return
                 setNeedsRefresh(true)
                 setMessage(
-                    'Load options unavailable. Reconnect or update this device, then reload.'
+                    cause instanceof Error
+                        ? cause.message
+                        : 'Load options unavailable. Reconnect or update this device, then reload.'
                 )
             } finally {
                 if (generation.current === id) setLoading(false)
@@ -229,9 +231,9 @@ function LoadOptionsEditor({ target, disabled }: { target: LoadProfileTarget; di
                 />
             </FormField>
             <Text kind="body/regular/sm">
-                Use long flags and literal values, without a model name. Leave empty for engine
-                defaults. Model identity, server, file and execution controls are managed by PAIR or
-                unavailable here.
+                Only supported load-tuning options are accepted, with explicit values (including
+                true/false for booleans). Leave empty for engine defaults. Model identity, server,
+                file and execution controls are unavailable here.
             </Text>
             {message && (
                 <Text

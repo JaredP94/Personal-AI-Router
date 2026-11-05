@@ -240,7 +240,12 @@ is reported once without values or a fallback to defaults. Successful deletion
 removes its profile. Orphans are pruned only after successful authoritative
 inventory, retaining edits newer than the inventory's captured generation.
 Unknown/stopped/malformed inventories never prune. Apply changes only the next
-load. No load behavior changes for other engines.
+load. Only the documented typed load-tuning allowlist is accepted, in long
+`--flag value` or `--flag=value` form. Unknown options (including engine working
+directories) and previously saved invalid options fail visibly without changing
+the saved file. This intentionally differs from opaque engine launch arguments:
+per-model options run on every load and have a narrower practical catalogue.
+No load behavior changes for other engines.
 
 ### Editable launch settings
 

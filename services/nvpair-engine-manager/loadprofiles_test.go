@@ -16,7 +16,7 @@ import (
 )
 
 func TestLoadProfileValidation(t *testing.T) {
-	for _, text := range []string{"--gpu max --context-length 200000 --parallel 2", "--offload-kv-cache", `--future-option "two words"`, ""} {
+	for _, text := range []string{"--gpu max --context-length 200000 --parallel 2", "--ttl 60", ""} {
 		args, err := validateLoadText(text)
 		if err != nil {
 			t.Fatalf("valid options rejected: %v", err)
@@ -36,6 +36,71 @@ func TestLoadProfileValidation(t *testing.T) {
 		if _, err := validateLoadText(text); err == nil {
 			t.Errorf("unsafe input accepted: %q", text)
 		}
+	}
+}
+
+func TestLoadProfileTuningAllowlist(t *testing.T) {
+	for _, option := range []struct{ name, value string }{
+		{"--gpu", "max"}, {"--gpu", "off"}, {"--gpu", "0.5"},
+		{"--context-length", "200000"}, {"--parallel", "2"}, {"--ttl", "60"},
+		{"--auto", "true"}, {"--auto", "false"},
+		{"--speculative-draft-mtp", "true"}, {"--speculative-draft-mtp", "false"},
+		{"--speculative-draft-max-tokens", "16"}, {"--speculative-draft-min-tokens", "0"},
+		{"--speculative-draft-min-continue-probability", "0.25"},
+	} {
+		for _, separator := range []string{" ", "="} {
+			text := option.name + separator + option.value
+			if strings.HasPrefix(option.name, "--speculative-draft-m") && option.name != "--speculative-draft-mtp" {
+				text = "--speculative-draft-mtp true " + text
+			}
+			if _, err := validateLoadText(text); err != nil {
+				t.Errorf("rejected %s: %v", text, err)
+			}
+		}
+	}
+	for _, text := range []string{
+		"--engine-cwd .", "--engine-cwd=..", "--no-engine-cwd true", "--no-engine-cwd=true", "--no-engine-cwd",
+		"--future-option 3", "--future-option=3", "--offload-kv-cache true",
+		"-c 1", "-c=1", "--context 1", "--", "model", "--gpu max model",
+		"--gpu max --gpu=off", "--ttl 1 --ttl 2", "--auto true --auto false",
+		"--gpu", "--gpu=", "--gpu --ttl 1", "--gpu MAX", "--gpu NaN", "--gpu Inf", "--gpu -0.1", "--gpu 1.1", "--gpu 0x1",
+		"--context-length 0", "--context-length 1.5", "--context-length 2147483648", "--parallel -1", "--ttl 0", "--ttl 1e3", "--ttl +1",
+		"--auto", "--auto yes", "--auto TRUE", "--auto true --gpu max", "--auto true --context-length 1",
+		"--speculative-draft-mtp 1", "--speculative-draft-max-tokens 0", "--speculative-draft-min-tokens -1",
+		"--speculative-draft-min-continue-probability 1.1", "--speculative-draft-min-continue-probability NaN",
+		"--speculative-draft-max-tokens 4", "--speculative-draft-mtp false --speculative-draft-min-tokens 0",
+		"--speculative-draft-mtp true --speculative-draft-min-tokens 3 --speculative-draft-max-tokens 2",
+		"--gpu mаx", "--ttl １", "--ｔtl 1", "--ttl\u00a01", "--ttl '1", "--ttl 1; x",
+	} {
+		if _, err := validateLoadText(text); err == nil {
+			t.Errorf("malformed/unsupported input accepted: %q", text)
+		}
+	}
+	for _, option := range []string{"--engine-cwd", "--no-engine-cwd", "--future-option", "--ttl"} {
+		_, err := validateLoadText(option + "=private-value")
+		if err == nil || !strings.Contains(err.Error(), option) || strings.Contains(err.Error(), "private-value") {
+			t.Errorf("error must name only the option %s: %v", option, err)
+		}
+	}
+}
+
+func TestLoadProfilePreviouslyAcceptedOptionReportedInvalid(t *testing.T) {
+	e := &Executor{baseDir: t.TempDir()}
+	path := filepath.Join(e.baseDir, "lmstudio-load-profiles.json")
+	data := []byte(`{"revision":1,"profiles":{"m":{"revision":1,"loadText":"--engine-cwd ."}}}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.GetLoadProfile(context.Background(), settings.Request{Engine: "lmstudio", Model: "m"})
+	if err == nil || !strings.Contains(err.Error(), "invalid") || !strings.Contains(err.Error(), "--engine-cwd") {
+		t.Fatalf("saved invalid profile was not reported: %v", err)
+	}
+	if _, err := e.loadProfileArgs(context.Background(), "m"); err == nil {
+		t.Fatal("saved invalid profile applied silently")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(data) {
+		t.Fatal("invalid profile silently dropped or rewritten")
 	}
 }
 

@@ -187,6 +187,19 @@ describe('per-model LM Studio Load options', () => {
         expect(container.textContent).toContain('PAIR owns model identity.')
         expect(applyProfile).not.toHaveBeenCalled()
     })
+    it('shows the service allowlist error for an invalid saved profile', async () => {
+        getProfile.mockRejectedValueOnce(
+            new Error(
+                'Saved LM Studio load profile is invalid: unsupported load option --engine-cwd.'
+            )
+        )
+        await render()
+        await open()
+        expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1)
+        expect(container.textContent).toContain('unsupported load option --engine-cwd')
+        expect(field().disabled).toBe(true)
+        expect(applyProfile).not.toHaveBeenCalled()
+    })
     it('shows saving progress and a single safe failure, then requires refresh', async () => {
         let fail = (_error: Error): void => {}
         applyProfile.mockImplementationOnce(

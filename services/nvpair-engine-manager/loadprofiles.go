@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -19,60 +20,119 @@ import (
 )
 
 const loadProfileError = "LM Studio load options could not be read or saved. No default load was attempted."
-const loadProfileValidation = "Use long load-option flags with literal values. PAIR owns model identity and server addressing; file, execution and command controls are not allowed."
+const loadProfileValidation = "Use supported long load options with explicit literal values (--flag value or --flag=value)."
 
-// This is a boundary denylist, not a catalogue of vendor tuning options.
-// Unknown long flags are opaque. Short flags are ambiguous across CLI versions
-// and are refused; positional tokens can only be values of a preceding flag.
+// Derived from lms load --help: CLI 0.4.1 (43d4b26), bundled in llmster
+// 0.0.27-1 by the manifest's rolling installer. Unlike opaque engine
+// launch arguments, these per-model options run on every load: a small tuning
+// allowlist is practical, and any leaked control would be repeated every load.
+// Draft-model resource selection, engine files/directories and identity are
+// deliberately excluded. Boolean inputs are explicit true/false; only the
+// final CLI adapter turns them into the vendor's valueless flags.
 func validateLoadText(text string) ([]string, error) {
+	for _, r := range text {
+		if r > 127 {
+			return nil, errors.New(loadProfileValidation)
+		}
+	}
 	tokens, err := parseLaunchText(text)
 	if err != nil {
 		return nil, errors.New(loadProfileValidation)
 	}
 	args := make([]string, 0, len(tokens))
+	values := map[string]string{}
 	for i := 0; i < len(tokens); i++ {
-		token := tokens[i]
-		name, value, equals := strings.Cut(token, "=")
-		if !strings.HasPrefix(name, "--") || len(name) <= 2 {
+		name, value, equals := strings.Cut(tokens[i], "=")
+		// Never include a submitted value or malformed token in an error.
+		if !strings.HasPrefix(name, "--") || len(name) <= 2 || strings.ContainsFunc(name[2:], func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r == '-')
+		}) {
 			return nil, errors.New(loadProfileValidation)
 		}
-		for _, r := range name[2:] {
-			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
-				return nil, errors.New(loadProfileValidation)
-			}
+		invalid := func(reason string) ([]string, error) {
+			return nil, fmt.Errorf("LM Studio load option %s: %s.", name, reason)
 		}
-		// Prefix matching also rejects abbreviated spellings and names that append
-		// a suffix to a managed control. Vendor argument parsers may accept either.
-		for _, control := range []string{"host", "port", "bind", "address", "listen", "server", "endpoint", "url", "api", "model", "identifier", "alias", "name", "path", "file", "config", "preset", "template", "prompt", "system", "lora", "adapter", "project", "exec", "command", "script", "plugin", "tool", "extension", "help", "version", "list", "directory", "dir", "remote", "log", "input", "output", "include", "require", "import", "export", "mcp", "proxy", "socket", "hook", "module", "resource", "attach", "estimate", "dry-run"} {
-			if strings.Contains(name[2:], control) || strings.HasPrefix(control, name[2:]) {
-				return nil, errors.New(loadProfileValidation)
-			}
+		switch name {
+		case "--gpu", "--context-length", "--parallel", "--ttl", "--auto",
+			"--speculative-draft-mtp", "--speculative-draft-max-tokens",
+			"--speculative-draft-min-tokens", "--speculative-draft-min-continue-probability":
+		default:
+			return invalid("unsupported option")
 		}
-		if name == "--load" || name == "--unload" || name == "--download" {
-			return nil, errors.New(loadProfileValidation)
+		if _, repeated := values[name]; repeated {
+			return invalid("repeated option")
 		}
-		if !equals && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "--") {
+		if !equals && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
 			i++
 			value = tokens[i]
-			equals = true
-			args = append(args, token, value)
-		} else {
-			args = append(args, token)
 		}
-		// A bare flag is a vendor boolean; scalar/path-free literal values cannot
-		// introduce another command, response file, path or shell expression.
-		if equals {
-			if value == "" || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "/\\@:=;$`|&<>\"'(){}\r\n") {
-				return nil, errors.New(loadProfileValidation)
+		valid := false
+		switch name {
+		case "--auto", "--speculative-draft-mtp":
+			valid = value == "true" || value == "false"
+		case "--gpu":
+			valid = value == "off" || value == "max" || loadRatio(value)
+		case "--speculative-draft-min-continue-probability":
+			valid = loadRatio(value)
+		default:
+			minimum := int64(1)
+			if name == "--speculative-draft-min-tokens" {
+				minimum = 0
 			}
-			for _, r := range value {
-				if unicode.IsControl(r) {
-					return nil, errors.New(loadProfileValidation)
-				}
-			}
+			n, err := strconv.ParseInt(value, 10, 32)
+			valid = err == nil && n >= minimum && value != "" && !strings.ContainsFunc(value, func(r rune) bool { return r < '0' || r > '9' })
+		}
+		if !valid {
+			return invalid("invalid or missing typed value")
+		}
+		values[name] = value
+		// One stable representation for previews, persistence and comparisons.
+		args = append(args, name, value)
+	}
+	if values["--auto"] == "true" && (values["--gpu"] != "" || values["--context-length"] != "") {
+		return nil, errors.New("LM Studio load option --auto: conflicts with --gpu or --context-length.")
+	}
+	for _, name := range []string{"--speculative-draft-max-tokens", "--speculative-draft-min-tokens", "--speculative-draft-min-continue-probability"} {
+		if values[name] != "" && values["--speculative-draft-mtp"] != "true" {
+			return nil, fmt.Errorf("LM Studio load option %s: requires --speculative-draft-mtp true.", name)
 		}
 	}
+	minimum, _ := strconv.ParseInt(values["--speculative-draft-min-tokens"], 10, 32)
+	maximum, _ := strconv.ParseInt(values["--speculative-draft-max-tokens"], 10, 32)
+	if values["--speculative-draft-max-tokens"] != "" && minimum > maximum {
+		return nil, errors.New("LM Studio load option --speculative-draft-min-tokens: exceeds --speculative-draft-max-tokens.")
+	}
 	return args, nil
+}
+
+// Ratios use decimal notation only, not exponent/hex/NaN/Inf spellings.
+func loadRatio(value string) bool {
+	if value == "" || strings.ContainsFunc(value, func(r rune) bool { return (r < '0' || r > '9') && r != '.' }) {
+		return false
+	}
+	n, err := strconv.ParseFloat(value, 64)
+	return err == nil && n >= 0 && n <= 1
+}
+
+func loadCLIArgs(args []string) []string {
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i += 2 {
+		name, value := args[i], args[i+1]
+		switch name {
+		case "--auto":
+			if value == "true" {
+				result = append(result, name)
+			}
+		case "--speculative-draft-mtp":
+			if value == "false" {
+				name = "--no-speculative-draft-mtp"
+			}
+			result = append(result, name)
+		default:
+			result = append(result, name, value)
+		}
+	}
+	return result
 }
 
 type loadProfileRecord struct {
@@ -104,7 +164,7 @@ func (e *Executor) readLoadProfiles() (loadProfileFile, error) {
 			return state, errors.New(loadProfileError)
 		}
 		if _, err := validateLoadText(record.LoadText); err != nil {
-			return state, errors.New(loadProfileError)
+			return state, fmt.Errorf("Saved LM Studio load profile is invalid: %w", err)
 		}
 	}
 	return state, nil
@@ -169,7 +229,7 @@ func (e *Executor) PreviewLoadProfile(ctx context.Context, p settings.Request) (
 		result.Errors["loadText"] = err.Error()
 		return result, nil
 	}
-	result.Args = args
+	result.Args = loadCLIArgs(args)
 	result.LoadText, _ = formatLaunchText(args)
 	if p.ExpectedRevision != snap.Revision {
 		result.Errors["loadText"] = "Load options changed. Reload before applying."
