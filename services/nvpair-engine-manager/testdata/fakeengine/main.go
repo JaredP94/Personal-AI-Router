@@ -206,6 +206,36 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "persistent-host":
+			// Model an app whose HTTP server can stop/restart without exiting.
+			var server *http.Server
+			start := func() {
+				ln, err := net.Listen("tcp", os.Args[3])
+				if err != nil {
+					os.Exit(2)
+				}
+				server = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				})}
+				go func(s *http.Server) { _ = s.Serve(ln) }(server)
+			}
+			start()
+			for {
+				if _, err := os.Stat(os.Args[2] + "-stop"); err == nil {
+					if server != nil {
+						_ = server.Close()
+						server = nil
+					}
+					_ = os.Remove(os.Args[2] + "-stop")
+				}
+				if _, err := os.Stat(os.Args[2] + "-start"); err == nil {
+					if server == nil {
+						start()
+					}
+					_ = os.Remove(os.Args[2] + "-start")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 		case "shutdown-tail":
 			// Close the listener before asynchronous process teardown completes.
 			ln, err := net.Listen("tcp", os.Args[3])

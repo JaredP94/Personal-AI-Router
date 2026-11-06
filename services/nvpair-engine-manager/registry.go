@@ -238,6 +238,9 @@ type StopSpec struct {
 	Signal string   `json:"signal,omitempty"` // "term" (default) | "kill"
 	Cmd    []string `json:"cmd,omitempty"`    // optional explicit stop command
 	GraceS int      `json:"grace_s,omitempty"`
+	// WaitForExit requires command-mode shutdown to confirm the serving PID
+	// exits as well as releasing the listener. Most apps only stop the server.
+	WaitForExit bool `json:"wait_for_exit,omitempty"`
 }
 
 // Action is a config-declared operation exposed over engine:action.
@@ -776,6 +779,11 @@ func (p *Platform) validate(key string) error {
 			if pathWithinRoot(strings.ToLower(store), strings.ToLower(resolved)) {
 				return fmt.Errorf("platform %q: uninstall.remove %q is at or inside the model store %q — uninstall removes the engine, not the user's models", key, target, p.ModelsDir)
 			}
+		}
+	}
+	if sp := p.Runtime.Stop; sp != nil && sp.WaitForExit {
+		if p.Runtime.modeOrDefault() != "command" || len(sp.Cmd) == 0 || p.Runtime.Ready == nil {
+			return fmt.Errorf("platform %q: runtime.stop.wait_for_exit requires command mode, stop.cmd, and runtime.ready", key)
 		}
 	}
 	if err := validateProbe(key, "ready", p.Runtime.Ready); err != nil {

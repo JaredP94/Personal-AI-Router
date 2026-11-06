@@ -600,9 +600,11 @@ terminate is the only signal that actually stops them.
 
 Command-mode stop (including oMLX) gives the official stop CLI
 `max(grace_s, 5s)` to return, then up to `grace_s` (default 5s) for shutdown.
-It confirms three consecutive connection refusals **and**, when the host can
-resolve it, exit of the process observed on the port before stop. Closing the
-port alone does not mean app teardown is complete. The state mutex is never
+It confirms three consecutive connection refusals. Only manifests opting into
+`runtime.stop.wait_for_exit` (bundled oMLX) also require exit of the process
+observed on the port before stop, when the host can resolve it. LM Studio stops
+only its HTTP server; its persistent host need not exit for stop/restart.
+See [MANIFEST.md](MANIFEST.md#command-mode-shutdown-confirmation). The state mutex is never
 held across these waits; lifecycle operations remain serialized so an immediate
 start cannot overtake stop. A timeout leaves the engine running, not falsely
 stopped, and is returned to the caller.
