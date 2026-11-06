@@ -192,9 +192,12 @@ type Runtime struct {
 }
 
 type EditableLaunch struct {
-	FixedArgs  []string        `json:"fixed_args"`
-	Controls   []LaunchControl `json:"controls"`
-	StartIndex int             `json:"start_index,omitempty"`
+	ForbiddenFlags           []string        `json:"forbidden_flags,omitempty"`
+	ForbiddenEnv             []string        `json:"forbidden_env,omitempty"`
+	NormalizeFlagUnderscores bool            `json:"normalize_flag_underscores,omitempty"`
+	FixedArgs                []string        `json:"fixed_args"`
+	Controls                 []LaunchControl `json:"controls"`
+	StartIndex               int             `json:"start_index,omitempty"`
 }
 
 // LaunchControl binds CLI/environment syntax to PAIR policy fields. Value is a
@@ -225,12 +228,18 @@ func (r *Runtime) hasCustomLaunch() bool {
 
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
 // should be set; HTTP wins if both are.
+type ProbeJSONMatch struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
 type Probe struct {
-	HTTP      string `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
-	TCP       string `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
-	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
-	TimeoutS  int    `json:"timeout_s,omitempty"`
-	IntervalS int    `json:"interval_s,omitempty"`
+	JSONMatch *ProbeJSONMatch `json:"json_match,omitempty"`
+	HTTP      string          `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
+	TCP       string          `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
+	Status    int             `json:"status,omitempty"` // expected HTTP status (default 200)
+	TimeoutS  int             `json:"timeout_s,omitempty"`
+	IntervalS int             `json:"interval_s,omitempty"`
 }
 
 // StopSpec is how to terminate the engine. Default is a graceful
@@ -808,6 +817,9 @@ func (p *Platform) validate(key string) error {
 func validateProbe(key, which string, p *Probe) error {
 	if p == nil {
 		return nil
+	}
+	if p.JSONMatch != nil && (p.HTTP == "" || p.JSONMatch.Field == "" || p.JSONMatch.Value == "") {
+		return fmt.Errorf("platform %q: runtime.%s.json_match requires HTTP, field and value", key, which)
 	}
 	if strings.TrimSpace(p.HTTP) == "" && strings.TrimSpace(p.TCP) == "" {
 		return fmt.Errorf("platform %q: runtime.%s must set either http or tcp", key, which)

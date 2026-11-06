@@ -11,6 +11,10 @@ engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
 
+[llama.cpp](LLAMACPP.md) is a macOS arm64 lifecycle-only preview, pinned to
+b12171. Its macOS build is not notarized, like PAIR itself. It does not serve
+requests through PAIR yet; proxy/routing and model integration are deferred.
+
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)
 use bounded extraction, signature/quarantine verification and atomic replacement;

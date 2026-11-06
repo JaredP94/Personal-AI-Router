@@ -57,6 +57,15 @@ mutex is never held across lookup, command execution, or confirmation; the
 lifecycle operation lock still serializes stop/start. Failed-start cleanup uses
 the same confirmation policy.
 
+## JSON identity probes
+
+HTTP `runtime.ready` and `runtime.health` may declare
+`"json_match": {"field":"role", "value":"router"}`. A successful status alone
+then does not identify the engine: a valid JSON object, within 64 KiB, must
+contain that top-level string value. Invalid, missing, differently typed or
+mismatching fields fail readiness. This uses llama.cpp b12171's `/props` router
+identity; a model-mode instance does not qualify.
+
 ## Editable launch manifest bindings
 
 The engine-manager runner remains manifest-driven. `runtime.editable_launch`
@@ -88,6 +97,11 @@ assignments pass through literally after trusted manifest expansion.
 - The numeric server-port field supplies `server.port`. Existing runtime bind
   policy supplies `server.host`; no user launch setting can replace either.
   These controls are rejected in editable input, including their aliases.
+- `forbidden_flags` and `forbidden_env` reject additional vendor inputs that
+  would undermine managed state without mapping them to a port field.
+  `normalize_flag_underscores` matches vendors that accept long-option underscore
+  aliases. All tokens are checked, including after `--` and assignments supplied
+  in argument positions. Fixed managed defaults are not shown as editable text.
 - The proxy listener belongs to the broker and is never a launch binding.
 
 [manifest.schema.json](manifest.schema.json) supplies editor validation; Go

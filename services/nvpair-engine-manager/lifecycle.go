@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1016,12 +1018,27 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		httpcon.DrainAndClose(resp.Body)
+		defer httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		if resp.StatusCode != want {
+			return false
+		}
+		if p.JSONMatch != nil {
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
+			if err != nil || len(body) > 65536 {
+				return false
+			}
+			var object map[string]json.RawMessage
+			var value string
+			if json.Unmarshal(body, &object) != nil || json.Unmarshal(object[p.JSONMatch.Field], &value) != nil {
+				return false
+			}
+			return value == p.JSONMatch.Value
+		}
+		return true
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)

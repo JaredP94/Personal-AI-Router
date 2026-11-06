@@ -232,7 +232,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		if !ok || strings.HasPrefix(key, "-") || strings.ContainsAny(key, "/\\") {
 			break
 		}
-		if policy.environmentControl(key) != nil {
+		if policy.protectedEnvironment(key) {
 			return fail(managedLaunchMessage)
 		}
 		result.Env = append(result.Env, tokens[0])
@@ -457,7 +457,7 @@ func rejectManagedOverrides(rt Runtime) error {
 	if rt.LaunchEnv != nil {
 		for _, assignment := range *rt.LaunchEnv {
 			key, _, _ := strings.Cut(assignment, "=")
-			if policy.environmentControl(key) != nil {
+			if policy.protectedEnvironment(key) {
 				return fmt.Errorf("%s", managedLaunchMessage)
 			}
 		}
