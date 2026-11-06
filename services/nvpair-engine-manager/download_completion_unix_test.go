@@ -28,8 +28,9 @@ func TestLMSCompletionStopsDownloaderChildAfterLauncherExit(t *testing.T) {
 		default:
 		}
 	}}
+	bin := fakeEngineForTest(t)
 	go func() {
-		_, err := runLMSDownloadCommand(ctx, []string{fakeEngineForTest(t), "shutdown-download-fixture", marker, "exit-parent", childMarker}, output)
+		_, err := runLMSDownloadCommand(ctx, []string{bin, "shutdown-download-fixture", marker, "exit-parent", childMarker}, output)
 		done <- err
 	}()
 	select {
@@ -53,11 +54,7 @@ func TestLMSCompletionStopsDownloaderChildAfterLauncherExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if child, err := os.FindProcess(childPID); err == nil {
-			_ = child.Kill()
-		}
-	})
+	t.Cleanup(func() { killOwnedTestPID(childPID, bin) })
 	address, err := os.ReadFile(childMarker)
 	if err != nil {
 		t.Fatal(err)

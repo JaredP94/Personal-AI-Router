@@ -104,6 +104,16 @@ func trackedFakeProcesses(root string) []fakeProcessRecord {
 	return alive
 }
 
+// killOwnedTestPID kills a saved fixture PID only while it still runs this
+// test's own fake-engine copy, whose path is unique to the test. A PID the OS
+// has since reused for another program is left alone. On Windows,
+// killTestProcessGroup then revalidates ownership through a pinned handle.
+func killOwnedTestPID(pid int, bin string) {
+	if pid > 0 && pid != os.Getpid() && isOurEngineImage(testProcessImage(pid), bin) {
+		killTestProcessGroup(pid)
+	}
+}
+
 func sweepFakeProcesses(root string) []fakeProcessRecord {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
