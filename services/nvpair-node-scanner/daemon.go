@@ -100,6 +100,8 @@ type daemon struct {
 	// into a torn self entry. The self key is written nowhere else — onBrowse
 	// ignores our own uuid — so this is the sole self-key writer lock.
 	selfMu sync.Mutex
+	// Only the first local enrichment waits for node-info's startup readiness.
+	localInfoStartup sync.Once
 
 	// lastInfo / lastModels cache each node's last successful enrichment (keyed by
 	// hostUuid) — GPU/CPU/memory from node-info and the model list from
@@ -1231,7 +1233,7 @@ func (d *daemon) enrichInfoCandidates(node *noderec.DirectoryNode, hosts []strin
 		return
 	}
 	ask := func(host string) (NodeInfoResponse, bool) {
-		candidate, fetched := d.fetchNodeInfo(host, ni.Port)
+		candidate, fetched := d.fetchLocalNodeInfo(host, ni.Port, node.HostUUID)
 		if !fetched {
 			return NodeInfoResponse{}, false
 		}

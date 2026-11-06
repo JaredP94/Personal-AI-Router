@@ -82,9 +82,10 @@ type Manager struct {
 	// wait is never erased by a now-stale unanimous-403 verdict.
 	clusterGen atomic.Uint64
 
-	memMu   sync.Mutex
-	members map[string]*ClusterNode // keyed by nodeUuid
-	invites map[string]*Invite      // keyed by inviteId
+	membersWriteMu sync.Mutex // serialize durable snapshots, including address learning
+	memMu          sync.Mutex
+	members        map[string]*ClusterNode // keyed by nodeUuid
+	invites        map[string]*Invite      // keyed by inviteId
 
 	tsMu       sync.Mutex
 	tombstones map[string]Tombstone // keyed by removed nodeUuid; newest wins (fan-out removal)
@@ -131,13 +132,6 @@ type Manager struct {
 	sessions map[string]*pairingSession // keyed by inviteId
 
 	browser *Browser
-
-	// observedPeerHosts maps a member's uuid to the source host it was last seen
-	// connecting from over an authenticated transport. Memory-only: it is
-	// re-earned by the first inbound reconcile after a restart, and a stale
-	// persisted copy would be a claim rather than an observation.
-	observedMu        sync.Mutex
-	observedPeerHosts map[string]string
 
 	// peerAddrs remembers which of a member's advertised addresses answers, so a
 	// multi-homed peer is reconciled with at an address that works rather than at

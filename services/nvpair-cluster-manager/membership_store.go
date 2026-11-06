@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 // membersFile is the durable, lean roster persisted under the cluster dir. Only
@@ -30,11 +31,15 @@ func (m *Manager) persistMembers() {
 }
 
 func (m *Manager) persistMembersErr() error {
+	m.membersWriteMu.Lock()
+	defer m.membersWriteMu.Unlock()
 	m.memMu.Lock()
-	durable := make([]ClusterNode, 0, len(m.members))
+	durable := make([]persistedMember, 0, len(m.members))
 	for _, n := range m.members {
 		if n.State == stateMember {
-			durable = append(durable, *cloneClusterNode(n))
+			normalizeMemberAddresses(n, time.Now())
+			copy := cloneClusterNode(n)
+			durable = append(durable, persistedMember{ClusterNode: *copy, memberAddresses: copy.addresses})
 		}
 	}
 	m.memMu.Unlock()
@@ -57,14 +62,16 @@ func (m *Manager) loadMembers() error {
 	if err != nil {
 		return err
 	}
-	var nodes []ClusterNode
+	var nodes []persistedMember
 	if err := json.Unmarshal(data, &nodes); err != nil {
 		return err
 	}
 	m.memMu.Lock()
 	defer m.memMu.Unlock()
 	for i := range nodes {
-		n := nodes[i]
+		n := nodes[i].ClusterNode
+		n.addresses = nodes[i].memberAddresses
+		normalizeMemberAddresses(&n, time.Now())
 		m.members[n.NodeUUID] = &n
 	}
 	return nil

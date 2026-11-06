@@ -507,16 +507,8 @@ func (m *Manager) prepareJoinerInitialComplete(inviteID string, sess *pairingSes
 		log.Printf("pairing %s: cannot read inviter PairingInfo: %v", inviteID, err)
 		return nil
 	}
-	// The inviter's advertised link-local address carries the zone of its own
-	// interface; give it ours before it is dialled or recorded as the member's
-	// address, and keep it as an observation so a roster claim of the inviter's
-	// spelling cannot replace it.
-	if scoped := localScope(pi.Addr, inviterIP); scoped != pi.Addr {
-		pi.Addr = scoped
-		if host, _, err := net.SplitHostPort(scoped); err == nil {
-			m.noteObservedPeerHost(pi.NodeUUID, host)
-		}
-	}
+	// Remote zones name the peer's interfaces; scope to the incoming link.
+	pi.Addr = localScope(pi.Addr, inviterIP)
 	sess.peerPairing = pi
 	sess.peerCert = cert
 	sess.addr = pi.Addr
@@ -656,7 +648,6 @@ func (m *Manager) onInviterPaired(inviteID string, sess *pairingSession) error {
 	host, port := splitAddr(pi.Addr, m.port)
 	if sess.peerSrcIP != "" {
 		host = sess.peerSrcIP
-		m.noteObservedPeerHost(pi.NodeUUID, host)
 	}
 	if host != "" {
 		pi.Addr = net.JoinHostPort(host, strconv.Itoa(port))

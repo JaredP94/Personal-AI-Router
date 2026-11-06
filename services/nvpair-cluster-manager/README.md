@@ -363,6 +363,48 @@ cleaning or renaming it, and without touching disk or announcing a change.
   Broker-supplied address always wins, so manual-only nodes are still
   invitable and discovery-less networks still work.
 
+## Peer address roaming
+
+`POST /v1/cluster/roster` adds optional `selfAddresses: string[]`: numeric
+`host:port` endpoints for the **authenticated sender itself**, including routed
+overlay addresses from the local interface publisher. Older peers may omit it.
+The receiver learns only from that pinned connection's source host (keeping the
+known listening port), the sender's self-report, or a successful pinned response.
+Relayed roster addresses, names, mDNS and public previews never update this set.
+Identity always comes from the exact certificate pin, not an address.
+
+Local-only `pairingAddress`, `addressCandidates` (endpoint, first learned time,
+last authenticated success, last attempt), and `nextAddressProbe` are persisted
+atomically inside `cluster/members.json` with mode **0600**. These fields are not
+added to the JSON-RPC member projection. The existing `ipAddress` is the most
+recent authenticated reached host; the manual-node worker follows it for
+cluster-derived entries, so existing node detail shows the reached address.
+User-saved entries retain their address, name, kind and precedence.
+
+At most **8** distinct endpoints are retained per member, most recent successful
+first, with the pairing-time endpoint retained as a fallback. Learned endpoints
+expire after **30 days** without authenticated success (untried claims age from
+first receipt; repeating a claim does not renew it). Only numeric unicast IPs
+and ports 1–65535 are accepted; unspecified, multicast, broadcast, IPv4 link-local
+and self-reported loopback addresses are rejected. IPv6 link-local hints use the
+receiving/dialing connection's **local** zone, never the sender's interface name.
+
+The existing reachability chooser orders attempts within the whole-request
+budget; TCP acceptance alone never proves identity. At most **one unproven
+candidate per member per 30 seconds** is admitted to a dial walk, across
+concurrent reconciles and restarts, rotating fairly across untried hints.
+Redirects are not followed. Every application connection still verifies the
+member's exact current pin. A hostile address can fail, not impersonate a peer.
+Removal/rejoin is serialized with learning and clears all hints; a request or
+response already in flight cannot restore removed state.
+
+At least one authenticated rendezvous path must remain: for example a peer
+reaches the other's saved overlay address and teaches its own current addresses.
+If both machines lose every known path, re-establish reachability explicitly;
+this is not an unauthenticated discovery or naming service. Endorsements still
+fan out certificate trust, but a third party's relayed address grants no
+address-learning authority.
+
 ## Cluster trust fan-out
 
 Pairing is point-to-point, but trust is **not** left point-to-point: every

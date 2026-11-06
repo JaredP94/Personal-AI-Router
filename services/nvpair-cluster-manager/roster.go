@@ -36,6 +36,7 @@ type Roster struct {
 	Members       []RosterEntry  `json:"members"`
 	Tombstones    []Tombstone    `json:"tombstones,omitempty"` // legacy compatibility
 	RemovalProofs []RemovalProof `json:"removalProofs,omitempty"`
+	SelfAddresses []string       `json:"selfAddresses,omitempty"` // only the authenticated sender, never relayed
 }
 
 // selfPub returns this node's own Ed25519 public key.
@@ -59,6 +60,7 @@ func (m *Manager) buildLocalRoster() *Roster {
 	cid, _ := m.clusterIdentity()
 	r := &Roster{
 		ClusterID:     cid,
+		SelfAddresses: localRosterAddresses(m.port),
 		Tombstones:    m.snapshotTombstones(),
 		RemovalProofs: m.snapshotRemovalProofs(),
 	}
@@ -107,6 +109,10 @@ func (m *Manager) buildLocalRoster() *Roster {
 func (m *Manager) mergeRoster(remote *Roster, senderUUID string) bool {
 	m.rosterMu.Lock()
 	defer m.rosterMu.Unlock()
+	return m.mergeRosterLocked(remote, senderUUID)
+}
+
+func (m *Manager) mergeRosterLocked(remote *Roster, senderUUID string) bool {
 	if m.teardownPending.Load() {
 		return false
 	}
@@ -221,7 +227,7 @@ func (m *Manager) applyMembers(entries []RosterEntry, cid, senderUUID string) bo
 					if !m.entryEndorsed(e, cid) {
 						continue
 					}
-					if err := m.pinEntry(e, der); err != nil {
+					if err := m.pinEntry(e, der, senderUUID); err != nil {
 						continue
 					}
 					if err := m.clearRemovalProofAfterAdmission(e.NodeUUID, e.AdmissionEpoch); err != nil {
@@ -235,7 +241,6 @@ func (m *Manager) applyMembers(entries []RosterEntry, cid, senderUUID string) bo
 				if err := m.trust.AddEndorsements(e.NodeUUID, e.Endorsements); err != nil {
 					log.Printf("roster: persist endorsements for %s: %v", e.NodeUUID, err)
 				}
-				m.refreshMemberAddr(e)
 				if e.NodeUUID == senderUUID && m.refreshMemberIdentity(e) {
 					changed = true
 				}
@@ -251,7 +256,7 @@ func (m *Manager) applyMembers(entries []RosterEntry, cid, senderUUID string) bo
 			if !m.entryEndorsed(e, cid) {
 				continue // no endorsement from a node we currently trust
 			}
-			if err := m.pinEntry(e, der); err != nil {
+			if err := m.pinEntry(e, der, senderUUID); err != nil {
 				continue
 			}
 			if err := m.clearRemovalProofAfterAdmission(e.NodeUUID, e.AdmissionEpoch); err != nil {
@@ -307,9 +312,15 @@ func (m *Manager) supersededByTombstone(e *RosterEntry) bool {
 }
 
 // pinEntry pins an accepted roster entry's cert and records it as a member.
-func (m *Manager) pinEntry(e *RosterEntry, der []byte) error {
+func (m *Manager) pinEntry(e *RosterEntry, der []byte, senderUUID string) error {
 	now := time.Now().UnixMilli()
-	host, port := splitAddr(e.Addr, m.port)
+	// Endorsements authenticate membership, not a relayed address claim.
+	host, port := "", m.port
+	if e.NodeUUID == senderUUID {
+		if addr, ok := candidateEndpoint(e.Addr, false); ok {
+			host, port = splitAddr(addr, m.port)
+		}
+	}
 	cid, _ := m.clusterIdentity()
 	previous, hadPrevious := m.memberByNodeID(e.NodeUUID)
 	m.upsertMember(&ClusterNode{
@@ -348,25 +359,6 @@ func (m *Manager) pinEntry(e *RosterEntry, der []byte) error {
 		return errors.Join(err, restoreMember())
 	}
 	return nil
-}
-
-// refreshMemberAddr updates a known member's reachable address from a roster
-// entry without disturbing its other fields.
-//
-// A host this node has seen the member connect from outranks the entry's claim,
-// which may be the member's own guess about which of its addresses works from
-// here — or another peer's relayed copy of that guess. The port is taken from the
-// entry either way: a listening port is a fact the member knows and an observer
-// cannot infer, since the source port of an inbound connection is ephemeral.
-func (m *Manager) refreshMemberAddr(e *RosterEntry) {
-	if e.Addr == "" {
-		return
-	}
-	host, port := splitAddr(e.Addr, m.port)
-	if observed := m.observedPeerHost(e.NodeUUID); observed != "" {
-		host = observed
-	}
-	m.setMemberAddr(e.NodeUUID, host, port)
 }
 
 // refreshMemberIdentity updates a still-trusted peer's display id/name — in both

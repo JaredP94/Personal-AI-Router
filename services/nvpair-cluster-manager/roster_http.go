@@ -10,11 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"slices"
 	"sync"
 	"time"
-
-	"nvpair-shared/netpick"
 )
 
 // reconcileEvery is the heartbeat cadence for catch-up roster reconciles — the
@@ -43,14 +40,21 @@ func (m *Manager) handleRoster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Snapshot the pin and both admissions before reading an untrusted body.
+	// Removal/rejoin may run while that read blocks; recheck before any merge
+	// or learning, under the same lock as membership removal.
+	m.rosterMu.Lock()
 	senderUUID, ok := m.verifyClientPin(r)
-	if !ok {
+	pin, pinned := m.trust.Get(senderUUID)
+	cid0, epoch0 := m.currentAdmission()
+	m.rosterMu.Unlock()
+	if !ok || !pinned {
 		m.rejectRosterReconcile(w, r)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
-	if err != nil {
-		http.Error(w, "read body", http.StatusBadRequest)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(body) > maxBodyBytes {
+		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 	var remote Roster
@@ -58,20 +62,25 @@ func (m *Manager) handleRoster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	changed := m.mergeRoster(&remote, senderUUID)
+	m.rosterMu.Lock()
+	cid, epoch := m.currentAdmission()
+	current, stillPinned := m.trust.Get(senderUUID)
+	_, valid := m.verifyClientPin(r)
+	if !valid || !stillPinned || current.AdmissionEpoch != pin.AdmissionEpoch || cid == "" || cid != cid0 || epoch != epoch0 {
+		m.rosterMu.Unlock()
+		http.Error(w, "stale peer", http.StatusForbidden)
+		return
+	}
+	changed := m.mergeRosterLocked(&remote, senderUUID)
+	if remote.ClusterID == cid {
+		changed = m.learnPeerAddressesLocked(senderUUID, hostOnly(r.RemoteAddr), remote.SelfAddresses, "", time.Now()) || changed
+	}
+	// Persist under the composition boundary: an old in-flight request must
+	// never write learned addresses back after member removal.
 	if changed {
-		log.Printf("roster: reconciled from peer %s; membership changed", senderUUID)
+		m.persistMembers()
 	}
-	// Learn the peer's current address from the authenticated connection so a
-	// member that moved to a new IP becomes reachable again without waiting on
-	// mDNS. verifyClientPin already authenticated the sender against its pinned
-	// cert, so the TCP source IP is trustworthy enough to dial back on the
-	// member's known listening port (we pass port 0 to keep the stored
-	// listening port, never the ephemeral source port).
-	if host := hostOnly(r.RemoteAddr); host != "" && m.noteObservedPeerHost(senderUUID, host) {
-		log.Printf("roster: refreshed peer %s address to %s (from connection)", senderUUID, host)
-		changed = true
-	}
+	m.rosterMu.Unlock()
 	if changed {
 		m.emitNodesChanged()
 	}
@@ -214,6 +223,7 @@ func (m *Manager) reconcileWith(addrs []string, peerUUID string) (reconcileOutco
 
 // reconcileWithin is reconcileWith under a caller-supplied budget.
 func (m *Manager) reconcileWithin(ctx context.Context, addrs []string, peerUUID string) (reconcileOutcome, bool) {
+	addrs = m.reservePeerDialCandidates(peerUUID, addrs)
 	if len(addrs) == 0 {
 		return reconcileUnreachable, false
 	}
@@ -265,6 +275,13 @@ func confirmedFirst(addrs []string, confirmed string) []string {
 // reconcileWith to try the next candidate; every actual response — including a
 // rejection — is that peer's answer and ends the walk.
 func (m *Manager) reconcileOnce(ctx context.Context, client *http.Client, body []byte, addr, peerUUID string) (outcome reconcileOutcome, provenRemoval, answered bool) {
+	m.rosterMu.Lock()
+	cid0, epoch0 := m.currentAdmission()
+	pin0, pinned := m.trust.Get(peerUUID)
+	m.rosterMu.Unlock()
+	if !pinned {
+		return reconcileUnreachable, false, false
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, peerURL("https", addr, rosterPath), bytes.NewReader(body))
 	if err != nil {
 		log.Printf("roster: build reconcile request for %s (%s): %v", addr, peerUUID, err)
@@ -277,7 +294,17 @@ func (m *Manager) reconcileOnce(ctx context.Context, client *http.Client, body [
 		return reconcileUnreachable, false, false
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	m.rosterMu.Lock()
+	defer m.rosterMu.Unlock()
+	cid, epoch := m.currentAdmission()
+	pin, stillPinned := m.trust.Get(peerUUID)
+	if !stillPinned || pin.AdmissionEpoch != pin0.AdmissionEpoch || cid == "" || cid != cid0 || epoch != epoch0 || m.teardownPending.Load() || resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 || !m.trust.MatchDER(peerUUID, resp.TLS.PeerCertificates[0].Raw) {
+		return reconcileUnreachable, false, false
+	}
+	if readErr != nil || len(rb) > maxBodyBytes {
+		return reconcileUnreachable, false, true
+	}
 	// A 403 is an authenticated signal (we pinned the peer's server cert, so we
 	// know it is really that peer) that it no longer holds our pin. But a dropped
 	// pin alone does not prove *we* were removed — a peer that itself left drops
@@ -302,8 +329,11 @@ func (m *Manager) reconcileOnce(ctx context.Context, client *http.Client, body [
 		log.Printf("roster: decode reconcile response from %s: %v", peerUUID, err)
 		return reconcileAccepted, false, true // 200: the peer accepted us; only the response body was unusable
 	}
-	if m.mergeRoster(&remote, peerUUID) {
-		log.Printf("roster: reconciled with peer %s; membership changed", peerUUID)
+	changed := m.mergeRosterLocked(&remote, peerUUID)
+	if remote.ClusterID == cid {
+		changed = m.learnPeerAddressesLocked(peerUUID, "", remote.SelfAddresses, addr, time.Now()) || changed
+	}
+	if changed {
 		m.emitNodesChanged()
 	}
 	return reconcileAccepted, false, true
@@ -467,12 +497,8 @@ func (m *Manager) removeBareRejectingPeers(clusterID string, generation uint64, 
 	}
 }
 
-// reconcileLoop runs the periodic catch-up reconcile and tombstone GC until the
-// context is cancelled. Each pass first refreshes member addresses from the
-// mDNS browse map, so a member that moved to a new IP (sleep/wake, DHCP)
-// re-converges within a heartbeat without a dedicated discovery callback. An
-// initial pass shortly after startup converges a node that just (re)started or
-// woke at a new address without waiting a full heartbeat.
+// reconcileLoop runs catch-up reconciliation and tombstone GC until cancelled.
+// Only pinned roster connections can update a member's durable address hints.
 func (m *Manager) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(reconcileEvery)
 	defer ticker.Stop()
@@ -490,8 +516,8 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 	}
 }
 
-// reconcilePass GCs expired tombstones, refreshes member addresses from the
-// discovery resolver, and pushes a roster reconcile to every confirmed peer.
+// reconcilePass GCs expired tombstones and pushes a roster reconcile to every
+// confirmed peer, using its bounded authenticated address hints.
 func (m *Manager) reconcilePass() {
 	m.gcTombstones()
 	if cid, _ := m.clusterIdentity(); cid == "" {
@@ -499,98 +525,11 @@ func (m *Manager) reconcilePass() {
 	}
 	m.mesh.Refresh()
 	m.clients.DropUnpinned()
-	m.refreshMemberAddrsFromMDNS()
 	m.reconcilePeersAndMaybeSelfRemove()
 }
 
-// refreshMemberAddrsFromMDNS updates each confirmed peer's stored reachable
-// address from the mDNS browse map when the peer has stopped advertising the
-// address we hold. Inter-node calls are mTLS cert-pinned, so trusting mDNS only
-// to *locate* a peer is safe — a wrong address simply fails the pinned handshake
-// and the next pass corrects it. This is the backstop that re-converges a moved
-// member even when it can't reach us to announce its new address itself.
-//
-// A peer that still advertises the address we hold keeps it. That address was
-// observed working from here, whereas the peer's own first choice is ranked from
-// its vantage point and may be a link only its cabled neighbour can use, so
-// overwriting on every pass would trade a known-good endpoint for a guess.
-func (m *Manager) refreshMemberAddrsFromMDNS() {
-	if m.browser == nil {
-		return
-	}
-	changed := false
-	for _, n := range m.snapshotNodes() {
-		if n.NodeUUID == m.identity.NodeUUID || n.State != stateMember {
-			continue
-		}
-		hosts, port, ok := m.browser.Resolve(n.NodeUUID)
-		if !ok {
-			hosts, port, ok = m.browser.Resolve(n.ID)
-		}
-		if !ok || len(hosts) == 0 {
-			continue
-		}
-		host := hosts[0]
-		if slices.Contains(hosts, n.IPAddress) {
-			// A peer that still advertises what we hold keeps it, unless hosts[0] is
-			// a strictly higher-ranked address class (e.g. physical private LAN over
-			// Tailscale / CGNAT). This allows seamless upgrade to local Wi-Fi when
-			// reconnecting to the local network.
-			if netpick.ScoreAddress(hosts[0]) <= netpick.ScoreAddress(n.IPAddress) {
-				host = n.IPAddress
-			}
-		}
-		if m.setMemberAddr(n.NodeUUID, host, port) {
-			log.Printf("roster: refreshed peer %s address to %s (from discovery)", n.NodeUUID, joinHostPort(host, port, m.port))
-			changed = true
-		}
-	}
-	if changed {
-		m.emitNodesChanged()
-	}
-}
-
-// resolvePeerAddrs returns a member's host:port candidates in the order to try
-// them: the address recorded at pairing time first (authoritative — it is the
-// source IP the peer connected from plus the listening port it advertised), then
-// everything the peer currently advertises through mDNS.
-//
-// The recorded address leads on equal footing, but if it is a lower-ranked class
-// (e.g. CGNAT/Tailscale) than an available physical LAN address from discovery,
-// discovery's top candidate leads so local Wi-Fi is preferred when reachable.
+// resolvePeerAddrs uses only local, authenticated address hints. Discovery and
+// relayed names/addresses cannot modify this set.
 func (m *Manager) resolvePeerAddrs(n ClusterNode) []string {
-	addrs := make([]string, 0, 4)
-	seen := make(map[string]bool, 4)
-	add := func(addr string) {
-		if addr == "" || seen[addr] {
-			return
-		}
-		seen[addr] = true
-		addrs = append(addrs, addr)
-	}
-	var hosts []string
-	var port int
-	if m.browser != nil {
-		var ok bool
-		hosts, port, ok = m.browser.Resolve(n.NodeUUID)
-		if !ok {
-			hosts, port, ok = m.browser.Resolve(n.ID)
-		}
-	}
-	leadWithRecorded := n.IPAddress != ""
-	if leadWithRecorded && len(hosts) > 0 {
-		if netpick.ScoreAddress(hosts[0]) > netpick.ScoreAddress(n.IPAddress) {
-			leadWithRecorded = false
-		}
-	}
-	if leadWithRecorded {
-		add(joinHostPort(n.IPAddress, n.Port, m.port))
-	}
-	for _, h := range hosts {
-		add(joinHostPort(h, port, m.port))
-	}
-	if !leadWithRecorded && n.IPAddress != "" {
-		add(joinHostPort(n.IPAddress, n.Port, m.port))
-	}
-	return addrs
+	return memberCandidateAddrs(n, time.Now())
 }

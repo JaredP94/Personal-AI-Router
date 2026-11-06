@@ -11,6 +11,11 @@ Node-info JSON decoding reads at most 1 MiB, and model-list decoding at most
 16 MiB. A JSON value that extends past its limit follows the existing probe or
 model-parse failure path.
 
+Cluster-derived entries follow cluster-manager's authenticated reached address
+when a member roams. User-saved PAIR/engine entries retain their original
+address, name and intent; the learned roster never overwrites them. Each new
+endpoint still needs a pinned-mTLS inventory proof before it becomes routable.
+
 ## Worker control health
 
 An id-bearing `worker/health` request (no params) returns `{"ok":true}` with
