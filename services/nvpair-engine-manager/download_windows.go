@@ -20,54 +20,24 @@ import (
 )
 
 type downloadProcess struct {
-	cmd       *exec.Cmd
-	job, gate windows.Handle
+	cmd   *exec.Cmd
+	owner *processJob
+	job   windows.Handle
 }
 
-func (p *downloadProcess) close() {
-	_ = windows.CloseHandle(p.gate)
-	_ = windows.CloseHandle(p.job) // KILL_ON_JOB_CLOSE also covers worker crashes.
-}
+func (p *downloadProcess) close() { p.owner.release() }
 
 func configureDownloadProcess(cmd *exec.Cmd) (*downloadProcess, error) {
-	executable, err := os.Executable()
+	owner, err := configureProcessJob(cmd, false)
 	if err != nil {
 		return nil, err
 	}
-	job, err := windows.CreateJobObject(nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	p := &downloadProcess{cmd: cmd, job: job}
-	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		p.close()
-		return nil, err
-	}
-	p.gate, err = windows.CreateEvent(nil, 1, 0, nil)
-	if err != nil {
-		p.close()
-		return nil, err
-	}
-	handle := p.gate
-	if err := windows.SetHandleInformation(handle, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
-		p.close()
-		return nil, err
-	}
-	// Keep the private-console launcher, but gate CLI creation until the
-	// launcher belongs to its job: no child can escape an assignment race.
-	cmd.Args = append([]string{executable, "--run-download", strconv.FormatUint(uint64(handle), 10), cmd.Path}, cmd.Args[1:]...)
-	cmd.Path = executable
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true, CreationFlags: windows.CREATE_NEW_CONSOLE,
-		AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(handle)},
-	}
-	return p, nil
+	native := owner.ops.(*windowsProcessJob)
+	return &downloadProcess{cmd: cmd, owner: owner, job: native.job}, nil
 }
 
 func killDownload(_ context.Context, process *downloadProcess) error {
-	return windows.TerminateJobObject(process.job, 1)
+	return process.owner.stop()
 }
 func terminateDownload(ctx context.Context, process *downloadProcess) error {
 	return interruptDownload(ctx, process)
@@ -106,19 +76,11 @@ func waitDownloadGroup(ctx context.Context, process *downloadProcess) error {
 // addresses that PID, whereas forced cleanup addresses the job. Assign the
 // job before opening the start gate and before cmd.Wait can reap the launcher.
 func pinDownloadProcess(process *downloadProcess) (func(), error) {
-	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(process.cmd.Process.Pid))
-	if err != nil {
+	if err := process.owner.activate(); err != nil {
 		return nil, err
 	}
-	if err := windows.AssignProcessToJobObject(process.job, handle); err != nil {
-		_ = windows.CloseHandle(handle)
-		return nil, err
-	}
-	if err := windows.SetEvent(process.gate); err != nil {
-		_ = windows.CloseHandle(handle)
-		return nil, err
-	}
-	return func() { _ = windows.CloseHandle(handle) }, nil
+	// The shared owner pins the launcher until close, including pipe drainage.
+	return func() {}, nil
 }
 
 // runDownloadProcess owns the CLI in a private hidden console. Reset only this
