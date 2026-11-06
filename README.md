@@ -152,7 +152,7 @@ Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not 
 promise that this fork publishes all of them for each release.
 
 **Upgrade clients and services together:** Desktop `0.9.0` ships service
-product `2.7.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+product `3.0.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 

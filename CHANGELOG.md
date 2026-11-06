@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unsigned, unnotarized **macOS arm64 release** for this fork. Windows, Linux
 desktop and Intel Mac packages are not published. The privileged helper and
 helper-based firewall setup remain unavailable in unsigned builds. Desktop
-`0.9.0` ships service product `2.7.0`. A source build of this release was
+`0.9.0` ships service product `3.0.0`, a major version because routing to
+unpaired PAIR machines is a breaking change. A source build of this release was
 validated on two macOS arm64 machines; see
 [Next release readiness](docs/release-readiness.mdx) for what was and was not
 exercised, and the [release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.9.0)
