@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,6 +67,40 @@ func TestValidateAcceptsCommandModeAndCmdAction(t *testing.T) {
 	m.Actions["pull"] = Action{Cmd: []string{"lms", "get", "{model}", "--yes"}}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("command-mode/cmd-action manifest rejected: %v", err)
+	}
+}
+
+func TestValidateStopWaitForExit(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, wait, cmd, ready string
+		wantErr                      bool
+	}{
+		{"enabled command", "command", "true", `["cli","stop"]`, `{"tcp":"127.0.0.1:{port}"}`, false},
+		{"disabled command", "command", "false", `["cli","stop"]`, `null`, false},
+		{"disabled process", "process", "false", `[]`, `null`, false},
+		{"process mode", "process", "true", `["cli","stop"]`, `{"tcp":"127.0.0.1:{port}"}`, true},
+		{"missing stop command", "command", "true", `[]`, `{"tcp":"127.0.0.1:{port}"}`, true},
+		{"missing readiness probe", "command", "true", `["cli","stop"]`, `null`, true},
+		{"string instead of boolean", "command", `"true"`, `["cli","stop"]`, `{"tcp":"127.0.0.1:{port}"}`, true},
+		{"number instead of boolean", "command", "1", `["cli","stop"]`, `{"tcp":"127.0.0.1:{port}"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := fmt.Sprintf(`{
+				"engine":"test", "display_name":"Test", "manifest_version":1,
+				"platforms":{"linux/amd64":{"runtime":{
+					"mode":%q, "bin":"cli", "start":[["cli","start"]],
+					"stop":{"cmd":%s,"wait_for_exit":%s}, "ready":%s
+				}}}
+			}`, tc.mode, tc.cmd, tc.wait, tc.ready)
+			var m Manifest
+			err := json.Unmarshal([]byte(data), &m)
+			if err == nil {
+				err = m.Validate()
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("manifest validation error = %v, wantErr=%v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -381,6 +416,25 @@ func TestBundledManifestsMerge(t *testing.T) {
 		}
 	} else {
 		t.Error("omlx darwin/arm64 missing")
+	}
+}
+
+func TestBundledStopWaitForExit(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.LoadFS(bundledManifests, "manifests"); err != nil {
+		t.Fatal(err)
+	}
+	for _, engine := range []string{"omlx", "lmstudio", "ollama"} {
+		m, ok := reg.Get(engine)
+		if !ok {
+			t.Fatalf("missing bundled engine %s", engine)
+		}
+		for key, p := range m.Platforms {
+			wait := p.Runtime.Stop != nil && p.Runtime.Stop.WaitForExit
+			if wait != (engine == "omlx") {
+				t.Errorf("%s %s: wait_for_exit=%v, only oMLX requires app exit before restart", engine, key, wait)
+			}
+		}
 	}
 }
 

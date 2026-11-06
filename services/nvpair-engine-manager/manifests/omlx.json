@@ -50,7 +50,7 @@
     "port": 1235,
     "bind": "127.0.0.1",
     "start": [["{cli}", "start"]],
-    "stop": { "cmd": ["{cli}", "stop"] },
+    "stop": { "cmd": ["{cli}", "stop"], "wait_for_exit": true },
     "ready": { "http": "http://127.0.0.1:{port}/health", "status": 200, "timeout_s": 45 },
     "health": { "http": "http://127.0.0.1:{port}/health", "status": 200, "interval_s": 10 }
   },

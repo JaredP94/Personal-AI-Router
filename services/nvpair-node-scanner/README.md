@@ -42,6 +42,11 @@ on interface-change notifications rather than re-enumerated on every five-second
 scan. The responder reuses per-interface senders for announcements and replies;
 removed or re-addressed interfaces retire their cached senders, including when
 all eligible interfaces disappear. Shutdown sends the goodbye before closing them.
+If only part of browser receive setup succeeds, failed address-family binds and
+interface memberships retry at scan boundaries with exponential backoff (1 second
+up to 60 seconds), without replacing working sockets or rejoining working
+memberships. A network snapshot change rebuilds setup immediately; a failed
+established receiver is rebuilt on the next scan.
 
 Every scan still performs real per-interface writes, preserving the consecutive
 send-failure evidence that address selection consumes. Source binding preserves

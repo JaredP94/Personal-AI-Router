@@ -561,12 +561,14 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	// Bound the stop CLI (e.g. `lms server stop`): the broker no longer
 	// force-kills engine-manager on a timeout, so an unbounded stop command
 	// would wedge StopAll and, in turn, the whole app shutdown.
-	// Snapshot the serving PID before the CLI can close its listener. The
-	// daemon can remain alive tearing down state after the port is released.
+	// Only engines declaring wait_for_exit need the serving PID to exit:
+	// some apps tear down after releasing the port, while others (LM Studio)
+	// intentionally keep their host process alive after stopping the server.
+	// Snapshot the PID before the CLI can close its listener.
 	// No state mutex is held during lookup, command execution, or this wait;
 	// opMu still serializes lifecycle operations, as it does for readiness.
 	pid := 0
-	if rt.Ready != nil {
+	if sp.WaitForExit && rt.Ready != nil {
 		pid, _, _ = pidOnPort(port)
 		// Never wait for this service itself to exit (e.g. a misconfigured
 		// probe targeting engine-manager). Only an independent daemon counts.
@@ -648,8 +650,9 @@ func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port
 	return e.waitDownContext(parent, p, port, 0, timeout)
 }
 
-// waitCommandUnavailable requires both transport closure and exit of the PID
-// observed before stop. If the host cannot resolve a PID, transport remains
+// waitCommandUnavailable requires transport closure and, for engines opting
+// into wait_for_exit, exit of the PID observed before stop. Otherwise pid is 0.
+// If the host cannot resolve a PID, transport remains
 // the best available evidence; the deadline is never extended by polling.
 func (e *Executor) waitCommandUnavailable(p *Probe, port, pid int, timeout time.Duration) bool {
 	return e.waitDownContext(context.Background(), p, port, pid, timeout)
