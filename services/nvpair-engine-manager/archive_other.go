@@ -20,6 +20,8 @@ func renameArchiveNew(stage, target string) error {
 	}
 	return os.Rename(stage, target)
 }
+func rejectArchiveQuarantine(string) error { return nil } // no supported archive installs on these hosts
+
 func verifyArchivePlatform(context.Context, string, *ArchiveInstall) error {
 	return fmt.Errorf("archive signature and quarantine verification require macOS")
 }

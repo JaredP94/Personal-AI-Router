@@ -6,8 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # Managing Engines in NVIDIA Personal AI Router
 
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
-run models. Today that means Ollama or LM Studio on a given machine. PAIR can
-install and run those engines for you, or work with a copy you already have.
+run models. PAIR supports Ollama, LM Studio and oMLX. It can install and run
+those engines for you, or work with a copy you already have. A macOS arm64
+**llama.cpp lifecycle-only preview** also appears in Engine settings: it can be
+installed, started, stopped and configured, but **does not serve requests through
+PAIR yet**. Its official b12171 macOS build is **not notarized**, like PAIR itself.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
 
@@ -62,6 +65,25 @@ It does not do everything that the application does.
 
 Check that the terminal interface covers your workflow before relying on it.
 Refer also to [Getting started](getting-started.mdx).
+
+## llama.cpp preview
+
+Install llama.cpp from its node row (not first-run automatic selection). The
+managed listener defaults to `127.0.0.1:8082`; Settings exposes the server port
+and launch arguments/environment but no proxy port. PAIR protects all listener
+controls, including Unix-socket host values and port-changing presets. Readiness
+requires the `/props` router identity, not merely HTTP success. Non-loopback
+binding still requires the existing explicit `engine_allow_lan_bind` permission.
+There is no model hub, model download/delete, load profile or routed endpoint yet.
+
+Installation verifies the pinned SHA-256, bounded contained extraction, expected
+server/libraries/Metal layout, absence of quarantine and existing signature
+integrity. PAIR never clears quarantine or re-signs the download. Stop the engine
+before updating: archive validation failures keep the old installation, and
+successful replacements exchange the complete directory atomically. Uninstall
+requires PAIR's identity-bound install claim and preserves `{install_dir}-models`.
+See the [release pin, parser audit and safeguards](../services/nvpair-engine-manager/LLAMACPP.md).
+Packaged live smoke testing remains a maintainer pre-merge check.
 
 ## Installing an Engine
 

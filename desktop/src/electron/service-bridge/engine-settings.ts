@@ -68,7 +68,7 @@ function flag(value: JsonValue | undefined): boolean {
     return value
 }
 function isSettingsEngine(value: JsonValue | undefined): value is EngineSettingsTarget['engine'] {
-    return value === 'ollama' || value === 'lmstudio' || value === 'omlx'
+    return value === 'ollama' || value === 'lmstudio' || value === 'omlx' || value === 'llamacpp'
 }
 function isSnapshotPhase(value: JsonValue | undefined): value is EngineSettingsSnapshot['phase'] {
     return isReceiptPhase(value) || value === 'idle'

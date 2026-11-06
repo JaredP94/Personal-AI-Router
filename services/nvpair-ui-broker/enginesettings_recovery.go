@@ -58,7 +58,7 @@ func (b *Broker) recoverEngineSettings() []string {
 	b.engineConfigMu.Lock()
 	b.settingsRecoveryBlocked = make(map[string]bool)
 	loadErr := b.loadEngineSettingsLocked()
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		record := b.engineSettings[engine]
 		if loadErr != nil || (record != nil && (record.Snapshot.Phase == "failed" || record.Snapshot.Phase == "applying")) {
 			b.settingsRecoveryBlocked[engine] = true
@@ -67,7 +67,7 @@ func (b *Broker) recoverEngineSettings() []string {
 	}
 	b.engineConfigMu.Unlock()
 	var excluded []string
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		if !b.recoverEngineSettingsForEngine(engine) {
 			excluded = append(excluded, engine)
 		}
@@ -205,7 +205,9 @@ func (b *Broker) settingsAvailabilityBlockedLocked(engine string) bool {
 	if !b.settingsRecoveryBlocked[engine] {
 		return false
 	}
-	b.unregisterService(engineSettingsService(engine))
+	if service := engineSettingsService(engine); service != "" {
+		b.unregisterService(service)
+	}
 	b.setProxyLocalBackend(b.settingsProxy(engine), engine, 0, false)
 	return true
 }

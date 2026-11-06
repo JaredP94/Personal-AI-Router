@@ -213,6 +213,9 @@ func extractTarGzip(ctx context.Context, source, root string, maxBytes int64, ma
 }
 
 func installArchive(ctx context.Context, source, target, engine, digest string, spec *ArchiveInstall, verify func(context.Context, string, *ArchiveInstall) error) error {
+	if err := rejectArchiveQuarantine(source); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 		return err
 	}

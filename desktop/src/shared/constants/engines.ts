@@ -4,23 +4,21 @@
 import { EngineType, ModelExpiry } from '@/shared/types/engines'
 
 // The engines `nvpair-engine-manager` ships a manifest for, and therefore the
-// only ones PAIR can install, run or route to. llama-cpp, whisper-cpp,
-// piper-tts, sherpa-onnx-tts and stable-diffusion-cpp were carried here as
-// never-enabled placeholders; they were removed with the chat window, which was
-// their only in-app consumer. Adding an engine back means shipping its manifest
-// first -- an engine row without one renders commands that fail with `-32000`.
-export const EngineTypes = ['ollama', 'lm-studio', 'omlx'] as const
+// engines PAIR can install and manage. Proxy/routing support is a separate
+// inventory; llama.cpp currently has lifecycle and settings only.
+export const EngineTypes = ['ollama', 'lm-studio', 'omlx', 'llamacpp'] as const
 
 // Kept as a distinct export so a future engine can ship behind it rather than
 // appearing the moment its type exists.
-export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'omlx'] as const
+export const EnabledEngineTypes: EngineType[] = ['ollama', 'lm-studio', 'omlx', 'llamacpp'] as const
 
 export const EngineSources = ['bundled', 'detected', 'installed'] as const
 
 export const EngineDisplayNames: Record<EngineType, string> = {
     ollama: 'Ollama',
     'lm-studio': 'LM Studio',
-    omlx: 'oMLX'
+    omlx: 'oMLX',
+    llamacpp: 'llama.cpp'
 } as const
 
 /** Default docs/install URLs for built-in backends. Single source of truth for UI and adapter buildInfo(). */
@@ -30,6 +28,10 @@ export const EngineDefaultLinks: Record<EngineType, { docsUrl: string; installUr
     omlx: {
         docsUrl: 'https://github.com/jundot/omlx',
         installUrl: 'https://github.com/jundot/omlx/releases/latest'
+    },
+    llamacpp: {
+        docsUrl: 'https://github.com/ggml-org/llama.cpp',
+        installUrl: 'https://github.com/ggml-org/llama.cpp/releases/tag/b12171'
     }
 } as const
 

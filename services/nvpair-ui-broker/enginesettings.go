@@ -185,7 +185,7 @@ func (b *Broker) settingsProxy(engine string) *proxyProcess {
 }
 
 func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (settings.Snapshot, error) {
-	if engine != "ollama" && engine != "lmstudio" && engine != "omlx" {
+	if engine != "ollama" && engine != "lmstudio" && engine != "omlx" && engine != "llamacpp" {
 		return settings.Snapshot{}, fmt.Errorf("this engine does not support settings")
 	}
 	if err := b.loadEngineSettingsLocked(); err != nil {
@@ -196,7 +196,7 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 		return settings.Snapshot{}, err
 	}
 	proxyPort := 0
-	ready := false
+	ready := engine == "llamacpp" // lifecycle-only; no proxy exists yet
 	if proxy := b.settingsProxy(engine); proxy != nil {
 		ready, proxyPort = proxy.Status()
 	}
@@ -254,7 +254,7 @@ type settingsPublication struct {
 // full projection. Coalescing never reverses any engine's sequence.
 func (b *Broker) publishSettingsLocked() {
 	all := make([]settings.Snapshot, 0, len(b.engineSettings))
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		if record := b.engineSettings[engine]; record != nil {
 			record.Snapshot.Sequence++
 			all = append(all, record.Snapshot)
@@ -290,7 +290,10 @@ func (b *Broker) sendSettingsPublications() {
 }
 
 func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string, config settings.Config, current settings.Snapshot) error {
-	if config.ServerPort < 1 || config.ServerPort > 65535 || config.ProxyPort < 1 || config.ProxyPort > 65535 {
+	if engine == "llamacpp" && config.ProxyPort != 0 {
+		return fmt.Errorf("llama.cpp has no PAIR proxy yet; proxy port must be zero")
+	}
+	if config.ServerPort < 1 || config.ServerPort > 65535 || (engine != "llamacpp" && (config.ProxyPort < 1 || config.ProxyPort > 65535)) {
 		return fmt.Errorf("ports must be between 1 and 65535")
 	}
 	if config.ServerPort == config.ProxyPort {
@@ -321,7 +324,7 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 		return err
 	}
 	for _, other := range installed.Engines {
-		if other.Engine != engine && (other.Port == config.ServerPort || other.Port == config.ProxyPort) {
+		if other.Engine != engine && other.Port > 0 && (other.Port == config.ServerPort || other.Port == config.ProxyPort) {
 			return fmt.Errorf("a selected port is reserved by another configured engine")
 		}
 	}
@@ -343,6 +346,9 @@ func (b *Broker) validateSettingsPortsLocked(ctx context.Context, engine string,
 		}
 	}
 	for _, port := range []int{config.ServerPort, config.ProxyPort} {
+		if port == 0 {
+			continue
+		}
 		if port == current.EffectiveProxyPort || (current.Running && port == current.EffectiveServerPort) {
 			continue
 		}
@@ -394,7 +400,7 @@ func (b *Broker) runSettingsOperationLocked(ctx context.Context, engine string, 
 
 func (b *Broker) runSettingsOperationWithJoinLocked(ctx context.Context, engine string, record *engineSettingsRecord, joinBudget time.Duration) error {
 	service := engineSettingsService(engine)
-	if b.regCache != nil {
+	if b.regCache != nil && service != "" {
 		b.unregisterService(service)
 	}
 	b.setProxyLocalBackend(b.settingsProxy(engine), engine, record.Snapshot.EffectiveServerPort, false)
@@ -769,6 +775,12 @@ func (b *Broker) rebindSettingsProxy(ctx context.Context, engine string, port in
 }
 
 func (b *Broker) rebindSettingsProxyOn(ctx context.Context, p *proxyProcess, engine string, port int) error {
+	if engine == "llamacpp" {
+		if p != nil || port != 0 {
+			return fmt.Errorf("llama.cpp has no PAIR proxy yet")
+		}
+		return ctx.Err()
+	}
 	if p == nil {
 		return fmt.Errorf("proxy unavailable")
 	}
@@ -803,7 +815,7 @@ func (b *Broker) refreshEngineSettings(ctx context.Context) {
 				readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				defer cancel()
 				changed := false
-				for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+				for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 					var before settings.Snapshot
 					if r := b.engineSettings[engine]; r != nil {
 						before = r.Snapshot
@@ -827,8 +839,10 @@ func engineSettingsService(engine string) noderec.ServiceKey {
 		return noderec.ServiceOllama
 	case "lmstudio":
 		return noderec.ServiceLMStudio
-	default:
+	case "omlx":
 		return noderec.ServiceOMLX
+	default:
+		return ""
 	}
 }
 

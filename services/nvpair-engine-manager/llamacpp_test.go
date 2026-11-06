@@ -135,6 +135,28 @@ func TestLlamaReadinessIdentity(t *testing.T) {
 	}
 }
 
+func TestLlamaNoProxyLaunchSettings(t *testing.T) {
+	p, _ := llamaManifest(t).PlatformFor("darwin", "arm64")
+	ex := settingsExecutor(t, true)
+	st := settingsState(t, ex)
+	st.plat.Runtime = p.Runtime
+	ex.engines["llamacpp"] = st
+	request := settingsRequest(t, ex)
+	request.Engine = "llamacpp"
+	request.Settings.ServerPort = 8082
+	request.Settings.ProxyPort = 0
+	request.Settings.LaunchText = "CUSTOM=value --threads 4"
+	preview, err := ex.PreviewLaunch(request)
+	if err != nil || len(preview.Errors) != 0 || preview.Settings.ProxyPort != 0 {
+		t.Fatalf("proxy-free preview: %+v %v", preview, err)
+	}
+	request.Settings.ProxyPort = 8081
+	preview, err = ex.PreviewLaunch(request)
+	if err == nil && len(preview.Errors) == 0 {
+		t.Fatal("future proxy accepted")
+	}
+}
+
 func TestLlamaPortCollision(t *testing.T) {
 	m := llamaManifest(t)
 	p, _ := m.PlatformFor("darwin", "arm64")

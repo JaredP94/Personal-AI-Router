@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Engine launch text
 
-Ollama and LM Studio accept editable arguments and leading environment
+Ollama, LM Studio and llama.cpp accept editable arguments and leading environment
 assignments in `pair-arguments-v1` notation. The executable and startup
 subcommand remain manifest-owned. oMLX is launched unchanged through `omlx start`;
 its app manages server settings. Only its PAIR proxy port is editable.
@@ -40,7 +40,10 @@ numeric server-port and proxy-port fields. Managed flag aliases, equals forms,
 attached short values and ambiguous bundles containing a managed short option
 are rejected, including after `--`. The bundled protected controls include
 Ollama's `OLLAMA_HOST` and LM Studio's `--port`/`-p`, `--bind`/`--host`,
-`LMS_SERVER_PORT` and `LMS_SERVER_HOST`.
+`LMS_SERVER_PORT` and `LMS_SERVER_HOST`. llama.cpp also protects `--host`,
+`--port`, `LLAMA_ARG_HOST`, `LLAMA_ARG_PORT`, port-changing presets, reuse-port
+controls and the PAIR-owned cache. See the [complete b12171 audit](LLAMACPP.md#binding-audit-b12171).
+llama.cpp has a server-port field only; its proxy port remains zero until a later PR.
 
 Saved overrides undergo the same checks before execution. Launch settings do
 not change the existing bind policy: default loopback and the explicit live

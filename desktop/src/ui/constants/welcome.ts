@@ -14,12 +14,14 @@ export const WELCOME_STEP_SUB_HEADINGS = ['', 'You can update later by clicking 
 export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
     ollama: true,
     'lm-studio': true,
-    omlx: true
+    omlx: true,
+    llamacpp: false
 }
 
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {
     const platform = displayNameToPlatform(os)
     return EnabledEngineTypes.filter(t => {
+        if (t === 'llamacpp') return false // lifecycle-only preview; install from its node row
         const caps = EngineCapabilities[t]
         if (!caps.hasInstall.length) return false
         if (caps.hasInstallPath) return false

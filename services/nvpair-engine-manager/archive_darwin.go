@@ -23,19 +23,23 @@ func renameArchiveNew(stage, target string) error {
 	return unix.RenameatxNp(unix.AT_FDCWD, stage, unix.AT_FDCWD, target, unix.RENAME_EXCL)
 }
 
+func rejectArchiveQuarantine(p string) error {
+	_, err := unix.Lgetxattr(p, "com.apple.quarantine", nil)
+	if err == nil {
+		return fmt.Errorf("cannot install %s: it carries com.apple.quarantine; the file was left unchanged", p)
+	}
+	if !errors.Is(err, unix.ENOATTR) {
+		return fmt.Errorf("cannot check quarantine for %s: %w", p, err)
+	}
+	return nil
+}
+
 func verifyArchivePlatform(ctx context.Context, root string, spec *ArchiveInstall) error {
 	if err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		_, err = unix.Lgetxattr(p, "com.apple.quarantine", nil)
-		if err == nil {
-			return fmt.Errorf("cannot install %s: it carries com.apple.quarantine; the file was left unchanged", p)
-		}
-		if !errors.Is(err, unix.ENOATTR) {
-			return fmt.Errorf("cannot check quarantine for %s: %w", p, err)
-		}
-		return nil
+		return rejectArchiveQuarantine(p)
 	}); err != nil {
 		return err
 	}

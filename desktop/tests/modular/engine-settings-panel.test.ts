@@ -161,6 +161,28 @@ afterEach(async () => {
 })
 
 describe('engine launch settings panel', () => {
+    it('edits llama.cpp server and launch settings without a proxy port', async () => {
+        getSettings.mockImplementation(async target => ({
+            ...baseline,
+            ...target,
+            settings: { serverPort: 8082, proxyPort: 0, launchText: '' },
+            effectiveServerPort: 8082,
+            effectiveProxyPort: 0
+        }))
+        await render('llamacpp')
+        expect(container.querySelector('[aria-label="Proxy port"]')).toBeNull()
+        expect(field('Server port').disabled).toBe(false)
+        await change('Engine arguments', 'CUSTOM=value --threads 4')
+        await click('Apply')
+        expect(previewSettings).toHaveBeenCalledWith(
+            expect.objectContaining({
+                engine: 'llamacpp',
+                settings: { serverPort: 8082, proxyPort: 0, launchText: 'CUSTOM=value --threads 4' }
+            })
+        )
+        expect(applySettings).toHaveBeenCalledOnce()
+    })
+
     it('loads read-only, then enables editing when settings arrive', async () => {
         let finish = (_snapshot: EngineSettingsSnapshot): void => {}
         getSettings.mockImplementationOnce(

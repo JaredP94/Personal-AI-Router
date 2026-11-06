@@ -16,7 +16,7 @@ case-alias paths, special files, setuid/setgid modes, quarantine metadata, more
 than 512 entries or 2 GiB of expanded data. Internal library links are preserved.
 Required files must be nonempty regular files (or contained links to them).
 
-On macOS every extracted entry is checked for `com.apple.quarantine`; any such
+On macOS the source archive and every extracted entry are checked for `com.apple.quarantine`; any such
 attribute fails installation naming the file, without changing the attribute.
 The system `/usr/bin/codesign --verify --strict <executable>` must succeed; this
 checks existing signature integrity, not notarization or publisher trust. PAIR

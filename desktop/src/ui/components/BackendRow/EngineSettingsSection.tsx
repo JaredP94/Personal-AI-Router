@@ -94,6 +94,7 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
         snapshot.format !== 'pair-arguments-v1'
     const locked = readOnly || disabled || applying
     const isOmlx = engine === 'omlx'
+    const hasProxy = engine !== 'llamacpp'
 
     useEffect(() => watchEngineSettings(), [])
     useEffect(() => {
@@ -204,9 +205,9 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
         }
         const id = ++generation.current
         const serverPort = Number(draft.serverPort)
-        const proxyPort = Number(draft.proxyPort)
+        const proxyPort = hasProxy ? Number(draft.proxyPort) : 0
         if (
-            ![serverPort, proxyPort].every(
+            !(hasProxy ? [serverPort, proxyPort] : [serverPort]).every(
                 port => Number.isInteger(port) && port >= 1 && port <= 65535
             )
         ) {
@@ -289,17 +290,19 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                             aria-invalid={!!errors.serverPort}
                         />
                     </FormField>
-                    <FormField slotLabel="Proxy port">
-                        <TextInput
-                            size="small"
-                            aria-label="Proxy port"
-                            value={draft.proxyPort}
-                            onValueChange={value => change('proxyPort', value)}
-                            disabled={locked}
-                            inputMode="numeric"
-                            aria-invalid={!!errors.proxyPort}
-                        />
-                    </FormField>
+                    {hasProxy && (
+                        <FormField slotLabel="Proxy port">
+                            <TextInput
+                                size="small"
+                                aria-label="Proxy port"
+                                value={draft.proxyPort}
+                                onValueChange={value => change('proxyPort', value)}
+                                disabled={locked}
+                                inputMode="numeric"
+                                aria-invalid={!!errors.proxyPort}
+                            />
+                        </FormField>
+                    )}
                 </Flex>
                 {isOmlx ? (
                     <Text kind="body/regular/sm">
