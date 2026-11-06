@@ -5,6 +5,33 @@ SPDX-License-Identifier: Apache-2.0
 
 # Engine manifest capabilities
 
+## Pinned macOS archive installs
+
+`install.archive` is an alternative to `install.disk_image`, scripts and commands.
+It requires a single checksum-pinned `fetch`, a nonempty `required` relative-file
+list and a `codesign` target in that list. Files are unpacked with one wrapper
+component stripped into a private sibling staging directory, never by a shell.
+The runner rejects absolute/traversing paths, escaping or invalid links, duplicate
+case-alias paths, special files, setuid/setgid modes, quarantine metadata, more
+than 512 entries or 2 GiB of expanded data. Internal library links are preserved.
+Required files must be nonempty regular files (or contained links to them).
+
+On macOS every extracted entry is checked for `com.apple.quarantine`; any such
+attribute fails installation naming the file, without changing the attribute.
+The system `/usr/bin/codesign --verify --strict <executable>` must succeed; this
+checks existing signature integrity, not notarization or publisher trust. PAIR
+never re-signs the files. Other platforms fail closed.
+
+The completed staging directory includes an identity-bound PAIR install claim
+and artifact digest. First installation uses exclusive rename; updates atomically
+exchange the complete directories using macOS `RENAME_SWAP`. Extraction,
+validation, claim-write or exchange failure leaves the previous install intact.
+Repeated `engine:install` is a no-op for the same claimed digest; a changed pinned
+digest replaces a stopped, claimed installation. Stop the engine before updating.
+Unclaimed installations are never replaced or uninstalled. Archive installs may
+use the special `models_dir: "{install_dir}-models"` sibling cache; uninstall
+removes only the engine tree, never this cache. There is no separate update RPC.
+
 ## Command-mode shutdown confirmation
 
 `runtime.stop.wait_for_exit` is an optional boolean (default `false`). It

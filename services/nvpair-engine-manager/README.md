@@ -12,7 +12,10 @@ start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
 
 The bundled manifests under `manifests/` are the working reference for manifest
-authoring.
+authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)
+use bounded extraction, signature/quarantine verification and atomic replacement;
+repeating `engine:install` updates a stopped, PAIR-owned archive installation when
+the manifest's pinned artifact changes, preserving its sibling model cache.
 
 ## Worker control health
 

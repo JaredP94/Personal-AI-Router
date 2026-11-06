@@ -91,7 +91,8 @@ type Install struct {
 	// runner mounts it read-only, copies App into Into unless an app is
 	// already there, detaches it and, with Open, opens the app. The runner
 	// owns the mount, so it is detached on every path, cancellation included.
-	DiskImage *DiskImage `json:"disk_image,omitempty"`
+	DiskImage *DiskImage      `json:"disk_image,omitempty"`
+	Archive   *ArchiveInstall `json:"archive,omitempty"`
 	// Creates names what the install puts in place, when that is somewhere a
 	// user's own copy could already be (an app in /Applications). PAIR records
 	// the install as its own only if Creates did not exist before it ran, so
@@ -746,6 +747,11 @@ func (p *Platform) validate(key string) error {
 				return fmt.Errorf("platform %q: install.creates must name the app disk_image copies", key)
 			}
 		}
+		if p.Install.Archive != nil {
+			if err := p.Install.validateArchive(); err != nil {
+				return fmt.Errorf("platform %q: %w", key, err)
+			}
+		}
 		if strings.Contains(p.Install.Creates, "{") {
 			return fmt.Errorf("platform %q: install.creates %q must be a literal path", key, p.Install.Creates)
 		}
@@ -755,7 +761,7 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install.mode %q invalid (want \"user\" or \"admin\")", key, p.Install.Mode)
 		}
 	}
-	if strings.Contains(p.ModelsDir, "{") {
+	if strings.Contains(p.ModelsDir, "{") && !(p.Install != nil && p.Install.Archive != nil && p.ModelsDir == "{install_dir}-models") {
 		return fmt.Errorf("platform %q: models_dir %q must be a literal path, not a template — the model store must not be derived from the install directory", key, p.ModelsDir)
 	}
 	if p.Uninstall != nil {

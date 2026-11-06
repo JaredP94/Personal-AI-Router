@@ -60,6 +60,9 @@ func capabilitiesForPlatform(m *Manifest, p Platform, goos string, adopted bool,
 		uninstall = installedByPAIR(installDir, creates) &&
 			uninstallerCoversCLI(p.Uninstall, detectedExecutable(&p, installDir, goos), installDir, goos)
 	}
+	if uninstall && p.Install != nil && p.Install.Archive != nil {
+		uninstall = installedByPAIR(installDir, installDir)
+	}
 	return Capabilities{
 		ListModels:  list,
 		PullModel:   pull,
