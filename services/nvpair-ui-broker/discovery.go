@@ -562,6 +562,7 @@ func startScanner(
 // observes as EOF) and waits for it to exit, escalating if it does not — see
 // waitForStdinClose. Safe to call multiple times.
 func (s *scannerProcess) Stop() {
+	flushWorkerWrites("scanner", s.peer)
 	waitForStdinClose("scanner", s.cmd, s.stdin, s.done)
 }
 

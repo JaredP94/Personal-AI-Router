@@ -80,6 +80,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	mgr, err := NewManager(codec, path)
 	if err != nil {
 		log.Fatalf("failed to initialise settings manager: %v", err)

@@ -179,5 +179,6 @@ func (c *clusterManagerProcess) Call(ctx context.Context, method string, params 
 // EOF) and waits for it to exit, escalating if it does not — see
 // waitForStdinClose. Safe to call multiple times.
 func (c *clusterManagerProcess) Stop() {
+	flushWorkerWrites("cluster-manager", c.peer)
 	waitForStdinClose("cluster-manager", c.cmd, c.stdin, c.done)
 }

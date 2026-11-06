@@ -194,5 +194,6 @@ func (m *workloadManagerProcess) handleSubscribe(params json.RawMessage) {
 // to exit, escalating if it does not — see waitForStdinClose. Safe to call
 // multiple times.
 func (m *workloadManagerProcess) Stop() {
+	flushWorkerWrites("workload-manager", m.peer)
 	waitForStdinClose("workload-manager", m.cmd, m.stdin, m.done)
 }

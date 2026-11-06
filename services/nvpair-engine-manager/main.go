@@ -89,6 +89,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	manifestDir, installBase := userPaths()
 	reg := buildRegistry(manifestDir)
 	log.Printf("loaded %d engine manifest(s): %v", len(reg.Names()), reg.Names())

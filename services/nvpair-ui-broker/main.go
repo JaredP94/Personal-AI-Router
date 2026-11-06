@@ -269,6 +269,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	paths := workerPaths{
 		workerHealthInterval: *workerHealthInterval,
 		scanner:              resolvedScanner,

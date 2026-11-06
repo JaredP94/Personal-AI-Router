@@ -6,7 +6,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -14,7 +13,7 @@ import (
 )
 
 // TestWorkerHealth catches a missing health dispatch, incorrect correlation or
-// payload, and a response deferred until after dispatch returns.
+// payload, and a response missing from the ordered writer.
 func TestWorkerHealth(t *testing.T) {
 	for _, rawID := range []string{"7", `"health-7"`} {
 		t.Run(rawID, func(t *testing.T) {
@@ -23,6 +22,7 @@ func TestWorkerHealth(t *testing.T) {
 			id := json.RawMessage(rawID)
 			msg := &Message{JSONRPC: "2.0", ID: &id, Method: "worker/health"}
 			m.handleMessage(msg)
+			_ = m.codec.Flush(t.Context())
 			output := out.String()
 
 			var response Message
@@ -40,7 +40,7 @@ func TestWorkerHealth(t *testing.T) {
 }
 
 // TestWorkerHealthWriteError catches a failed response being silently discarded.
-// The diagnostic must be emitted inline without request or response payloads.
+// The terminal diagnostic must contain no request or response payloads.
 func TestWorkerHealthWriteError(t *testing.T) {
 	var diagnostics bytes.Buffer
 	previous := slog.Default()
@@ -59,12 +59,12 @@ func TestWorkerHealthWriteError(t *testing.T) {
 		Params: json.RawMessage(`{"private":"health-params"}`),
 	}
 	m.handleMessage(msg)
+	_ = m.codec.Close() // join asynchronous terminal diagnostic before reading its sink
 
 	output := diagnostics.String()
-	if !strings.Contains(output, "level=ERROR") ||
-		!strings.Contains(output, "worker/health") ||
-		!strings.Contains(output, io.ErrClosedPipe.Error()) {
-		t.Fatalf("health write error was not surfaced inline: %q", output)
+	if !strings.Contains(output, "JSON-RPC stream terminated") ||
+		!strings.Contains(output, `reason="write failed"`) {
+		t.Fatalf("health write error was not surfaced: %q", output)
 	}
 	for _, payload := range []string{"private-health-id", "health-params", `"ok"`} {
 		if strings.Contains(output, payload) {

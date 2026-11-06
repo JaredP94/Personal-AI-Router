@@ -38,6 +38,18 @@ type readWriter struct {
 	io.Writer
 }
 
+// Close interrupts both halves when the codec declares this stream dead.
+func (rw readWriter) Close() error {
+	var err error
+	if w, ok := rw.Writer.(io.Closer); ok {
+		err = w.Close()
+	}
+	if r, ok := rw.Reader.(io.Closer); ok {
+		_ = r.Close()
+	}
+	return err
+}
+
 // writeOnlyReadWriter adapts a write-only child stream — a stdin pipe — into the
 // io.ReadWriter the shared Codec expects. These handles only push control frames
 // down a child's stdin and never read it: the child's stdout is drained by the
@@ -49,3 +61,10 @@ type writeOnlyReadWriter struct {
 }
 
 func (writeOnlyReadWriter) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (rw writeOnlyReadWriter) Close() error {
+	if w, ok := rw.Writer.(io.Closer); ok {
+		return w.Close()
+	}
+	return nil
+}

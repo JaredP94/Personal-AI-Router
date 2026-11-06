@@ -265,5 +265,6 @@ func (p *proxyProcess) Call(ctx context.Context, method string, params json.RawM
 // proxy drains its HTTP server) and waits for it to exit, escalating if it does
 // not — see waitForStdinClose. Safe to call multiple times.
 func (p *proxyProcess) Stop() {
+	flushWorkerWrites(p.name, p.peer)
 	waitForStdinClose(p.name, p.cmd, p.stdin, p.done)
 }

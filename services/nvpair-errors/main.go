@@ -64,6 +64,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	mgr := NewManager(codec)
 	// The broker passes the stable per-host UUID so this node's errors are
 	// attributed to the same identity the broker stamps and the cluster keys on

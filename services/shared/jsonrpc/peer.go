@@ -28,21 +28,18 @@ var ErrPeerClosed = errors.New("jsonrpc peer closed")
 // lets a child originate an upward Call without deadlocking its own read loop
 // (the read pump lives in Serve, separate from the Call goroutine).
 //
-// Peer does NOT own the process/transport lifecycle: the caller builds the
-// Codec (e.g. over a child's stdout/stdin), runs Serve in a goroutine, and
-// calls Close when the transport goes away. Serve also closes the peer when
-// Read returns a terminal error, so in-flight and future Calls fail fast.
+// The caller owns the process lifecycle and supplies an interruptible transport.
+// Close and terminal read/write errors abort the codec and fail pending calls.
+// For a clean control-pipe EOF, Drain the codec before closing that pipe and
+// keep the child stdout drained through the process owner's bounded join.
 type Peer struct {
 	codec *Codec
 
 	idCounter atomic.Int64
 
-	mu      sync.Mutex
-	pending map[int64]chan *Message
-	closed  bool
-	// Tail of the relay write queue; responses never hold up later writes.
-	relayWriteDone <-chan struct{}
-
+	mu           sync.Mutex
+	pending      map[int64]chan *Message
+	closed       bool
 	closeOnce    sync.Once
 	closedCh     chan struct{}
 	relayCtx     context.Context
@@ -90,8 +87,8 @@ func (p *Peer) RespondErrorData(id *json.RawMessage, code int, message string, d
 // the peer reported separately; a non-nil error means the call itself couldn't
 // complete (transport gone, ctx cancelled/deadline). Callers wanting a fixed
 // timeout should pass a ctx with a deadline. Cancellation does not interrupt an
-// in-flight frame: its write keeps the codec lock until it finishes or the
-// transport owner closes the writer. Queued writes stop waiting on cancellation.
+// in-flight frame: the single ordered writer finishes it or kills the stream
+// at its write deadline. Canceled requests not yet started are skipped.
 func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, *RPCError, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
@@ -113,6 +110,8 @@ func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) 
 		return nil, nil, ctx.Err()
 	case <-p.closedCh:
 		return nil, nil, ErrPeerClosed
+	case <-p.codec.Done():
+		return nil, nil, p.codec.Err()
 	case err := <-written:
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
@@ -127,6 +126,8 @@ func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) 
 		return nil, nil, ctx.Err()
 	case <-p.closedCh:
 		return nil, nil, ErrPeerClosed
+	case <-p.codec.Done():
+		return nil, nil, p.codec.Err()
 	case resp := <-ch:
 		return resp.Result, resp.Error, nil
 	}
@@ -138,55 +139,38 @@ func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) 
 // via push events). Both writing and responding run off the caller's loop.
 // Relay writes retain submission order. Returns an error only if the peer is
 // already closed; accepted requests report write failures through respond.
-// Close cancels queued writes and fails pending relays; the transport owner
-// must close the writer to release any in-flight frame (as with Call).
+// Close cancels queued writes, fails pending relays and aborts the transport.
 func (p *Peer) RelayRequest(method string, params json.RawMessage, respond func(result json.RawMessage, rpcErr *RPCError, err error)) error {
 	ch, id, err := p.register()
 	if err != nil {
 		return err
 	}
 
-	// Reserve queue position synchronously: simply launching write goroutines
-	// would let later engine commands overtake earlier ones at the codec lock.
-	p.mu.Lock()
-	previous := p.relayWriteDone
-	done := make(chan struct{})
-	p.relayWriteDone = done
-	p.mu.Unlock()
-	params = bytes.Clone(params)
-	ctx := p.relayCtx
-	written := make(chan error, 1)
-	go func() {
-		defer close(done)
-		if previous != nil {
-			select {
-			case <-previous:
-			case <-ctx.Done():
-				return
-			}
-		}
-		written <- p.writeRequest(ctx, id, method, params)
-	}()
+	// Submit synchronously into the codec FIFO, not a second queue of blocked
+	// goroutines: otherwise a later Notify/Respond could overtake this request.
+	idRaw := json.RawMessage(strconv.FormatInt(id, 10))
+	written, writeErr := p.codec.submit(p.relayCtx, &Message{JSONRPC: "2.0", ID: &idRaw, Method: method, Params: params})
 
 	go func() {
 		defer p.clearPending(id)
+		if writeErr != nil {
+			respond(nil, nil, writeErr)
+			return
+		}
 		select {
 		case <-p.closedCh:
 			respond(nil, nil, ErrPeerClosed)
 			return
-		case err := <-written:
-			if ctx.Err() != nil {
-				respond(nil, nil, ErrPeerClosed)
-				return
-			}
-			if err != nil {
-				respond(nil, nil, err)
-				return
-			}
+		case <-p.codec.Done():
+			respond(nil, nil, p.codec.Err())
+			return
+		case <-written:
 		}
 		select {
 		case <-p.closedCh:
 			respond(nil, nil, ErrPeerClosed)
+		case <-p.codec.Done():
+			respond(nil, nil, p.codec.Err())
 		case resp := <-ch:
 			respond(resp.Result, resp.Error, nil)
 		}
@@ -233,7 +217,8 @@ func (p *Peer) deliverResponse(msg *Message) {
 	}
 }
 
-// Close marks the peer closed and wakes all pending Calls with ErrPeerClosed.
+// Close aborts the peer and wakes all pending Calls with ErrPeerClosed.
+// Drain the codec first when a clean shutdown must deliver accepted frames.
 // Idempotent; safe to call from Serve and from a process-exit watcher.
 func (p *Peer) Close() {
 	p.closeOnce.Do(func() {
@@ -242,6 +227,7 @@ func (p *Peer) Close() {
 		p.mu.Unlock()
 		close(p.closedCh)
 		p.cancelRelays()
+		p.codec.terminate(ErrPeerClosed)
 	})
 }
 

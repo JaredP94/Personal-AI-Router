@@ -156,14 +156,23 @@ func drainNodeInfoStdout(stdout io.Reader, onNotify func(method string, params j
 }
 
 func nodeInfoPeer(stdout io.Reader, stdin io.Writer) *Peer {
-	frames := &nodeInfoFrames{reader: bufio.NewReaderSize(stdout, maxNodeInfoLine)}
+	closer, _ := stdout.(io.Closer)
+	frames := &nodeInfoFrames{reader: bufio.NewReaderSize(stdout, maxNodeInfoLine), closer: closer}
 	return NewPeer(jsonrpc.NewCodecMaxFrame(readWriter{frames, stdin}, maxNodeInfoLine))
 }
 
 // nodeInfoFrames yields node-info's stdout to the codec one complete frame at a
 // time, dropping any frame longer than maxNodeInfoLine. Each Read returns bytes
 // from at most one frame, so the codec's buffer never holds more than one.
+func (f *nodeInfoFrames) Close() error {
+	if f.closer != nil {
+		return f.closer.Close()
+	}
+	return nil
+}
+
 type nodeInfoFrames struct {
+	closer  io.Closer
 	reader  *bufio.Reader
 	pending []byte // unread remainder of the current frame (reader's buffer)
 	err     error  // read error to report once pending is drained
@@ -204,5 +213,6 @@ func discardToFrameEnd(reader *bufio.Reader) error {
 // it to exit, escalating if it does not — see waitForStdinClose. Safe to call
 // multiple times.
 func (n *nodeInfoProcess) Stop() {
+	flushWorkerWrites("node-info", n.peer)
 	waitForStdinClose("node-info", n.cmd, n.stdin, n.done)
 }
