@@ -61,7 +61,8 @@ type mibTCP6RowOwnerPID struct {
 // (IPv4 first, then IPv6) plus that process's full image path. ok is false
 // when nothing is listening or the owner can't be resolved, so a caller can
 // fail closed (decline the stop). It is precise to a single port: a genuine
-// desktop app on a different port is never surfaced.
+// desktop app on a different port is never surfaced. This observation-only
+// lookup must not authorize termination; findLegacyListener retains identity.
 func pidOnPort(port int) (pid int, image string, ok bool) {
 	if p, found := listenerPID(windows.AF_INET, port); found {
 		return p, imagePathForPID(p), true
@@ -139,27 +140,65 @@ func imagePathForPID(pid int) string {
 	return windows.UTF16ToString(buf[:size])
 }
 
-// A legacy orphan has no job. Revalidate the expected PAIR-installed image
-// through a pinned handle and terminate only that process object. Enumerating
-// and killing a PID tree cannot establish ownership of its current children.
-// The caller has already checked that expectedImage is in an owned install.
-func terminateOwnedPID(pid int, grace time.Duration, expectedImage string) {
-	if pid <= 0 || expectedImage == "" {
-		return
+// findLegacyListener opens the process once, at identification. Neither the
+// identity checks nor termination reopen its PID. The second table read in
+// identifyPinnedProcess rejects a listener that changed before OpenProcess.
+func findLegacyListener(port int) (legacyListener, bool) {
+	pid, ok := listenerPID(windows.AF_INET, port)
+	if !ok {
+		pid, ok = listenerPID(windows.AF_INET6, port)
+	}
+	if !ok {
+		return nil, false
+	}
+	return openPinnedProcess(pid, port)
+}
+
+func openPinnedProcess(pid, port int) (*pinnedProcess, bool) {
+	if pid <= 0 {
+		return nil, false
 	}
 	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE, false, uint32(pid))
 	if err != nil {
-		return
+		return nil, false
 	}
-	defer windows.CloseHandle(h)
+	return identifyPinnedProcess(pid, port, &windowsPinnedProcess{handle: h})
+}
+
+type windowsPinnedProcess struct{ handle windows.Handle }
+
+func (p *windowsPinnedProcess) imagePath() string {
 	buf := make([]uint16, 32768)
 	size := uint32(len(buf))
-	if windows.QueryFullProcessImageName(h, 0, &buf[0], &size) != nil || !isOurEngineImage(windows.UTF16ToString(buf[:size]), expectedImage) {
-		return
+	if windows.QueryFullProcessImageName(p.handle, 0, &buf[0], &size) != nil {
+		return ""
 	}
+	return windows.UTF16ToString(buf[:size])
+}
+
+func (p *windowsPinnedProcess) creationTime() (uint64, error) {
+	var created, exited, kernel, user windows.Filetime
+	err := windows.GetProcessTimes(p.handle, &created, &exited, &kernel, &user)
+	return uint64(created.HighDateTime)<<32 | uint64(created.LowDateTime), err
+}
+
+func (p *windowsPinnedProcess) ownsPort(port, pid int) bool {
+	for _, family := range []uint32{windows.AF_INET, windows.AF_INET6} {
+		if owner, ok := listenerPID(family, port); ok && owner == pid {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *windowsPinnedProcess) close() { _ = windows.CloseHandle(p.handle) }
+
+// A legacy orphan has no job. Terminate only the pinned, revalidated process
+// object, never its descendants, whose ownership has not been established.
+func (p *windowsPinnedProcess) terminate(grace time.Duration) {
 	// Windowless legacy engines cannot receive WM_CLOSE. Unlike owned jobs,
 	// there is no safe way to reclaim descendants without their own proof.
-	if windows.TerminateProcess(h, 1) != nil {
+	if windows.TerminateProcess(p.handle, 1) != nil {
 		return
 	}
 	if grace <= 0 {
@@ -167,7 +206,7 @@ func terminateOwnedPID(pid int, grace time.Duration, expectedImage string) {
 	}
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		status, err := windows.WaitForSingleObject(h, 100)
+		status, err := windows.WaitForSingleObject(p.handle, 100)
 		if err != nil || status != uint32(windows.WAIT_TIMEOUT) {
 			return
 		}

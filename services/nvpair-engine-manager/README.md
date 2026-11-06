@@ -156,8 +156,8 @@ This does not extend the supported platform list.
 Each fake-engine executable (including test copies) has a per-test owner under
 the run's `nvpair-em-test-*` directory. Before doing any work, the fake records
 its PID and executable identity there; detached children inherit registration.
-A `t.Cleanup` sweep force-kills owned process groups on Unix (process trees on
-Windows) and fails the test if any remain. `TestMain` also checks registered
+A `t.Cleanup` sweep force-kills owned process groups on Unix (individually
+pinned, identity-checked processes on Windows) and fails the test if any remain. `TestMain` also checks registered
 children and processes whose executables are under this run's directory, sweeps
 survivors, and fails the run if a per-test cleanup was missed. Sweeps verify
 executable identity before signaling PIDs and never target other test runs.
@@ -629,9 +629,14 @@ already-cancelled launch. No state mutex or job-handle mutex covers a process
 wait. Existing lifecycle-operation serialization remains unchanged.
 
 No `taskkill` calls remain. Legacy adopted Windows orphans have no job: reclaim
-reopens and pins the process, revalidates its image against the already-verified
-PAIR-owned install, then terminates **that handle only**. It does not enumerate
-or kill descendants for which ownership cannot be proved. Foreign listeners and
+opens a query/terminate handle when identifying the listener and records its
+creation time and image. That handle stays open through termination; immediately
+before terminating, reclaim checks the creation time and image through the same
+handle, and re-reads the TCP listener table to confirm it still owns the managed
+port. Any failed check declines termination. The pinned handle prevents PID reuse
+between checks. Reclaim terminates **that handle only**, then closes it exactly
+once on every path. It does not enumerate or kill descendants for which ownership
+cannot be proved. Foreign listeners and
 vendor-managed daemon trees remain untouched.
 
 Windows runtime behavior is untested here; cross-compilation and injected-job

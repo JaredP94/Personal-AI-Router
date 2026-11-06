@@ -12,8 +12,23 @@ import (
 	"time"
 )
 
+type unixLegacyListener struct {
+	pid   int
+	image string
+}
+
+func findLegacyListener(port int) (legacyListener, bool) {
+	pid, image, ok := pidOnPort(port)
+	return &unixLegacyListener{pid: pid, image: image}, ok
+}
+
+func (p *unixLegacyListener) processID() int    { return p.pid }
+func (p *unixLegacyListener) imagePath() string { return p.image }
+func (p *unixLegacyListener) close()            {}
+
 // Preserve Unix orphan reclaim and its existing signal/deadline semantics.
-func terminateOwnedPID(pid int, grace time.Duration, _ string) {
+func (p *unixLegacyListener) terminate(grace time.Duration, _ string) {
+	pid := p.pid
 	if pid <= 0 {
 		return
 	}

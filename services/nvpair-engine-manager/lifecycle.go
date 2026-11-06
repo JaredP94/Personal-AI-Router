@@ -488,7 +488,12 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			// desktop app on a different port (e.g. Ollama's own :11434 while
 			// we manage :11435) is never touched; we decline only a process
 			// whose image we can't confirm is ours.
-			pid, image, ok := pidOnPort(port)
+			listener, ok := findLegacyListener(port)
+			pid, image := 0, ""
+			if ok {
+				defer listener.close()
+				pid, image = listener.processID(), listener.imagePath()
+			}
 			if ok && isOwnedInstallPath(binPath, st.installDir) && isOurEngineImage(image, binPath) {
 				st.mu.Lock()
 				st.stopping = true
@@ -498,7 +503,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 				}
 				st.mu.Unlock()
 				grace := stopGrace(rt)
-				terminateOwnedPID(pid, grace, binPath)
+				listener.terminate(grace, binPath)
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
 					return nil

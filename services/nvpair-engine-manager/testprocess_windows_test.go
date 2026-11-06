@@ -4,7 +4,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -32,4 +36,23 @@ func testRunProcesses(root string) []fakeProcessRecord {
 
 func signalPID(pid int, _ bool) error { killTestProcessGroup(pid); return nil }
 
-func killTestProcessGroup(pid int) { terminateOwnedPID(pid, 0, testProcessImage(pid)) }
+func killTestProcessGroup(pid int) {
+	// Identify and validate through the same handle, including for helpers
+	// without listeners. Never re-open a PID after an image-only lookup.
+	p, ok := openPinnedProcess(pid, 0)
+	if !ok {
+		return
+	}
+	defer p.close()
+	image := canonicalEnginePath(p.imagePath())
+	if !isManagedInstallPath(image, canonicalEnginePath(testProcessRoot)) {
+		// Copied fixtures may live outside the run directory but must have
+		// been explicitly registered to an owner inside this test run.
+		key := fmt.Sprintf("%x", sha256.Sum256([]byte(image)))
+		owner, err := os.ReadFile(filepath.Join(testProcessRoot, "owners", key))
+		if err != nil || !isManagedInstallPath(canonicalEnginePath(string(owner)), canonicalEnginePath(testProcessRoot)) {
+			return
+		}
+	}
+	p.terminate(0, p.imagePath())
+}
