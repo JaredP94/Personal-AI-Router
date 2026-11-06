@@ -10,6 +10,69 @@ notice audit. It describes the current checkout, not a certification of the next
 release. No release was published and no installed app was replaced by this
 audit.
 
+## Packaged-app validation (2026-11-05)
+
+**Owner's source build, not certification of a published artifact.** Notes dated
+2026-11-05/06 cover a macOS arm64 package built from `44611f9`, ad-hoc signed
+and unnotarized, still labelled desktop `0.8.0` / service product `2.6.0`.
+It was installed over existing 0.8.0 data on two of the owner's Macs
+(macOS 27.2, arm64, 128 GB), each fully backed up first. Validation drove the
+packaged broker through the same JSON-RPC calls as the desktop and relaunched
+the app; it was **not a desktop UI click-through**.
+
+### Validated
+
+- Broker and all twelve workers started with relay protocol 2. Existing manual
+  nodes and cluster files survived; a saved entry without a kind migrated to
+  `pair`.
+- Ollama installed with increasing download progress. PAIR started and stopped
+  Ollama, LM Studio and oMLX; the oMLX installations were development builds.
+- Model downloads showed progress, accepted cancellation without deleting
+  partial data, became interrupted after engine-manager was killed and
+  automatically restarted, and retried to completion.
+- Ollama inference returned HTTP 200 through `/api/chat`,
+  `/v1/chat/completions` and `/v1/messages`, streaming and non-streaming.
+- Local and remote launch settings applied a harmless change, restarted the
+  engine, rejected an `OLLAMA_HOST` override and restored the exact settings.
+  LM Studio load-option validation accepted allowed options and rejected
+  execution-directory controls, unknown flags and short flags; no saved-profile
+  model load was exercised.
+- A controlled listener on `127.0.0.1` made a proxy-port change fail up front
+  with an occupied-port error, leaving settings unchanged.
+- With two machines in one cluster using a saved Tailscale address, one verified
+  the other over pinned cluster mTLS. Remote engine start and all six inference
+  paths above reached the peer while the local Mac had no Ollama; remote
+  download cancellation and re-download worked. The saved entry stayed `pair`
+  across a manual-nodes worker restart.
+
+### Still unvalidated
+
+Windows/Linux runtime, Intel Macs, an actual LM Studio load with a saved
+profile, oMLX installation from its release disk image, real-machine unpairing,
+and verification in the reverse direction remain untested. Rollback after an
+engine has already stopped has unit coverage only: the port-conflict test
+refused the change before anything stopped. Desktop UI interaction and
+published release assets were not validated.
+
+### Follow-ups
+
+The validation notes record these as non-blocking follow-ups, not fixes:
+
+- [Roaming peer addresses](known-issues.mdx#roaming-peers-need-a-saved-address),
+  [leftover oMLX launchers](known-issues.mdx#leftover-omlx-launchers-count-as-installed)
+  and [Ollama's unpinned install download](known-issues.mdx#ollama-install-download-is-not-checksum-pinned)
+  have user-facing limitations and workarounds.
+- Starting oMLX 0.7.4.dev1 immediately after stopping it failed; waiting briefly
+  allowed it to start. A startup scanner probe can warn before node-info is up.
+- Windows downloads use job objects, but engine stopping still uses
+  `taskkill`; runtime validation and cleanup unification remain follow-ups.
+- JSON-RPC notifications have no write deadline, so a stalled stdout reader can
+  stall lock-holding callers. Engine-manager tests can leave fake-engine
+  helpers running, and engine-manager does not build for FreeBSD.
+
+llama.cpp is deferred to a later release because it needs a thirteenth proxy
+worker, unsigned-binary review and its own download-cancellation path.
+
 ## Documentation and Installer Maintenance
 
 - [x] Backfill `0.7.0-rc.1` in the changelog using its published notes and source;
