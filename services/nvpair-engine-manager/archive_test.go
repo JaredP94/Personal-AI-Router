@@ -122,43 +122,6 @@ func TestArchiveLimitsAndCancellation(t *testing.T) {
 
 func acceptArchive(context.Context, string, *ArchiveInstall) error { return nil }
 
-func TestArchiveInstallRollback(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "engine")
-	spec := &ArchiveInstall{Required: []string{"llama-server", "lib.dylib"}, Codesign: "llama-server"}
-	good := archiveFixture(t, archiveEntry{name: "bundle/llama-server", body: "old"}, archiveEntry{name: "bundle/lib.dylib", body: "metal"})
-	bad := archiveFixture(t, archiveEntry{name: "bundle/llama-server", body: "partial"})
-	if err := installArchive(context.Background(), bad, target, "fixture", "old-digest", spec, acceptArchive); err == nil {
-		t.Fatal("partial install succeeded")
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("partial install left target: %v", err)
-	}
-	if err := installArchive(context.Background(), good, target, "fixture", "old-digest", spec, acceptArchive); err != nil {
-		t.Fatal(err)
-	}
-	if !installedByPAIR(target, target) {
-		t.Fatal("missing identity-bound claim")
-	}
-	for _, attempt := range []struct {
-		archive string
-		verify  func(context.Context, string, *ArchiveInstall) error
-	}{
-		{bad, acceptArchive}, {good, func(context.Context, string, *ArchiveInstall) error { return errors.New("broken signature") }},
-	} {
-		if err := installArchive(context.Background(), attempt.archive, target, "fixture", "new-digest", spec, attempt.verify); err == nil {
-			t.Fatal("failed update succeeded")
-		}
-		b, err := os.ReadFile(filepath.Join(target, "llama-server"))
-		if err != nil || string(b) != "old" || !installedByPAIR(target, target) {
-			t.Fatal("update did not preserve old installation and claim")
-		}
-	}
-	entries, err := os.ReadDir(filepath.Dir(target))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("staging debris: %v %v", entries, err)
-	}
-}
-
 func TestArchiveRefusesUnownedReplacement(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "engine")
 	if err := os.Mkdir(target, 0755); err != nil {

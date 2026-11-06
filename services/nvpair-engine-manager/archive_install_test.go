@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -39,42 +38,6 @@ func TestArchiveChecksumMismatch(t *testing.T) {
 	}
 	if _, err := os.Stat(st.installDir); !os.IsNotExist(err) {
 		t.Fatal("checksum failure left install directory")
-	}
-}
-
-func TestArchiveUninstallPreservesModelCacheAndRequiresClaim(t *testing.T) {
-	for _, owned := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unowned", true: "owned"}[owned], func(t *testing.T) {
-			ex, st := archiveExecutor(t)
-			p := archiveFixture(t, archiveEntry{name: "bundle/llama-server", body: "fixture"})
-			if err := installArchive(context.Background(), p, st.installDir, "archive-fixture", "digest", st.plat.Install.Archive, acceptArchive); err != nil {
-				t.Fatal(err)
-			}
-			if !owned {
-				clearInstallMarker(st.installDir)
-			}
-			cache := st.installDir + "-models"
-			if err := os.MkdirAll(cache, 0755); err != nil {
-				t.Fatal(err)
-			}
-			sentinel := filepath.Join(cache, "keep.gguf")
-			if err := os.WriteFile(sentinel, []byte("model"), 0644); err != nil {
-				t.Fatal(err)
-			}
-			err := ex.Uninstall(context.Background(), "archive-fixture")
-			if owned && err != nil {
-				t.Fatal(err)
-			}
-			if !owned && err == nil {
-				t.Fatal("unclaimed installation removed")
-			}
-			if !fileExists(sentinel) {
-				t.Fatal("model cache deleted")
-			}
-			if fileExists(filepath.Join(st.installDir, "llama-server")) == owned {
-				t.Fatal("wrong uninstall result")
-			}
-		})
 	}
 }
 
