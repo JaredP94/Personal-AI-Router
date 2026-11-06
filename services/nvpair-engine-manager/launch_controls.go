@@ -109,6 +109,9 @@ func (p *EditableLaunch) environmentControl(name string) *LaunchControl {
 }
 
 func (p *EditableLaunch) protectedEnvironment(name string) bool {
+	if p.llamaCPP() && validEnvironmentKey(name) {
+		return true
+	}
 	if p.environmentControl(name) != nil {
 		return true
 	}
@@ -128,6 +131,9 @@ func (p *EditableLaunch) normalizeFlag(name string) string {
 }
 
 func (p *EditableLaunch) validateControls() error {
+	if p.OptionPolicy != "" && !p.llamaCPP() {
+		return fmt.Errorf("unknown launch option policy")
+	}
 	flags, env, fields := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, control := range p.Controls {
 		binding, err := control.binding()

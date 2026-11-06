@@ -81,7 +81,7 @@
             "--sleep-idle-seconds",
             "300"
           ],
-          "normalize_flag_underscores": true,
+          "option_policy": "llamacpp-b12171",
           "controls": [
             {
               "flags": [
@@ -101,24 +101,6 @@
               ],
               "value": "{server.port}"
             }
-          ],
-          "forbidden_flags": [
-            "--reuse-port",
-            "--embd-gemma-default",
-            "--fim-qwen-1.5b-default",
-            "--fim-qwen-3b-default",
-            "--fim-qwen-7b-default",
-            "--fim-qwen-7b-spec",
-            "--fim-qwen-14b-spec",
-            "--fim-qwen-30b-default",
-            "--gpt-oss-20b-default",
-            "--gpt-oss-120b-default",
-            "--vision-gemma-4b-default",
-            "--vision-gemma-12b-default"
-          ],
-          "forbidden_env": [
-            "LLAMA_ARG_REUSE_PORT",
-            "LLAMA_CACHE"
           ]
         },
         "ready": {

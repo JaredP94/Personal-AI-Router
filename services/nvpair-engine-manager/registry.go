@@ -192,6 +192,7 @@ type Runtime struct {
 }
 
 type EditableLaunch struct {
+	OptionPolicy             string          `json:"option_policy,omitempty"`
 	ForbiddenFlags           []string        `json:"forbidden_flags,omitempty"`
 	ForbiddenEnv             []string        `json:"forbidden_env,omitempty"`
 	NormalizeFlagUnderscores bool            `json:"normalize_flag_underscores,omitempty"`

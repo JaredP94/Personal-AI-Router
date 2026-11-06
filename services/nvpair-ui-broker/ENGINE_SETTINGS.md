@@ -38,7 +38,13 @@ engines do not qualify, even if a claimed identity matches a saved pin.
 `launchText` follows
 [`pair-arguments-v1`](../nvpair-engine-manager/LAUNCH_TEXT.md). Bind-address,
 port and proxy-wiring assignments are rejected, not reconciled with numeric
-fields. Unrelated vendor arguments/environment are opaque. `resolution` is
+fields. Unrelated vendor arguments/environment are opaque for Ollama and LM Studio.
+llama.cpp instead uses the pinned, typed inference-only allowlist documented in
+[LLAMACPP.md](../nvpair-engine-manager/LLAMACPP.md#launch-allowlist-b12171), with no
+user environment assignments. Unlike #48's server launch text, its parser exposes
+host execution, agents, tunnels, MCP and downloads: the same closed-policy
+reasoning as #49's load options applies. Persisted invalid settings are reported
+as invalid, never silently applied or discarded. `resolution` is
 accepted as an optional upstream request field but cannot authorize managed
 launch controls; `conflict` remains absent because those controls are rejected.
 

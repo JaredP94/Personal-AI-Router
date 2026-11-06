@@ -104,7 +104,7 @@ func TestLlamaResolvedLaunch(t *testing.T) {
 	t.Setenv("LLAMA_ARG_PORT", "9999")
 	t.Setenv("LLAMA_ARG_REUSE_PORT", "1")
 	t.Setenv("LLAMA_CACHE", "/tmp/unwanted-cache")
-	args, env := []string{"--threads", "4"}, []string{"CUSTOM=literal"}
+	args, env := []string{"--threads", "4"}, []string{}
 	p.Runtime.LaunchArgs = &args
 	p.Runtime.LaunchEnv = &env
 	cmd, err := resolveProcessLaunch(p.Runtime, "/fixture/llama-server", map[string]string{"host": "127.0.0.1", "port": "8082", "install_dir": "/fixture"})
@@ -145,7 +145,7 @@ func TestLlamaNoProxyLaunchSettings(t *testing.T) {
 	request.Engine = "llamacpp"
 	request.Settings.ServerPort = 8082
 	request.Settings.ProxyPort = 0
-	request.Settings.LaunchText = "CUSTOM=value --threads 4"
+	request.Settings.LaunchText = "--threads 4"
 	preview, err := ex.PreviewLaunch(request)
 	if err != nil || len(preview.Errors) != 0 || preview.Settings.ProxyPort != 0 {
 		t.Fatalf("proxy-free preview: %+v %v", preview, err)

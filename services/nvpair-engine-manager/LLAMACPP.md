@@ -39,6 +39,34 @@ shutdown uses the existing process lifecycle, not command-mode `wait_for_exit`.
 The model cache is `LLAMA_CACHE={install_dir}-models`, a PAIR-managed sibling
 that survives engine uninstall. Nothing in this PR downloads models.
 
+## Launch allowlist (b12171)
+
+Unlike #48's open Ollama/LM Studio launch text, llama.cpp's real parser exposes
+host tools, agents, tunnels, MCP, filesystem paths and model downloads. As with
+#49's LM Studio load options, only explicitly typed inference/resource tuning is
+accepted. Unknown options, positional arguments, `--`, repeated options (including
+aliases or opposing switches), non-ASCII and **all** environment assignments are
+invalid. Saved settings use the same checks; invalid settings are reported, not
+dropped or applied. No model/download or template-file option is permitted.
+
+Allowed value options (documented short aliases included): `--ctx-size/-c`,
+`--batch-size/-b`, `--ubatch-size/-ub` (context 0–1048576, batches 1–1048576),
+`--threads/-t`, `--threads-batch/-tb` (1–4096),
+`--gpu-layers/--n-gpu-layers/-ngl` (0–1048576, `auto`, `all`),
+`--flash-attn/-fa` (`on/off/auto`), `--cache-type-k/-ctk`, `--cache-type-v/-ctv`
+(`f32/f16/bf16/q8_0/q4_0/q4_1/q5_0/q5_1/iq4_nl`), `--parallel/-np` (1–1024),
+`--predict/--n-predict/-n` (-1–1048576), `--temp/--temperature` (0–10),
+`--top-k` (0–1048576), `--top-p`, `--min-p` (0–1),
+`--chat-template` (only named built-ins from b12171 `src/llama-chat.cpp`),
+`--reasoning-format` (`none/auto/deepseek/deepseek-legacy`),
+`--reasoning/-rea` (`on/off/auto`), `--reasoning-effort`
+(`default/minimal/low/medium/high/xhigh/max`), `--reasoning-budget` (-1–1048576).
+`--flag value` and `--flag=value` are normalized to separate argv values because
+b12171's parser requires them. Presence-only boolean switches: `--cont-batching/-cb`,
+`--no-cont-batching/-nocb`, `--kv-offload/-kvo`, `--no-kv-offload/-nkvo`,
+`--mlock`, `--mmap`, `--no-mmap`, `--metrics`, `--slots`, `--no-slots`.
+No arbitrary template programs, paths, URLs or non-finite numeric values are allowed.
+
 ## Binding audit (b12171)
 
 Reviewed the real parser at

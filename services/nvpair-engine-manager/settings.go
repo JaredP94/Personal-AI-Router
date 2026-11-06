@@ -17,6 +17,9 @@ import (
 )
 
 func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]string) (launchCommand, error) {
+	if err := validateLlamaOverrides(rt); err != nil {
+		return launchCommand{}, err
+	}
 	if err := rejectManagedOverrides(rt); err != nil {
 		return launchCommand{}, err
 	}
@@ -81,7 +84,15 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 			command.Args = append(command.Args, control.flag(), value)
 		}
 	}
-	command.Args = append(command.Args, (*rt.LaunchArgs)...)
+	args := *rt.LaunchArgs
+	if p.llamaCPP() {
+		var err error
+		args, err = normalizeLlamaOptions(args)
+		if err != nil {
+			return launchCommand{}, err
+		}
+	}
+	command.Args = append(command.Args, args...)
 
 	return command, nil
 }
@@ -226,6 +237,12 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	tokens, err := parseLaunchText(request.Settings.LaunchText)
 	if err != nil {
 		return fail(err.Error())
+	}
+	if policy.llamaCPP() {
+		tokens, err = normalizeLlamaOptions(tokens)
+		if err != nil {
+			return fail(err.Error())
+		}
 	}
 	for len(tokens) > 0 {
 		key, _, ok := strings.Cut(tokens[0], "=")
