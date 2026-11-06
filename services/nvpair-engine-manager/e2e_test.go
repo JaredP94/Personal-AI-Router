@@ -133,7 +133,8 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
-	manifest := testEngineManifest(fakeEngineForTest(t))
+	bin := fakeEngineForTest(t)
+	manifest := testEngineManifest(bin)
 	platform := manifest.Platforms[hostKey()]
 	platform.Runtime.Env["FAKE_PID_FILE"] = pidFile
 	platform.Runtime.Env["FAKE_START_DELAY"] = "1m"
@@ -162,11 +163,7 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("fake engine did not publish its PID")
 	}
-	t.Cleanup(func() {
-		if pidAlive(pid) {
-			_ = signalPID(pid, true)
-		}
-	})
+	t.Cleanup(func() { killOwnedTestPID(pid, bin) })
 
 	send(t, manager.stdin, 2, prepareShutdownMethod, nil)
 	waitResult(t, manager.frames, "2", 10*time.Second)
