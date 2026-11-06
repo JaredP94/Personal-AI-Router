@@ -153,5 +153,9 @@ func (e *Executor) restoreEnabled(ctx context.Context, engine string) error {
 	if err != nil || !known || !enabled {
 		return err
 	}
+	// Retain ON intent for a future reinstall, but never launch a missing engine.
+	if installed, err := e.Detect(engine); err != nil || !installed {
+		return err
+	}
 	return e.doStart(ctx, st, engine, startOpts{})
 }

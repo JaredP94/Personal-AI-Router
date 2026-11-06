@@ -33,6 +33,16 @@ type listedEngine struct {
 // An explicit runtime.cli is authoritative for command mode; otherwise detect
 // declares the ordered CLI candidates. No PATH lookup or undeclared locations.
 func detectedExecutable(plat *Platform, installDir, goos string) string {
+	for _, path := range plat.DetectRequires {
+		resolved, err := resolvePlaceholders(path, map[string]string{"install_dir": installDir})
+		if err != nil {
+			return ""
+		}
+		info, err := os.Stat(expandPathForOS(resolved, goos))
+		if err != nil || info.IsDir() {
+			return ""
+		}
+	}
 	paths := plat.Detect
 	if plat.Runtime.modeOrDefault() == "command" && plat.Runtime.CLI != "" {
 		paths = []string{plat.Runtime.CLI}

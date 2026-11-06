@@ -109,8 +109,15 @@ On macOS arm64, the bundled manifest checks these CLI paths in order:
 2. `/opt/homebrew/bin/omlx`
 3. `/usr/local/bin/omlx`
 
+The manifest also requires `/Applications/oMLX.app/Contents/MacOS/omlx-cli`,
+the target of the app's launcher (`detect_requires`). A stale launcher without
+that target reports **not installed**; saved ON intent is retained but skipped
+at launch without an error. In desktop, use **Install oMLX**; in TUI Engines,
+select oMLX and press **i** to reinstall the app. PAIR does not delete or alter
+`~/.omlx` to repair detection.
+
 The Homebrew and `/usr/local` candidates are assumed to provide the same `omlx`
-CLI and `start`/`stop` semantics as the install.sh installation. This change does
+CLI and `start`/`stop` semantics as the app's launcher. This change does
 not verify vendor CLI behavior. No app-bundle executable is a candidate:
 `oMLX.app/Contents/MacOS/oMLX` is the GUI executable (also matched by lowercase
 `omlx` on case-insensitive macOS filesystems), and `omlx-cli` and other bundle

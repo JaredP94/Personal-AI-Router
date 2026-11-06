@@ -7,6 +7,7 @@
     "/opt/homebrew/bin/omlx",
     "/usr/local/bin/omlx"
   ],
+  "detect_requires": ["/Applications/oMLX.app/Contents/MacOS/omlx-cli"],
   "install": {
     "fetch_variants": [
       {

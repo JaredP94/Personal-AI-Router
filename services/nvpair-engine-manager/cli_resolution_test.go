@@ -31,6 +31,10 @@ func isolatedCommandRegistry(t *testing.T, engine, root string) *Registry {
 			plat.Detect[i] = filepath.Join(root, path)
 		}
 	}
+	for i, path := range plat.DetectRequires {
+		plat.DetectRequires[i] = filepath.Join(root, path)
+		resolutionFile(t, plat.DetectRequires[i])
+	}
 	// Presence/HTTP adoption is covered separately. Keep these filesystem tests
 	// independent of any real service on the engine's default port.
 	plat.Runtime.Port, plat.Runtime.Ready, plat.Runtime.Health = 0, nil, nil
@@ -146,6 +150,9 @@ func TestCommandCLIOverrideIsAuthoritative(t *testing.T) {
 			// shipped macOS platform on any test host and disable real probes.
 			m, _ := reg.Get("omlx")
 			p, _ := m.PlatformFor("darwin", "arm64")
+			for i, path := range p.DetectRequires {
+				p.DetectRequires[i] = filepath.Join(home, path)
+			}
 			p.Runtime.Port, p.Runtime.Ready, p.Runtime.Health = 0, nil, nil
 			m.Platforms = map[string]Platform{runtime.GOOS + "/" + runtime.GOARCH: *p}
 			want := ""

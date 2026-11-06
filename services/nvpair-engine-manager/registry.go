@@ -61,10 +61,12 @@ type Manifest struct {
 // first; OS-specific Go code is the fallback only for primitives a
 // manifest cannot express (process termination, console hiding).
 type Platform struct {
-	Detect    []string   `json:"detect,omitempty"`
-	Install   *Install   `json:"install,omitempty"`
-	Uninstall *Uninstall `json:"uninstall,omitempty"`
-	Runtime   Runtime    `json:"runtime"`
+	Detect []string `json:"detect,omitempty"`
+	// DetectRequires lists files that must also exist (e.g. a launcher target).
+	DetectRequires []string   `json:"detect_requires,omitempty"`
+	Install        *Install   `json:"install,omitempty"`
+	Uninstall      *Uninstall `json:"uninstall,omitempty"`
+	Runtime        Runtime    `json:"runtime"`
 	// ModelsDir is the engine's on-disk model store, referenced elsewhere as
 	// {models_dir}. Nothing this service removes may delete it: Uninstall
 	// skips it, and validation rejects a removal at or inside it. It must be a
@@ -546,7 +548,7 @@ func applyPlatformDefaults(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	base := map[string]any{}
-	for _, k := range []string{"detect", "install", "uninstall", "runtime", "models_dir"} {
+	for _, k := range []string{"detect", "detect_requires", "install", "uninstall", "runtime", "models_dir"} {
 		raw, ok := top[k]
 		if !ok {
 			continue
@@ -903,6 +905,7 @@ func (m *Manifest) templatedStrings() []string {
 	var out []string
 	for _, p := range m.Platforms {
 		out = append(out, p.Detect...)
+		out = append(out, p.DetectRequires...)
 		if p.Install != nil {
 			out = append(out, p.Install.Run...)
 			out = append(out, p.Install.Script...)

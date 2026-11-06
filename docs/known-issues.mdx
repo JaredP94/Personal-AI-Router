@@ -120,14 +120,6 @@ On the peer that needs to connect, add a reachable IP address or hostname as
 **PAIR machine**, such as its Tailscale address; a saved address does not replace
 pairing or verification.
 
-## Leftover oMLX Launchers Count as Installed
-
-A leftover `~/.omlx` launcher can make PAIR report oMLX as installed even when
-`/Applications/oMLX.app` is absent, and PAIR retries starting it on each launch.
-This also affects 0.8.0. Restore the oMLX app or use the vendor's cleanup
-instructions for a stale installation; PAIR's installed status alone does not
-prove the app bundle is present.
-
 ## Ollama Install Download Is Not Checksum-Pinned
 
 PAIR installs Ollama from the vendor's floating latest-download URL without a
