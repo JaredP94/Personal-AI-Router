@@ -45,3 +45,12 @@ type readWriter struct {
 	io.Reader
 	io.Writer
 }
+
+// EOF on control asks the broker to stop. Its process owner must keep stdout
+// draining through worker cleanup, then close the read half after joining it.
+func (rw readWriter) Close() error {
+	if w, ok := rw.Writer.(io.Closer); ok {
+		return w.Close()
+	}
+	return nil
+}

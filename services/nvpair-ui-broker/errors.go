@@ -189,5 +189,6 @@ func (e *errorsProcess) handleSubscribe(params json.RawMessage) {
 // waits for it to exit, escalating if it does not — see waitForStdinClose. Safe
 // to call multiple times.
 func (e *errorsProcess) Stop() {
+	flushWorkerWrites("errors", e.peer)
 	waitForStdinClose("errors", e.cmd, e.stdin, e.done)
 }

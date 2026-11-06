@@ -13,8 +13,7 @@ import (
 )
 
 type pairingPublicationWriter struct {
-	manager *Manager
-	entered chan bool
+	entered chan struct{}
 	release chan struct{}
 	mu      sync.Mutex
 	frames  []Message
@@ -27,11 +26,7 @@ func (w *pairingPublicationWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	if msg.Method == "cluster:pairing-completed" {
-		protected := !w.manager.rosterMu.TryLock()
-		if !protected {
-			w.manager.rosterMu.Unlock()
-		}
-		w.entered <- protected
+		w.entered <- struct{}{}
 		<-w.release
 	}
 	w.mu.Lock()
@@ -41,7 +36,7 @@ func (w *pairingPublicationWriter) Write(p []byte) (int, error) {
 }
 
 // The real completion and removal execute concurrently. The publication seam
-// observes the composition lock, and channels order the interleaving: no sleeps
+// stalls the ordered stream, and channels order the interleaving: no sleeps
 // or assumption that the broker happened to receive the completion first.
 func TestPairingCompletionPublicationOrdersConcurrentRemoval(t *testing.T) {
 	m := newTestManager(t)
@@ -51,7 +46,7 @@ func TestPairingCompletionPublicationOrdersConcurrentRemoval(t *testing.T) {
 	m.putInvite(&Invite{InviteID: "ordered", ClusterID: "cluster-1", State: inviteStatePending})
 	sess := putInviterSession(t, m, "ordered", "cluster-1")
 	sess.joinerAddr = "overlay.example:14321"
-	writer := &pairingPublicationWriter{manager: m, entered: make(chan bool, 1), release: make(chan struct{})}
+	writer := &pairingPublicationWriter{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	m.codec = NewCodec(writer)
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(writer.release) }) }
@@ -61,10 +56,7 @@ func TestPairingCompletionPublicationOrdersConcurrentRemoval(t *testing.T) {
 	completed := make(chan error, 1)
 	go func() { completed <- m.finalizePairing("ordered", sess, pi, cert) }()
 	select {
-	case protected := <-writer.entered:
-		if !protected {
-			t.Error("completion publication is outside the roster commit/removal boundary")
-		}
+	case <-writer.entered:
 	case <-ctx.Done():
 		t.Fatal("completion never reached publication")
 	}
@@ -90,6 +82,9 @@ func TestPairingCompletionPublicationOrdersConcurrentRemoval(t *testing.T) {
 	case <-removed:
 	case <-ctx.Done():
 		t.Fatal("removal stalled")
+	}
+	if err := m.codec.Flush(ctx); err != nil {
+		t.Fatal(err)
 	}
 	writer.mu.Lock()
 	defer writer.mu.Unlock()

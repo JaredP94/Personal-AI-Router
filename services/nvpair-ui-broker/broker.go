@@ -3484,6 +3484,12 @@ func (b *Broker) handleMessage(msg *Message) {
 		if err := b.codec.Respond(msg.ID, nil); err != nil {
 			log.Printf("failed to respond to shutdown: %v", err)
 		}
+		// Respond now means admission, not delivery. Flush the shutdown ack
+		// before cancellation aborts this stream, using the existing ingress budget.
+		beginTeardown()
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), teardownWaitReserving(250*time.Millisecond, enginePreparationReserve+workerCleanupReserve))
+		_ = b.codec.Drain(flushCtx)
+		flushCancel()
 		slog.Info("shutdown requested via JSON-RPC")
 		b.cancel()
 

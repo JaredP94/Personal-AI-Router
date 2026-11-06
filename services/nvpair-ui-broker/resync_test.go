@@ -201,10 +201,9 @@ func joinHeartbeatForCleanup(t *testing.T, stopHeartbeat func(), logs *lockedBuf
 	}
 }
 
-// TestHeartbeatStopBoundsNoopTransportClose covers stdio-shaped shutdown: Close
-// is a no-op, so a write blocked below the codec cannot be unblocked. stop must
-// abandon the join rather than park Serve forever, and it must log that single
-// abandonment without including any payload.
+// Even a defective custom transport with a no-op Close cannot retain the
+// heartbeat producer: Notify returns on bounded admission. Unlike production
+// transports, this test must explicitly release its underlying write.
 func TestHeartbeatStopBoundsNoopTransportClose(t *testing.T) {
 	writer := newNoopCloseBlockingReadWriter()
 	b := &Broker{
@@ -255,8 +254,8 @@ func TestHeartbeatStopBoundsNoopTransportClose(t *testing.T) {
 		t.Fatalf("stopHeartbeat returned after %v, want within the bounded wait", elapsed)
 	}
 	got := string(logs.Bytes())
-	if !strings.Contains(got, "heartbeat") || !strings.Contains(got, "250ms") {
-		t.Fatalf("heartbeat shutdown warning = %q, want method and timeout", got)
+	if strings.Contains(got, "abandon") {
+		t.Fatalf("bounded notification admission should let the heartbeat join: %q", got)
 	}
 }
 

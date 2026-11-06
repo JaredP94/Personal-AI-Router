@@ -5,21 +5,13 @@ package main
 
 import (
 	"io"
-	"os"
+	"nvpair-shared/jsonrpc"
 )
 
-type stdioTransport struct {
-	io.Reader
-	io.Writer
-}
-
 func newStdioTransport() io.ReadWriteCloser {
-	return &stdioTransport{
-		Reader: os.Stdin,
-		Writer: os.Stdout,
+	transport, err := jsonrpc.NewStdioTransport()
+	if err != nil {
+		panic("cannot initialize interruptible JSON-RPC stdio")
 	}
-}
-
-func (s *stdioTransport) Close() error {
-	return nil
+	return transport
 }

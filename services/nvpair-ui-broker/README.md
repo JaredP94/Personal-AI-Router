@@ -226,6 +226,14 @@ All Go stdio readers validate through the shared codec: only malformed-frame
 DecodeError is recoverable; envelope mismatch is terminal with a metadata-only
 protocol-mismatch diagnostic. Worker reader termination closes its owned control
 pipe, so EOF reaches the child and normal supervision observes its exit.
+Outbound codec frames share one ordered writer: at most 256 outstanding frames
+and 16 MiB, with a five-second deadline from admission (including queue time).
+Notify/Respond wait at most 10 ms for immediate completion and otherwise return
+acceptance, not delivery. Overflow or a write deadline terminates the stream;
+notifications are never dropped while keeping the stream alive. Clean owners
+drain accepted frames before control EOF, within existing shutdown budgets;
+terminal failures retain the existing supervision/recovery policy. See the
+[codec sizing measurements and lifecycle audit](../shared/jsonrpc/README.md).
 Separate HTTP/mTLS cluster payloads are not stdio envelopes. Desktop TypeScript
 enforces the same canonical envelope rules as Go: duplicate or case-variant
 reserved members are recoverable decode errors, and envelope mismatches (missing

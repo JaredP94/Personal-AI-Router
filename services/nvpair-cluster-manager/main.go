@@ -61,6 +61,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	mgr, err := NewManager(codec, *configDir, *port)
 	if err != nil {
 		log.Fatalf("failed to initialise cluster manager: %v", err)

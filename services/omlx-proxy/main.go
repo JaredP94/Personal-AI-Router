@@ -81,6 +81,7 @@ func main() {
 	tel := telemetry.NewManager("nvpair-omlx-proxy", telemetry.OTLPExporter)
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	disc := NewDiscovery()
 	proxy := NewProxy(codec, disc, effectivePort, tel)
 	defer func() {

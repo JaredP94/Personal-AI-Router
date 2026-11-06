@@ -83,6 +83,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	mgr := NewManager(codec, *port, selfUUID, *clusterDir)
 
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {

@@ -263,11 +263,8 @@ func TestCanceledQueuedRequestWritersExit(t *testing.T) {
 			t.Fatalf("only %d/%d canceled queued writers exited while the first frame was blocked", i, queued)
 		}
 	}
-	select {
-	case err := <-first:
-		t.Fatalf("first writer finished before its frame was drained: %v", err)
-	default:
-	}
+	// Notify now returns on admission; the first frame is still owned by
+	// the single writer even after its producer returns.
 
 	// Cancellation must not release the active writer's lock or damage its
 	// frame. Let it finish only after every canceled queued writer has exited.
@@ -338,8 +335,11 @@ func TestCallBlockedWriteFinishesWhenWriterCloses(t *testing.T) {
 		t.Fatal("Close did not release Call with a blocked write")
 	}
 	writer.Close()
-	// Acquiring the codec lock proves the abandoned write has finished.
-	go func() { peer.codec.wmu <- struct{}{}; <-peer.codec.wmu; done <- nil }()
+	// Joining the writer proves the interrupted write has finished.
+	peer.codec.out.mu.Lock()
+	idle := peer.codec.out.idle
+	peer.codec.out.mu.Unlock()
+	go func() { <-idle; done <- nil }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):

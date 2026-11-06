@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -153,6 +154,17 @@ func signalWaitFor(name string) time.Duration {
 // preserving the full EOF cleanup allowance for the joins that follow it.
 func engineShutdownDeadline() time.Duration {
 	return teardownWaitReserving(engineStopAllBudget, workerCleanupReserve)
+}
+
+// Flush before EOF without closing the read half: workers still need stdout
+// during cleanup. This wait draws on the existing phase/teardown budget.
+func flushWorkerWrites(name string, peer *Peer) {
+	if peer == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), graceFor(name))
+	defer cancel()
+	_ = peer.Codec().Drain(ctx)
 }
 
 // waitForStdinClose signals a managed worker to shut down by closing its stdin

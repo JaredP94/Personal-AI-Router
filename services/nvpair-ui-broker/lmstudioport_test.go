@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -371,6 +372,9 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 	b.lmstudioBackendPort.Store(managedLMStudioBackendStart)
 	b.setLMStudioProxy(proxy)
 	b.setErrors(&errorsProcess{peer: NewPeer(NewCodec(errorsClient))})
+	fallbackEntered, fallbackRelease := make(chan struct{}), make(chan struct{})
+	releaseFallback := sync.OnceFunc(func() { close(fallbackRelease) })
+	t.Cleanup(releaseFallback)
 
 	requests := make(chan string, 4)
 	go func() {
@@ -386,6 +390,8 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 			if msg.Method == "set-port" && count == 1 {
 				_ = codec.RespondError(msg.ID, -32000, "occupied")
 			} else {
+				close(fallbackEntered)
+				<-fallbackRelease
 				_ = codec.Respond(msg.ID, proxyReadyParams{Port: managedLMStudioBackendStart + 1})
 			}
 		}
@@ -410,8 +416,13 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 		}
 	}
 
-	// The first reconciliation is now blocked writing its warning. A duplicate
-	// ready must not overtake it and release the gate before the fallback move.
+	select {
+	case <-fallbackEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("missing fallback rebind")
+	}
+	// Warning notifications no longer block reconciliation. Stall the actual
+	// fallback acknowledgement: duplicate ready must not open the gate early.
 	b.forwardLMStudioProxyNotification("ready", json.RawMessage(`{"port":1235}`))
 	select {
 	case <-b.lmstudioPortReady:
@@ -422,6 +433,7 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 	if _, err := NewCodec(errorsServer).Read(); err != nil {
 		t.Fatalf("read fallback warning: %v", err)
 	}
+	releaseFallback()
 	select {
 	case <-b.lmstudioPortReady:
 	case <-time.After(2 * time.Second):

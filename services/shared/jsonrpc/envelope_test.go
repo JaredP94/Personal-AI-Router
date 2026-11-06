@@ -24,6 +24,7 @@ func TestNotifyStampsEpochAndSeq(t *testing.T) {
 	if err := c.Notify("node/updated", map[string]string{"id": "n2"}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
+	mustFlush(t, c)
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 frames, got %d", len(lines))
@@ -60,6 +61,8 @@ func TestSeqIsPerCodecNotGlobal(t *testing.T) {
 	if err := bc.Notify("m", nil); err != nil {
 		t.Fatalf("bc.Notify: %v", err)
 	}
+	mustFlush(t, ac)
+	mustFlush(t, bc)
 	// Each codec numbers its own connection from 1, so the second codec's
 	// single frame must carry seq 1 even though the first is at seq 3.
 	if want := `"seq":1`; !strings.Contains(b.String(), want) {
@@ -74,6 +77,7 @@ func TestStampingOmitsResponsesAndRequests(t *testing.T) {
 	if err := c.Respond(&id, map[string]bool{"ok": true}); err != nil {
 		t.Fatalf("Respond: %v", err)
 	}
+	mustFlush(t, c)
 	out := buf.String()
 	if strings.Contains(out, `"epoch"`) || strings.Contains(out, `"seq"`) {
 		t.Errorf("response frame must not carry epoch/seq: %s", out)
@@ -151,6 +155,7 @@ func TestConcurrentNotifyWritesInSeqOrder(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
+	mustFlush(t, c)
 
 	// Decode every frame off the wire in order and assert wire order == seq order.
 	reader := readCodec(bytes.NewReader(buf.Bytes()))
@@ -178,7 +183,7 @@ func TestConcurrentNotifyWritesInSeqOrder(t *testing.T) {
 }
 
 // syncBuffer is an io.Writer safe to hand to a Codec that concurrent
-// goroutines notify through. The codec serialises its own writes with wmu, but
+// goroutines notify through. The codec serialises its own writes, but
 // the test does not assume that and the buffer is cheap to make safe.
 type syncBuffer struct {
 	mu  sync.Mutex

@@ -80,6 +80,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
 	mgr, err := NewManager(codec, tlsOpts, mesh, *clusterDir)
 	if err != nil {
 		log.Fatalf("failed to construct manager: %v", err)

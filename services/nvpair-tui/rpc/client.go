@@ -120,6 +120,8 @@ func (c *Client) Run(ctx context.Context) (runErr error) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.codec.Done():
+			return c.codec.Err()
 		case frame = <-frames:
 		}
 		msg, err := frame.message, frame.err

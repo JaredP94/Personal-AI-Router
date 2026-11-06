@@ -21,6 +21,13 @@ type rw struct {
 func writeCodec(w io.Writer) *Codec { return NewCodec(rw{Reader: bytes.NewReader(nil), Writer: w}) }
 func readCodec(r io.Reader) *Codec  { return NewCodec(rw{Reader: r, Writer: io.Discard}) }
 
+func mustFlush(t *testing.T, c *Codec) {
+	t.Helper()
+	if err := c.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClassifiers(t *testing.T) {
 	id := json.RawMessage("1")
 	req := &Message{JSONRPC: "2.0", ID: &id, Method: "m"}
@@ -40,9 +47,11 @@ func TestClassifiers(t *testing.T) {
 
 func TestNotifyRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeCodec(&buf).Notify("node/discovered", map[string]string{"id": "n1"}); err != nil {
+	sender1 := writeCodec(&buf)
+	if err := sender1.Notify("node/discovered", map[string]string{"id": "n1"}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
+	mustFlush(t, sender1)
 	if !bytes.HasSuffix(buf.Bytes(), []byte("\n")) {
 		t.Fatalf("frame not newline-terminated: %q", buf.String())
 	}
@@ -63,18 +72,22 @@ func TestRespondAndError(t *testing.T) {
 	id := json.RawMessage("7")
 
 	var okBuf bytes.Buffer
-	if err := writeCodec(&okBuf).Respond(&id, map[string]int{"level": 1}); err != nil {
+	sender1 := writeCodec(&okBuf)
+	if err := sender1.Respond(&id, map[string]int{"level": 1}); err != nil {
 		t.Fatalf("Respond: %v", err)
 	}
+	mustFlush(t, sender1)
 	msg, err := readCodec(&okBuf).Read()
 	if err != nil || !msg.IsResponse() || msg.Error != nil {
 		t.Fatalf("bad ok response: %+v err=%v", msg, err)
 	}
 
 	var errBuf bytes.Buffer
-	if err := writeCodec(&errBuf).RespondError(&id, -32601, "method not found"); err != nil {
+	sender2 := writeCodec(&errBuf)
+	if err := sender2.RespondError(&id, -32601, "method not found"); err != nil {
 		t.Fatalf("RespondError: %v", err)
 	}
+	mustFlush(t, sender2)
 	emsg, err := readCodec(&errBuf).Read()
 	if err != nil {
 		t.Fatalf("Read err response: %v", err)
@@ -98,9 +111,11 @@ func (w *oneByteWriter) Write(p []byte) (int, error) {
 
 func TestShortWriteWritesFullFrame(t *testing.T) {
 	var w oneByteWriter
-	if err := writeCodec(&w).Notify("m", map[string]string{"k": "value-that-spans-many-writes"}); err != nil {
+	sender1 := writeCodec(&w)
+	if err := sender1.Notify("m", map[string]string{"k": "value-that-spans-many-writes"}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
+	mustFlush(t, sender1)
 	msg, err := readCodec(bytes.NewReader(w.buf.Bytes())).Read()
 	if err != nil {
 		t.Fatalf("Read after short writes: %v", err)
@@ -135,9 +150,11 @@ func TestReadMalformedFrameIsRecoverableDecodeError(t *testing.T) {
 func TestRespondErrorDataRoundTrip(t *testing.T) {
 	id := json.RawMessage("3")
 	var buf bytes.Buffer
-	if err := writeCodec(&buf).RespondErrorData(&id, -32602, "bad", map[string]string{"field": "port"}); err != nil {
+	sender1 := writeCodec(&buf)
+	if err := sender1.RespondErrorData(&id, -32602, "bad", map[string]string{"field": "port"}); err != nil {
 		t.Fatalf("RespondErrorData: %v", err)
 	}
+	mustFlush(t, sender1)
 	msg, err := readCodec(&buf).Read()
 	if err != nil {
 		t.Fatalf("Read: %v", err)
@@ -151,7 +168,9 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 	}
 	// nil data omits the field entirely.
 	var buf2 bytes.Buffer
-	_ = writeCodec(&buf2).RespondErrorData(&id, -32603, "boom", nil)
+	sender2 := writeCodec(&buf2)
+	_ = sender2.RespondErrorData(&id, -32603, "boom", nil)
+	mustFlush(t, sender2)
 	m2, _ := readCodec(&buf2).Read()
 	if len(m2.Error.Data) != 0 {
 		t.Fatalf("expected empty data for nil, got %q", string(m2.Error.Data))
@@ -161,9 +180,11 @@ func TestRespondErrorDataRoundTrip(t *testing.T) {
 func TestNewCodecMaxFrameAcceptsLargeFrame(t *testing.T) {
 	big := strings.Repeat("x", 2<<20) // 2 MiB, over the 1 MiB default
 	var buf bytes.Buffer
-	if err := writeCodec(&buf).Notify("m", map[string]string{"blob": big}); err != nil {
+	sender1 := writeCodec(&buf)
+	if err := sender1.Notify("m", map[string]string{"blob": big}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
+	mustFlush(t, sender1)
 	c := NewCodecMaxFrame(rw{Reader: bytes.NewReader(buf.Bytes()), Writer: io.Discard}, 8<<20)
 	msg, err := c.Read()
 	if err != nil {
