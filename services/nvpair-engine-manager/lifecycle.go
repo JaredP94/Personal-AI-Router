@@ -28,6 +28,8 @@ const (
 	engineIdentityProbeHeader = "X-NVPAIR-Engine-Identity-Probe"
 )
 
+var errCommandStillRunning = errors.New("engine shutdown is not confirmed")
+
 type listenerProbeResult uint8
 
 const (
@@ -326,7 +328,7 @@ func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine s
 		if stopErr := e.runCommandStop(st, engine, rt, port); stopErr != nil {
 			// A non-zero stop CLI can still have taken the daemon down. Confirm
 			// that before surfacing a cleanup failure.
-			if rt.Ready != nil && e.waitUnavailable(rt.Ready, port, time.Second) {
+			if !errors.Is(stopErr, errCommandStillRunning) && rt.Ready != nil && e.waitUnavailable(rt.Ready, port, time.Second) {
 				return startErr
 			}
 			return errors.Join(startErr, fmt.Errorf("clean up failed %s start: %w", engine, stopErr))
@@ -527,7 +529,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 			return e.reconcileFailedCommandStop(st, engine, true, fmt.Errorf("cannot stop engine %q: no stop command is configured", engine))
 		}
 		if err := e.runCommandStop(st, engine, rt, port); err != nil {
-			return e.reconcileFailedCommandStop(st, engine, rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
+			return e.reconcileFailedCommandStop(st, engine, errors.Is(err, errCommandStillRunning) || rt.Ready == nil || !e.waitUnavailable(rt.Ready, port, time.Second), err)
 		}
 	} else if proc != nil {
 		proc.stop()
@@ -559,20 +561,30 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 	// Bound the stop CLI (e.g. `lms server stop`): the broker no longer
 	// force-kills engine-manager on a timeout, so an unbounded stop command
 	// would wedge StopAll and, in turn, the whole app shutdown.
+	// Snapshot the serving PID before the CLI can close its listener. The
+	// daemon can remain alive tearing down state after the port is released.
+	// No state mutex is held during lookup, command execution, or this wait;
+	// opMu still serializes lifecycle operations, as it does for readiness.
+	pid := 0
+	if rt.Ready != nil {
+		pid, _, _ = pidOnPort(port)
+		// Never wait for this service itself to exit (e.g. a misconfigured
+		// probe targeting engine-manager). Only an independent daemon counts.
+		if pid == os.Getpid() {
+			pid = 0
+		}
+	}
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), commandStopTimeout(rt))
 	runErr := e.runCommand(stopCtx, argv)
 	cancelStop()
+	if rt.Ready != nil {
+		grace := stopGrace(rt)
+		if !e.waitCommandUnavailable(rt.Ready, port, pid, grace) {
+			return fmt.Errorf("stop %s: engine is still serving or shutting down on port %d after %s: %w", engine, port, grace, errCommandStillRunning)
+		}
+	}
 	if runErr != nil {
 		return fmt.Errorf("stop %s: %w", engine, runErr)
-	}
-	if rt.Ready != nil {
-		grace := 5 * time.Second
-		if sp.GraceS > 0 {
-			grace = time.Duration(sp.GraceS) * time.Second
-		}
-		if !e.waitUnavailable(rt.Ready, port, grace) {
-			return fmt.Errorf("stop %s: engine is still serving on port %d after %s", engine, port, grace)
-		}
 	}
 	return nil
 }
@@ -633,12 +645,23 @@ func (e *Executor) waitUnavailable(p *Probe, port int, timeout time.Duration) bo
 }
 
 func (e *Executor) waitUnavailableContext(parent context.Context, p *Probe, port int, timeout time.Duration) bool {
+	return e.waitDownContext(parent, p, port, 0, timeout)
+}
+
+// waitCommandUnavailable requires both transport closure and exit of the PID
+// observed before stop. If the host cannot resolve a PID, transport remains
+// the best available evidence; the deadline is never extended by polling.
+func (e *Executor) waitCommandUnavailable(p *Probe, port, pid int, timeout time.Duration) bool {
+	return e.waitDownContext(context.Background(), p, port, pid, timeout)
+}
+
+func (e *Executor) waitDownContext(parent context.Context, p *Probe, port, pid int, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	misses := 0
 	for {
 		result := probeListener(ctx, p, port)
-		if result == listenerProbeRefused {
+		if result == listenerProbeRefused && !pidAlive(pid) {
 			misses++
 			if misses == unavailableConfirmations {
 				return true

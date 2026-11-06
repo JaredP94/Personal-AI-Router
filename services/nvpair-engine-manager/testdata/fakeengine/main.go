@@ -180,6 +180,31 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "shutdown-tail":
+			// Close the listener before asynchronous process teardown completes.
+			ln, err := net.Listen("tcp", os.Args[3])
+			if err != nil {
+				os.Exit(2)
+			}
+			go func() {
+				for {
+					conn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					_ = conn.Close()
+				}
+			}()
+			for {
+				if _, err := os.Stat(os.Args[2]); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			_ = ln.Close()
+			delay, _ := time.ParseDuration(os.Args[4])
+			time.Sleep(delay)
+			return
 		case "touch": // write a marker file so a test can assert the command ran
 			if len(os.Args) > 2 {
 				_ = os.WriteFile(os.Args[2], []byte("ok"), 0o644)

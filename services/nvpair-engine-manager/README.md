@@ -561,6 +561,15 @@ SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
 engines we spawn can't receive a graceful (non-`/F`) close, so a forced
 terminate is the only signal that actually stops them.
 
+Command-mode stop (including oMLX) gives the official stop CLI
+`max(grace_s, 5s)` to return, then up to `grace_s` (default 5s) for shutdown.
+It confirms three consecutive connection refusals **and**, when the host can
+resolve it, exit of the process observed on the port before stop. Closing the
+port alone does not mean app teardown is complete. The state mutex is never
+held across these waits; lifecycle operations remain serialized so an immediate
+start cannot overtake stop. A timeout leaves the engine running, not falsely
+stopped, and is returned to the caller.
+
 ### Adoption — start may attach to an engine it didn't launch
 
 Before spawning, `engine:start` **probes the chosen port's readiness
