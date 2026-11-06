@@ -6,6 +6,8 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -131,6 +133,28 @@ func normalizeLlamaOptions(args []string) ([]string, error) {
 		result = append(result, canonical, value)
 	}
 	return result, nil
+}
+
+// b12171 common/arg.cpp:common_params_apply_system_config unconditionally
+// reads /etc/llama.cpp/config.ini; there is no disable-config switch. The user
+// search in common/common.cpp:fs_get_config_directory uses XDG_CONFIG_HOME or
+// HOME/.config. The child has PAIR-owned search paths and no inherited env.
+// Refuse any file at the remaining paths, including unreadable/dangling links;
+// never parse or log its contents. A false env value cannot undo reuse-port.
+func llamaConfigPaths(env map[string]string) []string {
+	return []string{"/etc/llama.cpp/config.ini", filepath.Join(env["XDG_CONFIG_HOME"], "llama.cpp", "config.ini")}
+}
+
+func rejectLlamaConfigFiles(paths ...string) error {
+	for _, path := range paths {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			if err != nil {
+				return fmt.Errorf("cannot inspect llama.cpp configuration %s: %w", path, err)
+			}
+			return fmt.Errorf("cannot start llama.cpp while configuration file %s exists; remove it from the child search path", path)
+		}
+	}
+	return nil
 }
 
 func validateLlamaOverrides(rt Runtime) error {

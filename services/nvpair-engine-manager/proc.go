@@ -29,9 +29,16 @@ type managedProc struct {
 // stdout/stderr lines to onLine. The returned proc's done channel
 // closes once the process exits.
 func startManagedProc(bin string, args []string, env map[string]string, onLine func(stream, line string)) (*managedProc, error) {
+	return startManagedProcWithEnvironment(bin, args, env, true, onLine)
+}
+
+func startManagedProcWithEnvironment(bin string, args []string, env map[string]string, inherit bool, onLine func(stream, line string)) (*managedProc, error) {
 	cmd := exec.Command(bin, args...)
-	if len(env) > 0 {
-		cmd.Env = os.Environ()
+	if len(env) > 0 || !inherit {
+		cmd.Env = []string{}
+		if inherit {
+			cmd.Env = os.Environ()
+		}
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}

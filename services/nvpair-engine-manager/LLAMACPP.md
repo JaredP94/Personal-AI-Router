@@ -78,7 +78,8 @@ handling and long-option normalization:
   There is no separate Unix-socket option or short host alias in this parser.
 - `--port` / `LLAMA_ARG_PORT`: TCP port; no short port alias.
 - `--reuse-port` / `LLAMA_ARG_REUSE_PORT`: enables multiple sockets on the port.
-  PAIR forces the environment value to `0` even when inherited.
+  PAIR sets `0` only after excluding configuration files; `0` cannot undo a
+  config-enabled reuse-port value in this tag.
 - Port-changing presets (no environment aliases): `--embd-gemma-default`,
   `--fim-qwen-1.5b-default`, `--fim-qwen-3b-default`, `--fim-qwen-7b-default`,
   `--fim-qwen-7b-spec`, `--fim-qwen-14b-spec`, `--fim-qwen-30b-default`,
@@ -89,10 +90,25 @@ All are forbidden in editable launch input, including matching values,
 duplicates, `--flag=value`, underscore spellings (`--reuse_port`, etc.) and tokens
 after `--`. Protected environment assignments are rejected even in argument
 positions. `LLAMA_CACHE` is also protected to keep the managed cache identity.
-Host/port environment defaults are overwritten by PAIR. System configuration
-loads before environment and CLI in this tag; PAIR's managed host/port and
-reuse-port environment therefore take precedence. Additional launch options stay
-literal, without shell evaluation. Non-loopback binding is available only through
+The child inherits **no** parent environment. This removes all `LLAMA_ARG_*`,
+`LLAMA_CACHE`, `HF_TOKEN`, `HF_ENDPOINT`, `MODEL_ENDPOINT`, `MTMD_BACKEND_DEVICE`,
+`LLAMA_APP_CMD` and dynamic-loader overrides, rather than maintaining a removal
+denylist. PAIR supplies only manifest-owned values: cache, listener, reuse-port=0,
+empty API prefix, offline mode, fixed system PATH and child-only HOME/XDG paths.
+The configuration audit uses b12171 `common/arg.cpp`:
+`common_params_apply_system_config` always reads `/etc/llama.cpp/config.ini` and
+user `config.ini` **before** environment/CLI; there is no disable-config option.
+`common/common.cpp:fs_get_config_directory` uses `XDG_CONFIG_HOME`, then
+`HOME/.config` (not macOS Application Support). PAIR points HOME/XDG_CONFIG_HOME
+at `{install_dir}/.pair-home` and `{install_dir}/.pair-config`; the actual user
+configuration cannot be found. Before every spawn it refuses any file (including
+symlinks or inspection failures) at `/etc/llama.cpp/config.ini` or
+`{install_dir}/.pair-config/llama.cpp/config.ini`, naming the path. It never
+modifies ambient files. Thus a config enabling reuse-port or a tool runtime is
+never applied. `common/common.cpp:fs_get_cache_directory` and
+`common_get_model_endpoint`, and `common/arg.cpp` environment handlers are the audited
+cache/download configuration sources. Additional launch options stay literal,
+without shell evaluation. Non-loopback binding is available only through
 the existing validated start path with `engine_allow_lan_bind`, not launch text.
 
 Selected lifecycle/manifest concepts are adapted from

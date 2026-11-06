@@ -72,7 +72,12 @@
         ],
         "env": {
           "LLAMA_CACHE": "{install_dir}-models",
-          "LLAMA_ARG_REUSE_PORT": "0"
+          "LLAMA_ARG_REUSE_PORT": "0",
+          "LLAMA_ARG_API_PREFIX": "",
+          "LLAMA_ARG_OFFLINE": "1",
+          "HOME": "{install_dir}/.pair-home",
+          "XDG_CONFIG_HOME": "{install_dir}/.pair-config",
+          "PATH": "/usr/bin:/bin"
         },
         "bind": "127.0.0.1",
         "port": 8082,

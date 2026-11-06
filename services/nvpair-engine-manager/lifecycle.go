@@ -258,9 +258,14 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		return err
 	}
 
+	if rt.EditableLaunch.llamaCPP() {
+		if err := rejectLlamaConfigFiles(llamaConfigPaths(launch.Env)...); err != nil {
+			return err
+		}
+	}
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()
-	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+	proc, err := startManagedProcWithEnvironment(launch.Bin, launch.Args, launch.Env, !rt.EditableLaunch.llamaCPP(), func(stream, line string) {
 		_, _ = diagnostics.Write([]byte(line + "\n"))
 		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
 		// out of exported engine logs; report exit/readiness failures separately.
