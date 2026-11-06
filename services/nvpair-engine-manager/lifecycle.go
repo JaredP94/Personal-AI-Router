@@ -317,6 +317,7 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 // daemon-style engine such as LM Studio), then waits for readiness.
 // There is no owned process — liveness comes from the probe.
 func (e *Executor) bringUpCommand(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	ctx = withControlCommand(ctx)
 	st.mu.Lock()
 	st.proc = nil
 	st.mu.Unlock()
@@ -398,7 +399,7 @@ func runPrivateLaunchCommand(ctx context.Context, argv []string, environment map
 		}
 	}
 	configureSysProcAttr(cmd)
-	if err := cmd.Run(); err != nil {
+	if err := runOwnedCommandMode(cmd, isControlCommand(ctx)); err != nil {
 		failure := fmt.Errorf("launch command failed: %w", err)
 		if len(privateArgs) > 0 || len(environment) > 0 {
 			return failure
@@ -497,7 +498,7 @@ func (e *Executor) doStop(st *engineState, engine string) error {
 				}
 				st.mu.Unlock()
 				grace := stopGrace(rt)
-				terminatePID(pid, grace)
+				terminateOwnedPID(pid, grace, binPath)
 				if !pidAlive(pid) {
 					e.markStopped(st, engine)
 					return nil
@@ -576,7 +577,7 @@ func (e *Executor) runCommandStop(st *engineState, engine string, rt Runtime, po
 			pid = 0
 		}
 	}
-	stopCtx, cancelStop := context.WithTimeout(context.Background(), commandStopTimeout(rt))
+	stopCtx, cancelStop := context.WithTimeout(withControlCommand(context.Background()), commandStopTimeout(rt))
 	runErr := e.runCommand(stopCtx, argv)
 	cancelStop()
 	if rt.Ready != nil {

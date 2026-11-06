@@ -24,7 +24,7 @@ type windowsProcessJob struct {
 	job, gate, process windows.Handle
 }
 
-func configureProcessJob(cmd *exec.Cmd, breakaway bool) (*processJob, error) {
+func configureProcessJob(cmd *exec.Cmd, detachedControl bool) (*processJob, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -37,15 +37,21 @@ func configureProcessJob(cmd *exec.Cmd, breakaway bool) (*processJob, error) {
 	owner := newProcessJob(native)
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	// Command-mode vendor CLIs can explicitly launch an independent daemon with
-	// CREATE_BREAKAWAY_FROM_JOB. Never enable SILENT_BREAKAWAY: ordinary children
-	// must remain owned, even when they reparent or detach their console.
-	if breakaway {
-		limits.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+	// Command-mode engines declare vendor-managed daemons, not owned server
+	// trees. Own the control CLI itself but preserve its independent children.
+	// Never apply this exception to servers, downloads, or install helpers.
+	if detachedControl {
+		limits.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
 	}
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		owner.release()
 		return nil, err
+	}
+	if detachedControl {
+		// Suspend the actual CLI, not a launcher whose child would break away.
+		// The shared assign/resume sequence still gates all user code.
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW}
+		return owner, nil
 	}
 	native.gate, err = windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
@@ -78,7 +84,36 @@ func (p *windowsProcessJob) assign() error {
 	}
 	return nil
 }
-func (p *windowsProcessJob) resume() error    { return windows.SetEvent(p.gate) }
+func (p *windowsProcessJob) resume() error {
+	if p.gate != 0 {
+		return windows.SetEvent(p.gate)
+	}
+	// CREATE_SUSPENDED has not executed user code or spawned children. Both
+	// os.Process and p.process pin its identity while we open its initial thread.
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	for err = windows.Thread32First(snapshot, &entry); err == nil; err = windows.Thread32Next(snapshot, &entry) {
+		if entry.OwnerProcessID != uint32(p.cmd.Process.Pid) {
+			continue
+		}
+		thread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME|windows.THREAD_QUERY_LIMITED_INFORMATION, false, entry.ThreadID)
+		if err != nil {
+			return err
+		}
+		defer windows.CloseHandle(thread)
+		ownerPID, _, queryErr := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessIdOfThread").Call(uintptr(thread))
+		if ownerPID != uintptr(p.cmd.Process.Pid) {
+			return fmt.Errorf("suspended thread identity changed: %w", queryErr)
+		}
+		_, err = windows.ResumeThread(thread)
+		return err
+	}
+	return fmt.Errorf("find suspended control thread: %w", err)
+}
 func (p *windowsProcessJob) terminate() error { return windows.TerminateJobObject(p.job, 1) }
 func (p *windowsProcessJob) close() error {
 	for _, h := range []windows.Handle{p.gate, p.process} {

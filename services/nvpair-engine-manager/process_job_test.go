@@ -26,6 +26,21 @@ func (j *recordingJob) resume() error    { return j.step("resume") }
 func (j *recordingJob) terminate() error { return j.step("terminate") }
 func (j *recordingJob) close() error     { return j.step("close") }
 
+func TestProcessJobCancellationBeforeActivationDoesNotResume(t *testing.T) {
+	j := &recordingJob{}
+	p := newProcessJob(j)
+	if err := p.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if p.activate() == nil {
+		t.Fatal("canceled launch was resumed")
+	}
+	p.release()
+	if !reflect.DeepEqual(j.events, []string{"terminate", "close"}) {
+		t.Fatal(j.events)
+	}
+}
+
 func TestProcessJobAssignmentBeforeResume(t *testing.T) {
 	j := &recordingJob{}
 	p := newProcessJob(j)
@@ -91,8 +106,8 @@ func TestProcessJobTerminationErrorStillCloses(t *testing.T) {
 	if p.stop() == nil {
 		t.Fatal("expected termination error")
 	}
-	p.release()
 	if !reflect.DeepEqual(j.events, []string{"terminate", "close"}) {
-		t.Fatal(j.events)
+		t.Fatal("termination error must close the job immediately", j.events)
 	}
+	p.release()
 }

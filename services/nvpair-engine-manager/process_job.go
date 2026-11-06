@@ -3,7 +3,10 @@
 
 package main
 
-import "sync"
+import (
+	"os"
+	"sync"
+)
 
 // processJob owns one gated launch. The lock protects only handle operations,
 // never a process wait. Implementations must not wait in these methods.
@@ -15,15 +18,19 @@ type jobOperations interface {
 }
 
 type processJob struct {
-	mu     sync.Mutex
-	ops    jobOperations
-	closed bool
+	mu      sync.Mutex
+	ops     jobOperations
+	closed  bool
+	stopped bool
 }
 
 func newProcessJob(ops jobOperations) *processJob { return &processJob{ops: ops} }
 func (p *processJob) activate() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed || p.stopped {
+		return os.ErrProcessDone
+	}
 	if err := p.ops.assign(); err != nil {
 		p.abort()
 		return err
@@ -42,10 +49,17 @@ func (p *processJob) abort() {
 func (p *processJob) stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
+	if p.closed || p.stopped {
 		return nil
 	}
-	return p.ops.terminate()
+	p.stopped = true
+	if err := p.ops.terminate(); err != nil {
+		// Kill-on-close is the fallback even if explicit termination fails.
+		_ = p.ops.close()
+		p.closed = true
+		return err
+	}
+	return nil
 }
 func (p *processJob) release() {
 	p.mu.Lock()

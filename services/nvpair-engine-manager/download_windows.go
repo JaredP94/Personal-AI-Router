@@ -165,7 +165,7 @@ func interruptDownload(parent context.Context, process *downloadProcess) error {
 	defer cancel()
 	helper := exec.CommandContext(ctx, executable, "--interrupt-download", strconv.Itoa(cmd.Process.Pid))
 	configureSysProcAttr(helper)
-	return helper.Run()
+	return runOwnedCommand(helper)
 }
 
 // Download launch and console attachment run in helpers so engine-manager's

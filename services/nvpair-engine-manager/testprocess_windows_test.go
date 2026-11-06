@@ -30,4 +30,6 @@ func testRunProcesses(root string) []fakeProcessRecord {
 	return records
 }
 
-func killTestProcessGroup(pid int) { _ = signalPID(pid, true) }
+func signalPID(pid int, _ bool) error { killTestProcessGroup(pid); return nil }
+
+func killTestProcessGroup(pid int) { terminateOwnedPID(pid, 0, testProcessImage(pid)) }

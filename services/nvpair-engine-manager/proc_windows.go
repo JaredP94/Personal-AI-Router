@@ -6,20 +6,13 @@
 package main
 
 import (
-	"context"
 	"os/exec"
-	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-// taskkillTimeout bounds each taskkill invocation so a hung taskkill can't
-// wedge StopAll (and the whole app shutdown) now that the broker no longer
-// force-kills engine-manager on a timeout.
-const taskkillTimeout = 5 * time.Second
 
 // configureSysProcAttr hides the child's console window
 // (HideWindow + CREATE_NO_WINDOW), matching every other NVPAIR subprocess.
@@ -28,36 +21,6 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 		HideWindow:    true,
 		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
 	}
-}
-
-// gracefulSignal stops the process tree and is the only stop signal
-// engine-manager sends: stop() sends this once and waits for the engine to
-// exit. Windows has no SIGTERM, and the engines we spawn run windowless
-// (CREATE_NO_WINDOW), so a non-/F taskkill only posts WM_CLOSE — which a
-// windowless process can't receive ("can only be terminated forcefully"), i.e.
-// it does nothing. Never force-killing such a process would leave the engine
-// running forever, so on Windows the stop is taskkill /T /F.
-func gracefulSignal(cmd *exec.Cmd) error {
-	return taskkill(cmd, true)
-}
-
-func taskkill(cmd *exec.Cmd, force bool) error {
-	return taskkillContext(context.Background(), cmd, force)
-}
-
-func taskkillContext(parent context.Context, cmd *exec.Cmd, force bool) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	args := []string{"/T", "/PID", strconv.Itoa(cmd.Process.Pid)}
-	if force {
-		args = append([]string{"/F"}, args...)
-	}
-	ctx, cancel := context.WithTimeout(parent, taskkillTimeout)
-	defer cancel()
-	kc := exec.CommandContext(ctx, "taskkill", args...)
-	configureSysProcAttr(kc) // hide taskkill's own console window
-	return kc.Run()
 }
 
 var (
@@ -176,23 +139,39 @@ func imagePathForPID(pid int) string {
 	return windows.UTF16ToString(buf[:size])
 }
 
-// signalPID asks the PID's process tree to stop (taskkill /T), escalating to
-// a forced /F kill when force is set. It is the PID-addressed kill used only by
-// the orphan reclaim (a process we lost the *exec.Cmd handle to), distinct from
-// the normal graceful-only stop() path.
-func signalPID(pid int, force bool) error {
-	if pid <= 0 {
-		return nil
+// A legacy orphan has no job. Revalidate the expected PAIR-installed image
+// through a pinned handle and terminate only that process object. Enumerating
+// and killing a PID tree cannot establish ownership of its current children.
+// The caller has already checked that expectedImage is in an owned install.
+func terminateOwnedPID(pid int, grace time.Duration, expectedImage string) {
+	if pid <= 0 || expectedImage == "" {
+		return
 	}
-	args := []string{"/T", "/PID", strconv.Itoa(pid)}
-	if force {
-		args = append([]string{"/F"}, args...)
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskkillTimeout)
-	defer cancel()
-	kc := exec.CommandContext(ctx, "taskkill", args...)
-	configureSysProcAttr(kc) // hide taskkill's own console window
-	return kc.Run()
+	defer windows.CloseHandle(h)
+	buf := make([]uint16, 32768)
+	size := uint32(len(buf))
+	if windows.QueryFullProcessImageName(h, 0, &buf[0], &size) != nil || !isOurEngineImage(windows.UTF16ToString(buf[:size]), expectedImage) {
+		return
+	}
+	// Windowless legacy engines cannot receive WM_CLOSE. Unlike owned jobs,
+	// there is no safe way to reclaim descendants without their own proof.
+	if windows.TerminateProcess(h, 1) != nil {
+		return
+	}
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		status, err := windows.WaitForSingleObject(h, 100)
+		if err != nil || status != uint32(windows.WAIT_TIMEOUT) {
+			return
+		}
+	}
 }
 
 // pidAlive reports whether the PID is still running (WaitForSingleObject with
