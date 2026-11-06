@@ -374,6 +374,7 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 	b.setErrors(&errorsProcess{peer: NewPeer(NewCodec(errorsClient))})
 	fallbackEntered, fallbackRelease := make(chan struct{}), make(chan struct{})
 	releaseFallback := sync.OnceFunc(func() { close(fallbackRelease) })
+	announceFallback := sync.OnceFunc(func() { close(fallbackEntered) })
 	t.Cleanup(releaseFallback)
 
 	requests := make(chan string, 4)
@@ -385,14 +386,27 @@ func TestManagedLMStudioConcurrentReadyWaitsForFallbackRebind(t *testing.T) {
 			if err != nil {
 				return
 			}
+			if msg.Method != "set-port" {
+				// Reconciliation also publishes node/set-local-backend asynchronously.
+				// It is not another fallback entry and must not close the latch again.
+				_ = codec.Respond(msg.ID, nil)
+				continue
+			}
 			count++
 			requests <- msg.Method
-			if msg.Method == "set-port" && count == 1 {
+			if count == 1 {
 				_ = codec.RespondError(msg.ID, -32000, "occupied")
 			} else {
-				close(fallbackEntered)
+				announceFallback()
 				<-fallbackRelease
-				_ = codec.Respond(msg.ID, proxyReadyParams{Port: managedLMStudioBackendStart + 1})
+				var requested struct {
+					Port int `json:"port"`
+				}
+				if err := json.Unmarshal(msg.Params, &requested); err != nil {
+					t.Error(err)
+					return
+				}
+				_ = codec.Respond(msg.ID, proxyReadyParams{Port: requested.Port})
 			}
 		}
 	}()
