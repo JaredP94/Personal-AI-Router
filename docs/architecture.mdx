@@ -254,6 +254,25 @@ and its broker-owned service metadata over pinned cluster mTLS on the same port.
 The public preview still exposes hostname, hardware inventory, and utilization
 to devices on the subnet; do not run PAIR where that disclosure is unacceptable.
 
+### Authenticated Peer Address Roaming
+
+Cluster-manager keeps at most eight local address hints per member in
+`cluster/members.json` (0600), ordered by authenticated success, retaining the
+pairing-time endpoint as a fallback. Only a pinned roster connection's source
+address, that peer's own `selfAddresses` report, or its successful pinned
+response can teach that member's record. Discovery, previews, names and relayed
+addresses cannot teach it. Learned hints expire after 30 days without success;
+new/unproven endpoints are dial-budgeted to one per member per 30 seconds,
+including across restarts. IPv6 scopes are local to the observed connection.
+
+An address is never an identity: every connection checks the exact current
+certificate pin and redirects are refused. Removal clears the member's hints,
+including against an in-flight read. Saved manual addresses retain user
+precedence; cluster-derived entries follow the authenticated reached address in
+the existing node detail. If both peers lose every known path, an explicit
+reachable rendezvous is still required. See
+[cluster-manager](../services/nvpair-cluster-manager/README.md#peer-address-roaming).
+
 ### Two Personalities on One Port
 
 The proxies and `nvpair-cluster-manager` serve two different things on a single

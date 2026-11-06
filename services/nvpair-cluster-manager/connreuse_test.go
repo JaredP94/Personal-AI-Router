@@ -64,6 +64,8 @@ func TestReconcile_ReusesPeerConnections(t *testing.T) {
 	defer ts.Close()
 
 	addr := ts.Listener.Addr().String()
+	host, port := splitAddr(addr, m.port)
+	m.upsertMember(&ClusterNode{NodeUUID: peerUUID, ID: "peer", IPAddress: host, Port: port, ClusterID: "cluster-1", AdmissionEpoch: 1, State: stateMember})
 	const rounds = 5
 	for i := 0; i < rounds; i++ {
 		if outcome, _ := m.reconcileWith([]string{addr}, peerUUID); outcome != reconcileAccepted {

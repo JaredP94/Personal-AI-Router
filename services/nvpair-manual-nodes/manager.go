@@ -577,8 +577,10 @@ func (m *Manager) syncClusterMembers() {
 		}
 		found := false
 		for _, member := range activeMembers {
-			if (tn.status.HostUUID != "" && tn.status.HostUUID == member.NodeUUID) ||
-				tn.entry.Address == member.IPAddress {
+			// A cluster seed follows the member's reached endpoint. A saved
+			// entry is never rebuilt here, so its operator-selected address wins.
+			if tn.entry.Address == member.IPAddress &&
+				(tn.status.HostUUID == "" || tn.status.HostUUID == member.NodeUUID) {
 				found = true
 				break
 			}

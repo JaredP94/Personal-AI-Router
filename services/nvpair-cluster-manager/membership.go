@@ -61,6 +61,8 @@ type ClusterNode struct {
 	State          MembershipState `json:"state"`
 	JoinedAt       *int64          `json:"joinedAt"`
 	LastSeen       *int64          `json:"lastSeen"`
+
+	addresses memberAddresses // local-only durable hints; never serialized to IPC
 }
 
 // Invite is the Broker-facing view of a pairing session (§6). Certificates are
@@ -88,6 +90,7 @@ func cloneClusterNode(node *ClusterNode) *ClusterNode {
 		return nil
 	}
 	cp := *node
+	cp.addresses.AddressCandidates = append([]addressCandidate(nil), node.addresses.AddressCandidates...)
 	if node.JoinedAt != nil {
 		v := *node.JoinedAt
 		cp.JoinedAt = &v
@@ -122,7 +125,11 @@ func cloneInvite(inv *Invite) *Invite {
 // upsertMember inserts or replaces a member, keyed by nodeUuid.
 func (m *Manager) upsertMember(node *ClusterNode) {
 	m.memMu.Lock()
-	m.members[node.NodeUUID] = cloneClusterNode(node)
+	copy := cloneClusterNode(node)
+	if copy.State == stateMember {
+		normalizeMemberAddresses(copy, time.Now())
+	}
+	m.members[node.NodeUUID] = copy
 	m.memMu.Unlock()
 	m.clusterGen.Add(1)
 }
@@ -133,6 +140,7 @@ func (m *Manager) removeMemberByUUID(uuid string) bool {
 	_, ok := m.members[uuid]
 	delete(m.members, uuid)
 	m.memMu.Unlock()
+	m.peerAddrs.Forget(uuid)
 	if ok {
 		m.clusterGen.Add(1)
 	}
@@ -142,8 +150,12 @@ func (m *Manager) removeMemberByUUID(uuid string) bool {
 // resetMembership clears the entire member set (used when leaving a cluster).
 func (m *Manager) resetMembership() {
 	m.memMu.Lock()
+	old := m.members
 	m.members = make(map[string]*ClusterNode)
 	m.memMu.Unlock()
+	for uuid := range old {
+		m.peerAddrs.Forget(uuid)
+	}
 	m.clusterGen.Add(1)
 }
 
@@ -177,68 +189,6 @@ func (m *Manager) memberByNodeID(idOrUUID string) (*ClusterNode, bool) {
 		}
 	}
 	return nil, false
-}
-
-// setMemberAddr updates a member's reachable host:port under the membership
-// lock, returning whether anything actually changed. A zero/invalid port keeps
-// the member's existing listening port (falling back to the local default), so
-// callers learning only a host (e.g. a TCP source IP, whose port is ephemeral)
-// don't clobber the real listening port. Callers persist and emit
-// nodes:changed when this returns true.
-func (m *Manager) setMemberAddr(uuid, host string, port int) bool {
-	if host == "" {
-		return false
-	}
-	m.memMu.Lock()
-	defer m.memMu.Unlock()
-	n, ok := m.members[uuid]
-	if !ok {
-		return false
-	}
-	if port < 1 || port > 65535 {
-		port = n.Port
-	}
-	if port < 1 || port > 65535 {
-		port = m.port
-	}
-	if n.IPAddress == host && n.Port == port {
-		return false
-	}
-	n.IPAddress = host
-	n.Port = port
-	return true
-}
-
-// noteObservedPeerHost records the source host an authenticated peer connected
-// from and applies it as that member's address, returning whether anything
-// changed.
-//
-// An address observed on a connection is the only claim about a peer's
-// reachability this node has verified: the peer reached us from it, over a
-// transport pinned to its certificate. A peer's own advertised address — or worse,
-// a third peer's relayed copy of it — is that peer guessing which of its addresses
-// works from here, which is exactly the guess that goes wrong on a multi-homed
-// host. So the observation is remembered, and refreshMemberAddr will not overwrite
-// it with a claim.
-func (m *Manager) noteObservedPeerHost(uuid, host string) bool {
-	if uuid == "" || host == "" {
-		return false
-	}
-	m.observedMu.Lock()
-	if m.observedPeerHosts == nil {
-		m.observedPeerHosts = make(map[string]string)
-	}
-	m.observedPeerHosts[uuid] = host
-	m.observedMu.Unlock()
-	return m.setMemberAddr(uuid, host, 0)
-}
-
-// observedPeerHost returns the source host this peer was last seen connecting
-// from, or "" if it never has been.
-func (m *Manager) observedPeerHost(uuid string) string {
-	m.observedMu.Lock()
-	defer m.observedMu.Unlock()
-	return m.observedPeerHosts[uuid]
 }
 
 // updateMemberIdentity refreshes a member's display fields (id/name) in place,

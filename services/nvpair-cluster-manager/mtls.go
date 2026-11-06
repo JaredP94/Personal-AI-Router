@@ -50,7 +50,11 @@ func (m *Manager) peerClient(peerUUID string) (*http.Client, error) {
 	if !ok {
 		return nil, fmt.Errorf("no pin for peer %s", peerUUID)
 	}
-	return client, nil
+	// Peer responses cannot send candidate dials to a different endpoint or
+	// downgrade transport. Keep the pooled transport, but prohibit redirects.
+	bounded := *client
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &bounded, nil
 }
 
 func (m *Manager) buildPairingClientTLSConfig(peerDER []byte) (*tls.Config, error) {
@@ -152,20 +156,35 @@ func (m *Manager) handleMembersRemove(w http.ResponseWriter, r *http.Request) {
 
 // notifyPeerRemoval best-effort tells a peer it has been removed, over mTLS,
 // while the peer's pin still exists (call before deleting it locally).
-func (m *Manager) notifyPeerRemoval(addr, peerUUID string, proof RemovalProof) {
+func (m *Manager) notifyPeerRemoval(node ClusterNode, proof RemovalProof) {
+	peerUUID := node.NodeUUID
 	client, err := m.peerClient(peerUUID)
 	if err != nil {
 		log.Printf("notify removal: %v", err)
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), pairingHTTPTimeout)
+	defer cancel()
+	addrs := m.reservePeerDialCandidates(peerUUID, m.resolvePeerAddrs(node))
 	body, _ := json.Marshal(membersRemoveRequest{NodeUUID: m.identity.NodeUUID, Proof: proof})
-	resp, err := client.Post(peerURL("https", addr, membersRemovePath), "application/json", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("notify removal to %s (%s): %v", addr, peerUUID, err)
+	for _, addr := range confirmedFirst(addrs, m.peerAddrs.ChooseWithin(ctx, peerUUID, addrs)) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, peerURL("https", addr, membersRemovePath), bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			m.peerAddrs.Forget(peerUUID)
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes))
+		_ = resp.Body.Close()
 		return
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes))
-	_ = resp.Body.Close()
 }
 
 // serveSplit serves both transport modes on one listener via the shared

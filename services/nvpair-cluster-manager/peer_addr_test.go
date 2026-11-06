@@ -14,8 +14,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"nvpair-shared/noderec"
 )
 
 // unreachableAddr is in TEST-NET-1 (RFC 5737), which is reserved for
@@ -27,22 +25,22 @@ const unreachableAddr = "192.0.2.1:14321"
 // could not reach, so every reconcile burned the full request timeout against it
 // while the address that worked sat unused in the same candidate list.
 func TestReconcileWithFailsOverToAnAnsweringAddress(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mA := newTestManagerPort(t, 15031)
-	mB := newTestManagerPort(t, 15032)
-	go func() { _ = mA.runHTTP(ctx) }()
-	go func() { _ = mB.runHTTP(ctx) }()
-	time.Sleep(400 * time.Millisecond)
-
+	mA, mB := newTestManager(t), newTestManager(t)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(mA.handleRoster))
+	_, port := splitAddr(srv.Listener.Addr().String(), mA.port)
+	mA.port = port
+	srv.TLS = mA.buildServerTLSConfig()
+	srv.StartTLS()
+	defer srv.Close()
 	pinTrusted(t, mA, mB.identity.NodeUUID, string(mB.identity.CertPEM), mB.identity.CertFingerprint)
 	pinTrusted(t, mB, mA.identity.NodeUUID, string(mA.identity.CertPEM), mA.identity.CertFingerprint)
-	mA.upsertMember(&ClusterNode{NodeUUID: mB.identity.NodeUUID, ID: "node-b", IPAddress: "127.0.0.1", Port: 15032, AdmissionEpoch: 1, State: stateMember})
-	mB.upsertMember(&ClusterNode{NodeUUID: mA.identity.NodeUUID, ID: "node-a", IPAddress: "192.0.2.1", Port: 15031, AdmissionEpoch: 1, State: stateMember})
-
-	working := net.JoinHostPort("127.0.0.1", strconv.Itoa(15031))
-	outcome, _ := mB.reconcileWith([]string{unreachableAddr, working}, mA.identity.NodeUUID)
+	mA.upsertMember(&ClusterNode{NodeUUID: mB.identity.NodeUUID, ID: "node-b", IPAddress: "127.0.0.1", Port: mB.port, ClusterID: "cluster-1", AdmissionEpoch: 1, State: stateMember})
+	mB.upsertMember(&ClusterNode{NodeUUID: mA.identity.NodeUUID, ID: "node-a", IPAddress: "192.0.2.1", Port: port, ClusterID: "cluster-1", AdmissionEpoch: 1, State: stateMember})
+	working := strings.TrimPrefix(srv.URL, "https://")
+	mB.memMu.Lock()
+	mB.members[mA.identity.NodeUUID].addresses.AddressCandidates = []addressCandidate{{Address: working, LearnedAt: time.Now().UnixMilli()}}
+	mB.memMu.Unlock()
+	outcome, _ := mB.reconcileWith([]string{net.JoinHostPort("192.0.2.1", strconv.Itoa(port)), working}, mA.identity.NodeUUID)
 	if outcome != reconcileAccepted {
 		t.Fatalf("reconcile outcome = %v, want accepted via the second candidate", outcome)
 	}
@@ -58,6 +56,12 @@ func TestReconcileBudgetCoversTheWholeCandidateWalk(t *testing.T) {
 	pinTrusted(t, m, peerUUID, certPEM, fingerprint)
 
 	blackholed := []string{"192.0.2.1:14321", "192.0.2.2:14321", "192.0.2.3:14321", "192.0.2.4:14321"}
+	m.upsertMember(&ClusterNode{NodeUUID: peerUUID, ID: "peer", IPAddress: "192.0.2.1", Port: 14321, State: stateMember})
+	m.memMu.Lock()
+	for _, addr := range blackholed[1:] {
+		m.members[peerUUID].addresses.AddressCandidates = append(m.members[peerUUID].addresses.AddressCandidates, addressCandidate{Address: addr, LearnedAt: time.Now().UnixMilli()})
+	}
+	m.memMu.Unlock()
 	budget := 600 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
@@ -76,102 +80,7 @@ func TestReconcileBudgetCoversTheWholeCandidateWalk(t *testing.T) {
 	}
 }
 
-// TestResolvePeerAddrsPutsTheRecordedAddressFirst: the pairing-time address was
-// observed working from here, so it leads — but the peer's other advertised
-// addresses follow it rather than being discarded.
-func TestResolvePeerAddrsPutsTheRecordedAddressFirst(t *testing.T) {
-	m := newTestManagerPort(t, 14321)
-	peer := "33333333-3333-3333-3333-333333333333"
-	m.browser = newBrowser()
-	m.browser.setRelay([]noderec.DirectoryNode{{
-		HostUUID: peer,
-		Name:     "peer",
-		IP:       "192.168.240.1",
-		IPs:      []string{"192.168.240.1", "10.172.55.129"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
-	}})
-
-	got := m.resolvePeerAddrs(ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.172.55.129", Port: 14321})
-	want := []string{"10.172.55.129:14321", "192.168.240.1:14321"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("resolvePeerAddrs = %v, want %v", got, want)
-	}
-}
-
-// TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress: the stored address
-// was proven from this host, while the peer's own first choice is ranked from its
-// vantage point, so a peer that still advertises what we hold must not be
-// redirected onto a link only its neighbour can use.
-func TestRefreshMemberAddrsFromMDNSKeepsAStillAdvertisedAddress(t *testing.T) {
-	m := newTestManagerPort(t, 14321)
-	peer := "44444444-4444-4444-4444-444444444444"
-	m.upsertMember(&ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "10.172.55.129", Port: 14321, State: stateMember})
-	m.browser = newBrowser()
-	m.browser.setRelay([]noderec.DirectoryNode{{
-		HostUUID: peer,
-		Name:     "peer",
-		IP:       "192.168.240.1",
-		IPs:      []string{"192.168.240.1", "10.172.55.129"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
-	}})
-
-	m.refreshMemberAddrsFromMDNS()
-	if n, _ := m.memberByNodeID(peer); n.IPAddress != "10.172.55.129" {
-		t.Fatalf("stored address = %q, want it kept at 10.172.55.129", n.IPAddress)
-	}
-
-	// A peer that has stopped advertising the stored address really moved.
-	m.browser.setRelay([]noderec.DirectoryNode{{
-		HostUUID: peer,
-		Name:     "peer",
-		IP:       "10.172.55.200",
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
-	}})
-	m.refreshMemberAddrsFromMDNS()
-	if n, _ := m.memberByNodeID(peer); n.IPAddress != "10.172.55.200" {
-		t.Fatalf("stored address = %q, want the moved peer's 10.172.55.200", n.IPAddress)
-	}
-}
-
-func TestResolvePeerAddrs_PrefersLocalLANOverRecordedCGNAT(t *testing.T) {
-	m := newTestManagerPort(t, 14321)
-	peer := "55555555-5555-5555-5555-555555555555"
-	m.browser = newBrowser()
-	m.browser.setRelay([]noderec.DirectoryNode{{
-		HostUUID: peer,
-		Name:     "peer",
-		IP:       "192.168.1.50",
-		IPs:      []string{"192.168.1.50", "100.64.1.2"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
-	}})
-
-	// Node was recorded with Tailscale CGNAT address.
-	got := m.resolvePeerAddrs(ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "100.64.1.2", Port: 14321})
-	want := []string{"192.168.1.50:14321", "100.64.1.2:14321"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("resolvePeerAddrs = %v, want LAN first %v", got, want)
-	}
-}
-
-func TestRefreshMemberAddrsFromMDNS_UpgradesCGNATToLAN(t *testing.T) {
-	m := newTestManagerPort(t, 14321)
-	peer := "66666666-6666-6666-6666-666666666666"
-	// Node currently holds Tailscale CGNAT address.
-	m.upsertMember(&ClusterNode{NodeUUID: peer, ID: "peer", IPAddress: "100.64.1.2", Port: 14321, State: stateMember})
-	m.browser = newBrowser()
-	m.browser.setRelay([]noderec.DirectoryNode{{
-		HostUUID: peer,
-		Name:     "peer",
-		IP:       "192.168.1.50",
-		IPs:      []string{"192.168.1.50", "100.64.1.2"},
-		Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceCluster: {Port: 14321}},
-	}})
-
-	m.refreshMemberAddrsFromMDNS()
-	if n, _ := m.memberByNodeID(peer); n.IPAddress != "192.168.1.50" {
-		t.Fatalf("stored address = %q, want upgraded to LAN 192.168.1.50", n.IPAddress)
-	}
-}
+// Reachability confirmation only reorders hints; authentication remains mTLS.
 
 func TestConfirmedFirst(t *testing.T) {
 	addrs := []string{"a:1", "b:1", "c:1"}

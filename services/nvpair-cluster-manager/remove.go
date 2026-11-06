@@ -6,8 +6,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
-	"strconv"
 )
 
 type removeParams struct {
@@ -92,9 +90,7 @@ func (m *Manager) handleNodesRemove(msg *Message) {
 	}
 
 	// Notify first, while the peer's pin is still present to authenticate mTLS.
-	if node.IPAddress != "" {
-		m.notifyPeerRemoval(net.JoinHostPort(node.IPAddress, strconv.Itoa(node.Port)), node.NodeUUID, proof)
-	}
+	m.notifyPeerRemoval(*node, proof)
 	// De-pin and drop membership under the cluster-composition boundary so the
 	// removal is atomic against a concurrent self-remove teardown — the two can't
 	// interleave and leave a half-cleared roster. The network notify above stays
