@@ -144,6 +144,13 @@ The bundled uninstalls remove only what an install put down: Ollama's app or
 install directory, and LM Studio's `~/.lmstudio/bin` and `llmster` runtime. LM
 Studio's conversations, credentials and settings are left where they are.
 
+### Unsupported-target build fallbacks
+
+FreeBSD can compile the engine manager, but is not a supported platform and has
+no bundled engine manifests. Its fallbacks refuse app install-identity claims
+and use ordinary process waiting rather than detached-downloader exit watching.
+This does not extend the supported platform list.
+
 ### Fake-engine test cleanup
 
 Each fake-engine executable (including test copies) has a per-test owner under
