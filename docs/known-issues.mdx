@@ -120,14 +120,6 @@ On the peer that needs to connect, add a reachable IP address or hostname as
 **PAIR machine**, such as its Tailscale address; a saved address does not replace
 pairing or verification.
 
-## Ollama Install Download Is Not Checksum-Pinned
-
-PAIR installs Ollama from the vendor's floating latest-download URL without a
-pinned checksum and logs `UNPINNED download`. This is unchanged since 0.8.0;
-download progress is not an integrity check. If a pinned artifact is required,
-install an independently verified Ollama release yourself instead of using
-PAIR's install action.
-
 ## The Terminal Interface Cannot Do Everything the Desktop App Can
 
 **Implemented in source, pending release testing.** `nvpair-tui` now shows

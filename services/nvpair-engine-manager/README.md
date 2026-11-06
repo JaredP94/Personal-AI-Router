@@ -144,6 +144,20 @@ The bundled uninstalls remove only what an install put down: Ollama's app or
 install directory, and LM Studio's `~/.lmstudio/bin` and `llmster` runtime. LM
 Studio's conversations, credentials and settings are left where they are.
 
+### Ollama: pinned initial download
+
+Fresh installs use Ollama **v0.40.15** from
+[its GitHub release](https://github.com/ollama/ollama/releases/tag/v0.40.15),
+not a floating latest URL. Each SHA-256 comes from that release's
+[`sha256sum.txt`](https://github.com/ollama/ollama/releases/download/v0.40.15/sha256sum.txt):
+`Ollama-darwin.zip` (both Mac architectures),
+`ollama-windows-amd64.zip`, `ollama-windows-arm64.zip`,
+`ollama-linux-amd64.tar.zst`, and `ollama-linux-arm64.tar.zst`.
+All five artifacts were independently downloaded into a fresh temporary directory
+and hashed without executing or installing them. v0.40.15 exceeds the 0.14.0
+minimum needed for `/v1/messages`. Ollama's own updates continue as before;
+the pin only selects the initial install, not a permanent runtime version.
+
 ### oMLX: the release disk image
 
 oMLX installs the way oMLX recommends: the `.dmg` from its GitHub releases,
