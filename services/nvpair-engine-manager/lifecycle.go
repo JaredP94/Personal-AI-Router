@@ -914,7 +914,12 @@ func (e *Executor) stopEngines(names []string) []string {
 }
 
 func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string, port int, gen int64) {
-	h := st.plat.Runtime.Health
+	// Settings rollback can replace Runtime after this loop was canceled but
+	// before its goroutine starts. Keep a private probe snapshot, and release
+	// mu before waiting or performing any network I/O.
+	st.mu.Lock()
+	h := *st.plat.Runtime.Health
+	st.mu.Unlock()
 	interval := 5 * time.Second
 	if h.IntervalS > 0 {
 		interval = time.Duration(h.IntervalS) * time.Second
@@ -926,7 +931,7 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			ok := e.probe(ctx, h, port)
+			ok := e.probe(ctx, &h, port)
 			st.mu.Lock()
 			// Bail if stopped or if a newer start superseded this loop —
 			// a stale loop must never write health for a later run.
