@@ -25,12 +25,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/errors"
+	"nvpair-shared/listen"
 )
 
 // newErrorsMux builds the HTTP routes backed by the manager. Split out
@@ -122,7 +122,7 @@ func handleServeLocal(w http.ResponseWriter, mgr *Manager) {
 // moment it becomes a member the same listener serves pinned peers. Nothing has
 // to be rebound, and no restart is needed to re-read the cluster dir.
 func runHTTPServer(ctx context.Context, port int, mgr *Manager, mesh *clustertrust.Mesh) error {
-	base, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	base, err := listen.TCP(fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("listen on port %d: %w", port, err)
 	}

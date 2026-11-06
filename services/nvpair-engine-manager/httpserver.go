@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/listen"
 	"nvpair-shared/splitlisten"
 )
 
@@ -60,7 +61,7 @@ func serveHTTP(ctx context.Context, port int, exec *Executor, mesh *clustertrust
 	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
 	plainMux, tlsMux := emSurface(exec, mesh)
 
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listen.TCP(addr)
 	if err != nil {
 		slog.Warn("engine-manager HTTP endpoint disabled (bind failed)", "addr", addr, "err", err)
 		return

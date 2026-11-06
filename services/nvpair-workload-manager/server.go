@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/listen"
 )
 
 // eventsPath is the single inter-node endpoint (spec §7.2).
@@ -92,7 +92,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(eventsPath, s.handleEvents)
 
-	base, err := net.Listen("tcp", ":"+strconv.Itoa(s.port))
+	base, err := listen.TCP(":" + strconv.Itoa(s.port))
 	if err != nil {
 		return fmt.Errorf("listen on :%d: %w", s.port, err)
 	}

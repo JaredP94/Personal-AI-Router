@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 
 	"nvpair-shared/errors"
+	"nvpair-shared/listen"
 )
 
 // proxyport.go owns the broker's proxy/engine port ordering. With managed
@@ -91,11 +91,11 @@ func nextAvailablePortExcluding(start int, excludedPorts []int, available func(i
 	})
 }
 
-// tcpPortAvailable uses the exact wildcard bind shape ollama-proxy uses. The
+// tcpPortAvailable uses the same wildcard and loopback reservation as the proxies. The
 // listener is only a preflight; the proxy's bind remains authoritative and a
 // process winning the race is handled as a normal, non-destructive failure.
 func tcpPortAvailable(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	ln, err := listen.TCP(fmt.Sprintf(":%d", port))
 	if err != nil {
 		return false
 	}

@@ -22,6 +22,7 @@ import (
 
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/listen"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
 	"nvpair-shared/splitlisten"
@@ -464,7 +465,7 @@ func main() {
 	observer := newAddressObserver()
 
 	if httpEnabled {
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+		listener, err := listen.TCP(fmt.Sprintf(":%d", *port))
 		if err != nil {
 			log.Fatalf("failed to listen on port %d: %v", *port, err)
 		}
@@ -487,7 +488,7 @@ func main() {
 	// --tls-port. The BYO --cert path keeps its own *tlsPort so a plaintext and a
 	// TLS listener can coexist there.
 	if clusterGated {
-		base, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+		base, err := listen.TCP(fmt.Sprintf(":%d", *port))
 		if err != nil {
 			log.Fatalf("failed to listen on port %d: %v", *port, err)
 		}
@@ -518,7 +519,7 @@ func main() {
 		if tlsOpts.MutualAuth() {
 			mode = "mTLS"
 		}
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *tlsPort))
+		listener, err := listen.TCP(fmt.Sprintf(":%d", *tlsPort))
 		if err != nil {
 			log.Fatalf("failed to listen on TLS port %d: %v", *tlsPort, err)
 		}

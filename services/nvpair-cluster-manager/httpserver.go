@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"eapnoob"
+	"nvpair-shared/listen"
 )
 
 const (
@@ -58,7 +59,7 @@ func (m *Manager) runHTTP(ctx context.Context) error {
 	trustedMux.HandleFunc(membersRemovePath, m.handleMembersRemove)
 	trustedMux.HandleFunc(rosterPath, m.handleRoster)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", m.port))
+	listener, err := listen.TCP(fmt.Sprintf(":%d", m.port))
 	if err != nil {
 		return fmt.Errorf("listen on :%d: %w", m.port, err)
 	}
