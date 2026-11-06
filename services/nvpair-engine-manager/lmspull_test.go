@@ -28,7 +28,7 @@ func TestLMSCommandCancellationRequiresConfirmation(t *testing.T) {
 				}
 			}}
 			done := make(chan error, 1)
-			argv := []string{fakeEngineBin, "download-cancel-fixture"}
+			argv := []string{fakeEngineForTest(t), "download-cancel-fixture"}
 			if !confirmed {
 				argv = append(argv, "unconfirmed")
 			}

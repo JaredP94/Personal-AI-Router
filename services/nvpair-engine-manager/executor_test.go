@@ -69,7 +69,7 @@ func responseHeaderTimeout(t *testing.T, client *http.Client) time.Duration {
 }
 
 func TestEngineHTTPClientsBoundResponseHeaders(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	if got := responseHeaderTimeout(t, ex.client); got != engineResponseHeaderTimeout {
 		t.Fatalf("ordinary response-header timeout = %s, want %s", got, engineResponseHeaderTimeout)
 	}
@@ -97,7 +97,7 @@ func TestActionDeclaredTimeoutBoundsResponseHeaders(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
 
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Engine = "other"
 	platform := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	platform.Runtime.Port = port
@@ -154,7 +154,7 @@ func TestActionTimeoutValidation(t *testing.T) {
 }
 
 func TestEngineLifecycle(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 
@@ -163,7 +163,7 @@ func TestEngineLifecycle(t *testing.T) {
 		t.Fatalf("detect: %v", err)
 	}
 	if !installed {
-		t.Fatalf("expected fake engine to be detected (bin=%s)", fakeEngineBin)
+		t.Fatalf("expected fake engine to be detected (bin=%s)", fakeEngineForTest(t))
 	}
 
 	if err := ex.Start(ctx, "fake"); err != nil {
@@ -199,7 +199,7 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	p.Runtime.Port = port
@@ -248,21 +248,21 @@ func TestCrashThenExternalServiceIsAdoptedWithoutRespawn(t *testing.T) {
 }
 
 func TestActionRequiresRunning(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	if _, err := ex.Action(context.Background(), "fake", "list_models", nil); err == nil {
 		t.Fatal("expected error: action on a non-running engine")
 	}
 }
 
 func TestStartUnknownEngine(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	if err := ex.Start(context.Background(), "nope"); err == nil {
 		t.Fatal("expected error for unknown engine")
 	}
 }
 
 func TestStartPortOverride(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin)) // manifest Port is 0
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t))) // manifest Port is 0
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	const want = 17777
 	if err := ex.StartWith(context.Background(), "fake", startOpts{Port: want}); err != nil {
@@ -506,7 +506,7 @@ func TestCommandModeMissingCLIInstallsDespiteLiveAPI(t *testing.T) {
 		Engine: "missing-cli", DisplayName: "Missing CLI", ManifestVersion: 1,
 		Platforms: map[string]Platform{key: {
 			Detect:  []string{cli},
-			Install: &Install{Run: []string{fakeEngineBin, "touch", cli}},
+			Install: &Install{Run: []string{fakeEngineForTest(t), "touch", cli}},
 			Runtime: Runtime{
 				Mode: "command", CLI: cli, Port: port,
 				Ready: &Probe{HTTP: "http://127.0.0.1:{port}/v1/models", Status: http.StatusOK},
@@ -611,7 +611,7 @@ func TestProxyFacadeCannotIdentifyAsOllama(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
 
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Engine = "ollama"
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
@@ -660,7 +660,7 @@ func TestPreviouslyAdoptedForeignReplacementFailsClosed(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
 
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Engine = "ollama"
 	m.DisplayName = "Ollama"
 	key := runtime.GOOS + "/" + runtime.GOARCH
@@ -695,7 +695,7 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyFile(t, fakeEngineBin, bin)
+	copyFile(t, fakeEngineForTest(t), bin)
 
 	port, err := freePort()
 	if err != nil {
@@ -707,7 +707,7 @@ func TestUninstallTerminatesRunningInstance(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	t.Cleanup(func() { killTestProcessGroup(cmd.Process.Pid); _ = cmd.Wait() })
 	waitPortServing(t, port)
 	if _, image, ok := pidOnPort(port); !ok || image == "" {
 		t.Skip("host cannot resolve the PID/image owning a port; skipping PID-precise stop test")
@@ -743,8 +743,8 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(managedBin), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyFile(t, fakeEngineBin, managedBin)
-	copyFile(t, fakeEngineBin, externalBin)
+	copyFile(t, fakeEngineForTest(t), managedBin)
+	copyFile(t, fakeEngineForTest(t), externalBin)
 
 	port, err := freePort()
 	if err != nil {
@@ -756,7 +756,7 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	t.Cleanup(func() { killTestProcessGroup(cmd.Process.Pid); _ = cmd.Wait() })
 	waitPortServing(t, port)
 
 	m := testEngineManifest(managedBin)
@@ -785,7 +785,7 @@ func TestUninstallDoesNotKillExternalSameNameProcess(t *testing.T) {
 
 func TestUninstallRefusesExternalProcessEngine(t *testing.T) {
 	externalBin := filepath.Join(t.TempDir(), "external"+exeExt())
-	copyFile(t, fakeEngineBin, externalBin)
+	copyFile(t, fakeEngineForTest(t), externalBin)
 	m := testEngineManifest(externalBin)
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
@@ -809,7 +809,7 @@ func TestUninstallRefusesUnidentifiedLiveListener(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(managedBin), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyFile(t, fakeEngineBin, managedBin)
+	copyFile(t, fakeEngineForTest(t), managedBin)
 
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
@@ -868,7 +868,7 @@ func TestDownloadVerify(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	ctx := context.Background()
 
 	p, err := ex.download(ctx, "fake", &Fetch{URL: srv.URL + "/installer.ps1", SHA256: good})
@@ -898,7 +898,7 @@ func TestDownloadVerify(t *testing.T) {
 }
 
 func TestInstallRefusesAdmin(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	p.Detect = nil // ensure not-detected so install reaches the mode check
@@ -920,7 +920,7 @@ func TestEngineUninstall(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(binCopy), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyFile(t, fakeEngineBin, binCopy)
+	copyFile(t, fakeEngineForTest(t), binCopy)
 
 	m := testEngineManifest(binCopy)
 	key := runtime.GOOS + "/" + runtime.GOARCH
@@ -1000,12 +1000,12 @@ func TestCommandModeLifecycle(t *testing.T) {
 		Engine: "daemon", DisplayName: "Daemon Engine", ManifestVersion: 1,
 		Platforms: map[string]Platform{
 			key: {
-				Detect: []string{fakeEngineBin},
+				Detect: []string{fakeEngineForTest(t)},
 				Runtime: Runtime{
 					Mode:   "command",
 					Port:   port,
-					Start:  [][]string{{fakeEngineBin, "touch", startMarker}},
-					Stop:   &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}},
+					Start:  [][]string{{fakeEngineForTest(t), "touch", startMarker}},
+					Stop:   &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", stopMarker}},
 					Ready:  &Probe{HTTP: "http://127.0.0.1:{port}/", Status: 200, TimeoutS: 10},
 					Health: &Probe{HTTP: "http://127.0.0.1:{port}/", Status: 200, IntervalS: 1},
 				},
@@ -1040,8 +1040,8 @@ func TestCommandModeLifecycle(t *testing.T) {
 // TestCmdAction exercises a CLI action with a param placeholder; it must
 // run without the engine being "running" and return the command stdout.
 func TestCmdAction(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
-	m.Actions["echo"] = Action{Cmd: []string{fakeEngineBin, "echo", "{model}"}}
+	m := testEngineManifest(fakeEngineForTest(t))
+	m.Actions["echo"] = Action{Cmd: []string{fakeEngineForTest(t), "echo", "{model}"}}
 	ex := newTestExecutor(t, m)
 
 	res, err := ex.Action(context.Background(), "fake", "echo", json.RawMessage(`{"model":"llama3"}`))
@@ -1111,6 +1111,10 @@ func copyFile(t *testing.T, src, dst string) {
 	}
 	if err := os.WriteFile(dst, data, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	// Copies must retain test ownership, even outside the run directory.
+	if isManagedInstallPath(src, testProcessRoot) {
+		registerFakeExecutable(t, dst, fakeProcessDir(t))
 	}
 }
 

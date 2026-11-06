@@ -204,7 +204,7 @@ func TestCommandLifecycleAndActionsExecuteResolvedCLI(t *testing.T) {
 		t.Run(map[bool]string{false: "detected candidate", true: "explicit override"}[override], func(t *testing.T) {
 			root := t.TempDir()
 			cli := filepath.Join(root, "control-cli"+exeExt())
-			copyFile(t, fakeEngineBin, cli)
+			copyFile(t, fakeEngineForTest(t), cli)
 			startMarker, stopMarker := filepath.Join(root, "started"), filepath.Join(root, "stopped")
 			p := Platform{Detect: []string{filepath.Join(root, "missing"), cli}, Runtime: Runtime{
 				Mode:  "command",
@@ -228,7 +228,7 @@ func TestCommandLifecycleAndActionsExecuteResolvedCLI(t *testing.T) {
 				if err := os.MkdirAll(filepath.Join(root, "fake"), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				copyFile(t, fakeEngineBin, filepath.Join(root, "fake", "control-cli"+exeExt()))
+				copyFile(t, fakeEngineForTest(t), filepath.Join(root, "fake", "control-cli"+exeExt()))
 			}
 			t.Cleanup(ex.StopAll)
 			if err := ex.Start(context.Background(), "fake"); err != nil {

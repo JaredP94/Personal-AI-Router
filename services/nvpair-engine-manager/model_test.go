@@ -20,7 +20,7 @@ import (
 // are covered by TestCmdAction; LM Studio has no CLI model-delete (vendor
 // limitation), which is why only Ollama exposes delete_model.
 func TestModelLifecycle(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin) // already has list_models (GET /api/tags)
+	m := testEngineManifest(fakeEngineForTest(t)) // already has list_models (GET /api/tags)
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 	m.Actions["run_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}}
 	m.Actions["unload_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/generate"}}

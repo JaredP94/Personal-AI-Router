@@ -136,7 +136,7 @@ func TestEngineNativeStatsReportsTheEngineView(t *testing.T) {
 // with no omlx engine has no admin API to ask. That is a normal state, not a
 // failure, so the answer is "unsupported" with no error.
 func TestEngineNativeStatsReportsUnsupportedWhenTheEngineHasNoAdminAPI(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	got := ex.EngineNativeStats(context.Background())
 	if got.Supported {
 		t.Fatalf("supported = true, want false (%+v)", got)
@@ -330,7 +330,7 @@ func TestEngineNativeActivityReportsTheEngineRows(t *testing.T) {
 // activity view follows the stats view — no admin API means "unsupported",
 // with no error.
 func TestEngineNativeActivityReportsUnsupportedWhenTheEngineHasNoAdminAPI(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	got := ex.EngineNativeActivity(context.Background())
 	if got.Supported {
 		t.Fatalf("supported = true, want false (%+v)", got)
@@ -347,7 +347,7 @@ func TestEngineNativeActivityReportsUnsupportedWhenTheEngineHasNoAdminAPI(t *tes
 // ride the em surface, so they are served on the same listener behind the
 // same two gates — plaintext for loopback only, mTLS for pinned peers only.
 func TestEngineNativeSurfaceIsGatedLikeTheModelList(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	plainMux, tlsMux := emSurface(ex, clustertrust.Open(t.TempDir()))
 
 	for _, path := range []string{engineStatsPath, engineActivityPath} {
@@ -408,7 +408,7 @@ func TestEngineNativeSurfaceIsGatedLikeTheModelList(t *testing.T) {
 // loopback. The mTLS personality does not serve the path at all, so no peer
 // can read another node's live engine rows.
 func TestTheLiveActivityPathIsNotServedToPeers(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	plainMux, tlsMux := emSurface(ex, clustertrust.Open(t.TempDir()))
 
 	// The local read still works: this node's own proxy reads it over

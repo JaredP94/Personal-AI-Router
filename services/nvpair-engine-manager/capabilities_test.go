@@ -134,7 +134,7 @@ func TestSetPortCapabilityMatchesEngineSetPortRules(t *testing.T) {
 		{"external command with an official stop command", Runtime{Mode: "command", Start: [][]string{{"start", "{port}"}}, Stop: &StopSpec{Cmd: []string{"stop"}}}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := testEngineManifest(fakeEngineBin)
+			m := testEngineManifest(fakeEngineForTest(t))
 			m.Actions = nil // isolate set_port from the action flags
 			for key, p := range m.Platforms {
 				p.Runtime = tc.rt
@@ -174,7 +174,7 @@ func TestCapabilitiesUseEffectiveManifest(t *testing.T) {
 // EngineStatus carries the capabilities: engine:status, engine:get-installed,
 // and the engine:state-changed notification.
 func TestCapabilitiesOnEveryStatusPath(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	for key, p := range m.Platforms {
 		p.Detect = nil        // nothing installed
 		p.Runtime.Ready = nil // no probe, so no listener adoption can occur
@@ -229,7 +229,7 @@ func TestCapabilitiesOnSetPortResult(t *testing.T) {
 // registry with no block for this host: get-installed and status still list it,
 // and report every flag false rather than a guess from another platform.
 func TestUnsupportedPlatformReportsNoCapabilities(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Platforms = map[string]Platform{
 		"unsupported/platform": m.Platforms[runtime.GOOS+"/"+runtime.GOARCH],
 	}

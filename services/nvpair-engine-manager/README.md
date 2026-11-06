@@ -144,6 +144,18 @@ The bundled uninstalls remove only what an install put down: Ollama's app or
 install directory, and LM Studio's `~/.lmstudio/bin` and `llmster` runtime. LM
 Studio's conversations, credentials and settings are left where they are.
 
+### Fake-engine test cleanup
+
+Each fake-engine executable (including test copies) has a per-test owner under
+the run's `nvpair-em-test-*` directory. Before doing any work, the fake records
+its PID and executable identity there; detached children inherit registration.
+A `t.Cleanup` sweep force-kills owned process groups on Unix (process trees on
+Windows) and fails the test if any remain. `TestMain` also checks registered
+children and processes whose executables are under this run's directory, sweeps
+survivors, and fails the run if a per-test cleanup was missed. Sweeps verify
+executable identity before signaling PIDs and never target other test runs.
+`TestFakeEngineCleanupOnFailedTest` exercises cleanup after a fatal assertion.
+
 ### Ollama: pinned initial download
 
 Fresh installs use Ollama **v0.40.15** from

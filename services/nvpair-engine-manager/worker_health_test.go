@@ -20,7 +20,7 @@ func TestWorkerHealth(t *testing.T) {
 	for _, rawID := range []string{"7", `"health-7"`} {
 		t.Run(rawID, func(t *testing.T) {
 			var out bytes.Buffer
-			ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+			ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 			st, err := ex.state("fake")
 			if err != nil {
 				t.Fatal(err)

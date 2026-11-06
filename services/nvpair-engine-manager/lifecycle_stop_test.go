@@ -30,7 +30,7 @@ func spawnFakeListener(t *testing.T, binPath string, port int) *exec.Cmd {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	t.Cleanup(func() { killTestProcessGroup(cmd.Process.Pid); _ = cmd.Wait() })
 	waitPortServing(t, port)
 	if _, image, ok := pidOnPort(port); !ok || image == "" {
 		t.Skip("host cannot resolve the PID/image owning a port; skipping PID-precise stop test")
@@ -47,7 +47,7 @@ func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyFile(t, fakeEngineBin, bin)
+	copyFile(t, fakeEngineForTest(t), bin)
 	port, err := freePort()
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestStopReclaimsOurOrphanOnManagedPort(t *testing.T) {
 
 func TestStopDoesNotReclaimSameExternalImage(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "external-ollama"+strconv.Itoa(os.Getpid())+exeExt())
-	copyFile(t, fakeEngineBin, bin)
+	copyFile(t, fakeEngineForTest(t), bin)
 	port, err := freePort()
 	if err != nil {
 		t.Fatal(err)
@@ -118,8 +118,8 @@ func TestStopDeclinesForeignListenerWithActionableError(t *testing.T) {
 	dir := t.TempDir()
 	ourBin := filepath.Join(dir, "ourengine"+exeExt())
 	foreignBin := filepath.Join(dir, "foreignengine"+exeExt())
-	copyFile(t, fakeEngineBin, ourBin)
-	copyFile(t, fakeEngineBin, foreignBin)
+	copyFile(t, fakeEngineForTest(t), ourBin)
+	copyFile(t, fakeEngineForTest(t), foreignBin)
 	port, err := freePort()
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestStopRejectsAdoptedProcessEngine(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
 
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	p.Runtime.Port = port
 	p.Runtime.Ready = &Probe{HTTP: srv.URL, Status: http.StatusOK}
@@ -202,7 +202,7 @@ func TestStopReconcilesAdoptedProcessAfterExternalStop(t *testing.T) {
 	}))
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	p.Runtime.Port = port
 	p.Runtime.Ready = &Probe{HTTP: srv.URL, Status: http.StatusOK}
@@ -233,7 +233,7 @@ func TestStopKeepsAdoptedProcessRunningWhileEndpointIsUnhealthy(t *testing.T) {
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
 	port, _ := strconv.Atoi(u.Port())
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	p := m.Platforms[runtime.GOOS+"/"+runtime.GOARCH]
 	p.Runtime.Port = port
 	p.Runtime.Ready = &Probe{HTTP: srv.URL, Status: http.StatusOK}
@@ -258,7 +258,7 @@ func TestCommandStopFailureKeepsLiveEngineRunning(t *testing.T) {
 	}))
 	defer srv.Close()
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
-	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "failmark", marker}, 1, false)
+	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineForTest(t), "failmark", marker}, 1, false)
 
 	err := ex.Stop("command")
 	if err == nil || !strings.Contains(err.Error(), "stop command") {
@@ -286,7 +286,7 @@ func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 		srv.Close()
 		close(closed)
 	}()
-	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "failmark", marker}, 2, false)
+	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineForTest(t), "failmark", marker}, 2, false)
 
 	if err := ex.Stop("command"); err != nil {
 		t.Fatalf("nonzero stop command with a closed endpoint must succeed: %v", err)
@@ -303,7 +303,7 @@ func TestCommandStopFailureSucceedsWhenEndpointIsConfirmedDown(t *testing.T) {
 
 func TestCommandStopWithoutReadinessProbeUsesConfiguredCommand(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
-	ex := commandStopTestExecutor(t, "http://127.0.0.1:1", []string{fakeEngineBin, "touch", marker}, 1, false)
+	ex := commandStopTestExecutor(t, "http://127.0.0.1:1", []string{fakeEngineForTest(t), "touch", marker}, 1, false)
 	st, _ := ex.state("command")
 	st.plat.Runtime.Ready = nil
 
@@ -324,7 +324,7 @@ func TestCommandStopRejectsSuccessWhileEndpointIsLive(t *testing.T) {
 	}))
 	defer srv.Close()
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
-	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
+	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineForTest(t), "touch", marker}, 1, false)
 
 	err := ex.Stop("command")
 	if err == nil || !strings.Contains(err.Error(), "still serving") {
@@ -341,7 +341,7 @@ func TestCommandStopRejectsSuccessWhileEndpointIsUnhealthy(t *testing.T) {
 	}))
 	defer srv.Close()
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
-	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
+	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineForTest(t), "touch", marker}, 1, false)
 
 	err := ex.Stop("command")
 	if err == nil || !strings.Contains(err.Error(), "still serving") {
@@ -357,7 +357,7 @@ func TestCommandStopFailureRestartsHealthMonitoring(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	marker := filepath.Join(t.TempDir(), "stop-attempted")
-	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 1, false)
+	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineForTest(t), "touch", marker}, 1, false)
 	st, _ := ex.state("command")
 	st.plat.Runtime.Health = &Probe{HTTP: srv.URL, Status: http.StatusOK, IntervalS: 1}
 	t.Cleanup(func() {
@@ -397,7 +397,7 @@ func TestCommandStopReportsStoppedOnlyAfterEndpointCloses(t *testing.T) {
 		srv.Close()
 		close(closed)
 	}()
-	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineBin, "touch", marker}, 2, true)
+	ex := commandStopTestExecutor(t, srv.URL, []string{fakeEngineForTest(t), "touch", marker}, 2, true)
 
 	if err := ex.Stop("command"); err != nil {
 		t.Fatalf("stop: %v", err)
@@ -427,7 +427,7 @@ func commandStopTestExecutor(t *testing.T, readyURL string, stopCmd []string, gr
 		Engine: "command", DisplayName: "Command Engine", ManifestVersion: 1,
 		Platforms: map[string]Platform{
 			key: {
-				Detect: []string{fakeEngineBin},
+				Detect: []string{fakeEngineForTest(t)},
 				Runtime: Runtime{
 					Mode:  "command",
 					Port:  port,

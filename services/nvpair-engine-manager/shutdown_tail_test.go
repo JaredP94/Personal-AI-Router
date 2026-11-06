@@ -27,7 +27,7 @@ func testCommandStopTail(t *testing.T, delay string, grace int, wantTimeout bool
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(fakeEngineBin, "shutdown-tail", marker, "127.0.0.1:"+strconv.Itoa(port), delay)
+	cmd := exec.Command(fakeEngineForTest(t), "shutdown-tail", marker, "127.0.0.1:"+strconv.Itoa(port), delay)
 	configureSysProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -39,11 +39,11 @@ func testCommandStopTail(t *testing.T, delay string, grace int, wantTimeout bool
 	if pid, _, ok := pidOnPort(port); !ok || pid != cmd.Process.Pid {
 		t.Skip("host cannot resolve listener PID")
 	}
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	p := m.Platforms[hostKey()]
 	p.Runtime.Mode = "command"
 	p.Runtime.Port = port
-	p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", marker}, GraceS: grace}
+	p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", marker}, GraceS: grace}
 	p.Runtime.Health = nil
 	m.Platforms[hostKey()] = p
 	ex := newTestExecutor(t, m)

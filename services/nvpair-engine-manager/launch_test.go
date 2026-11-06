@@ -84,7 +84,7 @@ func TestCommandLaunchRejectsEmptyExecutable(t *testing.T) {
 func TestLaunchTextReachesChildLiterally(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "captured args.json")
 	want := []string{"", "two words", "日本語", `C:\new\tools\`, `\\server\share`, `a"b`, "$HOME", "%USERPROFILE%", "{port}", "$(ignored)", "line\nbreak"}
-	tokens := append([]string{fakeEngineBin, "captureargs", path}, want...)
+	tokens := append([]string{fakeEngineForTest(t), "captureargs", path}, want...)
 	text, err := formatLaunchText(tokens)
 	if err != nil {
 		t.Fatal(err)
@@ -110,11 +110,11 @@ func TestLifecycleUsesResolvedLaunchBuilder(t *testing.T) {
 	for _, mode := range []string{"process", "command"} {
 		t.Run(mode, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "captured args.json")
-			manifest := testEngineManifest(fakeEngineBin)
+			manifest := testEngineManifest(fakeEngineForTest(t))
 			for key, platform := range manifest.Platforms {
-				platform.Runtime = Runtime{Mode: mode, Bin: fakeEngineBin, Port: 25001,
+				platform.Runtime = Runtime{Mode: mode, Bin: fakeEngineForTest(t), Port: 25001,
 					Args:  []string{"captureargs", path, "{host}", "{port}", "two words", ""},
-					Start: [][]string{{fakeEngineBin, "captureargs", path, "{host}", "{port}", "two words", ""}},
+					Start: [][]string{{fakeEngineForTest(t), "captureargs", path, "{host}", "{port}", "two words", ""}},
 				}
 				manifest.Platforms[key] = platform
 			}

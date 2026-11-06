@@ -77,7 +77,7 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree, exitEarly, us
 	go func() {
 		defer close(pullDone)
 		_, _ = ex.trackedPull(ctx, "lmstudio", "fixture", "shutdown-pull", true, func(ctx context.Context) (json.RawMessage, error) {
-			argv := []string{fakeEngineBin, "shutdown-download-fixture", marker, mode}
+			argv := []string{fakeEngineForTest(t), "shutdown-download-fixture", marker, mode}
 			if tree {
 				argv = append(argv, childMarker)
 			}

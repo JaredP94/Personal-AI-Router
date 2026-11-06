@@ -28,7 +28,7 @@ func TestPullEngineErrorBecomesRPCError(t *testing.T) {
 				_, _ = w.Write([]byte("{\"status\":\"pulling manifest\"}\n{\"error\":\"model does not exist\"}\n"))
 			}))
 			defer engine.Close()
-			manifest := testEngineManifest(fakeEngineBin)
+			manifest := testEngineManifest(fakeEngineForTest(t))
 			manifest.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 			ex := newTestExecutor(t, manifest)
 			st, err := ex.state("fake")

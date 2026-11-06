@@ -49,7 +49,7 @@ func adoptedEngineOnLivePort(t *testing.T, ex *Executor) {
 // engine whose stop can only be declined stays running, so each repeat sweep
 // would re-pay doStop's readiness probe for it.
 func TestStopAll_RunsOneSweepPerProcess(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	adoptedEngineOnLivePort(t, ex)
 
 	ex.StopAll()
@@ -76,7 +76,7 @@ func TestStopAll_RunsOneSweepPerProcess(t *testing.T) {
 // the broker would close stdin, engine-manager would exit, and the engines it
 // launched would be left running with nothing owning them.
 func TestStopAll_WaitsForTheSweepInFlight(t *testing.T) {
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	adoptedEngineOnLivePort(t, ex)
 	st, err := ex.state("fake")
 	require.NoError(t, err)
@@ -171,12 +171,12 @@ func TestStopAll_RetriesAFailedStopCommand(t *testing.T) {
 		Engine: "daemon", DisplayName: "Daemon Engine", ManifestVersion: 1,
 		Platforms: map[string]Platform{
 			hostKey(): {
-				Detect: []string{fakeEngineBin},
+				Detect: []string{fakeEngineForTest(t)},
 				Runtime: Runtime{
 					Mode:  "command",
 					Port:  port,
-					Start: [][]string{{fakeEngineBin, "touch", startMarker}},
-					Stop:  &StopSpec{Cmd: []string{fakeEngineBin, "failoncethentouch", stopAttempt, stopMarker}},
+					Start: [][]string{{fakeEngineForTest(t), "touch", startMarker}},
+					Stop:  &StopSpec{Cmd: []string{fakeEngineForTest(t), "failoncethentouch", stopAttempt, stopMarker}},
 					Ready: &Probe{HTTP: "http://127.0.0.1:{port}/", Status: http.StatusOK, TimeoutS: 10},
 				},
 			},

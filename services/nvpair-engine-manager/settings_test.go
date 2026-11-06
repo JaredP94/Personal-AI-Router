@@ -23,7 +23,7 @@ import (
 
 func settingsExecutor(t *testing.T, command bool) *Executor {
 	t.Helper()
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	port, err := freePort()
@@ -40,7 +40,7 @@ func settingsExecutor(t *testing.T, command bool) *Executor {
 	}
 	if command {
 		p.Runtime.Mode = "command"
-		p.Runtime.CLI = fakeEngineBin
+		p.Runtime.CLI = fakeEngineForTest(t)
 		p.Runtime.Start = [][]string{{"{cli}", "server", "start", "--port", "{port}", "--bind", "{host}"}}
 		p.Runtime.EditableLaunch = &EditableLaunch{
 			FixedArgs: []string{"server", "start"},
@@ -208,7 +208,7 @@ func TestSettingsPreviewAcceptsUnrelatedOptions(t *testing.T) {
 func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
 	eachEngineMode(t, func(t *testing.T, e *Executor) {
 		p := settingsRequest(t, e)
-		if strings.Contains(p.Settings.LaunchText, fakeEngineBin) || strings.Contains(p.Settings.LaunchText, "server start") || strings.Contains(p.Settings.LaunchText, "serve") {
+		if strings.Contains(p.Settings.LaunchText, fakeEngineForTest(t)) || strings.Contains(p.Settings.LaunchText, "server start") || strings.Contains(p.Settings.LaunchText, "serve") {
 			t.Fatalf("manifest command leaked into editor: %q", p.Settings.LaunchText)
 		}
 		p.Settings.LaunchText = "different serve"
@@ -225,7 +225,7 @@ func TestSettingsArgumentsDoNotIncludeExecutableOrSubcommand(t *testing.T) {
 			t.Fatal(err)
 		}
 		actual, err := applyLiteralLaunch(rt, launch, map[string]string{"host": "127.0.0.1", "port": fmt.Sprint(p.Settings.ServerPort)})
-		if err != nil || actual.Bin != fakeEngineBin || !slices.Equal(actual.Args[:len(rt.EditableLaunch.FixedArgs)], rt.EditableLaunch.FixedArgs) {
+		if err != nil || actual.Bin != fakeEngineForTest(t) || !slices.Equal(actual.Args[:len(rt.EditableLaunch.FixedArgs)], rt.EditableLaunch.FixedArgs) {
 			t.Fatalf("arguments changed the executable/subcommand: %+v %v", actual, err)
 		}
 	})
@@ -643,11 +643,11 @@ func TestSettingsCommandLaunchPreservesLiteralsAndCleansFailedStart(t *testing.T
 	capture := filepath.Join(t.TempDir(), "argv.json")
 	stopped := filepath.Join(t.TempDir(), "stopped")
 	rt := &st.plat.Runtime
-	rt.Start = [][]string{{fakeEngineBin, "captureargs", capture, "--port", "{port}", "--bind", "{host}"}}
+	rt.Start = [][]string{{fakeEngineForTest(t), "captureargs", capture, "--port", "{port}", "--bind", "{host}"}}
 	rt.EditableLaunch.FixedArgs = []string{"captureargs", capture}
 	rt.Ready = nil
 	rt.Health = nil
-	rt.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopped}}
+	rt.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", stopped}}
 	p := settingsRequest(t, e)
 	p.Settings.LaunchText += ` "{port}" "$HOME" "two words" ""`
 	if _, err := e.ConfigureLaunch(context.Background(), settings.Configure{Engine: "fake", Settings: p.Settings}, func(context.Context, bool) error { return nil }); err != nil {
@@ -689,10 +689,10 @@ func TestSettingsEnvironmentReachesEngineAndCanBeEditedAndRemoved(t *testing.T) 
 			if command {
 				capture := filepath.Join(t.TempDir(), "args.json")
 				rt := &st.plat.Runtime
-				rt.Start = [][]string{{fakeEngineBin, "captureargs", capture, "--port", "{port}", "--bind", "{host}"}}
+				rt.Start = [][]string{{fakeEngineForTest(t), "captureargs", capture, "--port", "{port}", "--bind", "{host}"}}
 				rt.EditableLaunch.FixedArgs = []string{"captureargs", capture}
 				rt.Ready, rt.Health = nil, nil
-				rt.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", filepath.Join(t.TempDir(), "stopped")}}
+				rt.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", filepath.Join(t.TempDir(), "stopped")}}
 			}
 			captureEnv := filepath.Join(t.TempDir(), "env.json")
 			prefix, err := formatLaunchText([]string{"PAIR_TEST_ENV_FILE=" + captureEnv, "PAIR_TEST_CUSTOM=first-value", `PAIR_TEST_LITERAL=$HOME {port} C:\new\tools`, "PAIR_TEST_EMPTY="})
@@ -774,10 +774,10 @@ func TestSettingsFailedStopLeavesSavedConfigurationIntact(t *testing.T) {
 	st := settingsState(t, e)
 	capture := filepath.Join(t.TempDir(), "argv.json")
 	rt := &st.plat.Runtime
-	rt.Start = [][]string{{fakeEngineBin, "captureargs", capture, "--port", "{port}", "--bind", "{host}"}}
+	rt.Start = [][]string{{fakeEngineForTest(t), "captureargs", capture, "--port", "{port}", "--bind", "{host}"}}
 	rt.EditableLaunch.FixedArgs = []string{"captureargs", capture}
 	rt.Ready, rt.Health = nil, nil
-	rt.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "failmark", filepath.Join(t.TempDir(), "stop-attempts")}}
+	rt.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "failmark", filepath.Join(t.TempDir(), "stop-attempts")}}
 	if err := e.Start(context.Background(), "fake"); err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +861,7 @@ func TestSettingsOmlxLaunchStateAndRestrictions(t *testing.T) {
 		Platforms: map[string]Platform{
 			runtime.GOOS + "/" + runtime.GOARCH: {
 				Runtime: Runtime{
-					Bin:  fakeEngineBin,
+					Bin:  fakeEngineForTest(t),
 					Port: 1235,
 					Args: []string{"serve"},
 				},
