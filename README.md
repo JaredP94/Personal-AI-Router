@@ -90,6 +90,18 @@ This project exists as a forward-looking extension that introduces practical fea
 12. **Aligned Metrics Layout (0.8.0)**
    - Node cards, job cards and the performance legend show their metrics as aligned key/value groups. Each group names its window once ("Last 60 s", "Since broker start", "This request", "Engine total", "Engine average"), the per-model breakdown is a table, values use tabular figures, and an unreported value reads as a muted dash. Legend rows are buttons, so soloing a series works from the keyboard.
 
+13. **Verified Peers and Saved Machines (0.9.0)**
+   - **Breaking:** a PAIR peer counts for routing, models, telemetry and workloads only after proving itself over its pinned cluster connection. A machine that is not in your cluster shows "Not in your cluster" with a **Pair** action. Upgrade every machine; older peers appear unverified until upgraded.
+   - Add a machine by IP address or hostname (for example over Tailscale) as a **PAIR machine**, which is saved and paired, or as **Engine only**, which uses that engine directly without trusting any PAIR claims. Saved entries keep their kind across restarts.
+
+14. **Engine Settings, Load Options and Download Control (0.9.0)**
+   - Each engine has a Settings panel for its ports, launch arguments and environment variables (for example `OLLAMA_*`), on this device and on verified peers. Changes that would override PAIR's bind address are rejected, and a failed apply restores the previous settings. oMLX shows only its proxy port.
+   - LM Studio models can keep per-model load options (context length, GPU offload, parallelism and other allowlisted tuning options), applied every time PAIR loads them.
+   - Ollama and LM Studio downloads show live progress and can be cancelled; cancelling keeps partial data so the download can resume, and an interrupted download can be retried.
+
+15. **Anthropic Messages API (0.9.0)**
+   - `/v1/messages` routes through every proxy to engines that serve it natively (Ollama 0.14.0+, LM Studio 0.4.1+, oMLX 0.1.0+), so clients such as Claude Code can use PAIR.
+
 ## What is supported
 
 | | |
@@ -122,7 +134,7 @@ with no desktop — but neither is the ordinary way in. Those are covered in
 
 Download PAIR from this fork's
 [GitHub releases page](https://github.com/JaredP94/Personal-AI-Router/releases).
-The latest published build is **`0.8.0` (2026-11-02), an unsigned,
+The latest published build is **`0.9.0` (2026-11-06), an unsigned,
 unnotarized macOS Apple Silicon release**, not an NVIDIA-signed release.
 Earlier releases and candidates remain available on the releases page.
 It includes an arm64 DMG, application ZIP, service-binary ZIP, updater metadata,
@@ -130,7 +142,7 @@ and `SHA256SUMS`; it does not include Windows, Linux, or Intel Mac installers.
 Its privileged helper and automatic helper-based firewall setup are unavailable.
 Automatic updater installation is not certified for this unsigned release;
 use the Terminal installer or a manual replacement. Read its
-[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.8.0).
+[release notes and limitations](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.9.0).
 It is marked as GitHub's Latest release for the Terminal installer and in-app
 update discovery.
 
@@ -139,8 +151,8 @@ Upstream official releases are separate and available at
 Windows `.exe`, Linux `.deb`, and macOS `.dmg` are supported build targets, not a
 promise that this fork publishes all of them for each release.
 
-**Upgrade clients and services together:** Desktop `0.8.0` ships service
-product `2.6.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
+**Upgrade clients and services together:** Desktop `0.9.0` ships service
+product `2.7.0`. Relay protocol stays v2, introduced in `0.7.0-rc.1`. Do not mix
 pre-v2 desktop/TUI clients or individual workers from other bundles with this
 bundle. See the changelog for the changes in this release.
 
@@ -153,7 +165,7 @@ trusted or repair privileged-helper signing:
 curl -fsSL https://raw.githubusercontent.com/JaredP94/Personal-AI-Router/main/scripts/install-mac.sh | bash
 ```
 
-To pin the release, pass `--version 0.8.0` using `bash -s --` after the pipe.
+To pin the release, pass `--version 0.9.0` using `bash -s --` after the pipe.
 The installer checks the downloaded DMG against that release's `SHA256SUMS` before
 installation. This detects corruption but is not a signature or independent
 publisher authentication. Local `--dmg` installs require your own verification.

@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-06
+
+Unsigned, unnotarized **macOS arm64 release** for this fork. Windows, Linux
+desktop and Intel Mac packages are not published. The privileged helper and
+helper-based firewall setup remain unavailable in unsigned builds. Desktop
+`0.9.0` ships service product `2.7.0`. A source build of this release was
+validated on two macOS arm64 machines; see
+[Next release readiness](docs/release-readiness.mdx) for what was and was not
+exercised, and the [release notes](https://github.com/JaredP94/Personal-AI-Router/releases/tag/v0.9.0)
+for limitations.
+
 **Upgrade notes:** **Breaking:** A PAIR peer counts for routing, identity, models,
 telemetry and workloads only after proving itself over its pinned cluster
 connection. A PAIR machine added by address that is not in your cluster shows
