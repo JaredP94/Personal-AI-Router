@@ -9,6 +9,12 @@ SPDX-License-Identifier: Apache-2.0
 
 Concretely, the daemon:
 
+- **Waits for local node-info on startup:** only the first local inventory read
+  retries with the existing 2, 4, 8-second telemetry backoff, under a single
+  15-second request-and-wait budget. A normal listener startup logs no outage;
+  a real outage still warns when that budget ends. After the first successful
+  read (or exhausted startup budget), failures warn immediately as before.
+
 - **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
 - **Browses** `_nvpair-node._tcp` for candidate endpoints. Verified/local records are keyed by authenticated host UUID; unverified previews have independent `preview:` record keys and an explicit `identityVerification: "unverified"` marker. A claimed UUID cannot overwrite or remove a verified record.
 - **Authenticates before enrichment:** remote hardware and broker-owned service metadata come from `ni` over pinned cluster mTLS, with matching certificate/response/metadata identities and an exact-current-pin check after reading. Only authenticated metadata supplies service ports. Models, per-engine attribution and loaded state then come from the authenticated `em` port over pinned mTLS. Local inventory remains an owned loopback read. Public HTTP hardware is display-only and never supplies service models or scheduler telemetry.
