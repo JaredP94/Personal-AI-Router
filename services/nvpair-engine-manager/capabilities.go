@@ -41,6 +41,11 @@ func capabilitiesFor(m *Manifest, platform string, adopted bool, installDir stri
 	if !ok {
 		return Capabilities{}
 	}
+	goos := strings.SplitN(platform, "/", 2)[0]
+	return capabilitiesForPlatform(m, p, goos, adopted, installDir)
+}
+
+func capabilitiesForPlatform(m *Manifest, p Platform, goos string, adopted bool, installDir string) Capabilities {
 	_, list := m.Actions["list_models"]
 	_, pull := m.Actions["pull_model"]
 	deleteAction, deleteModel := m.Actions["delete_model"]
@@ -48,7 +53,6 @@ func capabilitiesFor(m *Manifest, platform string, adopted bool, installDir stri
 	if uninstall && p.Runtime.modeOrDefault() == "command" {
 		// Uninstall declines a command-mode engine PAIR has no record of
 		// installing, so offering it would only lead to that refusal.
-		goos := strings.SplitN(platform, "/", 2)[0]
 		creates := ""
 		if p.Install != nil {
 			creates = p.Install.Creates

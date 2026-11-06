@@ -196,7 +196,8 @@ func (e *Executor) runRemovePathAction(ctx context.Context, st *engineState, act
 	root = expandPath(root)
 
 	if act.ModelResolution == modelResolutionLMSDiskPath {
-		cli := controlCLIPath(st.plat, st.installDir, runtime.GOOS)
+		plat, installDir := st.platformSnapshot()
+		cli := controlCLIPath(&plat, installDir, runtime.GOOS)
 		targets, err := e.lmsDiskPathsToDelete(ctx, cli, root, vars["model"])
 		if err != nil {
 			return nil, err
@@ -252,8 +253,9 @@ func (e *Executor) runCmdAction(ctx context.Context, st *engineState, act Action
 		}
 	}
 	vars["port"] = strconv.Itoa(port)
-	vars["install_dir"] = st.installDir
-	if cli := controlCLIPath(st.plat, st.installDir, runtime.GOOS); cli != "" {
+	plat, installDir := st.platformSnapshot()
+	vars["install_dir"] = installDir
+	if cli := controlCLIPath(&plat, installDir, runtime.GOOS); cli != "" {
 		vars["cli"] = cli
 	}
 

@@ -407,6 +407,10 @@ lifecycle lock. A normal status read during an operation returns its current
 snapshot; explicit port checks and model sweeps wait within their caller's
 budget. Observations are discarded if a lifecycle operation or a newer state
 change intervened, so a delayed readiness reply cannot undo stop or set-port.
+Platform readers outside the engine operation lock copy the configuration under
+the state mutex before detection, actions, profile observations or health work;
+settings rollback cannot race those reads. Filesystem capability checks also run
+outside the state mutex.
 
 The five-second model sweep budget includes status probes and operation waits.
 `GET /v1/models` returns HTTP 503 if the sweep cannot complete in time, rather

@@ -83,6 +83,20 @@ type engineState struct {
 	restoreModels map[string]bool
 }
 
+// platformSnapshot copies the mutable platform under mu; callers must release
+// mu before invoking it, and perform probes/I/O only after it returns.
+// A shallow copy is safe: Detect/DetectRequires, Install/Uninstall, and Runtime's
+// slices, maps and pointers (including Ready, Health, Stop and EditableLaunch)
+// are immutable after publication. Settings replace LaunchArgs/LaunchEnv or the
+// whole Runtime, never their referents; SetPort only replaces Runtime.Port.
+// installDir (like modelsDir) is fixed when state is created; include it so
+// consumers resolve paths from the same configuration snapshot.
+func (st *engineState) platformSnapshot() (Platform, string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return *st.plat, st.installDir
+}
+
 // lockOperation marks the entire serialized operation, including external I/O.
 func (st *engineState) lockOperation() {
 	st.opMu.Lock()

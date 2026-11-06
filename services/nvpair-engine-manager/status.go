@@ -62,7 +62,8 @@ func (e *Executor) Detect(engine string) (bool, error) {
 // detectPath observes the filesystem without publishing a partial state. A
 // passive status check applies this result together with its port observation.
 func detectPath(st *engineState) (bool, string) {
-	binPath := detectedExecutable(st.plat, st.installDir, runtime.GOOS)
+	plat, installDir := st.platformSnapshot()
+	binPath := detectedExecutable(&plat, installDir, runtime.GOOS)
 	return binPath != "", binPath
 }
 
@@ -113,8 +114,9 @@ func (e *Executor) statusWithContext(ctx context.Context, engine string, probePo
 				}
 			}
 			result := statusLocked(engine, st)
+			adopted := st.adopted
 			st.mu.Unlock()
-			return result, nil
+			return e.withCapabilities(result, st, adopted), nil
 		}
 		key := statusProbeKey{revision: st.revision, port: port}
 		if st.statusRuns == nil {
@@ -162,8 +164,9 @@ func (e *Executor) statusWithContext(ctx context.Context, engine string, probePo
 				continue
 			}
 			result := statusLocked(engine, st)
+			adopted := st.adopted
 			st.mu.Unlock()
-			return result, nil
+			return e.withCapabilities(result, st, adopted), nil
 		}
 		return e.snapshot(engine, st), nil
 	}
@@ -195,19 +198,28 @@ func (e *Executor) Errors() []serviceError {
 
 func (e *Executor) snapshot(engine string, st *engineState) EngineStatus {
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	return statusLocked(engine, st)
+	result := statusLocked(engine, st)
+	adopted := st.adopted
+	st.mu.Unlock()
+	return e.withCapabilities(result, st, adopted)
+}
+
+// Capability derivation may probe installation markers and executable paths.
+// Keep that I/O outside mu and use the live platform, not the registry original.
+func (e *Executor) withCapabilities(result EngineStatus, st *engineState, adopted bool) EngineStatus {
+	plat, installDir := st.platformSnapshot()
+	result.Capabilities = capabilitiesForPlatform(st.manifest, plat, runtime.GOOS, adopted, installDir)
+	return result
 }
 
 func statusLocked(engine string, st *engineState) EngineStatus {
 	return EngineStatus{
-		Engine:       engine,
-		DisplayName:  st.manifest.DisplayName,
-		Installed:    st.installed,
-		Running:      st.running,
-		Healthy:      st.healthy,
-		Port:         st.port,
-		Capabilities: capabilitiesFor(st.manifest, runtime.GOOS+"/"+runtime.GOARCH, st.adopted, st.installDir),
+		Engine:      engine,
+		DisplayName: st.manifest.DisplayName,
+		Installed:   st.installed,
+		Running:     st.running,
+		Healthy:     st.healthy,
+		Port:        st.port,
 	}
 }
 

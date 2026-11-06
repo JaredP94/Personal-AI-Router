@@ -917,9 +917,11 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 	// Settings rollback can replace Runtime after this loop was canceled but
 	// before its goroutine starts. Keep a private probe snapshot, and release
 	// mu before waiting or performing any network I/O.
-	st.mu.Lock()
-	h := *st.plat.Runtime.Health
-	st.mu.Unlock()
+	plat, _ := st.platformSnapshot()
+	if plat.Runtime.Health == nil {
+		return
+	}
+	h := *plat.Runtime.Health
 	interval := 5 * time.Second
 	if h.IntervalS > 0 {
 		interval = time.Duration(h.IntervalS) * time.Second
