@@ -109,8 +109,15 @@ On macOS arm64, the bundled manifest checks these CLI paths in order:
 2. `/opt/homebrew/bin/omlx`
 3. `/usr/local/bin/omlx`
 
+The manifest also requires `/Applications/oMLX.app/Contents/MacOS/omlx-cli`,
+the target of the app's launcher (`detect_requires`). A stale launcher without
+that target reports **not installed**; saved ON intent is retained but skipped
+at launch without an error. In desktop, use **Install oMLX**; in TUI Engines,
+select oMLX and press **i** to reinstall the app. PAIR does not delete or alter
+`~/.omlx` to repair detection.
+
 The Homebrew and `/usr/local` candidates are assumed to provide the same `omlx`
-CLI and `start`/`stop` semantics as the install.sh installation. This change does
+CLI and `start`/`stop` semantics as the app's launcher. This change does
 not verify vendor CLI behavior. No app-bundle executable is a candidate:
 `oMLX.app/Contents/MacOS/oMLX` is the GUI executable (also matched by lowercase
 `omlx` on case-insensitive macOS filesystems), and `omlx-cli` and other bundle
@@ -136,6 +143,39 @@ without `models_dir`.
 The bundled uninstalls remove only what an install put down: Ollama's app or
 install directory, and LM Studio's `~/.lmstudio/bin` and `llmster` runtime. LM
 Studio's conversations, credentials and settings are left where they are.
+
+### Unsupported-target build fallbacks
+
+FreeBSD can compile the engine manager, but is not a supported platform and has
+no bundled engine manifests. Its fallbacks refuse app install-identity claims
+and use ordinary process waiting rather than detached-downloader exit watching.
+This does not extend the supported platform list.
+
+### Fake-engine test cleanup
+
+Each fake-engine executable (including test copies) has a per-test owner under
+the run's `nvpair-em-test-*` directory. Before doing any work, the fake records
+its PID and executable identity there; detached children inherit registration.
+A `t.Cleanup` sweep force-kills owned process groups on Unix (process trees on
+Windows) and fails the test if any remain. `TestMain` also checks registered
+children and processes whose executables are under this run's directory, sweeps
+survivors, and fails the run if a per-test cleanup was missed. Sweeps verify
+executable identity before signaling PIDs and never target other test runs.
+`TestFakeEngineCleanupOnFailedTest` exercises cleanup after a fatal assertion.
+
+### Ollama: pinned initial download
+
+Fresh installs use Ollama **v0.40.15** from
+[its GitHub release](https://github.com/ollama/ollama/releases/tag/v0.40.15),
+not a floating latest URL. Each SHA-256 comes from that release's
+[`sha256sum.txt`](https://github.com/ollama/ollama/releases/download/v0.40.15/sha256sum.txt):
+`Ollama-darwin.zip` (both Mac architectures),
+`ollama-windows-amd64.zip`, `ollama-windows-arm64.zip`,
+`ollama-linux-amd64.tar.zst`, and `ollama-linux-arm64.tar.zst`.
+All five artifacts were independently downloaded into a fresh temporary directory
+and hashed without executing or installing them. v0.40.15 exceeds the 0.14.0
+minimum needed for `/v1/messages`. Ollama's own updates continue as before;
+the pin only selects the initial install, not a permanent runtime version.
 
 ### oMLX: the release disk image
 
@@ -367,6 +407,10 @@ lifecycle lock. A normal status read during an operation returns its current
 snapshot; explicit port checks and model sweeps wait within their caller's
 budget. Observations are discarded if a lifecycle operation or a newer state
 change intervened, so a delayed readiness reply cannot undo stop or set-port.
+Platform readers outside the engine operation lock copy the configuration under
+the state mutex before detection, actions, profile observations or health work;
+settings rollback cannot race those reads. Filesystem capability checks also run
+outside the state mutex.
 
 The five-second model sweep budget includes status probes and operation waits.
 `GET /v1/models` returns HTTP 503 if the sweep cannot complete in time, rather
@@ -553,6 +597,15 @@ to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
 SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
 engines we spawn can't receive a graceful (non-`/F`) close, so a forced
 terminate is the only signal that actually stops them.
+
+Command-mode stop (including oMLX) gives the official stop CLI
+`max(grace_s, 5s)` to return, then up to `grace_s` (default 5s) for shutdown.
+It confirms three consecutive connection refusals **and**, when the host can
+resolve it, exit of the process observed on the port before stop. Closing the
+port alone does not mean app teardown is complete. The state mutex is never
+held across these waits; lifecycle operations remain serialized so an immediate
+start cannot overtake stop. A timeout leaves the engine running, not falsely
+stopped, and is returned to the caller.
 
 ### Adoption — start may attach to an engine it didn't launch
 

@@ -65,7 +65,7 @@ func TestModelFromParams(t *testing.T) {
 // still returns the pull's terminal result — matching what remote pulls already
 // surface via engine:remote-progress.
 func TestActionPullModelStreamsProgress(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 
 	var mu sync.Mutex
@@ -123,8 +123,8 @@ func TestActionPullModelStreamsProgress(t *testing.T) {
 // returns the command's terminal result — the counterpart to the HTTP streaming
 // path in TestActionPullModelStreamsProgress.
 func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
-	m.Actions["pull_model"] = Action{Cmd: []string{fakeEngineBin, "echo", "pulled:{model}"}}
+	m := testEngineManifest(fakeEngineForTest(t))
+	m.Actions["pull_model"] = Action{Cmd: []string{fakeEngineForTest(t), "echo", "pulled:{model}"}}
 
 	var mu sync.Mutex
 	var pulls []map[string]any
@@ -169,7 +169,7 @@ func TestActionPullModelCmdMarkerAndResult(t *testing.T) {
 // error), so a UI that already stopped waiting on the synchronous call still
 // converges off "pulling" instead of appearing stuck.
 func TestActionPullModelFailureEmitsTerminalError(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["pull_model"] = Action{HTTP: &ActionHTTP{Method: "POST", Path: "/api/pull"}}
 
 	var mu sync.Mutex

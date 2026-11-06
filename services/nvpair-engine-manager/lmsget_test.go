@@ -142,9 +142,9 @@ func TestIsLMSTransientDownloadError(t *testing.T) {
 // bare Hub id and succeeds for a Hugging Face URL — proving the runner
 // falls back from Hub to Hugging Face and returns the winning candidate.
 func TestCmdActionLMSGetFallback(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["pull_model"] = Action{
-		Cmd:             []string{fakeEngineBin, "resolvesim", "{model}"},
+		Cmd:             []string{fakeEngineForTest(t), "resolvesim", "{model}"},
 		ModelResolution: modelResolutionLMSGet,
 	}
 	ex := newTestExecutor(t, m)
@@ -163,9 +163,9 @@ func TestCmdActionLMSGetFallback(t *testing.T) {
 // resolve, the action surfaces the (last) resolve error rather than
 // silently succeeding.
 func TestCmdActionLMSGetAllFail(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["pull_model"] = Action{
-		Cmd:             []string{fakeEngineBin, "resolvesim", "{model}"},
+		Cmd:             []string{fakeEngineForTest(t), "resolvesim", "{model}"},
 		ModelResolution: modelResolutionLMSGet,
 	}
 	ex := newTestExecutor(t, m)
@@ -189,9 +189,9 @@ func TestCmdActionLMSGetResumesTransientDownload(t *testing.T) {
 	defer setResumeBudget(t, 3, time.Millisecond)()
 
 	counter := filepath.Join(t.TempDir(), "n")
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["pull_model"] = Action{
-		Cmd:             []string{fakeEngineBin, "downloadsim", counter, "2", "{model}"},
+		Cmd:             []string{fakeEngineForTest(t), "downloadsim", counter, "2", "{model}"},
 		ModelResolution: modelResolutionLMSGet,
 	}
 	ex := newTestExecutor(t, m)
@@ -213,9 +213,9 @@ func TestCmdActionLMSGetResumeExhausted(t *testing.T) {
 	defer setResumeBudget(t, 3, time.Millisecond)()
 
 	counter := filepath.Join(t.TempDir(), "n")
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["pull_model"] = Action{
-		Cmd:             []string{fakeEngineBin, "downloadsim", counter, "99", "{model}"},
+		Cmd:             []string{fakeEngineForTest(t), "downloadsim", counter, "99", "{model}"},
 		ModelResolution: modelResolutionLMSGet,
 	}
 	ex := newTestExecutor(t, m)

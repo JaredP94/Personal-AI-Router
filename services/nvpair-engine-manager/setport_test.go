@@ -53,7 +53,7 @@ func newBundledExecutor(t *testing.T, overrideDir string) *Executor {
 
 func adoptedEngineFixture(t *testing.T, engine string, port int, rt Runtime) *Executor {
 	t.Helper()
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Engine = engine
 	m.DisplayName = engine
 	for key, platform := range m.Platforms {
@@ -84,8 +84,8 @@ func adoptedCommandEngineFixture(t *testing.T, engine string, port int) (*Execut
 	ex := adoptedEngineFixture(t, engine, port, Runtime{
 		Mode:  "command",
 		Port:  port,
-		Start: [][]string{{fakeEngineBin, "touch", startMarker}},
-		Stop:  &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}},
+		Start: [][]string{{fakeEngineForTest(t), "touch", startMarker}},
+		Stop:  &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", stopMarker}},
 	})
 	return ex,
 		func() bool { return fileExists(filepath.Join(dir, "stopped-"+strconv.Itoa(port))) },
@@ -95,7 +95,7 @@ func adoptedCommandEngineFixture(t *testing.T, engine string, port int) (*Execut
 func adoptedProcessEngineFixture(t *testing.T, engine string, port int) *Executor {
 	t.Helper()
 	return adoptedEngineFixture(t, engine, port, Runtime{
-		Bin:  fakeEngineBin,
+		Bin:  fakeEngineForTest(t),
 		Port: port,
 		Stop: &StopSpec{Signal: "term", GraceS: 3},
 	})
@@ -106,7 +106,7 @@ func adoptedCommandEngineWithoutStopFixture(t *testing.T, engine string, port in
 	return adoptedEngineFixture(t, engine, port, Runtime{
 		Mode:  "command",
 		Port:  port,
-		Start: [][]string{{fakeEngineBin, "echo", "up"}},
+		Start: [][]string{{fakeEngineForTest(t), "echo", "up"}},
 	})
 }
 

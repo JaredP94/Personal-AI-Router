@@ -23,7 +23,7 @@ func TestLMStudioDeleteModelRemovePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
 		Result: &ActionResult{Array: "models", Field: "name"},
@@ -71,14 +71,15 @@ func deleteModelRestartManifest(t *testing.T, root, bin string) *Manifest {
 // a test may delete or corrupt it without disturbing any other test.
 func privateEngineBin(t *testing.T) string {
 	t.Helper()
-	data, err := os.ReadFile(fakeEngineBin)
+	data, err := os.ReadFile(fakeEngineForTest(t))
 	if err != nil {
 		t.Fatalf("read fake engine: %v", err)
 	}
-	bin := filepath.Join(t.TempDir(), "fake-engine"+filepath.Ext(fakeEngineBin))
+	bin := filepath.Join(t.TempDir(), "fake-engine"+filepath.Ext(fakeEngineForTest(t)))
 	if err := os.WriteFile(bin, data, 0o755); err != nil {
 		t.Fatalf("write fake engine copy: %v", err)
 	}
+	registerFakeExecutable(t, bin, fakeProcessDir(t))
 	return bin
 }
 
@@ -106,7 +107,7 @@ func TestDeleteModelRestartAfterBouncesRunningEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ex := newTestExecutor(t, deleteModelRestartManifest(t, root, fakeEngineBin))
+	ex := newTestExecutor(t, deleteModelRestartManifest(t, root, fakeEngineForTest(t)))
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	if err := ex.Start(ctx, "fake"); err != nil {
@@ -137,7 +138,7 @@ func TestDeleteModelRestartAfterLeavesStoppedEngineDown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ex := newTestExecutor(t, deleteModelRestartManifest(t, root, fakeEngineBin))
+	ex := newTestExecutor(t, deleteModelRestartManifest(t, root, fakeEngineForTest(t)))
 	if _, err := ex.Action(context.Background(), "fake", "delete_model", []byte(`{"model":"`+modelRel+`"}`)); err != nil {
 		t.Fatalf("delete_model: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestDeleteModelWithoutRestartAfterDoesNotBounce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := deleteModelRestartManifest(t, root, fakeEngineBin)
+	m := deleteModelRestartManifest(t, root, fakeEngineForTest(t))
 	act := m.Actions["delete_model"]
 	act.RestartAfter = false
 	m.Actions["delete_model"] = act
@@ -306,7 +307,7 @@ func hasRestartAfter(m *Manifest) bool {
 // restart_after makes ("the effect is visible when this replies") is only
 // keepable if doStart waits for a readiness probe.
 func TestRestartAfterRequiresReadinessProbe(t *testing.T) {
-	m := deleteModelRestartManifest(t, t.TempDir(), fakeEngineBin)
+	m := deleteModelRestartManifest(t, t.TempDir(), fakeEngineForTest(t))
 	for key, p := range m.Platforms {
 		p.Runtime.Ready = nil
 		m.Platforms[key] = p

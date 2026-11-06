@@ -69,7 +69,7 @@ func TestRunOpRejectsBadBind(t *testing.T) {
 
 func TestRunOpInstallAutostart(t *testing.T) {
 	var out bytes.Buffer
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	m := NewManager(NewCodec(&out), ex, nil)
 	allowReconciledTestStarts(t, m)
@@ -94,7 +94,7 @@ func TestStatusQueriesDoNotBlockMessageDispatchDuringEngineOperation(t *testing.
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+			ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 			st, err := ex.state("fake")
 			if err != nil {
 				t.Fatal(err)

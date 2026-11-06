@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,6 +77,30 @@ func bstr(m map[string]any, k string) string {
 }
 
 func main() {
+	// Registration is test-only and precedes every subcommand, including
+	// detached download children. It also follows copies of this executable.
+	if root := os.Getenv("PAIR_TEST_PROCESS_ROOT"); root != "" {
+		image, err := os.Executable()
+		if err != nil {
+			os.Exit(2)
+		}
+		image, err = filepath.EvalSymlinks(image)
+		if err != nil {
+			os.Exit(2)
+		}
+		key := fmt.Sprintf("%x", sha256.Sum256([]byte(image)))
+		owner, err := os.ReadFile(filepath.Join(root, "owners", key))
+		if err != nil {
+			os.Exit(2)
+		}
+		record, _ := json.Marshal(struct {
+			PID   int
+			Image string
+		}{os.Getpid(), image})
+		if os.WriteFile(filepath.Join(string(owner), fmt.Sprintf("process-%d", os.Getpid())), record, 0600) != nil {
+			os.Exit(2)
+		}
+	}
 	if path := os.Getenv("PAIR_TEST_ENV_FILE"); path != "" {
 		values := map[string]string{}
 		for _, key := range []string{"PAIR_TEST_CUSTOM", "PAIR_TEST_LITERAL", "PAIR_TEST_EMPTY", "OLLAMA_HOST"} {
@@ -179,6 +205,31 @@ func main() {
 			if err != nil || os.WriteFile(os.Args[2], data, 0o600) != nil {
 				os.Exit(1)
 			}
+			return
+		case "shutdown-tail":
+			// Close the listener before asynchronous process teardown completes.
+			ln, err := net.Listen("tcp", os.Args[3])
+			if err != nil {
+				os.Exit(2)
+			}
+			go func() {
+				for {
+					conn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					_ = conn.Close()
+				}
+			}()
+			for {
+				if _, err := os.Stat(os.Args[2]); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			_ = ln.Close()
+			delay, _ := time.ParseDuration(os.Args[4])
+			time.Sleep(delay)
 			return
 		case "touch": // write a marker file so a test can assert the command ran
 			if len(os.Args) > 2 {

@@ -133,7 +133,7 @@ func TestE2EPrepareShutdownCancelsStartingEngine(t *testing.T) {
 	cfg := t.TempDir()
 	home := t.TempDir()
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	platform := manifest.Platforms[hostKey()]
 	platform.Runtime.Env["FAKE_PID_FILE"] = pidFile
 	platform.Runtime.Env["FAKE_START_DELAY"] = "1m"
@@ -256,7 +256,7 @@ func (m *e2eManager) stop(t *testing.T) {
 }
 
 func writeFakeManifest(t *testing.T, dir string) {
-	writeE2EManifest(t, dir, testEngineManifest(fakeEngineBin))
+	writeE2EManifest(t, dir, testEngineManifest(fakeEngineForTest(t)))
 }
 
 func writeE2EManifest(t *testing.T, dir string, manifest *Manifest) {

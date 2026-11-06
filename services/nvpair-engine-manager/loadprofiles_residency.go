@@ -45,7 +45,8 @@ func (e *Executor) observeLoadProfile(ctx context.Context, snap *settings.LoadPr
 		return
 	}
 	act := st.manifest.Actions["load_model"]
-	argv, err := resolveArgs(act.Cmd, map[string]string{"model": snap.Model, "port": strconv.Itoa(port), "install_dir": st.installDir, "cli": controlCLIPath(st.plat, st.installDir, runtime.GOOS)})
+	plat, installDir := st.platformSnapshot()
+	argv, err := resolveArgs(act.Cmd, map[string]string{"model": snap.Model, "port": strconv.Itoa(port), "install_dir": installDir, "cli": controlCLIPath(&plat, installDir, runtime.GOOS)})
 	if err != nil || len(argv) == 0 {
 		return
 	}

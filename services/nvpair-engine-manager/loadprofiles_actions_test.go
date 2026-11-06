@@ -25,12 +25,12 @@ func profileActionExecutor(t *testing.T) (*Executor, string, string) {
 	t.Helper()
 	capture := filepath.Join(t.TempDir(), "argv.jsonl")
 	t.Setenv("PAIR_TEST_PROFILE_CAPTURE", capture)
-	bin := filepath.Join(t.TempDir(), "profile-cli"+filepath.Ext(fakeEngineBin))
+	bin := filepath.Join(t.TempDir(), "profile-cli"+filepath.Ext(fakeEngineForTest(t)))
 	if output, err := exec.Command("go", "build", "-o", bin, "./testdata/fakeprofilecli").CombinedOutput(); err != nil {
 		t.Fatalf("build profile CLI fixture: %v %s", err, output)
 	}
 	root := t.TempDir()
-	m := deleteModelRestartManifest(t, root, fakeEngineBin)
+	m := deleteModelRestartManifest(t, root, fakeEngineForTest(t))
 	m.Engine = "lmstudio"
 	m.Actions["load_model"] = Action{Cmd: []string{bin, "load", "{model}"}}
 	m.Actions["unload_model"] = Action{Cmd: []string{bin, "unload", "{model}"}}

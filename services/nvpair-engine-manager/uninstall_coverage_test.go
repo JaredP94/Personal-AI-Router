@@ -54,7 +54,7 @@ func TestCommandUninstallCoverage(t *testing.T) {
 			}
 			p.Uninstall.Run = rmCmd(target)
 			stopMarker := filepath.Join(home, "stop-ran")
-			p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}}
+			p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", stopMarker}}
 			m.Platforms[key] = p
 			ex := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), nil, base))
 			ex.detectTimeout = 0 // never wait for a destructive-command regression

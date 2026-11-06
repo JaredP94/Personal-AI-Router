@@ -132,7 +132,7 @@ func TestExtractStringsResultDistinguishesEmptyFromUnknown(t *testing.T) {
 // with a Result-bearing list_models action contributes its models; a stopped
 // engine contributes nothing.
 func TestModels(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
 		Result: &ActionResult{Array: "models", Field: "name"},
@@ -167,7 +167,7 @@ func TestModels(t *testing.T) {
 // flat union and the per-engine attribution are both derived from one sweep,
 // and a stopped engine yields neither.
 func TestModelsResult(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
 		Result: &ActionResult{Array: "models", Field: "name"},
@@ -216,8 +216,8 @@ func TestModelsResult(t *testing.T) {
 // loadedActionManifest is testEngineManifest with both list_models (/api/tags)
 // and loaded_models (/api/ps) actions declared, so the executor surfaces
 // LoadedByEngine from the fake engine's resident set.
-func loadedActionManifest() *Manifest {
-	m := testEngineManifest(fakeEngineBin)
+func loadedActionManifest(t *testing.T) *Manifest {
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
 		Result: &ActionResult{Array: "models", Field: "name"},
@@ -251,7 +251,7 @@ func setLoaded(t *testing.T, ex *Executor, names []string) {
 // eviction leaves the engine key present with an empty list ("running, nothing
 // loaded") while the installed list is unchanged.
 func TestModelsResultLoaded(t *testing.T) {
-	ex := newTestExecutor(t, loadedActionManifest())
+	ex := newTestExecutor(t, loadedActionManifest(t))
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 
@@ -278,7 +278,7 @@ func TestModelsResultLoaded(t *testing.T) {
 // action contributes no LoadedByEngine key (the map stays nil), so the field is
 // omitted on the wire for engines that don't support loaded reporting.
 func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["list_models"] = Action{
 		HTTP:   &ActionHTTP{Method: "GET", Path: "/api/tags"},
 		Result: &ActionResult{Array: "models", Field: "name"},
@@ -301,7 +301,7 @@ func TestModelsResultNoLoadedActionOmitsKey(t *testing.T) {
 // change, and a sweep after an eviction reports the engine as changed and
 // carries the fresh full model result as the push payload.
 func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
-	ex := newTestExecutor(t, loadedActionManifest())
+	ex := newTestExecutor(t, loadedActionManifest(t))
 	ctx := context.Background()
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	if err := ex.Start(ctx, "fake"); err != nil {
@@ -336,7 +336,7 @@ func TestSweepLoadedSeedsThenEmitsOnChange(t *testing.T) {
 // from a stop) is NOT reported as changed and keeps its last-good baseline, so a
 // single blip can't emit a spurious drop-then-re-add pair.
 func TestSweepLoadedRetainsLastGoodOnTransientMiss(t *testing.T) {
-	ex := newTestExecutor(t, loadedActionManifest())
+	ex := newTestExecutor(t, loadedActionManifest(t))
 	prev := map[string][]string{"fake": {"llama3.2:1b"}}
 	// The engine isn't started, so ModelsResult reports it neither running nor
 	// queryable: LoadedByEngine has no "fake" key this sweep.

@@ -29,7 +29,7 @@ func TestLMSCompletionStopsDownloaderChildAfterLauncherExit(t *testing.T) {
 		}
 	}}
 	go func() {
-		_, err := runLMSDownloadCommand(ctx, []string{fakeEngineBin, "shutdown-download-fixture", marker, "exit-parent", childMarker}, output)
+		_, err := runLMSDownloadCommand(ctx, []string{fakeEngineForTest(t), "shutdown-download-fixture", marker, "exit-parent", childMarker}, output)
 		done <- err
 	}()
 	select {

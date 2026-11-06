@@ -64,7 +64,7 @@ func TestDownloadUnpinned(t *testing.T) {
 		_, _ = w.Write(payload)
 	}))
 	defer srv.Close()
-	ex := newTestExecutor(t, testEngineManifest(fakeEngineBin))
+	ex := newTestExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	p, err := ex.download(context.Background(), "fake", &Fetch{URL: srv.URL}) // no SHA256
 	if err != nil {
 		t.Fatalf("unpinned download should succeed, got %v", err)
@@ -104,7 +104,7 @@ func TestUninstallRetries(t *testing.T) {
 
 	dir := t.TempDir()
 	binCopy := filepath.Join(dir, "fake"+exeExt())
-	copyFile(t, fakeEngineBin, binCopy)
+	copyFile(t, fakeEngineForTest(t), binCopy)
 	marker := filepath.Join(dir, "attempts")
 
 	m := testEngineManifest(binCopy)
@@ -171,15 +171,15 @@ func TestActionReservedPlaceholderWins(t *testing.T) {
 	m := &Manifest{
 		Engine: "fake", DisplayName: "Fake", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
-			Detect:  []string{fakeEngineBin},
-			Runtime: Runtime{CLI: fakeEngineBin, Bin: fakeEngineBin},
+			Detect:  []string{fakeEngineForTest(t)},
+			Runtime: Runtime{CLI: fakeEngineForTest(t), Bin: fakeEngineForTest(t)},
 		}},
 		Actions: map[string]Action{"echo": {Cmd: []string{"{cli}", "echo", "{model}"}}},
 	}
 	ex, _ := capturingExecutor(t, m)
 
 	// Malicious params try to override {cli} (argv[0]). Reserved must win,
-	// so the command runs fakeEngineBin (not the bogus path) and echoes
+	// so the command runs fakeEngineForTest(t) (not the bogus path) and echoes
 	// the model value.
 	res, err := ex.Action(context.Background(), "fake", "echo",
 		json.RawMessage(`{"cli":"definitely-not-a-real-binary","model":"safevalue"}`))
@@ -197,9 +197,9 @@ func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
 	m := &Manifest{
 		Engine: "slow", DisplayName: "Slow", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
-			Detect: []string{fakeEngineBin},
+			Detect: []string{fakeEngineForTest(t)},
 			Runtime: Runtime{
-				Bin:   fakeEngineBin,
+				Bin:   fakeEngineForTest(t),
 				Args:  []string{"noserve"}, // runs but never binds
 				Ready: &Probe{TCP: "127.0.0.1:{port}", TimeoutS: 1},
 			},
@@ -234,7 +234,7 @@ func TestReadinessTimeoutNoSpuriousExit(t *testing.T) {
 // for engines whose initialization finishes after several failed probes. Start
 // must keep the owned process alive until the configured finite budget expires.
 func TestStartWaitsForDelayedReadinessWithinBudget(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	p := m.Platforms[hostKey()]
 	p.Runtime.Env["FAKE_START_DELAY"] = "750ms"
 	p.Runtime.Ready.TimeoutS = 5
@@ -263,7 +263,7 @@ func TestStartWaitsForDelayedReadinessWithinBudget(t *testing.T) {
 // TestConcurrentStartIsSerialized guards the per-engine op lock: many
 // concurrent Starts must not race or double-spawn. Run under -race.
 func TestConcurrentStartIsSerialized(t *testing.T) {
-	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
+	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -285,8 +285,8 @@ func TestInstallChecksumMismatchReported(t *testing.T) {
 		Engine: "fake", DisplayName: "Fake", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
 			Detect:  []string{filepath.Join(t.TempDir(), "never"+exeExt())}, // stays not-installed
-			Install: &Install{Fetch: &Fetch{URL: srv.URL, SHA256: "deadbeef"}, Run: []string{fakeEngineBin, "echo", "x"}, Mode: "user"},
-			Runtime: Runtime{Bin: fakeEngineBin},
+			Install: &Install{Fetch: &Fetch{URL: srv.URL, SHA256: "deadbeef"}, Run: []string{fakeEngineForTest(t), "echo", "x"}, Mode: "user"},
+			Runtime: Runtime{Bin: fakeEngineForTest(t)},
 		}},
 	}
 	ex, c := capturingExecutor(t, m)
@@ -318,12 +318,12 @@ func TestHealthFlipReportsAndClears(t *testing.T) {
 	m := &Manifest{
 		Engine: "d", DisplayName: "Daemon", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
-			Detect: []string{fakeEngineBin},
+			Detect: []string{fakeEngineForTest(t)},
 			Runtime: Runtime{
 				Mode:   "command",
 				Port:   port,
-				Start:  [][]string{{fakeEngineBin, "echo", "up"}},
-				Stop:   &StopSpec{Cmd: []string{fakeEngineBin, "echo", "down"}},
+				Start:  [][]string{{fakeEngineForTest(t), "echo", "up"}},
+				Stop:   &StopSpec{Cmd: []string{fakeEngineForTest(t), "echo", "down"}},
 				Ready:  &Probe{HTTP: "http://127.0.0.1:{port}/", Status: 200, TimeoutS: 5},
 				Health: &Probe{HTTP: "http://127.0.0.1:{port}/", Status: 200, IntervalS: 1},
 			},
@@ -342,7 +342,7 @@ func TestHealthFlipReportsAndClears(t *testing.T) {
 }
 
 func TestUnexpectedExitReported(t *testing.T) {
-	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
+	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	if err := ex.Start(context.Background(), "fake"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestUnexpectedExitReported(t *testing.T) {
 }
 
 func TestNormalStopIsSilent(t *testing.T) {
-	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
+	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	if err := ex.Start(context.Background(), "fake"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestNormalStopIsSilent(t *testing.T) {
 }
 
 func TestRestartProcess(t *testing.T) {
-	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
+	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	t.Cleanup(func() { _ = ex.Stop("fake") })
 	if err := ex.Start(context.Background(), "fake"); err != nil {
 		t.Fatalf("start: %v", err)
@@ -386,7 +386,7 @@ func TestRestartProcess(t *testing.T) {
 }
 
 func TestActionUnknownAndHTTPError(t *testing.T) {
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	m.Actions["err"] = Action{HTTP: &ActionHTTP{Method: "GET", Path: "/api/error"}}
 	ex, _ := capturingExecutor(t, m)
 	t.Cleanup(func() { _ = ex.Stop("fake") })
@@ -482,7 +482,7 @@ func TestDownloadSizeCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineBin))
+	ex, _ := capturingExecutor(t, testEngineManifest(fakeEngineForTest(t)))
 	if _, err := ex.download(context.Background(), "x", &Fetch{URL: srv.URL, SHA256: "abc"}); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected size-cap error, got %v", err)
 	}
@@ -507,12 +507,12 @@ func TestStopClearsUnhealthy(t *testing.T) {
 	m := &Manifest{
 		Engine: "d", DisplayName: "Daemon", ManifestVersion: 1,
 		Platforms: map[string]Platform{hostKey(): {
-			Detect: []string{fakeEngineBin},
+			Detect: []string{fakeEngineForTest(t)},
 			Runtime: Runtime{
 				Mode:   "command",
 				Port:   port,
-				Start:  [][]string{{fakeEngineBin, "echo", "up"}},
-				Stop:   &StopSpec{Cmd: []string{fakeEngineBin, "touch", marker}, GraceS: 2},
+				Start:  [][]string{{fakeEngineForTest(t), "echo", "up"}},
+				Stop:   &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", marker}, GraceS: 2},
 				Ready:  &Probe{HTTP: "http://127.0.0.1:{port}/", Status: 200, TimeoutS: 5},
 				Health: &Probe{HTTP: "http://127.0.0.1:{port}/", Status: 200, IntervalS: 1},
 			},

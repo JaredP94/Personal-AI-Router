@@ -12,7 +12,7 @@ import (
 )
 
 func TestReservedAliasPortBlocksLocalAndRemoteStarts(t *testing.T) {
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	reg := NewRegistry()
 	reg.engines[manifest.Engine] = manifest
 	exec := reconciledTestExecutor(NewExecutor(reg, NewReporter(nil), func(string, any) {}, t.TempDir()))

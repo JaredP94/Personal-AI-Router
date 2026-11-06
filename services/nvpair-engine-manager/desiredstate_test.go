@@ -46,13 +46,13 @@ func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 	baseDir := t.TempDir()
 	ctx := context.Background()
 
-	first := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	first := desiredTestExecutor(t, testEngineManifest(fakeEngineForTest(t)), baseDir)
 	if err := first.Start(ctx, "fake"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	first.StopAll()
 
-	second := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	second := desiredTestExecutor(t, testEngineManifest(fakeEngineForTest(t)), baseDir)
 	t.Cleanup(second.StopAll)
 	if err := second.RestoreEnabled(ctx); err != nil {
 		t.Fatalf("restore ON: %v", err)
@@ -64,7 +64,7 @@ func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 		t.Fatalf("explicit stop: %v", err)
 	}
 
-	third := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	third := desiredTestExecutor(t, testEngineManifest(fakeEngineForTest(t)), baseDir)
 	if err := third.RestoreEnabled(ctx); err != nil {
 		t.Fatalf("restore after OFF: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestDesiredOnSurvivesShutdownAndExplicitOffDoesNot(t *testing.T) {
 
 func TestRestoreEnabledExcludesUnreconciledEngineWithoutChangingIntent(t *testing.T) {
 	baseDir := t.TempDir()
-	exec := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	exec := desiredTestExecutor(t, testEngineManifest(fakeEngineForTest(t)), baseDir)
 	t.Cleanup(exec.StopAll)
 	if err := exec.desired.set("fake", true); err != nil {
 		t.Fatal(err)
@@ -100,13 +100,13 @@ func TestRestoreEnabledExcludesUnreconciledEngineWithoutChangingIntent(t *testin
 
 func TestFailedRestoreRetainsDesiredOnForRetry(t *testing.T) {
 	baseDir := t.TempDir()
-	seed := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	seed := desiredTestExecutor(t, testEngineManifest(fakeEngineForTest(t)), baseDir)
 	if err := seed.Start(context.Background(), "fake"); err != nil {
 		t.Fatalf("seed start: %v", err)
 	}
 	seed.StopAll()
 
-	failing := testEngineManifest(fakeEngineBin)
+	failing := testEngineManifest(fakeEngineForTest(t))
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	platform := failing.Platforms[key]
 	platform.Runtime.Args = []string{"noserve"}
@@ -116,7 +116,7 @@ func TestFailedRestoreRetainsDesiredOnForRetry(t *testing.T) {
 		t.Fatal("expected restore failure")
 	}
 
-	retry := desiredTestExecutor(t, testEngineManifest(fakeEngineBin), baseDir)
+	retry := desiredTestExecutor(t, testEngineManifest(fakeEngineForTest(t)), baseDir)
 	t.Cleanup(retry.StopAll)
 	if err := retry.RestoreEnabled(context.Background()); err != nil {
 		t.Fatalf("retry restore: %v", err)
@@ -147,7 +147,7 @@ func TestDeclinedAdoptedStopStillPersistsOffIntent(t *testing.T) {
 
 	// The httptest listener runs in this test process, whose image is not the
 	// fake engine binary, so the stop is declined (never terminated).
-	m := testEngineManifest(fakeEngineBin)
+	m := testEngineManifest(fakeEngineForTest(t))
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	p := m.Platforms[key]
 	p.Runtime.Port = port
@@ -192,14 +192,14 @@ func TestConfirmedStopPersistsOffDespiteCommandExitError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	platform := manifest.Platforms[key]
 	platform.Runtime = Runtime{
 		Mode:  "command",
 		Port:  port,
 		Ready: &Probe{HTTP: srv.URL, Status: http.StatusOK},
-		Stop:  &StopSpec{Cmd: []string{fakeEngineBin, "failmark", marker}, GraceS: 2},
+		Stop:  &StopSpec{Cmd: []string{fakeEngineForTest(t), "failmark", marker}, GraceS: 2},
 	}
 	manifest.Platforms[key] = platform
 

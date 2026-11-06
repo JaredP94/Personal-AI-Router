@@ -146,10 +146,10 @@ func TestInstallFlowReportsOnlyMeasurablePercents(t *testing.T) {
 			Detect: []string{bin},
 			Install: &Install{
 				Fetch: &Fetch{URL: srv.URL, SHA256: hex.EncodeToString(sum[:])},
-				Run:   []string{fakeEngineBin, "touch", bin},
+				Run:   []string{fakeEngineForTest(t), "touch", bin},
 				Mode:  "user",
 			},
-			Runtime: Runtime{Bin: fakeEngineBin},
+			Runtime: Runtime{Bin: fakeEngineForTest(t)},
 		}},
 	}
 

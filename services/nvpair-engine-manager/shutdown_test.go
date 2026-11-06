@@ -25,7 +25,7 @@ func TestStopAllStopsEveryEngine(t *testing.T) {
 	reg := NewRegistry()
 	names := []string{"fake-a", "fake-b"}
 	for _, name := range names {
-		m := testEngineManifest(fakeEngineBin)
+		m := testEngineManifest(fakeEngineForTest(t))
 		m.Engine = name
 		reg.engines[name] = m
 	}
@@ -60,11 +60,11 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "fake.pid")
 	t.Setenv("FAKE_PID_FILE", pidFile)
 
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	platform := manifest.Platforms[hostKey()]
 	platform.Runtime.Mode = "command"
 	platform.Runtime.Bin = ""
-	platform.Runtime.Start = [][]string{{fakeEngineBin}}
+	platform.Runtime.Start = [][]string{{fakeEngineForTest(t)}}
 	platform.Runtime.Ready = nil
 	platform.Runtime.Health = nil
 	platform.Runtime.Stop = nil
@@ -127,13 +127,13 @@ func testStopAllDetachedCommandDaemon(t *testing.T, command string) {
 		t.Fatalf("free port: %v", err)
 	}
 
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	platform := manifest.Platforms[hostKey()]
 	platform.Runtime.Mode = "command"
 	platform.Runtime.Bin = ""
 	platform.Runtime.Port = port
-	platform.Runtime.Start = [][]string{{fakeEngineBin, command, startMarker}}
-	platform.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", stopMarker}, GraceS: 1}
+	platform.Runtime.Start = [][]string{{fakeEngineForTest(t), command, startMarker}}
+	platform.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", stopMarker}, GraceS: 1}
 	platform.Runtime.Ready = &Probe{
 		HTTP:     "http://127.0.0.1:{port}/",
 		Status:   http.StatusOK,
@@ -228,12 +228,12 @@ func testStopAllDetachedCommandDaemon(t *testing.T, command string) {
 
 func TestFailedCommandSpawnDoesNotRunStopCLI(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stopped")
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	p := manifest.Platforms[hostKey()]
 	p.Runtime.Mode = "command"
 	p.Runtime.Bin = ""
 	p.Runtime.Start = [][]string{{filepath.Join(t.TempDir(), "nonexistent")}}
-	p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineBin, "touch", marker}}
+	p.Runtime.Stop = &StopSpec{Cmd: []string{fakeEngineForTest(t), "touch", marker}}
 	p.Runtime.Ready, p.Runtime.Health = nil, nil
 	manifest.Platforms[hostKey()] = p
 	ex := newTestExecutor(t, manifest)

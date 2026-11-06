@@ -244,8 +244,8 @@ func TestStartDoesNotWaitForPassiveProbe(t *testing.T) {
 	ex := fixture.executor
 	st, err := ex.state("fake")
 	require.NoError(t, err)
-	st.plat.Detect = []string{fakeEngineBin}
-	st.plat.Runtime.Bin = fakeEngineBin
+	st.plat.Detect = []string{fakeEngineForTest(t)}
+	st.plat.Runtime.Bin = fakeEngineForTest(t)
 	finished := make(chan statusResult, 1)
 	go func() {
 		status, err := ex.Status("fake")

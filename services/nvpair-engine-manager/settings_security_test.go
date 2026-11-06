@@ -37,10 +37,10 @@ func TestManagedSettingsRejectBeforeAnyRuntimeMutation(t *testing.T) {
 }
 
 func TestOMLXOnlyProxySettingsForRunningApp(t *testing.T) {
-	manifest := testEngineManifest(fakeEngineBin)
+	manifest := testEngineManifest(fakeEngineForTest(t))
 	manifest.Engine = "omlx"
 	for key, platform := range manifest.Platforms {
-		platform.Runtime = Runtime{Mode: "command", CLI: fakeEngineBin, Port: 1235, Start: [][]string{{"{cli}", "start"}}}
+		platform.Runtime = Runtime{Mode: "command", CLI: fakeEngineForTest(t), Port: 1235, Start: [][]string{{"{cli}", "start"}}}
 		manifest.Platforms[key] = platform
 	}
 	e := newTestExecutor(t, manifest)
