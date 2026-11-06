@@ -321,7 +321,7 @@ func (e *Executor) runCommandOutput(ctx context.Context, argv []string) (string,
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	configureSysProcAttr(cmd)
-	out, err := cmd.Output()
+	out, err := ownedOutput(cmd)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(ee.Stderr)))

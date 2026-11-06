@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 // managedProc is a spawned engine process with its stdout/stderr
@@ -20,8 +19,9 @@ import (
 // graceful signal, force kill) live in proc_windows.go / proc_unix.go
 // so the same logic here runs on every platform.
 type managedProc struct {
-	cmd  *exec.Cmd
-	done chan struct{}
+	cmd   *exec.Cmd
+	done  chan struct{}
+	owner *processJob // Windows only; Unix retains its existing process groups.
 }
 
 // startManagedProc launches bin with args and the extra env (merged
@@ -46,11 +46,14 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	owner, err := startEngineCommand(cmd)
+	if err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return nil, err
 	}
 
-	mp := &managedProc{cmd: cmd, done: make(chan struct{})}
+	mp := &managedProc{cmd: cmd, done: make(chan struct{}), owner: owner}
 	var scanWg sync.WaitGroup
 	scanWg.Add(2)
 	go func() { defer scanWg.Done(); scanLines(stdout, "stdout", onLine) }()
@@ -58,8 +61,7 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 	go func() {
 		// Drain stdout/stderr fully before Wait: Wait closes the pipes on
 		// exit, which would otherwise truncate the final captured lines.
-		scanWg.Wait()
-		_ = cmd.Wait()
+		waitEngineCommand(mp, &scanWg, stdout, stderr)
 		close(mp.done)
 	}()
 	return mp, nil
@@ -75,20 +77,17 @@ func scanLines(r io.Reader, stream string, onLine func(stream, line string)) {
 	}
 }
 
-// stop stops the process and waits for it to exit, with no timeout.
+// stop stops the process using the platform's ownership-aware stop path.
 //
 // It sends one platform-appropriate stop signal (see gracefulSignal) and then
 // blocks until the process is gone:
 //   - Unix: SIGTERM to the process group — a graceful ask, with no escalation
 //     to SIGKILL. A well-behaved engine (Ollama, and the test fake) exits on it.
-//   - Windows: taskkill /T /F. Our engines run windowless, and a windowless
-//     process can't receive a graceful (non-/F) close, so /F is the only signal
-//     that actually stops it — never force-killing there would leave the engine
-//     running forever.
+//   - Windows: terminate the owned job; no PID lookup or tree enumeration.
+//     Command-mode engines use their bounded official stop CLI separately.
 //
-// There is deliberately no timeout: a stop is complete only when the engine has
-// actually exited. On Unix an engine that ignored SIGTERM would not be stopped
-// and this would wait for it; in practice engines exit on SIGTERM.
+// Unix deliberately retains its existing unbounded SIGTERM wait. Windows
+// bounds its final exit/drain wait after terminating and closing the owned job.
 func (mp *managedProc) stop() {
 	if mp == nil || mp.cmd == nil || mp.cmd.Process == nil {
 		return
@@ -98,37 +97,7 @@ func (mp *managedProc) stop() {
 		return // already exited
 	default:
 	}
-	_ = gracefulSignal(mp.cmd)
-	<-mp.done
-}
-
-// terminatePID stops the process with the given PID (and its tree on
-// Windows, or its process group on Unix when available): a graceful signal
-// first, escalating to a forced kill if the process hasn't exited within
-// grace. It exists to reclaim a PAIR-managed engine orphan adopted on our
-// own port — an instance a prior run spawned and then lost the handle to, so
-// we can only address it by PID rather than through the *exec.Cmd handle
-// managedProc.stop needs. Best-effort: a process that's already gone counts
-// as success. The platform primitives (signalPID, pidAlive) live in
-// proc_windows.go / proc_unix.go.
-func terminatePID(pid int, grace time.Duration) {
-	if pid <= 0 {
-		return
-	}
-	_ = signalPID(pid, false)
-	if grace <= 0 {
-		grace = 5 * time.Second
-	}
-	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
-		if !pidAlive(pid) {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if pidAlive(pid) {
-		_ = signalPID(pid, true)
-	}
+	stopEngineCommand(mp)
 }
 
 // normalizeEngineImage cleans an executable path for comparison. Linux

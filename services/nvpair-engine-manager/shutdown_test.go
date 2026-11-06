@@ -64,7 +64,8 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	platform := manifest.Platforms[hostKey()]
 	platform.Runtime.Mode = "command"
 	platform.Runtime.Bin = ""
-	platform.Runtime.Start = [][]string{{fakeEngineForTest(t)}}
+	bin := fakeEngineForTest(t)
+	platform.Runtime.Start = [][]string{{bin}}
 	platform.Runtime.Ready = nil
 	platform.Runtime.Health = nil
 	platform.Runtime.Stop = nil
@@ -87,11 +88,7 @@ func TestStopAllCancelsCommandStartWithoutError(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("command-mode fake engine did not publish its PID")
 	}
-	t.Cleanup(func() {
-		if pidAlive(pid) {
-			_ = signalPID(pid, true)
-		}
-	})
+	t.Cleanup(func() { killOwnedTestPID(pid, bin) })
 
 	ex.StopAll()
 

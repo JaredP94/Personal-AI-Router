@@ -156,8 +156,8 @@ This does not extend the supported platform list.
 Each fake-engine executable (including test copies) has a per-test owner under
 the run's `nvpair-em-test-*` directory. Before doing any work, the fake records
 its PID and executable identity there; detached children inherit registration.
-A `t.Cleanup` sweep force-kills owned process groups on Unix (process trees on
-Windows) and fails the test if any remain. `TestMain` also checks registered
+A `t.Cleanup` sweep force-kills owned process groups on Unix (individually
+pinned, identity-checked processes on Windows) and fails the test if any remain. `TestMain` also checks registered
 children and processes whose executables are under this run's directory, sweeps
 survivors, and fails the run if a per-test cleanup was missed. Sweeps verify
 executable identity before signaling PIDs and never target other test runs.
@@ -580,7 +580,7 @@ numbers and never add the two together: they count overlapping work.
 ```
 NotInstalled --engine:install--> (HTTPS download + verify-if-pinned + user-mode run) --> Stopped
 Stopped      --engine:start----> (adopt if already serving the port, else spawn) --> Running --health--> Running
-Running      --engine:stop-----> (stop signal, wait for exit; no timeout) --> Stopped
+Running      --engine:stop-----> (platform stop / bounded official stop CLI) --> Stopped
 ```
 
 Detect uses the manifest's executable candidates (`runtime.cli` when explicitly
@@ -592,11 +592,10 @@ unexpected exit is reported. The bundled Ollama manifest allows up to ten
 minutes for startup because GPU discovery can exceed the previous 30-second
 allowance on supported Windows systems. The deadline remains finite: if Ollama
 never serves its readiness endpoint, engine-manager stops the owned process and
-reports the failed start. Stop sends one stop signal and waits for the engine
-to exit, with no timeout: SIGTERM to the process group on Unix (graceful, no
-SIGKILL escalation), and `taskkill /T /F` on Windows — where the windowless
-engines we spawn can't receive a graceful (non-`/F`) close, so a forced
-terminate is the only signal that actually stops them.
+reports the failed start. Process-mode Stop preserves SIGTERM to the process
+group on Unix (graceful, no SIGKILL escalation or exit timeout). On Windows it
+terminates the owned job, closes its kill-on-close handle, and bounds the final
+exit wait to five seconds. There is no PID-addressed tree kill.
 
 Command-mode stop (including oMLX) gives the official stop CLI
 `max(grace_s, 5s)` to return, then up to `grace_s` (default 5s) for shutdown.
@@ -608,6 +607,40 @@ See [MANIFEST.md](MANIFEST.md#command-mode-shutdown-confirmation). The state mut
 held across these waits; lifecycle operations remain serialized so an immediate
 start cannot overtake stop. A timeout leaves the engine running, not falsely
 stopped, and is returned to the caller.
+
+### Windows process ownership
+
+One shared kill-on-close job helper is used by downloads and all Windows
+processes spawned by engine-manager:
+
+| Launch | Job membership and lifetime |
+| --- | --- |
+| Process-mode engine server | Gated hidden-console launcher, server, and all descendants; no breakaway. Stop terminates the job; launcher exit also closes the job and kills leftovers. |
+| Model download | Same launcher and full descendant job, preserving the existing bounded console-interrupt/retry/kill sequence. |
+| Action CLIs, install/uninstall helpers, console-interrupt helper | One job per invocation, including launcher and descendants; no breakaway. Context cancellation terminates the job; completion closes it. Commands have a 15-minute safety ceiling in addition to caller deadlines, with one-second inherited-output drainage. |
+| Command-mode start/stop CLIs (`lms server start/stop`, `omlx stop` where supported) | The actual CLI starts suspended and is assigned before its initial thread resumes. Its job owns **only the control CLI**; silent child breakaway deliberately preserves the command-mode contract that the vendor owns its daemon tree. These children are not reclaimed by job termination or by PID. The existing bounded official stop command and shutdown confirmation remain authoritative. |
+
+Only command-mode lifecycle controls get that child-breakaway exception; normal
+CLIs and install/uninstall helpers do not. All jobs and process handles remain
+non-inheritable. The gated launcher inherits only its start event, which it
+closes before launching the target. Assignment/resume failures terminate the
+owned process and close the job; cancellation cannot resume an unassigned or
+already-cancelled launch. No state mutex or job-handle mutex covers a process
+wait. Existing lifecycle-operation serialization remains unchanged.
+
+No `taskkill` calls remain. Legacy adopted Windows orphans have no job: reclaim
+opens a query/terminate handle when identifying the listener and records its
+creation time and image. That handle stays open through termination; immediately
+before terminating, reclaim checks the creation time and image through the same
+handle, and re-reads the TCP listener table to confirm it still owns the managed
+port. Any failed check declines termination. The pinned handle prevents PID reuse
+between checks. Reclaim terminates **that handle only**, then closes it exactly
+once on every path. It does not enumerate or kill descendants for which ownership
+cannot be proved. Foreign listeners and
+vendor-managed daemon trees remain untouched.
+
+Windows runtime behavior is untested here; cross-compilation and injected-job
+unit tests do not establish runtime behavior on Windows.
 
 ### Adoption — start may attach to an engine it didn't launch
 

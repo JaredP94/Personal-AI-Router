@@ -6,20 +6,13 @@
 package main
 
 import (
-	"context"
 	"os/exec"
-	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-// taskkillTimeout bounds each taskkill invocation so a hung taskkill can't
-// wedge StopAll (and the whole app shutdown) now that the broker no longer
-// force-kills engine-manager on a timeout.
-const taskkillTimeout = 5 * time.Second
 
 // configureSysProcAttr hides the child's console window
 // (HideWindow + CREATE_NO_WINDOW), matching every other NVPAIR subprocess.
@@ -28,36 +21,6 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 		HideWindow:    true,
 		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
 	}
-}
-
-// gracefulSignal stops the process tree and is the only stop signal
-// engine-manager sends: stop() sends this once and waits for the engine to
-// exit. Windows has no SIGTERM, and the engines we spawn run windowless
-// (CREATE_NO_WINDOW), so a non-/F taskkill only posts WM_CLOSE — which a
-// windowless process can't receive ("can only be terminated forcefully"), i.e.
-// it does nothing. Never force-killing such a process would leave the engine
-// running forever, so on Windows the stop is taskkill /T /F.
-func gracefulSignal(cmd *exec.Cmd) error {
-	return taskkill(cmd, true)
-}
-
-func taskkill(cmd *exec.Cmd, force bool) error {
-	return taskkillContext(context.Background(), cmd, force)
-}
-
-func taskkillContext(parent context.Context, cmd *exec.Cmd, force bool) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	args := []string{"/T", "/PID", strconv.Itoa(cmd.Process.Pid)}
-	if force {
-		args = append([]string{"/F"}, args...)
-	}
-	ctx, cancel := context.WithTimeout(parent, taskkillTimeout)
-	defer cancel()
-	kc := exec.CommandContext(ctx, "taskkill", args...)
-	configureSysProcAttr(kc) // hide taskkill's own console window
-	return kc.Run()
 }
 
 var (
@@ -98,7 +61,8 @@ type mibTCP6RowOwnerPID struct {
 // (IPv4 first, then IPv6) plus that process's full image path. ok is false
 // when nothing is listening or the owner can't be resolved, so a caller can
 // fail closed (decline the stop). It is precise to a single port: a genuine
-// desktop app on a different port is never surfaced.
+// desktop app on a different port is never surfaced. This observation-only
+// lookup must not authorize termination; findLegacyListener retains identity.
 func pidOnPort(port int) (pid int, image string, ok bool) {
 	if p, found := listenerPID(windows.AF_INET, port); found {
 		return p, imagePathForPID(p), true
@@ -176,23 +140,77 @@ func imagePathForPID(pid int) string {
 	return windows.UTF16ToString(buf[:size])
 }
 
-// signalPID asks the PID's process tree to stop (taskkill /T), escalating to
-// a forced /F kill when force is set. It is the PID-addressed kill used only by
-// the orphan reclaim (a process we lost the *exec.Cmd handle to), distinct from
-// the normal graceful-only stop() path.
-func signalPID(pid int, force bool) error {
+// findLegacyListener opens the process once, at identification. Neither the
+// identity checks nor termination reopen its PID. The second table read in
+// identifyPinnedProcess rejects a listener that changed before OpenProcess.
+func findLegacyListener(port int) (legacyListener, bool) {
+	pid, ok := listenerPID(windows.AF_INET, port)
+	if !ok {
+		pid, ok = listenerPID(windows.AF_INET6, port)
+	}
+	if !ok {
+		return nil, false
+	}
+	return openPinnedProcess(pid, port)
+}
+
+func openPinnedProcess(pid, port int) (*pinnedProcess, bool) {
 	if pid <= 0 {
-		return nil
+		return nil, false
 	}
-	args := []string{"/T", "/PID", strconv.Itoa(pid)}
-	if force {
-		args = append([]string{"/F"}, args...)
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskkillTimeout)
-	defer cancel()
-	kc := exec.CommandContext(ctx, "taskkill", args...)
-	configureSysProcAttr(kc) // hide taskkill's own console window
-	return kc.Run()
+	return identifyPinnedProcess(pid, port, &windowsPinnedProcess{handle: h})
+}
+
+type windowsPinnedProcess struct{ handle windows.Handle }
+
+func (p *windowsPinnedProcess) imagePath() string {
+	buf := make([]uint16, 32768)
+	size := uint32(len(buf))
+	if windows.QueryFullProcessImageName(p.handle, 0, &buf[0], &size) != nil {
+		return ""
+	}
+	return windows.UTF16ToString(buf[:size])
+}
+
+func (p *windowsPinnedProcess) creationTime() (uint64, error) {
+	var created, exited, kernel, user windows.Filetime
+	err := windows.GetProcessTimes(p.handle, &created, &exited, &kernel, &user)
+	return uint64(created.HighDateTime)<<32 | uint64(created.LowDateTime), err
+}
+
+func (p *windowsPinnedProcess) ownsPort(port, pid int) bool {
+	for _, family := range []uint32{windows.AF_INET, windows.AF_INET6} {
+		if owner, ok := listenerPID(family, port); ok && owner == pid {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *windowsPinnedProcess) close() { _ = windows.CloseHandle(p.handle) }
+
+// A legacy orphan has no job. Terminate only the pinned, revalidated process
+// object, never its descendants, whose ownership has not been established.
+func (p *windowsPinnedProcess) terminate(grace time.Duration) {
+	// Windowless legacy engines cannot receive WM_CLOSE. Unlike owned jobs,
+	// there is no safe way to reclaim descendants without their own proof.
+	if windows.TerminateProcess(p.handle, 1) != nil {
+		return
+	}
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		status, err := windows.WaitForSingleObject(p.handle, 100)
+		if err != nil || status != uint32(windows.WAIT_TIMEOUT) {
+			return
+		}
+	}
 }
 
 // pidAlive reports whether the PID is still running (WaitForSingleObject with

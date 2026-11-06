@@ -412,7 +412,7 @@ func (e *Executor) runCommand(ctx context.Context, argv []string) error {
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	configureSysProcAttr(cmd) // hide the console window on Windows
-	out, err := cmd.CombinedOutput()
+	out, err := ownedCombinedOutput(cmd, isControlCommand(ctx))
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -453,7 +453,7 @@ func (e *Executor) runCommandTail(ctx context.Context, argv []string, maxLines, 
 	tail := &commandTail{maxBytes: maxBytes}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = tail
-	if err := cmd.Run(); err != nil {
+	if err := runOwnedCommand(cmd); err != nil {
 		lines := strings.SplitAfter(string(tail.data), "\n")
 		if lines[len(lines)-1] == "" {
 			lines = lines[:len(lines)-1]

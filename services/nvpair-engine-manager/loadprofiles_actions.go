@@ -47,7 +47,7 @@ func (e *Executor) listLMSInstances(ctx context.Context, cli string) (map[string
 	var output lmsPSOutput
 	command.Stdout = &output
 	// stderr is discarded; stdout is bounded private structured data, never logs.
-	if err := command.Run(); err != nil || ctx.Err() != nil {
+	if err := runOwnedCommand(command); err != nil || ctx.Err() != nil {
 		return nil, errors.New(profiledListFailed)
 	}
 	var instances []struct {
@@ -84,7 +84,7 @@ func runPrivateLMSCommand(ctx context.Context, argv []string) error {
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	configureSysProcAttr(command)
 	command.WaitDelay = time.Second
-	if err := command.Run(); err != nil || ctx.Err() != nil {
+	if err := runOwnedCommand(command); err != nil || ctx.Err() != nil {
 		return errors.New(profiledLoadFailed)
 	}
 	return nil

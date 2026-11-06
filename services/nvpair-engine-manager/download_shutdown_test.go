@@ -53,6 +53,7 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree, exitEarly, us
 			t.Fatal(err)
 		}
 	}
+	bin := fakeEngineForTest(t)
 	marker := filepath.Join(t.TempDir(), "downloader-pid")
 	childMarker := marker + "-child"
 	events, unsub := ex.progress.subscribe("lmstudio")
@@ -77,7 +78,7 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree, exitEarly, us
 	go func() {
 		defer close(pullDone)
 		_, _ = ex.trackedPull(ctx, "lmstudio", "fixture", "shutdown-pull", true, func(ctx context.Context) (json.RawMessage, error) {
-			argv := []string{fakeEngineForTest(t), "shutdown-download-fixture", marker, mode}
+			argv := []string{bin, "shutdown-download-fixture", marker, mode}
 			if tree {
 				argv = append(argv, childMarker)
 			}
@@ -99,9 +100,7 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree, exitEarly, us
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Kill()
-		}
+		killOwnedTestPID(pid, bin)
 		cancel()
 		select {
 		case <-pullDone:
@@ -130,11 +129,7 @@ func testRunStopsDownloader(t *testing.T, ignore, midCancel, tree, exitEarly, us
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			if proc, err := os.FindProcess(childPID); err == nil {
-				_ = proc.Kill()
-			}
-		})
+		t.Cleanup(func() { killOwnedTestPID(childPID, bin) })
 		conn, err := net.DialTimeout("tcp", childAddress, time.Second)
 		if err != nil {
 			t.Fatal("child not alive before shutdown:", err)

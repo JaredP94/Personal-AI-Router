@@ -19,14 +19,15 @@ func TestCommandStopAndRestartWithPersistentHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(fakeEngineForTest(t), "persistent-host", marker, "127.0.0.1:"+strconv.Itoa(port))
+	bin := fakeEngineForTest(t)
+	cmd := exec.Command(bin, "persistent-host", marker, "127.0.0.1:"+strconv.Itoa(port))
 	configureSysProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	t.Cleanup(func() { killTestProcessGroup(cmd.Process.Pid); <-done })
+	t.Cleanup(func() { killOwnedTestPID(cmd.Process.Pid, bin); <-done })
 	waitPortServing(t, port)
 	if pid, _, ok := pidOnPort(port); !ok || pid != cmd.Process.Pid {
 		t.Skip("host cannot resolve listener PID")
@@ -85,14 +86,15 @@ func testCommandStopTail(t *testing.T, delay string, grace int, wantTimeout bool
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(fakeEngineForTest(t), "shutdown-tail", marker, "127.0.0.1:"+strconv.Itoa(port), delay)
+	bin := fakeEngineForTest(t)
+	cmd := exec.Command(bin, "shutdown-tail", marker, "127.0.0.1:"+strconv.Itoa(port), delay)
 	configureSysProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	t.Cleanup(func() { _ = signalPID(cmd.Process.Pid, true); <-done })
+	t.Cleanup(func() { killOwnedTestPID(cmd.Process.Pid, bin); <-done })
 	waitPortServing(t, port)
 	if pid, _, ok := pidOnPort(port); !ok || pid != cmd.Process.Pid {
 		t.Skip("host cannot resolve listener PID")
