@@ -182,7 +182,11 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         params?: LlamaCatalogParams,
         timeoutMs?: number | null
     ): Promise<JsonValue | undefined>
-    call(method: string, params?: JsonValue, timeoutMs?: number | null): Promise<JsonValue | undefined>
+    call(
+        method: string,
+        params?: JsonValue,
+        timeoutMs?: number | null
+    ): Promise<JsonValue | undefined>
     async call(
         method: string,
         params?: JsonValue,

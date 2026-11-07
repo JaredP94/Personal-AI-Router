@@ -7,12 +7,13 @@ package main
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Pin the canonical directory using the same component-by-component no-follow

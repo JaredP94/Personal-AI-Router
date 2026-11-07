@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,6 +53,46 @@ func TestLlamaCatalogValidation(t *testing.T) {
 		}
 	}
 }
+func TestLlamaCatalogCuratedAndRPC(t *testing.T) {
+	publishers := map[string]bool{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		author := r.URL.Query().Get("author")
+		publishers[author] = true
+		rows := make([]llamaHubRepo, 60)
+		for i := range rows {
+			rows[i] = fixtureLlamaRepo(t)
+			rows[i].ID = fmt.Sprintf("%s/model%d", author, i)
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	defer srv.Close()
+	ex := NewExecutor(NewRegistry(), NewReporter(nil), nil, t.TempDir())
+	ex.llamaHub.endpoint = srv.URL
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	m := NewManager(NewCodec(server), ex, nil)
+	defer m.remoteHTTP.CloseIdle()
+	defer m.readyHTTP.CloseIdle()
+	defer m.settingsHTTP.CloseIdle()
+	id := json.RawMessage("1")
+	m.handleMessage(context.Background(), &Message{JSONRPC: "2.0", ID: &id, Method: "engine:model-catalog", Params: json.RawMessage(`{}`)})
+	var response Message
+	if err := json.NewDecoder(client).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Models []LlamaCatalogEntry `json:"models"`
+	}
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != nil || len(result.Models) != 150 || !publishers["ggml-org"] || !publishers["bartowski"] || !publishers["unsloth"] {
+		t.Fatalf("curated RPC result: %d %v", len(result.Models), response.Error)
+	}
+}
+
 func TestLlamaCatalogBoundsCacheTTL(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
