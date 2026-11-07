@@ -41,8 +41,11 @@ type manualNodeStatus struct {
 	LMStudioPort         int                         `json:"lmstudio_port"`
 	LMStudioModels       []string                    `json:"lmstudio_models,omitempty"`
 	OMLXUp               bool                        `json:"omlx_up"`
+	LlamaCPPUp           bool                        `json:"llamacpp_up"`
 	OMLXPort             int                         `json:"omlx_port"`
+	LlamaCPPPort         int                         `json:"llamacpp_port"`
 	OMLXModels           []string                    `json:"omlx_models,omitempty"`
+	LlamaCPPModels       []string                    `json:"llamacpp_models,omitempty"`
 	NodeInfoUp           bool                        `json:"node_info_up"`
 	NodeInfoPort         int                         `json:"node_info_port"`
 	GPUs                 []GPUInfo                   `json:"gpus"`
@@ -491,7 +494,7 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 	}
 	models := s.Models
 	if len(models) == 0 {
-		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels)
+		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels, s.LlamaCPPModels)
 	}
 	modelsByEngine := s.ModelsByEngine
 	if len(modelsByEngine) == 0 {
@@ -619,6 +622,19 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		}
 		services[noderec.ServiceOMLX] = noderec.ServiceStatus{Port: port}
 	}
+	llamacppUp := s.LlamaCPPUp
+	if !llamacppUp && modelsByEngine != nil {
+		if _, ok := modelsByEngine["llamacpp"]; ok {
+			llamacppUp = true
+		}
+	}
+	if llamacppUp {
+		port := s.LlamaCPPPort
+		if port == 0 {
+			port = 8082
+		}
+		services[noderec.ServiceLlamaCPP] = noderec.ServiceStatus{Port: port}
+	}
 
 	ips := []string{}
 	if s.Address != "" {
@@ -627,7 +643,7 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 
 	models := s.Models
 	if len(models) == 0 {
-		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels)
+		models = mergeModels(s.OllamaModels, s.LMStudioModels, s.OMLXModels, s.LlamaCPPModels)
 	}
 
 	verification := "unverified"
@@ -700,6 +716,9 @@ func manualModelsByEngine(s manualNodeStatus) map[string][]string {
 	}
 	if len(s.OMLXModels) > 0 {
 		byEngine["omlx"] = s.OMLXModels
+	}
+	if len(s.LlamaCPPModels) > 0 {
+		byEngine["llamacpp"] = s.LlamaCPPModels
 	}
 	if len(byEngine) == 0 {
 		return nil
@@ -787,6 +806,15 @@ func (b *Broker) bridgeManualNode(s manualNodeStatus, key string) {
 		omlxPort = 1236
 	}
 	b.bridgeToProxy(b.getOMLXProxy(), "omlx", s, key, omlxUp, omlxPort, omlxModels)
+	llamacppModels := s.LlamaCPPModels
+	if len(llamacppModels) == 0 && s.ModelsByEngine != nil {
+		llamacppModels = s.ModelsByEngine["llamacpp"]
+	}
+	llamacppPort := s.LlamaCPPPort
+	if llamacppPort == 0 {
+		llamacppPort = 8082
+	}
+	b.bridgeToProxy(b.getLlamaCPPProxy(), "llamacpp", s, key, s.LlamaCPPUp || len(llamacppModels) > 0, llamacppPort, llamacppModels)
 }
 
 // bridgeToProxy adds the node to p when its engine is reachable, or removes it
@@ -824,6 +852,7 @@ func (b *Broker) removeManualNodeFromProxies(id string) {
 	b.callProxyManual(b.getProxy(), "ollama", "node/remove-manual", map[string]string{"id": id}, id)
 	b.callProxyManual(b.getLMStudioProxy(), "lmstudio", "node/remove-manual", map[string]string{"id": id}, id)
 	b.callProxyManual(b.getOMLXProxy(), "omlx", "node/remove-manual", map[string]string{"id": id}, id)
+	b.callProxyManual(b.getLlamaCPPProxy(), "llamacpp", "node/remove-manual", map[string]string{"id": id}, id)
 }
 
 // callProxyManual issues a best-effort node/add-manual|remove-manual to a

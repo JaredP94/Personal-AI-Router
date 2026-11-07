@@ -13,15 +13,15 @@ import (
 	"nvpair-shared/noderec"
 )
 
-func TestLlamaSettingsWithoutProxy(t *testing.T) {
+func TestLlamaSettingsWithProxy(t *testing.T) {
 	h := newSettingsHarness(t)
 	ctx := context.Background()
 	snapshot, err := h.b.getEngineSettings(ctx, settings.Request{Engine: "llamacpp"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.Editable || snapshot.Settings.ProxyPort != 0 || snapshot.EffectiveProxyPort != 0 || h.b.settingsProxy("llamacpp") != nil {
-		t.Fatalf("llama.cpp requires a proxy: %+v", snapshot)
+	if !snapshot.Editable || snapshot.Settings.ProxyPort == 0 || snapshot.EffectiveProxyPort == 0 || h.b.settingsProxy("llamacpp") == nil {
+		t.Fatalf("llama.cpp proxy unavailable: %+v", snapshot)
 	}
 	request := settings.Request{Engine: "llamacpp", ExpectedRevision: snapshot.Revision, RequestID: settingsID(), Settings: snapshot.Settings}
 	request.Settings.LaunchText = "--threads 4"
@@ -34,11 +34,11 @@ func TestLlamaSettingsWithoutProxy(t *testing.T) {
 		t.Fatalf("apply: %+v %v", receipt, err)
 	}
 	after, err := h.b.getEngineSettings(ctx, settings.Request{Engine: "llamacpp"}, "")
-	if err != nil || after.Settings.LaunchText != "--threads 4" || !after.Running || after.EffectiveProxyPort != 0 {
+	if err != nil || after.Settings.LaunchText != "--threads 4" || !after.Running || after.EffectiveProxyPort != snapshot.EffectiveProxyPort {
 		t.Fatalf("result: %+v %v", after, err)
 	}
-	if engineSettingsService("llamacpp") != "" {
-		t.Fatal("lifecycle-only engine maps to a routed service")
+	if engineSettingsService("llamacpp") != noderec.ServiceLlamaCPP {
+		t.Fatal("missing llama.cpp service")
 	}
 	// In particular a settings change must not unregister another engine's service.
 	if engineSettingsService("omlx") != noderec.ServiceOMLX {
@@ -61,14 +61,14 @@ func TestLlamaSettingsPortReservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := settings.Request{Engine: "llamacpp", ExpectedRevision: s.Revision, Settings: s.Settings}
-	for _, port := range []int{1, 8081} {
+	for _, port := range []int{0, 65536} {
 		request.Settings.ProxyPort = port
 		p, err := h.b.previewEngineSettings(ctx, request, "")
 		if err == nil && len(p.Errors) == 0 {
-			t.Fatal("proxy port accepted before proxy integration")
+			t.Fatal("invalid proxy port accepted")
 		}
 	}
-	request.Settings.ProxyPort = 0
+	request.Settings.ProxyPort = s.Settings.ProxyPort
 	h.otherEnginePort.Store(int32(request.Settings.ServerPort))
 	p, err := h.b.previewEngineSettings(ctx, request, "")
 	if err == nil && !strings.Contains(p.Errors["ports"], "configured engine") {
@@ -87,7 +87,7 @@ func TestLlamaSettingsPortReservations(t *testing.T) {
 	}
 }
 
-func TestLlamaSettingsRecoveryWithoutProxy(t *testing.T) {
+func TestLlamaSettingsRecoveryWithProxy(t *testing.T) {
 	h := newSettingsHarness(t)
 	ctx := context.Background()
 	s, err := h.b.getEngineSettings(ctx, settings.Request{Engine: "llamacpp"}, "")
@@ -105,7 +105,7 @@ func TestLlamaSettingsRecoveryWithoutProxy(t *testing.T) {
 	if excluded := h.b.recoverEngineSettings(); len(excluded) != 0 {
 		t.Fatalf("recovery blocked: %v", excluded)
 	}
-	if r.Snapshot.Phase != "succeeded" || r.Snapshot.Settings.ProxyPort != 0 {
+	if r.Snapshot.Phase != "succeeded" || r.Snapshot.Settings.ProxyPort != s.Settings.ProxyPort {
 		t.Fatalf("bad recovery: %+v", r.Snapshot)
 	}
 }

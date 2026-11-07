@@ -330,6 +330,7 @@ function proxyEngineFromManagerId(id: string): ProxyEngine | null {
     if (id === 'ollama') return 'ollama'
     if (id === 'lmstudio') return 'lm-studio'
     if (id === 'omlx') return 'omlx'
+    if (id === 'llamacpp') return 'llamacpp'
     return null
 }
 
@@ -342,6 +343,8 @@ function proxyRelayPrefix(engine: ProxyEngine): string {
             return 'lmstudio-proxy'
         case 'omlx':
             return 'omlx-proxy'
+        case 'llamacpp':
+            return 'llamacpp-proxy'
     }
 }
 
@@ -1101,6 +1104,7 @@ class ModularSupervisor {
         passPath('--proxy-path', 'proxy')
         passPath('--lmstudio-proxy-path', 'lmstudio-proxy')
         passPath('--omlx-proxy-path', 'omlx-proxy')
+        passPath('--llamacpp-proxy-path', 'llamacpp-proxy')
         passPath('--workload-manager-path', 'workload-manager')
         passPath('--cluster-manager-path', 'cluster-manager')
         passPath('--settings-path', 'node-settings')
@@ -1130,6 +1134,7 @@ class ModularSupervisor {
         await subscribe('proxy:subscribe', 'subscribe to broker ollama-proxy relay')
         await subscribe('lmstudio-proxy:subscribe', 'subscribe to broker lmstudio-proxy relay')
         await subscribe('omlx-proxy:subscribe', 'subscribe to broker omlx-proxy relay')
+        await subscribe('llamacpp-proxy:subscribe', 'subscribe to broker llamacpp-proxy relay')
         // Engine events are opt-in and replay no baseline — subscribe then hydrate.
         await subscribe('engine:subscribe', 'subscribe to broker engine relay')
         await subscribe('workloads:subscribe', 'subscribe to broker workloads stream')
@@ -1704,7 +1709,9 @@ class ModularSupervisor {
                   ? 'lm-studio'
                   : event.source === 'omlx-proxy'
                     ? 'omlx'
-                    : null
+                    : event.source === 'llamacpp-proxy'
+                      ? 'llamacpp'
+                      : null
         if (proxyEngine && event.method === 'ready') {
             // A (re)bound proxy starts with an empty manual-node set, so forget
             // what we think we bridged and re-push the local node if applicable.
@@ -1757,6 +1764,13 @@ class ModularSupervisor {
             return {
                 source: 'omlx-proxy',
                 method: notification.method.slice('omlx-proxy:'.length),
+                params: notification.params
+            }
+        }
+        if (notification.method.startsWith('llamacpp-proxy:')) {
+            return {
+                source: 'llamacpp-proxy',
+                method: notification.method.slice('llamacpp-proxy:'.length),
                 params: notification.params
             }
         }

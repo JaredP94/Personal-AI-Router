@@ -94,7 +94,6 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
         snapshot.format !== 'pair-arguments-v1'
     const locked = readOnly || disabled || applying
     const isOmlx = engine === 'omlx'
-    const hasProxy = engine !== 'llamacpp'
 
     useEffect(() => watchEngineSettings(), [])
     useEffect(() => {
@@ -205,9 +204,9 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
         }
         const id = ++generation.current
         const serverPort = Number(draft.serverPort)
-        const proxyPort = hasProxy ? Number(draft.proxyPort) : 0
+        const proxyPort = Number(draft.proxyPort)
         if (
-            !(hasProxy ? [serverPort, proxyPort] : [serverPort]).every(
+            ![serverPort, proxyPort].every(
                 port => Number.isInteger(port) && port >= 1 && port <= 65535
             )
         ) {
@@ -290,7 +289,7 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                             aria-invalid={!!errors.serverPort}
                         />
                     </FormField>
-                    {hasProxy && (
+                    {
                         <FormField slotLabel="Proxy port">
                             <TextInput
                                 size="small"
@@ -302,7 +301,7 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                                 aria-invalid={!!errors.proxyPort}
                             />
                         </FormField>
-                    )}
+                    }
                 </Flex>
                 {isOmlx ? (
                     <Text kind="body/regular/sm">

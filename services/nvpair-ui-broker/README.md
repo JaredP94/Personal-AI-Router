@@ -23,6 +23,7 @@ namespace:
 | `ollama-proxy` | Ollama-compatible inference proxy and router | `proxy:*` |
 | `lmstudio-proxy` | The LM Studio counterpart, supervised identically | `lmstudio-proxy:*` |
 | `omlx-proxy` | OpenAI-compatible oMLX proxy; broker-negotiated listen port | `omlx-proxy:*` |
+| `llamacpp-proxy` | llama.cpp routing proxy, default 1237 | `llamacpp-proxy:*` |
 | `nvpair-engine-manager` | Local engine and model control plane; also serves `GET /v1/models` to peers | `engine:*` |
 | `nvpair-cluster-manager` | Node identity, trusted-node store, PIN pairing | `cluster:*`, `nodes:*` |
 | `nvpair-workload-manager` | Cluster workload relay between this node and peers | `workloads:*` |
@@ -42,9 +43,9 @@ lifecycle, and relay rules.
 
 These responsibilities live in the broker itself rather than in a worker:
 
-- **Engine advertising.** The broker polls local Ollama, LM Studio, and oMLX
-  availability and registers each running engine's port (`ol` / `lm` / `om`)
-  with discovery, carrying all three in this host's single `_nvpair-node` record. The
+- **Engine advertising.** The broker polls local Ollama, LM Studio, oMLX and llama.cpp
+  availability and registers each running engine's port (`ol` / `lm` / `om` / `lc`)
+  with discovery, carrying all four in this host's single `_nvpair-node` record. The
   model list is not part of that record — it is served over HTTP by
   `nvpair-engine-manager` on the `em` service and fetched by a peer's daemon
   during discovery enrichment.
@@ -79,9 +80,9 @@ The broker probes `worker/health` (`{"ok":true}`) every 30 s with a 5 s deadline
 a successful probe restores `running`. After three failures, scanner, errors,
 settings, node-info, workload-manager, manual-nodes, cluster-manager, and scheduler
 are stopped through the existing bounded escalation and restarted. Engine-manager
-and all three proxies only degrade on a hang: restarting them automatically can
+and all four proxies only degrade on a hang: restarting them automatically can
 orphan engines or interrupt inference. They still accept explicit restarts.
-Desktop Settings → Service → Workers shows all twelve workers and
+Desktop Settings → Service → Workers shows all thirteen workers and
 "Not responding — restart manually" for these degraded
 rows; restarting engine-manager or a proxy asks for confirmation. TUI Overview
 uses the same registry and offers `R` with confirmation for any selected worker.
@@ -107,11 +108,12 @@ The [node-owned settings API](ENGINE_SETTINGS.md) exposes
 `engine:get-settings`, `engine:preview-settings` and `engine:apply-settings` for
 local engines and verified paired devices. It validates and journals the whole
 change before coordinating the engine lifecycle and the selected one of the
-three existing proxies. The broker, not the desktop, owns revisioning, port
+four proxies. The broker, not the desktop, owns revisioning, port
 reservations and recovery. oMLX's app launch remains unchanged; its settings
-permit only the PAIR proxy port. llama.cpp exposes the server port and launch
-text with proxy port zero: no additional worker, service advertisement or routing
-is enabled. Settings recovery and collision checks still apply.
+permit only the PAIR proxy port. llama.cpp exposes server and proxy ports and
+allowlisted launch text, including a contained cached GGUF via `--model`/`-m`.
+Its dedicated worker has the same settings convergence, bounded port writer,
+health supervision and manual hang-restart policy as the other proxies.
 
 ## Communication
 
@@ -126,6 +128,7 @@ Bidirectional newline-delimited JSON-RPC 2.0 — same conventions as every other
 | `--node-info-path <path>` | `./nvpair-node-info[.exe]` in the CWD | Explicit path to the `nvpair-node-info` binary the broker should spawn. When omitted and no default sibling exists, the broker runs without the local inventory server (non-fatal); when set to an invalid path, the broker exits with an error |
 | `--proxy-path <path>` | `./ollama-proxy[.exe]` in the CWD | Explicit path to the `ollama-proxy` binary the broker spawns for the local Ollama reverse proxy. Same optional semantics as `--node-info-path`: an absent default sibling means no local proxy (non-fatal); an invalid explicit path exits with an error |
 | `--lmstudio-proxy-path <path>` | `./lmstudio-proxy[.exe]` in the CWD | Explicit path to the `lmstudio-proxy` binary the broker spawns for the local LM Studio reverse proxy. Same optional semantics as `--proxy-path` |
+| `--llamacpp-proxy-path <path>` | `./llamacpp-proxy` | Dedicated llama.cpp proxy worker |
 | `--omlx-proxy-path <path>` | `./omlx-proxy[.exe]` in the CWD | Explicit path to the oMLX proxy. Same optional semantics as `--proxy-path`; its port is negotiated to avoid LM Studio/reservation collisions. |
 | `--workload-manager-path <path>` | `./nvpair-workload-manager[.exe]` in the CWD | Explicit path to the `nvpair-workload-manager` binary the broker spawns for the cluster workload relay. Same optional semantics as `--node-info-path`: an absent default sibling means no workload relay (non-fatal); an invalid explicit path exits with an error |
 | `--errors-path <path>` | `./nvpair-errors[.exe]` in the CWD | Explicit path to the `nvpair-errors` binary the broker spawns (with `--peer-sync`) for the service-error pipeline. Same optional semantics as `--node-info-path`: an absent default sibling means the error pipeline is disabled — producers' errors are dropped (non-fatal); an invalid explicit path exits with an error |
@@ -190,7 +193,7 @@ Shared lifecycle for all workers:
 - Path resolution: the explicit `--scanner-path` / `--node-info-path` / `--proxy-path` / `--workload-manager-path` / `--cluster-manager-path` (and the analogous flags for lmstudio-proxy / errors / engine-manager / manual-nodes / settings) if set, otherwise the same-named `./<binary>` (with `.exe` on Windows) in the broker's current working directory. No PATH fallback — a clear "not found" beats a surprising stale binary. A missing scanner is fatal (it's the broker's core job); every other worker is optional.
 - Log level: the broker's currently resolved level is forwarded at spawn time via `--log-level <lvl>`. Runtime `log/set-level` requests are fanned out to every running child over its stdin (see `log/set-level` below).
 - Hidden console window on Windows (`CREATE_NO_WINDOW`).
-- Shutdown: on signal, peer EOF, or `shutdown`, the broker joins all three proxies concurrently to close ingress, requests `engine:prepare-shutdown`, then closes worker stdin and joins started workers concurrently with bounded grace/terminate/kill escalation. Bounded process teardown is not proof of orphan-free engine cleanup; engine-manager remains ineligible for automatic hang restart.
+- Shutdown: on signal, peer EOF, or `shutdown`, the broker joins all four proxies concurrently to close ingress, requests `engine:prepare-shutdown`, then closes worker stdin and joins started workers concurrently with bounded grace/terminate/kill escalation. Bounded process teardown is not proof of orphan-free engine cleanup; engine-manager remains ineligible for automatic hang restart.
 - **Auto-restart with crash surfacing** for every supervised worker (see [Supervision & recovery](#supervision--recovery)): a crash is reported as `supervisor:subprocess-crashed:<name>` and the worker is restarted with backoff, clearing the entry once it's healthy again and leaving it up if the restart budget is exhausted.
 
 ## JSON-RPC Surface
@@ -212,7 +215,7 @@ Shared lifecycle for all workers:
 `exhausted`, or `missing`), `attempts`, optional `pid` and `lastError`,
 `restartOnHang`, and `since` (RFC 3339 timestamp of the last state transition).
 Missing status names the expected binary path in `lastError`; it never applies
-to scanner. Snapshots always list all twelve names in startup order:
+to scanner. Snapshots always list all thirteen names in startup order:
 `scanner`, `errors`, `settings`, `engine-manager`, `node-info`, `proxy`,
 `lmstudio-proxy`, `omlx-proxy`, `workload-manager`, `manual-nodes`,
 `cluster-manager`, `scheduler`. Clients should fetch this snapshot after epoch changes;

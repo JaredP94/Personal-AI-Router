@@ -96,6 +96,8 @@ func (b *Broker) proxyStartupPort(engine string) int {
 		return int(b.lmstudioProxyStartupPort.Load())
 	case "omlx":
 		return int(b.omlxProxyStartupPort.Load())
+	case "llamacpp":
+		return int(b.llamacppProxyStartupPort.Load())
 	}
 	return 0
 }

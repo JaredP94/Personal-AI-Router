@@ -16,6 +16,10 @@
 - none ✅
 
 ### Requests the backend handles but the bridge never calls (unused capability)
+- ⚠️ llamacpp-proxy → node/selected
+- ⚠️ llamacpp-proxy → node/set-local-backend
+- ⚠️ llamacpp-proxy → telemetry/configure
+- ⚠️ llamacpp-proxy → telemetry/status
 - ⚠️ lmstudio-proxy → node/selected
 - ⚠️ lmstudio-proxy → node/set-local-backend
 - ⚠️ lmstudio-proxy → telemetry/configure
@@ -69,6 +73,34 @@
 
 ### Backend binaries not listed in `modular-binaries.ts`
 - none ✅
+
+## llamacpp-proxy
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `error` | notification (we consume) | ✅ yes |
+| `errors:clear` | notification (we consume) | ✅ yes |
+| `errors:report` | notification (we consume) | ✅ yes |
+| `node/discovered` | notification (we consume) | ✅ yes |
+| `node/removed` | notification (we consume) | ✅ yes |
+| `node/selection-changed` | notification (we consume) | ➖ ignored |
+| `node/updated` | notification (we consume) | ✅ yes |
+| `proxy/request` | notification (we consume) | ✅ yes |
+| `proxy/request-started` | notification (we consume) | ➖ ignored |
+| `ready` | notification (we consume) | ✅ yes |
+| `workload:progress` | notification (we consume) | ➖ ignored |
+| `node/add-manual` | request (we call) | ✅ yes |
+| `node/remove-manual` | request (we call) | ✅ yes |
+| `node/select` | request (we call) | ✅ yes |
+| `node/selected` | request (we call) | ⚠️ not called |
+| `node/set-local-backend` | request (we call) | ⚠️ not called |
+| `node/set-priority` | request (we call) | ✅ yes |
+| `nodes/list` | request (we call) | ✅ yes |
+| `telemetry/configure` | request (we call) | ⚠️ not called |
+| `telemetry/status` | request (we call) | ⚠️ not called |
+
+**Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
+- `method (var)  (proxy.go)`
 
 ## lmstudio-proxy
 
@@ -403,6 +435,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 
 **Dynamic / unresolved notify sites (verify by hand — `npm run service-contracts` prints the line numbers):**
 - `proxy:*  (broker.go)`
+- `llamacpp-proxy:*  (llamacppproxy.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
 - `omlx-proxy:*  (omlxproxy.go)`
 - `WorkerRunning (var)  (supervisor.go, 2 sites)`

@@ -66,21 +66,22 @@ import { serviceLogLevel } from './service-log-level'
 // Live node sources are the two reverse proxies, relayed through the broker,
 // and the broker's consolidated discovery snapshot. Electron does not consume
 // worker discovery protocols directly.
-type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy' | 'omlx-proxy'
+type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy' | 'omlx-proxy' | 'llamacpp-proxy'
 type BrokerNodeSource = ProxyNodeSource | 'broker'
 
 /**
  * Engines surfaced by the broker's proxy plane. Other engine-manager engines
  * are not currently routed across nodes.
  */
-export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'omlx'>
-export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'omlx']
+export type ProxyEngine = Extract<EngineType, 'ollama' | 'lm-studio' | 'omlx' | 'llamacpp'>
+export const PROXY_ENGINES: readonly ProxyEngine[] = ['ollama', 'lm-studio', 'omlx', 'llamacpp']
 
 /** Map a proxy node source onto the engine it describes. */
 const PROXY_SOURCE_ENGINE: Record<ProxyNodeSource, ProxyEngine> = {
     'ollama-proxy': 'ollama',
     'lmstudio-proxy': 'lm-studio',
-    'omlx-proxy': 'omlx'
+    'omlx-proxy': 'omlx',
+    'llamacpp-proxy': 'llamacpp'
 }
 
 function proxyEngineToSource(engine: ProxyEngine): ProxyNodeSource {
@@ -91,6 +92,8 @@ function proxyEngineToSource(engine: ProxyEngine): ProxyNodeSource {
             return 'lmstudio-proxy'
         case 'omlx':
             return 'omlx-proxy'
+        case 'llamacpp':
+            return 'llamacpp-proxy'
     }
 }
 
@@ -218,7 +221,12 @@ function emptyPresence(): EnginePresence {
 }
 
 function emptyEngines(): Record<ProxyEngine, EnginePresence> {
-    return { ollama: emptyPresence(), 'lm-studio': emptyPresence(), omlx: emptyPresence() }
+    return {
+        ollama: emptyPresence(),
+        'lm-studio': emptyPresence(),
+        omlx: emptyPresence(),
+        llamacpp: emptyPresence()
+    }
 }
 
 /** Immutably set one engine's presence, preserving the other. */
@@ -230,7 +238,8 @@ function setEngine(
     return {
         ollama: engine === 'ollama' ? presence : engines.ollama,
         'lm-studio': engine === 'lm-studio' ? presence : engines['lm-studio'],
-        omlx: engine === 'omlx' ? presence : engines.omlx
+        omlx: engine === 'omlx' ? presence : engines.omlx,
+        llamacpp: engine === 'llamacpp' ? presence : engines.llamacpp
     }
 }
 
@@ -859,7 +868,9 @@ export function parseNodeMetricsSnapshot(
 
 /** True for an engine fronted by a broker-supervised reverse proxy. */
 export function isProxyEngine(engine: EngineType): engine is ProxyEngine {
-    return engine === 'ollama' || engine === 'lm-studio' || engine === 'omlx'
+    return (
+        engine === 'ollama' || engine === 'lm-studio' || engine === 'omlx' || engine === 'llamacpp'
+    )
 }
 
 const PENDING_OP_IDLE_TIMEOUT_MS = 90_000
@@ -1551,7 +1562,12 @@ class ModularBridgeState {
     // Per-engine bound proxy port reported by the broker. 0 = not reported yet;
     // we never fabricate a default — an unknown port surfaces as null, not a
     // guess. `ollama` is the `ollama-proxy`, `lm-studio` is the `lmstudio-proxy`.
-    private proxyPorts: Record<ProxyEngine, number> = { ollama: 0, 'lm-studio': 0, omlx: 0 }
+    private proxyPorts: Record<ProxyEngine, number> = {
+        ollama: 0,
+        'lm-studio': 0,
+        omlx: 0,
+        llamacpp: 0
+    }
     private selfId: string | null = null
     /**
      * Authoritative local-engine facts from `nvpair-engine-manager`, keyed by
@@ -2996,6 +3012,10 @@ class ModularBridgeState {
         }
         if (notification.source === 'omlx-proxy') {
             this.handleProxyNotification(notification, 'omlx')
+            return
+        }
+        if (notification.source === 'llamacpp-proxy') {
+            this.handleProxyNotification(notification, 'llamacpp')
             return
         }
         if (notification.source === 'broker') {

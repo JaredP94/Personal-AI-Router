@@ -1096,6 +1096,8 @@ function parseManualNodeStatus(raw: JsonValue | undefined): ManualNodeStatus | n
         lmstudio_port: numberValue(obj.lmstudio_port),
         omlx_up: booleanValue(obj.omlx_up),
         omlx_port: numberValue(obj.omlx_port),
+        llamacpp_up: booleanValue(obj.llamacpp_up),
+        llamacpp_port: numberValue(obj.llamacpp_port),
         node_info_up: booleanValue(obj.node_info_up),
         node_info_port: numberValue(obj.node_info_port),
         tls_enabled: booleanValue(obj.tls_enabled),

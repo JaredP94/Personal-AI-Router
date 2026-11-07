@@ -200,7 +200,7 @@ body bytes. The `120s` response-header timeout does not cut off this wait.
 Pre-commit connection/body read failures still retry on another candidate by
 default, but silence after headers alone does not.
 
-An optional, separate first-body limit is available in all three proxies:
+An optional, separate first-body limit is available in all four proxies:
 `--first-body-timeout 10m` for standalone use, or
 `NVPAIR_PROXY_FIRST_BODY_TIMEOUT=10m` in PAIR's inherited environment, followed
 by a restart. On macOS, an app opened from the Finder can inherit it via

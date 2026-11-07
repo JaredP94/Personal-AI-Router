@@ -176,10 +176,10 @@ It stages the generated binaries in `desktop/cli-bin/`.
 
 ### `services/`
 
-The Go services tree produces 14 executables: broker + 12 workers + TUI:
+The Go services tree produces 15 executables: broker + 13 workers + TUI:
 
 - `nvpair-ui-broker`: service entry point, worker supervisor, and JSON-RPC API
-- `ollama-proxy`, `lmstudio-proxy`, and `omlx-proxy`: compatible inference proxies
+- `ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`, and `llamacpp-proxy`: compatible inference proxies
 - `nvpair-node-scanner` and `nvpair-node-info`: discovery and host telemetry
 - `nvpair-manual-nodes`: user-specified nodes
 - `nvpair-engine-manager`: local engine and model lifecycle
@@ -190,7 +190,7 @@ The Go services tree produces 14 executables: broker + 12 workers + TUI:
 - `nvpair-job-scheduler`: node-wide pending-work and GPU-pressure rankings
 - `nvpair-tui`: standalone terminal interface for headless systems
 
-The broker supervises up to 12 worker processes. Standalone, only the scanner
+The broker supervises up to 13 worker processes. Standalone, only the scanner
 is required; missing default auxiliary binaries or initial auxiliary spawn
 failures leave reduced capabilities. Invalid explicit paths and scanner initial
 spawn failure are fatal. Optional initial failures use bounded retries; missing
@@ -199,7 +199,7 @@ prevalidates broker, scanner, Ollama proxy, node-info, and node-settings binarie
 Worker health and retry state appear under **Settings → Service → Workers** and
 in TUI **Overview**, where `R` requests restart with confirmation. The broker
 owns health policy: eight workers can restart on a hang, while engine-manager
-and the three proxies only degrade and require manual restart if unresponsive.
+and the four proxies only degrade and require manual restart if unresponsive.
 See [Health and Failure Detection](architecture.mdx#health-and-failure-detection).
 `nvpair-tui` is a separate client that starts its own broker, not a worker.
 

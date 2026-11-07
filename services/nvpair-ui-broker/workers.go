@@ -46,6 +46,7 @@ func (b *Broker) initWorkerRegistry() {
 		{"proxy", "ollama-proxy", &b.proxyPath, &b.proxySup, b.spawnProxy, func() { b.setProxy(nil) }},
 		{"lmstudio-proxy", "lmstudio-proxy", &b.lmstudioProxyPath, &b.lmstudioProxySup, b.spawnLMStudioProxy, func() { b.setLMStudioProxy(nil) }},
 		{"omlx-proxy", "omlx-proxy", &b.omlxProxyPath, &b.omlxProxySup, b.spawnOMLXProxy, func() { b.setOMLXProxy(nil) }},
+		{"llamacpp-proxy", "llamacpp-proxy", &b.llamacppProxyPath, &b.llamacppProxySup, b.spawnLlamaCPPProxy, func() { b.setLlamaCPPProxy(nil) }},
 		{"workload-manager", "nvpair-workload-manager", &b.workloadMgrPath, &b.workloadMgrSup, b.spawnWorkloadManager, func() { b.setWorkloadMgr(nil) }},
 		{"manual-nodes", "nvpair-manual-nodes", &b.manualNodesPath, &b.manualNodesSup, b.spawnManualNodes, b.clearManualNodesState},
 		{"cluster-manager", "nvpair-cluster-manager", &b.clusterMgrPath, &b.clusterMgrSup, b.spawnClusterManager, func() { b.setClusterMgr(nil) }},
@@ -64,7 +65,7 @@ func (b *Broker) initWorkerRegistry() {
 		if err != nil {
 			expected = binary
 		}
-		eligible := spec.name != "engine-manager" && spec.name != "proxy" && spec.name != "lmstudio-proxy" && spec.name != "omlx-proxy"
+		eligible := spec.name != "engine-manager" && spec.name != "proxy" && spec.name != "lmstudio-proxy" && spec.name != "omlx-proxy" && spec.name != "llamacpp-proxy"
 		status := WorkerStatus{Name: spec.name, State: WorkerRestarting, RestartOnHang: eligible, Since: time.Now()}
 		if *spec.path == "" && spec.name != "scanner" {
 			status.State = WorkerMissing
@@ -81,6 +82,7 @@ func (b *Broker) initWorkerRegistry() {
 	b.errorsSup.onRecovered = func() { slog.Info("nvpair-errors recovered") }
 	b.configureLMStudioProxySupervisorCallbacks(b.lmstudioProxySup)
 	b.configureOMLXProxySupervisorCallbacks(b.omlxProxySup)
+	b.configureLlamaCPPProxySupervisorCallbacks(b.llamacppProxySup)
 	b.proxySup.onExhausted = func(int) { b.finishOllamaProxyTerminal() }
 }
 
@@ -148,13 +150,14 @@ func (b *Broker) stopWorkers() {
 // so the deferred stopWorkers call can repeat this after the ordinary path.
 func (b *Broker) stopInferenceProxies() {
 	var proxies []*supervisor
-	for _, sup := range []*supervisor{b.omlxProxySup, b.lmstudioProxySup, b.proxySup} {
+	for _, sup := range []*supervisor{b.llamacppProxySup, b.omlxProxySup, b.lmstudioProxySup, b.proxySup} {
 		if sup != nil && b.workerActive(sup.name) {
 			proxies = append(proxies, sup)
 		}
 	}
 	stopSupervisors(proxies)
 	b.setOMLXProxy(nil)
+	b.setLlamaCPPProxy(nil)
 	b.setLMStudioProxy(nil)
 	b.setProxy(nil)
 }
@@ -314,6 +317,10 @@ func (b *Broker) probeWorker(ctx context.Context, name string) error {
 	case "omlx-proxy":
 		if b.omlxProxy != nil {
 			health = b.omlxProxy.Health
+		}
+	case "llamacpp-proxy":
+		if b.llamacppProxy != nil {
+			health = b.llamacppProxy.Health
 		}
 	case "workload-manager":
 		if b.workloadMgr != nil {

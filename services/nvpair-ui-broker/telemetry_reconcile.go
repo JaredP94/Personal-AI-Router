@@ -37,12 +37,12 @@ type telemetryApplication struct {
 	state      workerTelemetryState
 }
 
-var telemetryProxyNames = [...]string{"proxy", "lmstudio-proxy", "omlx-proxy"}
+var telemetryProxyNames = [...]string{"proxy", "lmstudio-proxy", "omlx-proxy", "llamacpp-proxy"}
 
-func (b *Broker) telemetryProxies() [3]*proxyProcess {
+func (b *Broker) telemetryProxies() [4]*proxyProcess {
 	b.workersMu.Lock()
 	defer b.workersMu.Unlock()
-	return [3]*proxyProcess{b.proxy, b.lmstudioProxy, b.omlxProxy}
+	return [4]*proxyProcess{b.proxy, b.lmstudioProxy, b.omlxProxy, b.llamacppProxy}
 }
 
 // desiredTelemetryLocked supplies the fail-closed policy before settings is ready.
@@ -155,7 +155,7 @@ func (b *Broker) reconcileTelemetry() {
 	}
 }
 
-func (b *Broker) telemetrySnapshot() (telemetryDesiredConfig, []workerTelemetryState, [3]*proxyProcess) {
+func (b *Broker) telemetrySnapshot() (telemetryDesiredConfig, []workerTelemetryState, [4]*proxyProcess) {
 	b.telemetryConfigMu.Lock()
 	defer b.telemetryConfigMu.Unlock()
 	proxies := b.telemetryProxies()
@@ -180,7 +180,7 @@ func (b *Broker) telemetrySnapshot() (telemetryDesiredConfig, []workerTelemetryS
 	return b.desiredTelemetryLocked(), states, proxies
 }
 
-func (b *Broker) queryTelemetryHealth(ctx context.Context, states []workerTelemetryState, proxies [3]*proxyProcess) {
+func (b *Broker) queryTelemetryHealth(ctx context.Context, states []workerTelemetryState, proxies [4]*proxyProcess) {
 	for i, p := range proxies {
 		if p == nil {
 			continue

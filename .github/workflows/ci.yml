@@ -163,6 +163,11 @@ jobs:
                   go test -v -count=1 -timeout=15m -json ./... 2>&1 \
                       | tee "$RUNNER_TEMP/cross-process.jsonl" \
                       | jq --unbuffered -j 'select(.Output != null) | .Output'
+            - name: Require llama.cpp broker routing coverage
+              if: success()
+              shell: bash
+              run: |
+                  jq -e 'select(.Action == "pass" and .Test == "TestBrokerLlamaCPPProxyRoutesOpenAI")' "$RUNNER_TEMP/cross-process.jsonl"
             - name: Upload cross-process diagnostics
               if: always()
               uses: actions/upload-artifact@v4.6.2

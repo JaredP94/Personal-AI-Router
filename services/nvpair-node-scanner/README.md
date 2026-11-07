@@ -15,7 +15,7 @@ Concretely, the daemon:
   a real outage still warns when that budget ends. After the first successful
   read (or exhausted startup budget), failures warn immediately as before.
 
-- **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
+- **Advertises** this node's one `_nvpair-node._tcp` record, built from a registry of the local services its parent (the broker) registers — `ni`/`ol`/`lm`/`om`/`lc`/`er`/`wl`/`cl`/`em`/`ec` ports plus the node identity (`uuid=`, `cluster-uuid=` when clustered, `ip=`). One record per node covers every service.
 - **Browses** `_nvpair-node._tcp` for candidate endpoints. Verified/local records are keyed by authenticated host UUID; unverified previews have independent `preview:` record keys and an explicit `identityVerification: "unverified"` marker. A claimed UUID cannot overwrite or remove a verified record.
 - **Authenticates before enrichment:** remote hardware and broker-owned service metadata come from `ni` over pinned cluster mTLS, with matching certificate/response/metadata identities and an exact-current-pin check after reading. Only authenticated metadata supplies service ports. Models, per-engine attribution and loaded state then come from the authenticated `em` port over pinned mTLS. Local inventory remains an owned loopback read. Public HTTP hardware is display-only and never supplies service models or scheduler telemetry.
   Node-info JSON decoding reads at most 1 MiB, and model inventory decoding reads

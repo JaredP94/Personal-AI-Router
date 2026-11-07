@@ -27,7 +27,7 @@ docs/             Desktop-specific architecture and contract documentation
 
 The renderer reaches services only through the preload bridge; it never talks to
 a Go worker directly. Electron starts `nvpair-ui-broker` and the broker
-supervises up to 12 workers. The service bundle contains 14 executables, including
+supervises up to 13 workers. The service bundle contains 15 executables, including
 `omlx-proxy` and the separate, unsupervised `nvpair-tui`. Desktop prevalidates
 broker, scanner, Ollama proxy, node-info, and node-settings; standalone broker
 requirements are narrower.

@@ -135,7 +135,7 @@ func TestLlamaReadinessIdentity(t *testing.T) {
 	}
 }
 
-func TestLlamaNoProxyLaunchSettings(t *testing.T) {
+func TestLlamaProxyLaunchSettings(t *testing.T) {
 	p, _ := llamaManifest(t).PlatformFor("darwin", "arm64")
 	ex := settingsExecutor(t, true)
 	st := settingsState(t, ex)
@@ -144,16 +144,16 @@ func TestLlamaNoProxyLaunchSettings(t *testing.T) {
 	request := settingsRequest(t, ex)
 	request.Engine = "llamacpp"
 	request.Settings.ServerPort = 8082
-	request.Settings.ProxyPort = 0
+	request.Settings.ProxyPort = 1237
 	request.Settings.LaunchText = "--threads 4"
 	preview, err := ex.PreviewLaunch(request)
-	if err != nil || len(preview.Errors) != 0 || preview.Settings.ProxyPort != 0 {
-		t.Fatalf("proxy-free preview: %+v %v", preview, err)
+	if err != nil || len(preview.Errors) != 0 || preview.Settings.ProxyPort != 1237 {
+		t.Fatalf("proxy preview: %+v %v", preview, err)
 	}
-	request.Settings.ProxyPort = 8081
+	request.Settings.ProxyPort = 0
 	preview, err = ex.PreviewLaunch(request)
 	if err == nil && len(preview.Errors) == 0 {
-		t.Fatal("future proxy accepted")
+		t.Fatal("zero proxy port accepted")
 	}
 }
 

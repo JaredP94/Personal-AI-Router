@@ -14,7 +14,7 @@ func TestLlamaLifecycleNotice(t *testing.T) {
 	v.SetSize(100, 20)
 	v.merge(engineStatus{Engine: "llamacpp", DisplayName: "llama.cpp", Installed: true, Running: true, Port: 8082})
 	rendered := v.View()
-	for _, notice := range []string{"llama.cpp", "8082", "not notarized", "does not serve requests through PAIR yet"} {
+	for _, notice := range []string{"llama.cpp", "8082", "not notarized", "not notarized"} {
 		if !strings.Contains(rendered, notice) {
 			t.Fatalf("missing %s in %s", notice, rendered)
 		}

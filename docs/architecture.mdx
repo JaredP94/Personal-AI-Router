@@ -79,7 +79,7 @@ flowchart TB
 ```
 
 Electron starts only `nvpair-ui-broker` as a Go service. The service inventory
-contains 14 executables: broker + 12 workers (including `omlx-proxy`) + TUI.
+contains 15 executables: broker + 13 workers (including `omlx-proxy` and `llamacpp-proxy`) + TUI.
 The broker attempts to start available workers, probes their control health,
 reports lifecycle state, and retries crashes, optional initial spawn failures,
 and eligible hangs within a shared budget. Workers log to stderr; stdout is
@@ -111,7 +111,7 @@ The checks have separate meanings at each layer:
 | The broker | `ping` plus a 15-second notification heartbeat. Desktop detects 45 seconds of inbound silence and owns bounded stop/start recovery and rehydration. This does not monitor worker hangs. |
 | Peer nodes | Reachability, not health: missed announcements, then recent inference activity, recent telemetry, or a probe of the node-info or engine-manager port before eviction. Peer inference proxies report activity; their HTTP listeners are not probed for peer reachability. |
 
-Each of the twelve workers answers `worker/health` with `{"ok":true}`. The broker
+Each of the thirteen workers answers `worker/health` with `{"ok":true}`. The broker
 probes every **30 seconds**, with a **5-second deadline**. The diagnostic flag
 `--worker-health-interval` defaults to `30s` and requires at least `1s`; the
 probe deadline is capped at the interval. **Two consecutive failed probes**
@@ -122,7 +122,7 @@ stopped through bounded escalation and restarted:
 - `scanner`, `errors`, `settings`, `node-info`
 - `workload-manager`, `manual-nodes`, `cluster-manager`, `scheduler`
 
-**Engine-manager and all three proxies are never auto-restarted on a hang.**
+**Engine-manager and all four proxies are never auto-restarted on a hang.**
 Engine-manager restart can orphan engines; proxy HTTP inference runs separately
 from stdio control, and restart would interrupt live streams. They still accept
 explicit restarts. Their desktop rows show "Not responding — restart manually".
@@ -138,13 +138,13 @@ exhaustion leaves the worker down until an explicit retry. `nvpair-errors`
 cannot report its own death into itself, so its crashes go to stderr instead.
 
 The broker registry is independent of the errors service. `workers:get-status`
-returns all twelve workers with `running`, `degraded`, `restarting`, `exhausted`,
+returns all thirteen workers with `running`, `degraded`, `restarting`, `exhausted`,
 or `missing` state. Unconditional `workers:update` notifications carry full
 snapshots, not deltas. `workers:restart {name}` initiates restart/retry, including
 from exhaustion; a missing default is rechecked and only starts if found.
 Desktop **Settings → Service → Workers** renders state, PID, attempts and last
 error; engine-manager and proxy restarts require confirmation. TUI **Overview**
-shows all twelve workers and uses **`R`** with confirmation. Both clients recover
+shows all thirteen workers and uses **`R`** with confirmation. Both clients recover
 worker snapshots on epoch changes; neither owns health/retry policy.
 
 Cross-process hang tests are **Unix-only**; Windows hang recovery remains
@@ -755,7 +755,7 @@ browsing themselves.
 The scanner advertises one `_nvpair-node._tcp` multicast DNS (mDNS) record for
 each host, and that record carries two kinds of content:
 
-- The ports its sibling services registered: node-info, all three proxies,
+- The ports its sibling services registered: node-info, all four proxies,
   errors, workloads, cluster manager, and engine manager
 - The node's identity: `uuid=`, `cluster-uuid=` after clustering, and where to
   reach it — `ip=` for the address the node ranks first, and `ips=` for the whole
@@ -891,7 +891,7 @@ an unverified address if pairing fails. See [Routed networks](remote-networks.md
 ## Observability and Distributed Tracing
 
 PAIR includes built-in OpenTelemetry (OTel) tracing and Arize Phoenix observability.
-Every proxy (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`) instruments local inference
+Every proxy (`ollama-proxy`, `lmstudio-proxy`, `omlx-proxy`, `llamacpp-proxy`) instruments local inference
 requests, scheduler routing decisions, and engine dispatch operations.
 
 ### Local-Only Tracing Topology
@@ -1178,8 +1178,8 @@ desktop build compiles the sibling tree directly.
 
 | Build In | Output | Contents |
 | --- | --- | --- |
-| `desktop/` | `desktop/cli-bin/` | 14 service executables including the unsupervised TUI, one OS/arch |
-| `services/` | `services/build/bin/` | All 14 service executables, for standalone use |
+| `desktop/` | `desktop/cli-bin/` | 15 service executables including the unsupervised TUI, one OS/arch |
+| `services/` | `services/build/bin/` | All 15 service executables, for standalone use |
 
 `desktop/scripts/build-modular-binaries.ts` compiles the runtime inventory for a
 selected target and writes a manifest recording the source identity, versions,

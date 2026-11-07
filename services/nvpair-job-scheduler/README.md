@@ -74,7 +74,7 @@ the order, pending counts, or pressure actually changed.
 
 ## Output
 
-One `schedule:priority` notification per engine (`ollama`, `lmstudio`):
+One `schedule:priority` notification per engine (`ollama`, `lmstudio`, `omlx`, `llamacpp`):
 
 ```json
 {

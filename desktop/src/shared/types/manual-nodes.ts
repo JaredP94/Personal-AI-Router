@@ -33,6 +33,9 @@ export interface ManualNodeStatus {
     omlx_up?: boolean
     omlx_port?: number
     omlx_models?: string[]
+    llamacpp_up?: boolean
+    llamacpp_port?: number
+    llamacpp_models?: string[]
     node_info_up?: boolean
     node_info_port?: number
     tls_enabled?: boolean

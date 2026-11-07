@@ -8,9 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 An **engine** is the local inference runtime Personal AI Router (PAIR) uses to
 run models. PAIR supports Ollama, LM Studio and oMLX. It can install and run
 those engines for you, or work with a copy you already have. A macOS arm64
-**llama.cpp lifecycle-only preview** also appears in Engine settings: it can be
-installed, started, stopped and configured, but **does not serve requests through
-PAIR yet**. Its official b12171 macOS build is **not notarized**, like PAIR itself.
+**llama.cpp engine** also appears in Engine settings: it can be installed,
+started, stopped and configured, and is served by its own routing proxy on
+**1237** (engine listener **127.0.0.1:8082**). Select a regular GGUF inside PAIR's
+llama.cpp model cache with allowlisted `--model`/`-m`; model hub/download/delete
+are not available yet. Its official b12171 macOS build is **not notarized**, like PAIR itself.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
 
