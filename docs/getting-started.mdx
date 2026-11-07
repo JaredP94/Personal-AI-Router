@@ -187,11 +187,12 @@ and models at runtime; neither is bundled in the application.
 5. Stop llama.cpp before deleting an owned downloaded model. Unmanaged files
    are not deletable through PAIR.
 
-Verified peers support catalog download/cancel using the existing remote
-controls. Their installed cache is not exposed by the current service contract:
-the peer list is labelled **served models only**, and the downloaded-model
-picker is local. To change a peer's startup model, enter a known installed
-catalog ID with `--model` in its Settings arguments and preview/apply normally.
+Verified peers show installed cache files and support owned deletion through
+the existing authenticated remote controls. Stop the peer's llama.cpp engine
+before deleting; unrecorded files cannot be deleted by PAIR. Catalog
+download/cancel remains available. The startup picker is local: to change a
+peer's startup model, enter a known installed catalog ID with `--model` in its
+Settings arguments and preview/apply normally.
 See [the current limitations](known-issues.mdx#llamacpp-model-hub-limitations).
 
 ## 5. Find Your Endpoint

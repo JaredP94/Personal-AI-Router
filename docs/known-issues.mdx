@@ -43,13 +43,12 @@ only its own identity-matched transfer temporary file and does not promise
 partial-download resume. A checksum, disk-space or identity failure is an error,
 not successful cancellation.
 
-Verified peers support the existing download/cancel/delete service methods,
-but there is no peer installed-cache listing in the current service contract.
-Desktop and TUI label peer lists as **served models only**, not all downloaded
-models; their downloaded-model startup pickers are local. The desktop Settings
-arguments can select a known installed peer catalog ID. Complete peer
-installed-list/delete-picker/startup-picker parity needs a service API addition
-before it can be claimed.
+Verified peers expose installed llama.cpp cache files in desktop and TUI,
+including while stopped. Unrecorded files are visible but not deletable;
+owned deletion uses the existing authenticated remote operation and refuses
+while llama.cpp is running. Unverified previews receive no inventory.
+Downloaded-model startup pickers remain local, as with the other engines.
+The desktop Settings arguments can select a known installed peer catalog ID.
 
 PAIR downloads the engine and models at runtime; they are not bundled and have
 their own upstream terms. Packaged install/update/rollback, real downloads,

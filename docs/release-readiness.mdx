@@ -24,11 +24,13 @@ unreleased **1.4.0** minor bump relative to v0.9.0's **1.3.0**.
 The new hub uses fixture/local-server and client tests, not live model downloads
 or packaged certification.
 
-**Still open:** the current service contract has no peer installed-cache
-listing. Peer download/cancel uses existing methods; client lists explicitly
-show served inventory only and startup dropdowns are local. Complete peer
-installed-list/delete-picker/startup-picker parity needs a service API addition.
-Do not describe that gap as completed.
+Verified-peer installed-list/delete parity now reuses the existing pinned-mTLS
+engine inventory, scanner/manual enrichment and broker discovery relay.
+Desktop and TUI show cache IDs/file names, size and ownership; unrecorded files
+cannot be deleted. Remote owned deletion retains the identity/running guards
+and visible refusal reasons. Previews receive none. Startup dropdowns remain
+local (as for the other engines); peer Settings arguments still accept a known
+installed catalog ID. Live-peer and packaged smoke testing remain release gates.
 
 The license generator documents llama.cpp and models as runtime downloads,
 not bundled components; no unbundled engine/model was added to the dependency

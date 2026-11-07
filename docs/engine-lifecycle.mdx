@@ -95,10 +95,13 @@ catalog IDs; **No model (router mode)** removes the model option. A separately
 configured known installed catalog ID is also accepted by the service. Launch
 descriptors are never model names.
 
-The current peer service contract does not expose installed cache inventory.
-Peer catalogs/download/cancel use existing authenticated methods, but their
-model list is explicitly served inventory only, and startup dropdown selection
-is local. A peer's known installed ID can still be set in its launch arguments.
+Verified peers publish installed llama.cpp cache inventory through the existing
+pinned-mTLS discovery path, separate from served-model routing. Desktop and TUI
+show owned and unrecorded files, with owned deletion through the existing remote
+operation. Stop the peer's engine first; identity checks and refusal reasons are
+the same as local deletion. Previews receive no inventory. Startup dropdown
+selection remains local; a peer's known installed ID can still be set in its
+launch arguments.
 Per-model load profiles remain out of scope. See the
 [terminal keys](terminal-interface.mdx#llamacpp-model-hub) and
 [known limitations](known-issues.mdx#llamacpp-model-hub-limitations).

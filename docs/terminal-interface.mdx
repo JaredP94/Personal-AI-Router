@@ -150,10 +150,12 @@ Startup selection preserves other tuning arguments, writes a cache-relative
 `--model` option, and uses node-owned revisioned settings preview/apply.
 Confirmation warns if the engine will restart. Display names are catalog IDs.
 
-On verified peers, catalog download/cancel use existing remote methods.
-The current services do not expose peer installed-cache inventory: `m` labels
-the list as served models only, and the startup picker is local. No local
-inventory is presented as a peer's cache.
+On verified peers, `m` lists installed llama.cpp cache files from authenticated
+discovery inventory, including while stopped. `d` confirms owned deletion
+through the existing remote operation; stop llama.cpp first. Unrecorded files
+are visible but cannot be deleted. Previews receive no inventory. Catalog
+download/cancel retain the existing remote methods. The startup picker remains
+local; no local inventory is presented as a peer's cache.
 
 ## The Screen
 
