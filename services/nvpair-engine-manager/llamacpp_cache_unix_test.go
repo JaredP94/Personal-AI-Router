@@ -46,6 +46,26 @@ func TestLlamaDeleteParentSwapCannotEscape(t *testing.T) {
 		t.Fatal("outside file changed")
 	}
 }
+func TestLlamaDeleteRefusesReplacedRecordedFile(t *testing.T) {
+	ex, cache := llamaDownloadExecutor(t, nil, nil)
+	if err := pullLlamaTest(ex, "original"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cache, llamaOwnedFilename(llamaTestID))
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, llamaTestBytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.ModelDelete(context.Background(), "llamacpp", llamaTestID); err == nil {
+		t.Fatal("deleted replacement that PAIR did not record")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("replacement disappeared")
+	}
+}
+
 func TestLlamaCachePinnedDirectoryAndNoClobber(t *testing.T) {
 	root := t.TempDir()
 	cache := filepath.Join(root, "models")

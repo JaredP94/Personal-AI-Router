@@ -27,8 +27,12 @@ type llamaOwnedModel struct {
 	SHA256    string `json:"sha256"`
 	FinalHost string `json:"finalHost"`
 }
+type llamaCacheRecord struct {
+	llamaOwnedModel
+	Identity string `json:"fileIdentity"`
+}
 type llamaCacheManifest struct {
-	Models []llamaOwnedModel `json:"models"`
+	Models []llamaCacheRecord `json:"models"`
 }
 
 func llamaOwnedFilename(id string) string {
@@ -36,7 +40,7 @@ func llamaOwnedFilename(id string) string {
 	return hex.EncodeToString(sum[:]) + ".gguf"
 }
 func readLlamaManifest(dir *os.File) (llamaCacheManifest, error) {
-	out := llamaCacheManifest{Models: []llamaOwnedModel{}}
+	out := llamaCacheManifest{Models: []llamaCacheRecord{}}
 	f, err := llamaCacheOpen(dir, llamaManifestName, false)
 	if os.IsNotExist(err) {
 		return out, nil
@@ -54,7 +58,7 @@ func readLlamaManifest(dir *os.File) (llamaCacheManifest, error) {
 	}
 	seen := map[string]bool{}
 	for _, m := range out.Models {
-		if _, err := llamaRepoID(m.ID); err != nil || m.File != llamaOwnedFilename(m.ID) || m.Size <= 0 || m.Size > llamaMaxModelSize || !llamaSHA.MatchString(m.SHA256) || seen[m.ID] {
+		if _, err := llamaRepoID(m.ID); err != nil || m.File != llamaOwnedFilename(m.ID) || m.Size <= 0 || m.Size > llamaMaxModelSize || !llamaSHA.MatchString(m.SHA256) || seen[m.ID] || m.Identity == "" {
 			return out, fmt.Errorf("invalid model ownership record")
 		}
 		seen[m.ID] = true
@@ -226,7 +230,16 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (json.RawMessa
 		return nil, err
 	}
 	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
-	manifest.Models = append(manifest.Models, record)
+	committed, err := llamaCacheOpen(dir, final, false)
+	if err != nil {
+		return nil, err
+	}
+	identity := llamaCacheIdentity(committed)
+	_ = committed.Close()
+	if identity == "" {
+		return nil, fmt.Errorf("cannot identify committed model")
+	}
+	manifest.Models = append(manifest.Models, llamaCacheRecord{llamaOwnedModel: record, Identity: identity})
 	if err := writeLlamaManifest(dir, manifest); err != nil {
 		// This operation created the final file; do not leave an unowned success.
 		_ = llamaCacheRemove(dir, final)
@@ -269,10 +282,10 @@ func (e *Executor) listLlamaModels() (json.RawMessage, error) {
 			continue
 		}
 		info, err := f.Stat()
-		valid := err == nil && info.Size() == m.Size && rejectSplitGGUF(f) == nil
+		valid := err == nil && info.Size() == m.Size && llamaCacheIdentity(f) == m.Identity && rejectSplitGGUF(f) == nil
 		_ = f.Close()
 		if valid {
-			models = append(models, m)
+			models = append(models, m.llamaOwnedModel)
 		}
 	}
 	for _, entry := range entries {
@@ -323,8 +336,9 @@ func (e *Executor) deleteLlamaModel(ctx context.Context, id string) (json.RawMes
 			return nil, err
 		}
 		info, err := f.Stat()
+		identity := llamaCacheIdentity(f)
 		_ = f.Close()
-		if err != nil || info.Size() != m.Size {
+		if err != nil || info.Size() != m.Size || identity != m.Identity {
 			return nil, fmt.Errorf("recorded model changed")
 		}
 		if err := llamaCacheRemove(dir, m.File); err != nil {

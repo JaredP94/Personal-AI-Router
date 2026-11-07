@@ -64,7 +64,7 @@ Existing `engine:action` supports llama.cpp `pull_model {model: id}` with
 finalHost}]}`, and `delete_model {model: id}`. Inventory combines the ownership
 manifest with a bounded (4096 entries) no-follow regular-GGUF scan; manually
 supplied GGUFs have their filename as ID and empty checksum/host and are never
-deletable by PAIR. Recorded files must match their recorded size and valid
+deletable by PAIR. Recorded files must match their descriptor-derived file identity, size and valid
 single-file GGUF metadata to appear. The live `list_models` remains the
 llama-server served inventory, not this installed list.
 
@@ -92,7 +92,7 @@ remote methods and streams. Start is refused during a cache mutation; deletion
 conservatively requires the engine to be stopped and no lifecycle op in flight.
 Every cache ancestor is opened with openat/no-follow from `/`; mutations stay
 relative to that descriptor even after a parent swap. Delete requires a matching
-ownership manifest record and regular file, and never recursively removes data.
+ownership manifest record, file identity and regular file, and never recursively removes data.
 
 This intentionally differs from NVIDIA/Personal-AI-Router@6d2d67f: PAIR does not
 ask llama-server\u0027s router-mode API to download. All checks and #50 tracking stay

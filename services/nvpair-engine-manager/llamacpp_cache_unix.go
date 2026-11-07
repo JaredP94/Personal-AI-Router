@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 // Pin the canonical directory using the same component-by-component no-follow
@@ -94,6 +95,17 @@ func llamaCacheOpen(dir *os.File, name string, create bool) (*os.File, error) {
 func llamaCacheRemove(dir *os.File, name string) error { return unix.Unlinkat(int(dir.Fd()), name, 0) }
 func llamaCacheRename(dir *os.File, from, to string) error {
 	return unix.Renameat(int(dir.Fd()), from, int(dir.Fd()), to)
+}
+func llamaCacheIdentity(f *os.File) string {
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	return fileIdentityFromStat(st)
 }
 func llamaCacheFree(dir *os.File) (uint64, error) {
 	var st unix.Statfs_t

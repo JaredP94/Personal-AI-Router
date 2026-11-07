@@ -16,4 +16,5 @@ func llamaCacheOpen(*os.File, string, bool) (*os.File, error) { return nil, llam
 func llamaCacheRemove(*os.File, string) error                 { return llamaCacheUnsupported() }
 func llamaCacheRename(*os.File, string, string) error         { return llamaCacheUnsupported() }
 func llamaCacheCommit(*os.File, string, string) error         { return llamaCacheUnsupported() }
+func llamaCacheIdentity(*os.File) string                      { return "" }
 func llamaCacheFree(*os.File) (uint64, error)                 { return 0, llamaCacheUnsupported() }
