@@ -181,8 +181,10 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	}
 	final := llamaOwnedFilename(id)
 	if f, err := llamaCacheOpen(dir, final, false); err == nil {
+		result, retErr = nil, fmt.Errorf("destination already exists; unrecorded files are never replaced")
+		classify()
 		_ = f.Close()
-		return nil, fmt.Errorf("destination already exists; unrecorded files are never replaced")
+		return result, retErr
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -194,8 +196,11 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	// Capture dev/ino immediately, before network I/O or writes.
 	identity := llamaCacheIdentity(f)
 	if identity == "" {
+		// Take the outcome fence before closing, as on every other exit path.
+		result, retErr = nil, fmt.Errorf("cannot identify temporary model")
+		classify()
 		_ = f.Close()
-		return nil, fmt.Errorf("cannot identify temporary model")
+		return result, retErr
 	}
 	published, manifestWritten, completed := false, false, false
 	originalCount := len(manifest.Models)
