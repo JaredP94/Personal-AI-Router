@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"reflect"
 	"slices"
 	"sort"
 	"sync"
@@ -76,7 +77,8 @@ type EnrichedNode struct {
 	// (normally a subset of ModelsByEngine), enriched by the daemon from the
 	// peer's engine-manager /v1/models loadedByEngine field. Carried through to
 	// AvailableNode so a remote node's cards can reflect loaded state.
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
 	// EngineNative is the engine's own report of itself: the counters, the
 	// rates and the models it lists as active, as the engine published them.
 	// Enriched by the daemon from the node's engine-manager
@@ -129,6 +131,7 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		Models:               n.Models,
 		ModelsByEngine:       n.ModelsByEngine,
 		LoadedByEngine:       n.LoadedByEngine,
+		DownloadedByEngine:   n.DownloadedByEngine,
 		EngineNative:         n.EngineNative,
 	}
 }
@@ -352,6 +355,9 @@ func enrichedNodeEqual(a, b EnrichedNode) bool {
 			return false
 		}
 	}
+	if !reflect.DeepEqual(a.DownloadedByEngine, b.DownloadedByEngine) {
+		return false
+	}
 	if len(a.LoadedByEngine) != len(b.LoadedByEngine) {
 		return false
 	}
@@ -427,6 +433,7 @@ func (sn storedNode) toAvailable() AvailableNode {
 		Models:               n.Models,
 		ModelsByEngine:       n.ModelsByEngine,
 		LoadedByEngine:       n.LoadedByEngine,
+		DownloadedByEngine:   n.DownloadedByEngine,
 		EngineNative:         n.EngineNative,
 	}
 }
@@ -722,6 +729,7 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 				ev.Node.IdentityVerification = "unverified"
 			}
 			ev.Node.Models, ev.Node.ModelsByEngine, ev.Node.LoadedByEngine = nil, nil, nil
+			ev.Node.DownloadedByEngine = nil
 			ev.Node.EngineNative = nil
 		}
 		if s.store != nil && method != noderec.NotifyNodeRemoved && ev.Node.ServicePeer() {

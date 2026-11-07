@@ -286,6 +286,7 @@ func (d *Directory) serviceView(n noderec.DirectoryNode) noderec.DirectoryNode {
 	}
 	n.Services = services
 	n.Models, n.ModelsByEngine, n.LoadedByEngine = nil, nil, nil
+	n.DownloadedByEngine = nil
 	n.EngineNative = nil
 	return n
 }

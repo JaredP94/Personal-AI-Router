@@ -125,7 +125,8 @@ type daemon struct {
 	// lastLoadedByEngine caches the per-engine loaded (in-memory) set from the
 	// same /v1/models fetch, so a transient miss reuses it rather than blanking
 	// a remote node's loaded state. Keyed by hostUuid.
-	lastLoadedByEngine map[string]map[string][]string
+	lastLoadedByEngine     map[string]map[string][]string
+	lastDownloadedByEngine map[string]map[string][]noderec.DownloadedModel
 	// nodeInfoDown holds the nodes whose last node-info enrichment failed, so
 	// the outage is reported when it starts and when it ends rather than once
 	// per sweep. Guarded by infoMu with the caches it explains: the reason a
@@ -819,6 +820,10 @@ func (d *daemon) dropSelf(oldHostUUID, newHostUUID string) {
 	delete(d.lastInfoAt, oldHostUUID)
 	delete(d.lastModels, oldHostUUID)
 	delete(d.lastModelsByEngine, oldHostUUID)
+	if d.lastDownloadedByEngine != nil {
+		d.lastDownloadedByEngine[newHostUUID] = d.lastDownloadedByEngine[oldHostUUID]
+	}
+	delete(d.lastDownloadedByEngine, oldHostUUID)
 	delete(d.lastLoadedByEngine, oldHostUUID)
 	d.infoMu.Unlock()
 	if existed {
@@ -1431,17 +1436,18 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 		return
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, em.Port, node.ClusterUUID)
+		models, byEngine, loadedByEngine, downloadedByEngine, fetched := d.fetchModels(host, em.Port, node.ClusterUUID)
 		if !fetched {
 			return modelInventory{}, false
 		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine, downloadedByEngine: downloadedByEngine}, true
 	}
 	key := hostKey{hostUUID: node.HostUUID, service: noderec.ServiceEngineManager}
 	if !d.localNode(node.HostUUID) {
 		_, inventory, ok := askRemembered(&d.enrichHosts, key, hosts, ask)
 		if ok && d.currentPeer(*node) {
 			node.Models, node.ModelsByEngine, node.LoadedByEngine = inventory.models, inventory.byEngine, inventory.loadedByEngine
+			node.DownloadedByEngine = inventory.downloadedByEngine
 		}
 		return
 	}
@@ -1458,22 +1464,29 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 		}
 		d.lastModels[node.HostUUID] = inventory.models
 		d.lastModelsByEngine[node.HostUUID] = inventory.byEngine
+		if d.lastDownloadedByEngine == nil {
+			d.lastDownloadedByEngine = make(map[string]map[string][]noderec.DownloadedModel)
+		}
+		d.lastDownloadedByEngine[node.HostUUID] = inventory.downloadedByEngine
 		d.lastLoadedByEngine[node.HostUUID] = inventory.loadedByEngine
 		d.infoMu.Unlock()
 		node.Models = inventory.models
 		node.ModelsByEngine = inventory.byEngine
 		node.LoadedByEngine = inventory.loadedByEngine
+		node.DownloadedByEngine = inventory.downloadedByEngine
 		return
 	}
 	d.infoMu.Lock()
 	cached, had := d.lastModels[node.HostUUID]
 	cachedByEngine := d.lastModelsByEngine[node.HostUUID]
 	cachedLoaded := d.lastLoadedByEngine[node.HostUUID]
+	cachedDownloaded := d.lastDownloadedByEngine[node.HostUUID]
 	d.infoMu.Unlock()
 	if had {
 		node.Models = cached
 		node.ModelsByEngine = cachedByEngine
 		node.LoadedByEngine = cachedLoaded
+		node.DownloadedByEngine = cachedDownloaded
 	}
 }
 
@@ -1491,41 +1504,43 @@ func (d *daemon) enrichModelsCandidates(node *noderec.DirectoryNode, hosts []str
 // dialed over loopback (both callers force that for self), which stays plain and
 // therefore keeps working when this node belongs to no cluster — a standalone
 // machine still has to show its own models.
-func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string, map[string][]string, map[string][]string, bool) {
+func (d *daemon) fetchModels(ip string, port int, clusterUUID string) ([]string, map[string][]string, map[string][]string, map[string][]noderec.DownloadedModel, bool) {
 	client, scheme, ok := d.modelsClient(ip, clusterUUID)
 	if !ok {
 		slog.Debug("model enrichment skipped: peer is not a pinned cluster member",
 			"ip", ip, "clusterUuid", clusterUUID)
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	url := scheme + "://" + net.JoinHostPort(ip, strconv.Itoa(port)) + "/v1/models"
 	if scheme == "https" {
 		var body struct {
-			Models         []string            `json:"models"`
-			ModelsByEngine map[string][]string `json:"modelsByEngine"`
-			LoadedByEngine map[string][]string `json:"loadedByEngine"`
+			Models             []string                             `json:"models"`
+			ModelsByEngine     map[string][]string                  `json:"modelsByEngine"`
+			LoadedByEngine     map[string][]string                  `json:"loadedByEngine"`
+			DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine"`
 		}
 		_, _, ok := clustertrust.ReadPeerInventory(context.Background(), d.mesh, client, clusterUUID, url, "", modelsResponseLimit, &body)
-		return body.Models, body.ModelsByEngine, body.LoadedByEngine, ok
+		return body.Models, body.ModelsByEngine, body.LoadedByEngine, body.DownloadedByEngine, ok
 	}
 	resp, err := client.Get(url)
 	if err != nil {
 		slog.Debug("model enrichment failed", "ip", ip, "url", url, "err", err)
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	var body struct {
-		Models         []string            `json:"models"`
-		ModelsByEngine map[string][]string `json:"modelsByEngine"`
-		LoadedByEngine map[string][]string `json:"loadedByEngine"`
+		Models             []string                             `json:"models"`
+		ModelsByEngine     map[string][]string                  `json:"modelsByEngine"`
+		LoadedByEngine     map[string][]string                  `json:"loadedByEngine"`
+		DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, modelsResponseLimit)).Decode(&body); err != nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
-	return body.Models, body.ModelsByEngine, body.LoadedByEngine, true
+	return body.Models, body.ModelsByEngine, body.LoadedByEngine, body.DownloadedByEngine, true
 }
 
 // modelsClient picks the transport for a model fetch: the plain client over
@@ -2052,11 +2067,11 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 		hosts = []string{loopbackHost}
 	}
 	ask := func(host string) (modelInventory, bool) {
-		models, byEngine, loadedByEngine, fetched := d.fetchModels(host, emPort, clusterUUID)
+		models, byEngine, loadedByEngine, downloadedByEngine, fetched := d.fetchModels(host, emPort, clusterUUID)
 		if !fetched {
 			return modelInventory{}, false
 		}
-		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine}, true
+		return modelInventory{models: models, byEngine: byEngine, loadedByEngine: loadedByEngine, downloadedByEngine: downloadedByEngine}, true
 	}
 	key := hostKey{hostUUID: hostUUID, service: noderec.ServiceEngineManager}
 	_, inventory, fetched := askRemembered(&d.enrichHosts, key, hosts, ask)
@@ -2092,10 +2107,14 @@ func (d *daemon) refreshNodeModelsCandidates(hostUUID, guardIP string, hosts []s
 	}
 	d.lastModels[hostUUID] = models
 	d.lastModelsByEngine[hostUUID] = byEngine
+	if d.lastDownloadedByEngine == nil {
+		d.lastDownloadedByEngine = make(map[string]map[string][]noderec.DownloadedModel)
+	}
+	d.lastDownloadedByEngine[hostUUID] = inventory.downloadedByEngine
 	d.lastLoadedByEngine[hostUUID] = loadedByEngine
 	d.infoMu.Unlock()
 
-	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine)
+	node, changed, valid := d.dir.applyModels(hostUUID, guardIP, emPort, models, byEngine, loadedByEngine, inventory.downloadedByEngine)
 	if !valid {
 		return false
 	}
@@ -2237,6 +2256,7 @@ func (d *daemon) forget(hostUUID string) {
 	delete(d.lastInfoAt, hostUUID)
 	delete(d.lastModels, hostUUID)
 	delete(d.lastModelsByEngine, hostUUID)
+	delete(d.lastDownloadedByEngine, hostUUID)
 	delete(d.lastLoadedByEngine, hostUUID)
 	delete(d.nodeInfoDown, hostUUID)
 	d.infoMu.Unlock()

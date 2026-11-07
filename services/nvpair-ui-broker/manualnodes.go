@@ -60,10 +60,11 @@ type manualNodeStatus struct {
 	// machine is also discovered). Empty until the node-info probe succeeds.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the remote's cluster principal.
-	ClusterUUID    string              `json:"clusterUuid,omitempty"`
-	Models         []string            `json:"models,omitempty"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	ClusterUUID        string                               `json:"clusterUuid,omitempty"`
+	Models             []string                             `json:"models,omitempty"`
+	ModelsByEngine     map[string][]string                  `json:"modelsByEngine,omitempty"`
+	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
 	// EngineNative is the remote engine's own report of itself, as the
 	// manual-node prober read it over the peer's pinned mTLS path. It is
 	// the same field a discovered node's record carries, so a manual node
@@ -511,6 +512,7 @@ func manualToEnriched(s manualNodeStatus) EnrichedNode {
 		Models:               models,
 		ModelsByEngine:       modelsByEngine,
 		LoadedByEngine:       s.LoadedByEngine,
+		DownloadedByEngine:   s.DownloadedByEngine,
 		EngineNative:         s.EngineNative,
 		Clustered:            s.ClusterUUID != "",
 		PeerRecordID:         recordID,
@@ -557,7 +559,7 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		for service, port := range s.PeerMetadata.Services {
 			services[service] = noderec.ServiceStatus{Port: port}
 		}
-		return noderec.DirectoryNode{HostUUID: s.HostUUID, Name: s.PeerMetadata.Name, IP: s.Address, IPs: []string{s.Address}, ClusterUUID: s.ClusterUUID, Trusted: true, IdentityVerification: "verified", PeerRecordID: s.PeerRecordID, Services: services, GPUs: s.GPUs, CPU: s.CPU, Memory: s.Memory, Models: s.Models, ModelsByEngine: s.ModelsByEngine, LoadedByEngine: s.LoadedByEngine, EngineNative: s.EngineNative, LastSeen: time.Now().Unix()}
+		return noderec.DirectoryNode{HostUUID: s.HostUUID, Name: s.PeerMetadata.Name, IP: s.Address, IPs: []string{s.Address}, ClusterUUID: s.ClusterUUID, Trusted: true, IdentityVerification: "verified", PeerRecordID: s.PeerRecordID, Services: services, GPUs: s.GPUs, CPU: s.CPU, Memory: s.Memory, Models: s.Models, ModelsByEngine: s.ModelsByEngine, LoadedByEngine: s.LoadedByEngine, DownloadedByEngine: s.DownloadedByEngine, EngineNative: s.EngineNative, LastSeen: time.Now().Unix()}
 	}
 	hostUUID := s.HostUUID
 	if hostUUID == "" {
@@ -668,6 +670,7 @@ func (b *Broker) manualToDirectoryNode(s manualNodeStatus, key string) noderec.D
 		Models:               models,
 		ModelsByEngine:       modelsByEngine,
 		LoadedByEngine:       s.LoadedByEngine,
+		DownloadedByEngine:   s.DownloadedByEngine,
 		EngineNative:         s.EngineNative,
 		LastSeen:             time.Now().Unix(),
 	}

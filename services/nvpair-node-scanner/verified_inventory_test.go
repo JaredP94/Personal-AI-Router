@@ -29,7 +29,7 @@ func TestClaimedPinnedPrincipalCannotPublishServiceInventory(t *testing.T) {
 	d := newMembershipTestDaemon(dir)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
-			_ = json.NewEncoder(w).Encode(map[string][]string{"models": {"forged-model"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []string{"forged-model"}, "downloadedByEngine": map[string][]noderec.DownloadedModel{"llamacpp": {{ID: "forged", File: "forged.gguf", Size: 24, Owned: true}}}})
 			return
 		}
 		_, portString, _ := net.SplitHostPort(r.Host)
@@ -51,7 +51,7 @@ func TestClaimedPinnedPrincipalCannotPublishServiceInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "forged-peer", Addresses: []string{host}, TXT: []string{"v=1", "uuid=" + peer, "cluster-uuid=" + peer, "ip=" + host, "ni=" + port, "em=" + port, "ol=11434"}}})
-	if n, ok := d.dir.get(peer); ok && (n.Trusted || len(n.Models) > 0 || len(n.ModelsByEngine) > 0) {
+	if n, ok := d.dir.get(peer); ok && (n.Trusted || len(n.Models) > 0 || len(n.ModelsByEngine) > 0 || len(n.DownloadedByEngine) > 0) {
 		t.Errorf("unauthenticated claim reached trusted/routing inventory: %+v", n)
 	}
 	p, _ := strconv.Atoi(port)
@@ -83,7 +83,7 @@ func secureInventoryFixture(t *testing.T, principal string) (*daemon, *httptest.
 			return
 		}
 		if r.URL.Path == "/v1/models" {
-			_ = json.NewEncoder(w).Encode(map[string][]string{"models": {"authenticated-model"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []string{"authenticated-model"}, "downloadedByEngine": map[string][]noderec.DownloadedModel{"llamacpp": {{ID: "peer-model", File: "peer.gguf", Size: 24, SHA256: "verified", Owned: true}}}})
 			return
 		}
 		if r.URL.Path == "/v1/engine-stats" {
@@ -131,7 +131,7 @@ func TestPublicPreviewHasIndependentKeyAndCannotRemoveVerifiedPeer(t *testing.T)
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: hint})
 	key := candidateRecordKey(hint)
 	preview, exists := d.dir.get(key)
-	if !exists || preview.RecordKey() != key || preview.IdentityVerification != "unverified" || preview.Trusted {
+	if !exists || preview.RecordKey() != key || preview.IdentityVerification != "unverified" || preview.Trusted || len(preview.DownloadedByEngine) != 0 {
 		t.Fatalf("preview not independently keyed: %+v", preview)
 	}
 	if after, _ := d.dir.get("uuid-peer"); after.PeerRecordID != before.PeerRecordID || !after.ServicePeer() {
@@ -156,6 +156,9 @@ func TestPinnedInventoryPromotesOnlyAuthenticatedMetadata(t *testing.T) {
 	if !ok || !n.ServicePeer() || n.PeerRecordID == "" || n.Name != "authenticated-name" || n.Services[noderec.ServiceOllama].Port != 11434 || len(n.Models) != 1 || n.Models[0] != "authenticated-model" {
 		t.Fatalf("authenticated projection = %+v", n)
 	}
+	if rows := n.DownloadedByEngine["llamacpp"]; len(rows) != 1 || rows[0].ID != "peer-model" || !rows[0].Owned {
+		t.Fatalf("missing authenticated cache: %+v", n.DownloadedByEngine)
+	}
 	var out bytes.Buffer
 	d.codec = NewCodec(&out)
 	if !d.refreshNodeTelemetryCandidates(context.Background(), n.HostUUID, []string{host}, port) {
@@ -177,7 +180,7 @@ func TestPinnedInventoryPromotesOnlyAuthenticatedMetadata(t *testing.T) {
 	clustertrusttest.WriteAdmission(t, d.clusterDir, "cluster-test", 2)
 	d.reloadTrust()
 	n, _ = d.dir.get("uuid-peer")
-	if n.Trusted || n.ServicePeer() || len(n.Models) > 0 || len(n.GPUs) > 0 {
+	if n.Trusted || n.ServicePeer() || len(n.Models) > 0 || len(n.GPUs) > 0 || len(n.DownloadedByEngine) > 0 {
 		t.Fatalf("admission change retained inventory: %+v", n)
 	}
 }

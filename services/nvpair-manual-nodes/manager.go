@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -219,10 +220,11 @@ type ManualNodeStatus struct {
 	// keys on. Empty when node-info didn't report one.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the remote node's cluster principal.
-	ClusterUUID    string              `json:"clusterUuid,omitempty"`
-	Models         []string            `json:"models,omitempty"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	ClusterUUID        string                               `json:"clusterUuid,omitempty"`
+	Models             []string                             `json:"models,omitempty"`
+	ModelsByEngine     map[string][]string                  `json:"modelsByEngine,omitempty"`
+	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
 	// EngineNative is the remote engine's own report of itself: the
 	// counters, the rates and the active models the node's engine-manager
 	// publishes at GET /v1/engine-stats. It is read over the same transport
@@ -880,6 +882,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		Models:               finalModels,
 		ModelsByEngine:       finalModelsByEngine,
 		LoadedByEngine:       finalLoadedByEngine,
+		DownloadedByEngine:   emRes.DownloadedByEngine,
 		EngineNative:         engineNative,
 	}
 
@@ -956,6 +959,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		!sliceEqual(prev.Models, newStatus.Models) ||
 		!mapsEqual(prev.ModelsByEngine, newStatus.ModelsByEngine) ||
 		!mapsEqual(prev.LoadedByEngine, newStatus.LoadedByEngine) ||
+		!reflect.DeepEqual(prev.DownloadedByEngine, newStatus.DownloadedByEngine) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
@@ -1028,9 +1032,10 @@ const (
 )
 
 type engineManagerModels struct {
-	Models         []string            `json:"models"`
-	ModelsByEngine map[string][]string `json:"modelsByEngine"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+	Models             []string                             `json:"models"`
+	ModelsByEngine     map[string][]string                  `json:"modelsByEngine"`
+	LoadedByEngine     map[string][]string                  `json:"loadedByEngine"`
+	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
 }
 
 // engineNativeDue reports whether this node's engine view is due for a fresh

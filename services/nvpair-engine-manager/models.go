@@ -11,6 +11,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"nvpair-shared/noderec"
 )
 
 // modelsTimeout bounds the whole engine:models sweep so one hung engine can't
@@ -40,9 +42,10 @@ const modelsTimeout = 5 * time.Second
 // ByEngine/Models entry until the next successful sweep. Its own omitempty drops
 // the whole map when no engine reports loaded state.
 type ModelsResult struct {
-	Models         []string            `json:"models"`
-	ByEngine       map[string][]string `json:"modelsByEngine,omitempty"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	Models             []string                             `json:"models"`
+	ByEngine           map[string][]string                  `json:"modelsByEngine,omitempty"`
+	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
 }
 
 // Models returns the union of model names served by every installed, running
@@ -168,6 +171,25 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	wg.Wait()
 
 	res := ModelsResult{Models: []string{}}
+	// Cache inventory is available even while the engine is stopped. Keep it
+	// separate from served models: proxies use the latter to choose owners.
+	if _, err := e.state("llamacpp"); err == nil {
+		raw, err := e.listLlamaModels(ctx)
+		if err != nil {
+			return res, err
+		}
+		var cache struct {
+			Models []llamaOwnedModel `json:"models"`
+		}
+		if err := json.Unmarshal(raw, &cache); err != nil {
+			return res, err
+		}
+		rows := make([]noderec.DownloadedModel, 0, len(cache.Models))
+		for _, model := range cache.Models {
+			rows = append(rows, noderec.DownloadedModel{ID: model.ID, File: model.File, Size: model.Size, SHA256: model.SHA256, Owned: model.SHA256 != ""})
+		}
+		res.DownloadedByEngine = map[string][]noderec.DownloadedModel{"llamacpp": rows}
+	}
 	seen := map[string]bool{}
 	for i, result := range results {
 		if result.modelsOK {

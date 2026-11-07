@@ -5,6 +5,21 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-ui-broker
 
+### Downloaded llama.cpp inventory
+
+The existing engine-manager `/v1/models` inventory adds `downloadedByEngine`:
+`{"llamacpp":[{"id":"catalog ID or file name","file":"cache-relative.gguf","size":24,"sha256":"…","owned":true}]}`.
+This cache list is available while stopped and remains separate from served
+`models`/`modelsByEngine`, which continue to drive routing. The cache scan is
+limited to 4096 entries and uses the existing bounded inventory response.
+Scanner enrichment and verified manual peers carry it over pinned cluster mTLS;
+the broker preserves it in discovery snapshots. Unverified previews receive none.
+Deletion reuses `engine:remote-delete-model` and authenticated ec
+`POST /v1/models/delete`, ending in engine-manager's identity-checked
+`delete_model`. Unrecorded files are not deletable; a running/busy llama.cpp
+engine refuses deletion with its stop-engine reason.
+
+
 A Go service that exposes the NVIDIA Personal AI Router API to **UI processes**
 and other clients (CLIs, dashboards, mobile companions, scripts, tests, etc.).
 The shipped graphical UI is bundled alongside the backend services and launches
