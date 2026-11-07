@@ -48,6 +48,20 @@ func TestLlamaPeerInventoryIncludesStoppedCache(t *testing.T) {
 	}
 }
 
+func TestLlamaPeerInventoryBeforeCacheParentExists(t *testing.T) {
+	ex, _ := llamaDownloadExecutor(t, nil, nil)
+	state, err := ex.state("llamacpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.installDir = filepath.Join(t.TempDir(), "not-created", "engine-bin", "llamacpp")
+	rec := httptest.NewRecorder()
+	modelsHandler(ex)(rec, httptest.NewRequest(http.MethodGet, modelsPath, nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"downloadedByEngine":{"llamacpp":[]}`) {
+		t.Fatalf("fresh cache unavailable: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestLlamaCacheFailurePreservesOtherEngineInventory(t *testing.T) {
 	ex, cache := llamaDownloadExecutor(t, nil, nil)
 	if err := os.MkdirAll(cache, 0700); err != nil {

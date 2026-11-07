@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -329,7 +330,7 @@ func (e *Executor) listLlamaModels(ctx context.Context) (json.RawMessage, error)
 		return nil, err
 	}
 	dir, err := openLlamaCache(st.installDir+"-models", false)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return json.RawMessage(`{"models":[]}`), nil
 	}
 	if err != nil {
