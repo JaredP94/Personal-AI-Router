@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Stack } from '@nvidia/foundations-react-core'
+import { Stack, Text } from '@nvidia/foundations-react-core'
+import { groupCatalog } from '@/ui/utils/llamacpp-models'
 import { ModelHubSearchBar } from './ModelHubSearchBar'
 import { ModelHubActions } from './ModelHubActions'
 import { InlineErrorBanner } from '@/ui/components/InlineErrorBanner'
@@ -69,13 +70,13 @@ export const ModelHubContent = ({
     const lookupGenRef = useRef(0)
 
     const loadModels = useCallback(async (backend: EngineType) => {
+        const gen = ++fetchGenRef.current
         const cached = cacheRef.current.get(backend)
         if (cached) {
             setAllModels(cached)
             setLoading(false)
             return
         }
-        const gen = ++fetchGenRef.current
         setLoading(true)
         try {
             const result = await searchEngineHub(backend)
@@ -85,7 +86,7 @@ export const ModelHubContent = ({
             setLoading(false)
         } catch (error) {
             if (fetchGenRef.current !== gen) return
-            console.warn('Model hub load error', error)
+            // Display service errors without logging upstream content.
             setErrors(prev => [
                 ...prev,
                 { id: performance.now().toString(), message: getErrorString(error) }
@@ -105,18 +106,51 @@ export const ModelHubContent = ({
         setQuery('')
         setSelectedModels(new Set())
         setSort(resolveStoredSort(engine, SORT_DEFAULT_STATE))
-        void loadModels(engine)
+        if (engine !== 'llamacpp') void loadModels(engine)
         return () => {
             // Invalidate any in-flight fetch for the previous engine.
             fetchGenRef.current += 1
         }
     }, [engine, loadModels])
 
+    useEffect(() => {
+        if (engine !== 'llamacpp' || !query.trim()) return
+        const generation = ++fetchGenRef.current
+        setLoading(true)
+        setErrors([])
+        const timer = setTimeout(() => {
+            void searchEngineHub('llamacpp', query)
+                .then(result => {
+                    if (fetchGenRef.current !== generation) return
+                    setAllModels(result)
+                    setLoading(false)
+                })
+                .catch(error => {
+                    if (fetchGenRef.current !== generation) return
+                    setErrors([{ id: 'search', message: getErrorString(error) }])
+                    setAllModels([])
+                    setLoading(false)
+                })
+        }, LOOKUP_DEBOUNCE_MS)
+        return () => {
+            clearTimeout(timer)
+            fetchGenRef.current++
+        }
+    }, [engine, query])
+
+    useEffect(() => {
+        if (engine === 'llamacpp' && !query.trim()) {
+            setErrors([])
+            void loadModels(engine)
+        }
+    }, [engine, query, loadModels])
+
     const queryFiltered = useMemo(() => {
+        if (engine === 'llamacpp') return allModels
         const q = query.toLowerCase().trim()
         if (!q) return allModels
         return allModels.filter(m => m.name.toLowerCase().includes(q))
-    }, [allModels, query])
+    }, [allModels, query, engine])
 
     const visibleModels = useMemo(() => {
         if (!engine || !downloadedModels || downloadedModels.length === 0) return queryFiltered
@@ -246,16 +280,44 @@ export const ModelHubContent = ({
                         onSort={handleSortPersist}
                     />
                 </Stack>
-                <ModelHubList
-                    className="grow min-h-0"
-                    disabled={disabledListClick}
-                    multiple={multiple}
-                    loading={loading || (lookingUp && displayModels.length === 0)}
-                    models={displayModels}
-                    selectedModels={selectedModels}
-                    onToggleSelectModel={handleListToggle}
-                    sort={sort}
-                />
+                {engine === 'llamacpp' ? (
+                    <Stack gap="2" className="overflow-y-auto grow min-h-0">
+                        <Text kind="body/regular/sm">
+                            Single-file Q4_K_M GGUF models only. Search accepts up to 100 characters
+                            and 50 results.
+                        </Text>
+                        {loading && <Text kind="body/regular/sm">Searching models…</Text>}
+                        {!loading &&
+                            groupCatalog(displayModels).map(([publisher, models]) => (
+                                <Stack key={publisher} gap="1">
+                                    <Text kind="body/semibold/sm">{publisher}</Text>
+                                    <ModelHubList
+                                        disabled={disabledListClick}
+                                        multiple={multiple}
+                                        loading={false}
+                                        models={models}
+                                        selectedModels={selectedModels}
+                                        onToggleSelectModel={handleListToggle}
+                                        sort={sort}
+                                    />
+                                </Stack>
+                            ))}
+                        {!loading && !displayModels.length && (
+                            <Text kind="body/regular/sm">No models found</Text>
+                        )}
+                    </Stack>
+                ) : (
+                    <ModelHubList
+                        className="grow min-h-0"
+                        disabled={disabledListClick}
+                        multiple={multiple}
+                        loading={loading || (lookingUp && displayModels.length === 0)}
+                        models={displayModels}
+                        selectedModels={selectedModels}
+                        onToggleSelectModel={handleListToggle}
+                        sort={sort}
+                    />
+                )}
 
                 {!!multiple && (
                     <ModelHubActions

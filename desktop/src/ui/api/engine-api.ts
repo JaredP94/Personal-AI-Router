@@ -74,7 +74,8 @@ export interface IEngineApi {
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
     /** Search the model registry/hub for available models. */
-    searchHub(engineType: EngineType): Promise<EngineHubSearchResponse>
+    searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
+    downloadedModels(nodeId: string): Promise<import('@/shared/types/engine-api').DownloadedModel[]>
     /** Resolve one exact model name the hub catalog does not list. */
     lookupHubModel(engineType: EngineType, name: string): Promise<EngineHubLookupResponse>
 
@@ -142,7 +143,9 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 model,
                 expiry
             }),
-        searchHub: engineType => transport.invoke('engine:search-hub', { engineType }),
+        searchHub: (engineType, query) =>
+            transport.invoke('engine:search-hub', { engineType, query }),
+        downloadedModels: nodeId => transport.invoke('engine:downloaded-models', { nodeId }),
         lookupHubModel: (engineType, name) =>
             transport.invoke('engine:lookup-hub-model', { engineType, name }),
 

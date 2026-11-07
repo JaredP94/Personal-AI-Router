@@ -22,7 +22,7 @@ export const EngineCapabilities: Record<EngineType, EngineCaps> = {
         hasPreferredNode: false,
         hasCrashAlert: false,
         hasModelSearchOnlyWhenRunning: false,
-        modelOpsWhenStopped: false
+        modelOpsWhenStopped: true
     },
     ollama: {
         // Ollama has no model keep-alive/expiry UI; unload uses unload_model

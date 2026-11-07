@@ -93,6 +93,35 @@ async function click(label: string): Promise<void> {
     await act(async () => button(label).click())
 }
 
+it('selects a llama.cpp cache-relative file through preview/apply and supports router mode', async () => {
+    await render('llamacpp')
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')
+    expect(select?.textContent).toContain('ggml-org/Demo:Q4_K_M')
+    expect(select?.textContent).toContain('No model')
+    await act(async () => {
+        if (select) {
+            select.value = 'cache.gguf'
+            select.dispatchEvent(new Event('change', { bubbles: true }))
+        }
+    })
+    await click('Apply')
+    expect(previewSettings.mock.calls[0]?.[0].settings.launchText).toBe('--model "cache.gguf"')
+    expect(applySettings.mock.calls[0]?.[0].settings.launchText).toBe('--model "cache.gguf"')
+    expect(container.innerHTML).not.toContain('/dev/fd/')
+})
+
+it('shows the installed catalog name when saved arguments select its catalog ID', async () => {
+    getSettings.mockImplementation(async target => ({
+        ...baseline,
+        ...target,
+        settings: { ...baseline.settings, launchText: '--model ggml-org/Demo:Q4_K_M' }
+    }))
+    await render('llamacpp')
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')?.value).toBe(
+        'cache.gguf'
+    )
+})
+
 beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
@@ -130,6 +159,9 @@ beforeEach(() => {
     vi.stubGlobal('pairApi', {
         engines: {
             getSettings,
+            downloadedModels: async () => [
+                { id: 'ggml-org/Demo:Q4_K_M', file: 'cache.gguf', size: 42, sha256: 'verified' }
+            ],
             previewSettings,
             applySettings,
             onSettingsChanged: (callback: typeof deliver) => {

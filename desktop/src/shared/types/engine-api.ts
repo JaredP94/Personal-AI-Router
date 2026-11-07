@@ -46,6 +46,13 @@ export interface EngineHubLookupResponse {
     model: EngineHubModel | null
 }
 
+export interface DownloadedModel {
+    id: string
+    file: string
+    size: number
+    sha256: string
+}
+
 /** Engine command discriminator. */
 export type EngineCommandType =
     | 'toggle'

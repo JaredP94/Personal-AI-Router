@@ -26,6 +26,8 @@ import {
 } from '@/ui/stores/engine-settings.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
+import { useLlamaInstalledModels } from '@/ui/hooks/useLlamaInstalledModels'
+import { selectLlamaModel, selectedLlamaModel } from '@/ui/utils/llamacpp-models'
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
 
 interface Draft {
@@ -94,6 +96,9 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
         snapshot.format !== 'pair-arguments-v1'
     const locked = readOnly || disabled || applying
     const isOmlx = engine === 'omlx'
+    const local = useConnectionStore(state => state.selfId === nodeId)
+    const installed = useLlamaInstalledModels(nodeId, engine === 'llamacpp' && local)
+    const selected = selectedLlamaModel(draft.launchText)
 
     useEffect(() => watchEngineSettings(), [])
     useEffect(() => {
@@ -303,6 +308,48 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                         </FormField>
                     }
                 </Flex>
+                {engine === 'llamacpp' && (
+                    <FormField slotLabel="Startup model">
+                        <select
+                            aria-label="Startup model"
+                            disabled={locked || (!local && !!selected)}
+                            value={
+                                installed.models.find(model => model.id === selected)?.file ??
+                                selected
+                            }
+                            onChange={event =>
+                                change(
+                                    'launchText',
+                                    selectLlamaModel(draft.launchText, event.target.value)
+                                )
+                            }
+                        >
+                            <option value="">No model (router mode)</option>
+                            {selected &&
+                                !installed.models.some(
+                                    model => model.file === selected || model.id === selected
+                                ) && (
+                                    <option value={selected}>
+                                        {selected.startsWith('/dev/fd/')
+                                            ? 'Unavailable model'
+                                            : selected}
+                                    </option>
+                                )}
+                            {installed.models.map(model => (
+                                <option key={model.id} value={model.file}>
+                                    {model.id}
+                                </option>
+                            ))}
+                        </select>
+                        {installed.error && <Text kind="body/regular/sm">{installed.error}</Text>}
+                        {!local && (
+                            <Text kind="body/regular/sm">
+                                Paired-device cache listing is not available yet. Engine arguments
+                                can select a known installed catalog ID.
+                            </Text>
+                        )}
+                    </FormField>
+                )}
                 {isOmlx ? (
                     <Text kind="body/regular/sm">
                         {"oMLX's server settings are managed in the oMLX app"}

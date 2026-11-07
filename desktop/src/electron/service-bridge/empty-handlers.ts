@@ -6,6 +6,7 @@ import type { ClusterInitialSnapshot } from '@/shared/types/bootstrap'
 import type { ClusterNode, ClusterNodeIdentity, Invite } from '@/shared/types/cluster'
 import type { ManualNodeKind, ManualNodeStatus } from '@/shared/types/manual-nodes'
 import type { EngineType } from '@/shared/types/engines'
+import type { DownloadedModel, EngineHubModel } from '@/shared/types/engine-api'
 import type { ServiceError } from '@/shared/types/errors'
 import type { NodeInferenceMetricsSnapshot } from '@/shared/types/metrics'
 import type {
@@ -1384,8 +1385,63 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
             )
         ),
     'engine:command': payload => handleEngineCommand(payload),
-    'engine:search-hub': payload =>
-        payload ? getEngineHubModels(payload.engineType) : { models: [] },
+    'engine:downloaded-models': async payload => {
+        if (!payload || payload.nodeId !== getModularBridgeState().getSelfId())
+            throw new Error('Installed cache listing is not available on paired devices yet.')
+        const result = await getModularSupervisor().callProcess(
+            'broker',
+            'engine:action',
+            {
+                engine: 'llamacpp',
+                action: 'list_downloaded'
+            },
+            15_000
+        )
+        const rows = objectValue(result)?.models
+        if (!Array.isArray(rows)) throw new Error('Could not read installed models.')
+        return rows.flatMap(row => {
+            const model = objectValue(row)
+            if (!model || !stringValue(model.id) || !stringValue(model.file)) return []
+            const value: DownloadedModel = {
+                id: stringValue(model.id),
+                file: stringValue(model.file),
+                size: numberValue(model.size),
+                sha256: stringValue(model.sha256)
+            }
+            return [value]
+        })
+    },
+    'engine:search-hub': async payload => {
+        if (!payload) return { models: [] }
+        if (payload.engineType !== 'llamacpp') return getEngineHubModels(payload.engineType)
+        const result = await getModularSupervisor().callProcess(
+            'broker',
+            'engine:model-catalog',
+            { query: payload.query ?? '' },
+            30_000
+        )
+        const rows = objectValue(result)?.models
+        if (!Array.isArray(rows)) throw new Error('Could not read the model catalog.')
+        const models: EngineHubModel[] = rows.flatMap(row => {
+            const model = objectValue(row)
+            const id = model ? stringValue(model.id) : ''
+            if (!model || !id) return []
+            return [
+                {
+                    id,
+                    name: id,
+                    author: id.split('/')[0],
+                    url: '',
+                    size: numberValue(model.size),
+                    downloads: 0,
+                    likes: 0,
+                    updatedAt: '',
+                    tags: []
+                }
+            ]
+        })
+        return { models }
+    },
     'engine:lookup-hub-model': payload =>
         payload ? lookupEngineHubModel(payload.engineType, payload.name) : { model: null },
 

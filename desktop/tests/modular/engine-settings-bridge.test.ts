@@ -61,6 +61,43 @@ describe('unified settings bridge', () => {
         )
     })
 
+    it('relays llama.cpp catalog queries and preserves service errors', async () => {
+        mocks.supervisor.callProcess.mockResolvedValueOnce({
+            models: [{ id: 'ggml-org/Small:Q4_K_M', file: 'hash.gguf', size: 42 }]
+        })
+        const result = await handleServiceBridgeInvoke('engine:search-hub', {
+            engineType: 'llamacpp',
+            query: 'Small'
+        })
+        expect(result.models[0]?.name).toBe('ggml-org/Small:Q4_K_M')
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+            'broker',
+            'engine:model-catalog',
+            { query: 'Small' },
+            30_000
+        )
+        mocks.supervisor.callProcess.mockRejectedValueOnce(new Error('not enough disk space'))
+        await expect(
+            handleServiceBridgeInvoke('engine:search-hub', { engineType: 'llamacpp' })
+        ).rejects.toThrow('not enough disk space')
+    })
+
+    it('lists local installed cache files without substituting a peer inventory', async () => {
+        mocks.supervisor.callProcess.mockResolvedValueOnce({
+            models: [
+                { id: 'ggml-org/Small:Q4_K_M', file: 'hash.gguf', size: 42, sha256: 'verified' }
+            ]
+        })
+        expect(
+            await handleServiceBridgeInvoke('engine:downloaded-models', { nodeId: 'local-node' })
+        ).toEqual([
+            { id: 'ggml-org/Small:Q4_K_M', file: 'hash.gguf', size: 42, sha256: 'verified' }
+        ])
+        await expect(
+            handleServiceBridgeInvoke('engine:downloaded-models', { nodeId: 'peer' })
+        ).rejects.toThrow('not available')
+    })
+
     it('updates llama.cpp through atomic install without uninstalling the working tree', async () => {
         await handleServiceBridgeInvoke('engine:command', {
             command: 'update',

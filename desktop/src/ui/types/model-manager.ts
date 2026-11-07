@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export type IncomingSyncRow = {
+    engineType?: import('@/shared/types/engines').EngineType
     opId?: string
     canCancel?: boolean
     rawModel: string

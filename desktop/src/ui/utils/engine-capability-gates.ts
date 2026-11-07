@@ -51,11 +51,12 @@ export function modelActionItems({
     busy
 }: ModelActionInput): ModelActionItem[] {
     const items: ModelActionItem[] = []
-    items.push({
-        id: 'load',
-        children: 'Load',
-        disabled: busy || isLoaded || !downloaded || !isRunning
-    })
+    if (capabilities.hasEject)
+        items.push({
+            id: 'load',
+            children: 'Load',
+            disabled: busy || isLoaded || !downloaded || !isRunning
+        })
     if (capabilities.hasEject) {
         items.push({
             id: 'eject',
@@ -68,7 +69,12 @@ export function modelActionItems({
         })
     }
     if (reported.deleteModel) {
-        items.push({ id: 'delete', children: 'Delete', danger: true, disabled: busy })
+        items.push({
+            id: 'delete',
+            children: !capabilities.hasEject && isRunning ? 'Delete (stop engine first)' : 'Delete',
+            danger: true,
+            disabled: busy || (!capabilities.hasEject && isRunning)
+        })
     }
     return items
 }

@@ -70,6 +70,27 @@ devices remain read-only. Launch text is displayed only in its editor.
 The renderer consumes the node-owned settings protocol described in
 [`ENGINE_SETTINGS.md`](../services/nvpair-ui-broker/ENGINE_SETTINGS.md).
 
+## llama.cpp models
+
+On macOS arm64, expand **llama.cpp → Models → Add model** to browse the
+Go-owned catalog grouped by publisher or search public single-file Q4_K_M GGUFs.
+Search bounds and download failures are shown as service messages. Download,
+Cancel, Canceling, Cancelled, Interrupted and Retry reuse the existing model
+manager's operation tracking. llama.cpp does not promise partial-file resume.
+Installed models can be refreshed while stopped; deletion requires a stopped
+engine and a PAIR-owned file.
+
+In **Settings → Startup model**, choose a downloaded catalog ID or **No model
+(router mode)**. The selector writes a cache-relative file into the existing
+arguments editor; Apply still previews, checks revisions and confirms restarts.
+The build is not notarized, like PAIR. PAIR downloads the engine and models at
+runtime; neither is bundled with the desktop app.
+
+Verified peers use the existing download/cancel controls. The current service
+contract does not expose their installed cache inventory: the desktop labels
+the peer list as served models only and does not pretend it is an installed list.
+Peer startup selection still accepts a known installed catalog ID in arguments.
+
 ## Develop
 
 ```bash
