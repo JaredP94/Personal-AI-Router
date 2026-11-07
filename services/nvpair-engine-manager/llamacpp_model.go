@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,9 @@ func llamaModelPath(cache, value string) (string, error) {
 		return "", fmt.Errorf("model must be an existing regular .gguf file inside the PAIR llama.cpp model cache")
 	}
 	if cache == "" || value == "" || strings.Contains(value, "://") {
+		return fail()
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && !filepath.IsAbs(value) {
 		return fail()
 	}
 	root, err := filepath.Abs(cache)

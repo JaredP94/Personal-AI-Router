@@ -17,7 +17,7 @@ func TestLlamaModelPathValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := filepath.Join(cache, "nested", "model.gguf")
-	for _, path := range []string{model, filepath.Join(cache, "model.txt")} {
+	for _, path := range []string{model, filepath.Join(cache, "model.txt"), filepath.Join(cache, "file:model.gguf")} {
 		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +41,7 @@ func TestLlamaModelPathValidation(t *testing.T) {
 			}
 		}
 	}
-	for _, input := range []string{outside, "../outside.gguf", "escape.gguf", "model.txt", "missing.gguf", "nested", "https://example.invalid/model.gguf", "file://" + model} {
+	for _, input := range []string{outside, "../outside.gguf", "escape.gguf", "model.txt", "missing.gguf", "nested", "https://example.invalid/model.gguf", "file:model.gguf", "file://" + model} {
 		if _, err := normalizeLlamaOptions([]string{"--model", input}, cache); err == nil {
 			t.Errorf("accepted %q", input)
 		}
