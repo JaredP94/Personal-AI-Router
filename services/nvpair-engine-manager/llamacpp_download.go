@@ -155,7 +155,7 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	}
 	free, err := e.llamaFreeSpace(dir)
 	if err != nil || free < uint64(row.Size)+(256<<20) {
-		return nil, fmt.Errorf("insufficient free space for model and 256 MiB reserve")
+		return nil, fmt.Errorf("not enough disk space: free space must cover the model and 256 MiB reserve")
 	}
 	final := llamaOwnedFilename(id)
 	if f, err := llamaCacheOpen(dir, final, false); err == nil {
@@ -203,7 +203,8 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	hash := sha256.New()
 	reader := io.LimitReader(resp.Body, row.Size+1)
 	buf := make([]byte, 128<<10)
-	var total int64
+	var total, spaceCheckedAt int64
+	lastSpaceCheck := time.Now()
 	last := -1
 	for {
 		n, readErr := reader.Read(buf)
@@ -216,6 +217,16 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 				return nil, err
 			}
 			_, _ = hash.Write(buf[:n])
+			// Recheck the pinned transfer filesystem at streaming boundaries:
+			// at most 256 MiB or five seconds of active streaming between checks.
+			// No state lock is held during fstatfs or network/file waits.
+			if total-spaceCheckedAt >= 256<<20 || time.Since(lastSpaceCheck) >= 5*time.Second {
+				free, err := e.llamaFreeSpace(f)
+				if err != nil || free < uint64(row.Size-total)+(256<<20) {
+					return nil, fmt.Errorf("not enough disk space for remaining model data and 256 MiB reserve")
+				}
+				spaceCheckedAt, lastSpaceCheck = total, time.Now()
+			}
 			pct := int(total * 100 / row.Size)
 			if pct != last {
 				last = pct

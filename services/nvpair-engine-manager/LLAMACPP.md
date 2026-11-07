@@ -73,7 +73,13 @@ cannot be preempted by a Go context.
 
 PAIR resolves metadata again before transfer, requiring LFS SHA-256 and size
 and a pinned repository commit. Limit: 64 GiB per file plus 256 MiB free-space
-reserve. Transfers have a 30-minute operation bound, 10-second dial/TLS/header
+reserve. During streaming, fstatfs on the open transfer descriptor rechecks
+space every 256 MiB or five seconds, whichever occurs first at a streaming
+boundary (a blocked read writes no additional bytes). Remaining free space must
+cover the unreceived file bytes plus the 256 MiB safety margin. A drop below that
+threshold aborts with "not enough disk space" through the existing progress/error
+state and identity-checked cleanup of this operation's temp. Transfers have a
+30-minute operation bound, 10-second dial/TLS/header
 bounds, a 64 KiB response-header cap and a 30-second idle-read bound. Redirects
 must stay HTTPS, cannot contain credentials and are limited to five; the final
 host is recorded. Bodies and transfer URLs are never logged. An exclusive
