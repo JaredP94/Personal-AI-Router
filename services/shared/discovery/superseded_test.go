@@ -40,6 +40,18 @@ func TestSupersededAdvertisementCannotBorrowEndpointLiveness(t *testing.T) {
 	}
 }
 
+func TestAccumulateOnlyBrowserRetainsAdvertisementHistory(t *testing.T) {
+	b := candidateBrowser(WithNoEviction())
+	old := Node{ID: "peer", Host: "peer.local.", TXT: []string{"uuid=peer"}}
+	b.Seed(old)
+	next := old
+	next.TXT = []string{"uuid=peer", "cluster-uuid=peer"}
+	b.reconcile(map[string]Node{b.key(next): next})
+	if len(b.Nodes()) != 2 {
+		t.Fatal("advertiser retirement overrode explicit accumulate-only policy")
+	}
+}
+
 func TestConcurrentAdvertiserVariantsRemainAvailableForAuthentication(t *testing.T) {
 	b := candidateBrowser()
 	genuine := Node{ID: "peer", Host: "peer.local.", TXT: []string{"uuid=peer", "ip=192.0.2.1"}}

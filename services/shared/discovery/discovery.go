@@ -431,7 +431,7 @@ func (b *Browser) reconcile(seen map[string]Node) []Event {
 		advertisers[AdvertiserKey(n)] = true
 	}
 	for k, n := range b.nodes {
-		if _, present := seen[k]; !present && advertisers[AdvertiserKey(n)] {
+		if _, present := seen[k]; !b.opt.noEvict && !present && advertisers[AdvertiserKey(n)] {
 			pending = append(pending, Event{Type: Removed, Node: n})
 			delete(b.nodes, k)
 			delete(b.misses, k)
