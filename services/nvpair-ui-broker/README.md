@@ -764,7 +764,7 @@ cache files nor synthesizes stopped state. Cancel acceptance is bounded by
 30 min action plus bounded stop and inside the clients' 32 min envelope.
 
 `engine:model-catalog` relays the Go-owned llama.cpp catalog with a 25-second
-budget outside the worker\u0027s 20-second metadata deadline. Existing action/pull,
+budget outside the worker's 20-second metadata deadline. Existing action/pull,
 cancel and remote methods also support PAIR-owned llama.cpp cache operations;
 see the engine-manager [cache contract](../nvpair-engine-manager/LLAMACPP.md#go-model-hub-and-owned-cache).
 

@@ -85,11 +85,11 @@ commit and manifest commit can leave an unrecorded file, never a deletable
 owned entry; abandoned crash temp files are not automatically reclaimed.
 
 `engine:cancel-pull` accepts asynchronously; only the terminal progress update
-confirms transfer release and removal of that operation\u0027s own temp file.
+confirms transfer release and removal of that operation's own temp file.
 If temp cleanup fails, the terminal state is an error, not successful cancellation. Unlike
 Ollama/LM Studio in #50, this cache is PAIR-owned: cleaning the uniquely created
 temp is safe; no shared, pre-existing or completed file is removed. Concurrent
-cache mutations are refused (including duplicate pulls), not queued. #50\u0027s
+cache mutations are refused (including duplicate pulls), not queued. #50's
 operation-ID fencing, broker worker-loss interruption and epoch recovery apply
 unchanged. Verified-peer downloads/cancel/delete use the existing authenticated
 remote methods and streams. Start is refused during a cache mutation; deletion
@@ -99,7 +99,7 @@ relative to that descriptor even after a parent swap. Delete requires a matching
 ownership manifest record, file identity and regular file, and never recursively removes data.
 
 This intentionally differs from NVIDIA/Personal-AI-Router@6d2d67f: PAIR does not
-ask llama-server\u0027s router-mode API to download. All checks and #50 tracking stay
+ask llama-server's router-mode API to download. All checks and #50 tracking stay
 inside Go. No real model was downloaded during development.
 
 ## Launch allowlist (b12171)
