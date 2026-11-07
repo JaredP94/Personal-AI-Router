@@ -22,11 +22,16 @@ type modelSnapshot struct {
 }
 
 type modelsPane struct {
-	open       bool
-	table      table.Model
-	inventory  modelSnapshot
-	generation uint64
-	err        error
+	catalog             bool
+	searching           bool
+	query               string
+	llama               []llamaModel
+	selectionGeneration uint64
+	open                bool
+	table               table.Model
+	inventory           modelSnapshot
+	generation          uint64
+	err                 error
 }
 
 type modelsLoadedMsg struct {
@@ -49,7 +54,7 @@ var (
 )
 
 func (v *enginesView) sizeModels(w, h int) {
-	v.models.table.SetColumns([]table.Column{{Title: "MODEL", Width: clampWidth(w-12, 10)}, {Title: "STATE", Width: 8}})
+	v.models.table.SetColumns([]table.Column{{Title: "MODEL", Width: clampWidth(w-16, 10)}, {Title: "STATE", Width: 12}})
 	v.models.table.SetWidth(w)
 	v.models.table.SetHeight(clampWidth(h-3, 1))
 }
@@ -58,6 +63,9 @@ func (v *enginesView) sizeModels(w, h int) {
 // discovery; never invent a remote list-models call or query the local engine
 // for facts about a peer.
 func (v *enginesView) loadModelsCmd() tea.Cmd {
+	if v.selectedEngine() == "llamacpp" && (v.target == "" || v.models.catalog) {
+		return v.loadLlamaModelsCmd()
+	}
 	v.models.generation++
 	node, generation := v.target, v.models.generation
 	method := "engine:models"
@@ -95,6 +103,9 @@ func peerInventory(node string, nodes []availableNode) modelSnapshot {
 }
 
 func (v *enginesView) peerModelsChanged() {
+	if v.selectedEngine() == "llamacpp" && v.models.catalog {
+		return
+	}
 	if v.target != "" {
 		v.models.generation++ // invalidate any getter issued before this full push
 		v.models.err = nil
@@ -104,6 +115,10 @@ func (v *enginesView) peerModelsChanged() {
 }
 
 func (v *enginesView) refreshModels() {
+	if v.selectedEngine() == "llamacpp" && (v.target == "" || v.models.catalog) {
+		v.refreshLlamaRows()
+		return
+	}
 	selected := v.selectedModel()
 	rows := []table.Row{}
 	for _, name := range v.models.inventory.ModelsByEngine[v.selectedEngine()] {
@@ -144,6 +159,7 @@ func (v *enginesView) toggleModels() tea.Cmd {
 		return nil
 	}
 	v.models.err = nil
+	v.models.catalog = false
 	if v.target != "" {
 		v.models.inventory = peerInventory(v.target, v.discovered)
 		v.refreshModels()
@@ -155,6 +171,21 @@ func (v *enginesView) toggleModels() tea.Cmd {
 
 func (v *enginesView) modelsView() string {
 	out := "Models — " + v.selectedEngine() + "\n"
+	if v.selectedEngine() == "llamacpp" && v.byName["llamacpp"].Capabilities.ListModels {
+		if v.models.catalog {
+			out = "Catalog — llama.cpp (single-file Q4_K_M; search: 100 characters / 50 results)\n"
+		}
+		if v.models.err != nil {
+			return out + statusErrStyle.Render(v.models.err.Error())
+		}
+		if v.target == "" || v.models.catalog {
+			if len(v.models.llama) == 0 {
+				return out + footerStyle.Render("No models")
+			}
+			return out + v.models.table.View()
+		}
+		out += "Peer installed-cache listing unavailable; served models only.\n"
+	}
 	if !v.byName[v.selectedEngine()].Capabilities.ListModels {
 		return out + footerStyle.Render("Model list unavailable (engine stopped or unsupported)")
 	}
@@ -176,6 +207,17 @@ func (v *enginesView) confirmDeleteModel() tea.Cmd {
 	e := v.byName[engine]
 	if !v.models.open || model == "" || !e.Capabilities.DeleteModel {
 		return nil
+	}
+	if engine == "llamacpp" {
+		if e.Running {
+			v.status = "Stop llama.cpp before deleting a model."
+			return nil
+		}
+		entry, ok := v.selectedLlamaEntry()
+		if v.models.catalog || node != "" || !ok || entry.SHA256 == "" {
+			v.status = "Only PAIR-owned installed models can be deleted."
+			return nil
+		}
 	}
 	label := "This node"
 	if node != "" {

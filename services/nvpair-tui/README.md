@@ -28,9 +28,10 @@ only the transfer's terminal update confirms stop. A transport error allows a
 retry without claiming success. Broker epoch changes, engine-manager restart or
 PID replacement, peer stream loss, and loss from verified inventory retire the
 old operation IDs as interrupted: “Download interrupted — retry to resume”.
-Late old updates cannot retire a replacement. Confirmed cancellation says partial data is kept
-so the download can resume. PAIR removes no cache files.
-Ollama and LM Studio have adapters; oMLX's supported manifest has no pull action.
+Late old updates cannot retire a replacement. For Ollama and LM Studio, confirmed cancellation says partial data is kept
+so the download can resume; PAIR removes no shared engine-cache files.
+llama.cpp instead cleans up only its own identity-matched transfer temporary
+file and does not promise resume. Ollama, LM Studio and llama.cpp have adapters; oMLX's supported manifest has no pull action.
 Pulls wait up to 32 min and cancel acceptance 15 s, outside the broker's 31 min
 and 10 s bounds respectively. See the
 [engine-manager lifecycle](../nvpair-engine-manager/README.md#model-download-cancellation).
@@ -129,8 +130,31 @@ PAIR-owned archive installation, keeping the previous tree on failure and
 preserving the sibling model cache. The engine list reports llama.cpp lifecycle
 state with a note: its macOS arm64 build is not notarized, like PAIR itself.
 The Proxies view includes the dedicated llama.cpp worker on default port 1237,
-and Overview includes it in the 13-worker registry. Model hub/download/delete
-controls remain deferred.
+and Overview includes it in the 13-worker registry.
+
+### llama.cpp model hub
+
+On a supported local engine, `m` lists the installed PAIR cache even while
+stopped. `b` switches between installed models and the Go-owned catalog, sorted
+by publisher/model ID; `/` searches (up to 100 characters, 50 results). `p`
+downloads the selected catalog model, or prompts for an ID outside the catalog.
+Existing progress and `c` cancellation apply; service errors remain visible.
+`d` deletes a PAIR-owned model only while llama.cpp is stopped; unmanaged files
+are marked and cannot be deleted.
+
+In the installed list, `a` chooses a startup model; `0` chooses **No model
+(router mode)**. Both read the current settings, preview the cache-relative
+`--model` change and confirm before Apply, warning when a restart is required.
+The model name is its catalog ID, never the inherited launch descriptor.
+PAIR downloads llama.cpp and models at runtime, not as bundled software.
+Only macOS arm64 and single-file Q4_K_M GGUF catalog downloads are supported.
+
+On verified peers, catalog downloads and cancellation use the existing remote
+methods. The current service contract exposes no peer installed-cache listing:
+`m` is explicitly served-model inventory only, and the startup picker is local.
+No invented peer list action or local inventory substituted for a peer is used.
+The existing unreleased TUI 1.4.0 minor bump already covers these additive
+features relative to v0.9.0's TUI 1.3.0.
 
 All destructive confirmations (including `u`, cluster remove/leave and manual
 remove) use the shared default-cancel prompt: only `y` dispatches; `n`, Esc and
