@@ -155,6 +155,11 @@ func (v *enginesView) selectedModel() string {
 }
 
 func (v *enginesView) toggleModels() tea.Cmd {
+	// A closed pane abandons its request; reopening peer inventory may not
+	// issue another RPC, so neither loading nor a late catalog may survive.
+	v.models.generation++
+	v.models.loading = false
+	v.models.llama = nil
 	v.models.open = !v.models.open
 	if !v.models.open {
 		return nil

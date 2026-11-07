@@ -100,6 +100,8 @@ listing but never pull/delete, and its server port is not editable.
 `n` cycles This node, trusted discovered peers, and cluster members with a host
 UUID. Peer status uses `engine:remote-get-installed {node:<hostUuid>}`, refreshed
 on selection and after remote actions. Transport/trust errors remain visible.
+Changing targets clears pending model-list state; late replies from the previous
+target cannot replace the current inventory or leave it loading.
 Local `i` sends `engine:install {engine}` without `start`; press `s` after
 installation to start it. Peer `i` installs and starts (`start:true`).
 Only the existing `engine:remote-start`, `engine:remote-stop`,

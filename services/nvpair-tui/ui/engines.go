@@ -809,6 +809,9 @@ func (v *enginesView) cycleTarget() tea.Cmd {
 		}
 	}
 	v.target = next
+	v.models.loading = false
+	v.models.searching = false
+	v.models.query = ""
 	v.models.catalog = false
 	v.models.llama = nil
 	v.models.selectionGeneration++
