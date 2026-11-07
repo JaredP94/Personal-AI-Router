@@ -9,11 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -206,5 +208,68 @@ func TestLlamaDownloadCancelAfterCommitSucceeds(t *testing.T) {
 	}
 	if errors := ex.reporter.snapshot(); len(errors) != 0 {
 		t.Fatalf("completed download reported failure: %+v", errors)
+	}
+}
+
+type gatedCloseBody struct {
+	io.ReadCloser
+	closing chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (b *gatedCloseBody) Close() error {
+	b.once.Do(func() { close(b.closing) })
+	<-b.release
+	return b.ReadCloser.Close()
+}
+
+type gatedCloseTransport struct {
+	http.RoundTripper
+	closing chan<- struct{}
+	release <-chan struct{}
+}
+
+func (g gatedCloseTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := g.RoundTripper.RoundTrip(r)
+	if err == nil && !strings.HasPrefix(r.URL.Path, "/api/models/") {
+		resp.Body = &gatedCloseBody{ReadCloser: resp.Body, closing: g.closing, release: g.release}
+	}
+	return resp, err
+}
+
+// A failure observed before the response body closes stays a failure even if
+// the user cancels while Close is still running.
+func TestLlamaDownloadCancelDuringBodyCloseKeepsFailure(t *testing.T) {
+	ex, _ := llamaDownloadExecutor(t, nil, func(repo *llamaHubRepo) {
+		repo.Siblings[0].LFS.SHA256 = strings.Repeat("b", 64)
+	})
+	closing, release := make(chan struct{}), make(chan struct{})
+	ex.llamaHub.client.Transport = gatedCloseTransport{RoundTripper: ex.llamaHub.client.Transport, closing: closing, release: release}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ex.trackedPull(context.Background(), "llamacpp", llamaTestID, "close-race", true, func(ctx context.Context) (json.RawMessage, error) {
+			return ex.pullLlamaModel(ctx, llamaTestID)
+		})
+		done <- err
+	}()
+	select {
+	case <-closing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("download body was never closed")
+	}
+	_ = ex.CancelModelPull("llamacpp", llamaTestID, "close-race")
+	close(release)
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("pull did not finish")
+	}
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("observed failure relabelled: %v", err)
+	}
+	if errors := ex.reporter.snapshot(); len(errors) != 1 || !strings.Contains(errors[0].ID, "pull-failed:llamacpp:") {
+		t.Fatalf("primary failure not reported: %+v", errors)
 	}
 }

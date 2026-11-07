@@ -223,7 +223,13 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		}
 		return nil, fmt.Errorf("model transfer failed")
 	}
-	defer resp.Body.Close()
+	// Deferred calls run last-in first-out: classify the primary outcome
+	// before closing the body, so a cancel that arrives while Close blocks
+	// cannot relabel an observed failure as cancellation.
+	defer func() {
+		classify()
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("model download returned HTTP %d", resp.StatusCode)
 	}
