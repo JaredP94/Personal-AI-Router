@@ -37,8 +37,8 @@ func TestLlamaManifestLifecycleOnly(t *testing.T) {
 	if p.Install.Fetch.SHA256 != "870ef967970fa18bbd31460bc5f7929bbb5f091359d8dc0f58e20133aa4b5fcd" || !strings.HasSuffix(p.Install.Fetch.URL, "/b12171/llama-b12171-bin-macos-arm64.tar.gz") {
 		t.Fatal("unverified release")
 	}
-	if len(m.Actions) != 0 {
-		t.Fatal("model integration must remain deferred")
+	if len(m.Actions) != 1 || m.Actions["list_models"].HTTP.Path != "/v1/models" || m.Actions["list_models"].Result.Field != "id" {
+		t.Fatal("only read-only model inventory is supported")
 	}
 	if p.Runtime.Port != 8082 || p.Runtime.Bind != "127.0.0.1" || p.Runtime.Stop.WaitForExit {
 		t.Fatal("unsafe lifecycle defaults")

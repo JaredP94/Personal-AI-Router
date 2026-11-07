@@ -2,6 +2,13 @@
   "engine": "llamacpp",
   "display_name": "llama.cpp",
   "manifest_version": 1,
+  "actions": {
+    "list_models": {
+      "description": "List the model served by llama-server using its OpenAI inventory.",
+      "http": { "method": "GET", "path": "/v1/models" },
+      "result": { "array": "data", "field": "id" }
+    }
+  },
   "platforms": {
     "darwin/arm64": {
       "detect": [

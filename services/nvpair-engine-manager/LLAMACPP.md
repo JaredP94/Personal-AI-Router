@@ -3,12 +3,14 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# llama.cpp: lifecycle-only preview
+# llama.cpp
 
 PAIR manages the official **b12171 macOS arm64** build. Other platforms are
-unsupported. It can install, start, stop and configure the engine, but **llama.cpp
-does not serve requests through PAIR yet**. There is no proxy worker, routing,
-model hub, download/delete adapter or load profile in this change.
+unsupported. PAIR installs, starts, stops and configures the engine and serves
+it through the dedicated `llamacpp-proxy` worker, default port **1237**. Routing
+uses exact model IDs from the engine's `/v1/models` inventory, with separate
+`llamacpp` attribution. There is no model hub, download/delete adapter or load
+profile yet.
 
 The macOS build is **not notarized**, like this fork's PAIR application. The
 release is checksum-pinned, not publisher-trusted by that checksum. Its existing
@@ -36,8 +38,10 @@ engine to be stopped; repeated `engine:install` applies a changed manifest pin.
 
 Default listener: **127.0.0.1:8082**, distinct from the fork's other engine and
 service ports. Configured-port reservations and occupied-port checks still apply.
-Readiness and health require `/props` to return the top-level `"role":"router"`
-identity, present in b12171 `tools/server/server-models.cpp` (`get_router_props`).
+Without a model, readiness and health require `/props` to return the top-level
+`"role":"router"` identity, present in b12171 `tools/server/server-models.cpp`
+(`get_router_props`). With `--model`, they instead match the canonical
+`model_path` from `tools/server/server-context.cpp` (`get_res_props`).
 A different service returning HTTP 200 is not an engine match. Foreground-process
 shutdown uses the existing process lifecycle, not command-mode `wait_for_exit`.
 The model cache is `LLAMA_CACHE={install_dir}-models`, a PAIR-managed sibling
@@ -51,9 +55,17 @@ host tools, agents, tunnels, MCP, filesystem paths and model downloads. As with
 accepted. Unknown options, positional arguments, `--`, repeated options (including
 aliases or opposing switches), non-ASCII and **all** environment assignments are
 invalid. Saved settings use the same checks; invalid settings are reported, not
-dropped or applied. No model/download or template-file option is permitted.
+dropped or applied. No download or template-file option is permitted.
 
-Allowed value options (documented short aliases included): `--ctx-size/-c`,
+`--model/-m` selects one existing regular `.gguf` file in the PAIR-owned
+`{install_dir}-models` cache. Absolute and cache-relative paths are accepted;
+both cache and file are resolved with `EvalSymlinks` before containment checks.
+Symlink escapes, URLs, directories, missing files and non-GGUF files are rejected
+in previews, saved settings and before launch. The normalized argv contains the
+canonical absolute path. The user supplies this file for now; PR 3 adds the hub
+that fills the cache. Omitting `--model` retains router mode.
+
+Other allowed value options (documented short aliases included): `--ctx-size/-c`,
 `--batch-size/-b`, `--ubatch-size/-ub` (context 0–1048576, batches 1–1048576),
 `--threads/-t`, `--threads-batch/-tb` (1–4096),
 `--gpu-layers/--n-gpu-layers/-ngl` (0–1048576, `auto`, `all`),
@@ -72,7 +84,7 @@ b12171's parser requires them. Presence-only boolean switches: `--cont-batching/
 `--metrics`, `--slots`, `--no-slots`. Every allowlisted name is checked against
 `testdata/llamacpp-b12171-options.txt`, the option names b12171 defines; regenerate
 it from `common/arg.cpp` when the pinned release changes.
-No arbitrary template programs, paths, URLs or non-finite numeric values are allowed.
+No arbitrary template programs, other paths, URLs or non-finite numeric values are allowed.
 
 ## Binding audit (b12171)
 

@@ -27,10 +27,12 @@ type llamaOption struct {
 
 // Deliberately closed policy, audited against ggml-org/llama.cpp tag b12171:
 // common/arg.cpp (common_params_parser_init/common_params_parse_ex), and
-// src/llama-chat.cpp (LLM_CHAT_TEMPLATES). No files, URLs or free-form programs.
+// src/llama-chat.cpp (LLM_CHAT_TEMPLATES). Only contained GGUF model files;
+// no URLs or free-form programs.
 // Unlike open server launch text, this parser also exposes host tools, agents,
 // tunnels, MCP and downloads. New upstream options must not become permissions.
 var llamaInferenceOptions = []llamaOption{
+	{names: "--model -m", kind: "model"},
 	{names: "--ctx-size -c", kind: "int", min: 0, max: 1048576},
 	{names: "--batch-size -b", kind: "int", min: 1, max: 1048576},
 	{names: "--ubatch-size -ub", kind: "int", min: 1, max: 1048576},
@@ -61,7 +63,7 @@ var llamaInferenceOptions = []llamaOption{
 	{names: "--no-slots", kind: "switch", group: "slots"},
 }
 
-func normalizeLlamaOptions(args []string) ([]string, error) {
+func normalizeLlamaOptions(args []string, cache string) ([]string, error) {
 	for _, arg := range args {
 		for _, c := range arg {
 			if c < 32 || c > 126 {
@@ -108,6 +110,12 @@ func normalizeLlamaOptions(args []string) ([]string, error) {
 		}
 		valid := false
 		switch option.kind {
+		case "model":
+			path, err := llamaModelPath(cache, value)
+			if err != nil {
+				return nil, err
+			}
+			value, valid = path, true
 		case "enum":
 			valid = slices.Contains(strings.Fields(option.choices), value)
 		case "gpu":
@@ -155,7 +163,7 @@ func rejectLlamaConfigFiles(paths ...string) error {
 	return nil
 }
 
-func validateLlamaOverrides(rt Runtime) error {
+func validateLlamaOverrides(rt Runtime, cache string) error {
 	if !rt.EditableLaunch.llamaCPP() {
 		return nil
 	}
@@ -163,7 +171,7 @@ func validateLlamaOverrides(rt Runtime) error {
 		return fmt.Errorf("llama.cpp launch environment assignments are not allowed")
 	}
 	if rt.LaunchArgs != nil {
-		_, err := normalizeLlamaOptions(*rt.LaunchArgs)
+		_, err := normalizeLlamaOptions(*rt.LaunchArgs, cache)
 		return err
 	}
 	return nil
