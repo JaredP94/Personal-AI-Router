@@ -230,11 +230,21 @@ func TestLlamaModelSubdirectoryLaunchClosesDescriptors(t *testing.T) {
 	}
 	countFDs := func() int {
 		t.Helper()
-		entries, err := os.ReadDir("/dev/fd")
+		dir, err := os.Open("/dev/fd")
 		if err != nil {
 			t.Fatal(err)
 		}
-		return len(entries)
+		// Descriptor entries may disappear during enumeration. Read names only:
+		// ReadDir can stat such an entry and fail with EBADF on macOS.
+		names, readErr := dir.Readdirnames(-1)
+		closeErr := dir.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		return len(names)
 	}
 	launch(bin, true) // Initialize the runtime's poller before the baseline.
 	before := countFDs()
