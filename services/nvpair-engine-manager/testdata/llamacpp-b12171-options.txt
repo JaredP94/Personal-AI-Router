@@ -1,4 +1,4 @@
-# Option names defined in ggml-org/llama.cpp b12171 common/arg.cpp.
+# Option names defined by common_arg(...) in ggml-org/llama.cpp b12171 common/arg.cpp.
 # Regenerate when the pinned release changes.
 --adaptive-decay
 --adaptive-target
@@ -101,6 +101,7 @@
 --epochs
 --escape
 --file
+--fim-qwen-1.5b-default
 --fim-qwen-14b-spec
 --fim-qwen-30b-default
 --fim-qwen-3b-default
@@ -184,7 +185,6 @@
 --mirostat-lr
 --mmproj
 --mmproj-auto
---mmproj-device
 --mmproj-offload
 --mmproj-url
 --model
@@ -438,7 +438,6 @@
 --yarn-beta-slow
 --yarn-ext-factor
 --yarn-orig-ctx
--1
 -C
 -Cb
 -Cbd
@@ -507,7 +506,6 @@
 -mg
 -mli
 -mm
--mmdev
 -mmu
 -mu
 -n
