@@ -107,9 +107,16 @@ in place by a process already authorized as the same user.
 
 `engine:cancel-pull` accepts asynchronously; only the terminal progress update
 confirms transfer release and removal of that operation's own temp file.
-If temp cleanup fails, the terminal state is an error, not successful cancellation. Unlike
-Ollama/LM Studio in #50, this cache is PAIR-owned: cleaning the uniquely created
-temp is safe; no shared, pre-existing or completed file is removed. Concurrent
+Before temp cleanup or completed-model deletion, fstatat with
+AT_SYMLINK_NOFOLLOW checks dev/ino (and the recorded size for a completed model)
+immediately before unlinkat. A changed entry is left untouched and reports
+"cleanup skipped" through the terminal error state, not successful cancellation.
+The original temp descriptor stays open until cleanup finishes. The same check
+protects manifest staging cleanup and rollback of an unrecorded model. The
+remaining check-to-unlink window cannot be eliminated on macOS; no unlink-by-fd
+primitive exists. Unlike Ollama/LM Studio in #50, only this operation's
+identity-matched temp is removed; shared or substituted files are not knowingly
+removed. Concurrent
 cache mutations are refused (including duplicate pulls), not queued. #50's
 operation-ID fencing, broker worker-loss interruption and epoch recovery apply
 unchanged. Verified-peer downloads/cancel/delete use the existing authenticated

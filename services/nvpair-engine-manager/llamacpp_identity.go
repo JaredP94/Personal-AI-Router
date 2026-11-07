@@ -15,6 +15,19 @@ func llamaManagedFilename(name string) bool {
 	return strings.HasSuffix(name, ".gguf") && llamaSHA.MatchString(strings.TrimSuffix(name, ".gguf"))
 }
 
+// Same-user processes can swap directory entries. macOS has no unlink-by-fd:
+// keep this no-follow identity check immediately adjacent to unlinkat, leaving
+// only the OS-minimum check-to-unlink window. Never unlink a known mismatch.
+func llamaCacheRemoveOwned(dir *os.File, name, identity string, size int64) error {
+	if err := llamaCacheMatch(dir, name, identity, size); err != nil {
+		if os.IsNotExist(err) {
+			return err
+		}
+		return fmt.Errorf("cleanup skipped because the cache entry changed or is unavailable: %w", err)
+	}
+	return llamaCacheRemove(dir, name)
+}
+
 // Compare the actual launch descriptor, not a pathname checked earlier. No
 // re-hash of a potentially 64 GiB file is needed for post-commit replacements.
 func validateLlamaRecordedFile(dir *os.File, name string, file *os.File) error {

@@ -72,7 +72,7 @@ func llamaTempName() string {
 	}
 	return ".pair-" + hex.EncodeToString(bytes[:]) + ".tmp"
 }
-func writeLlamaManifest(dir *os.File, m llamaCacheManifest) error {
+func writeLlamaManifest(dir *os.File, m llamaCacheManifest) (retErr error) {
 	if len(m.Models) > 4096 {
 		return fmt.Errorf("model ownership manifest full")
 	}
@@ -85,18 +85,24 @@ func writeLlamaManifest(dir *os.File, m llamaCacheManifest) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close(); _ = llamaCacheRemove(dir, name) }()
+	identity := llamaCacheIdentity(f)
+	defer func() {
+		if err := llamaCacheRemoveOwned(dir, name, identity, -1); err != nil && !os.IsNotExist(err) {
+			retErr = fmt.Errorf("manifest temporary file could not be removed: %w", err)
+		}
+		_ = f.Close()
+	}()
 	if _, err = f.Write(data); err != nil {
 		return err
 	}
 	if err = f.Sync(); err != nil {
 		return err
 	}
-	if err = f.Close(); err != nil {
-		return err
-	}
 	if err = llamaCacheRename(dir, name, llamaManifestName); err != nil {
 		return err
+	}
+	if err := llamaCacheMatch(dir, llamaManifestName, identity, int64(len(data))); err != nil {
+		return fmt.Errorf("model ownership manifest changed during commit: %w", err)
 	}
 	return dir.Sync()
 }
@@ -170,11 +176,11 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		return nil, fmt.Errorf("cannot identify temporary model")
 	}
 	defer func() {
-		_ = f.Close()
-		if err := llamaCacheRemove(dir, temp); err != nil && !os.IsNotExist(err) {
+		if err := llamaCacheRemoveOwned(dir, temp, identity, -1); err != nil && !os.IsNotExist(err) {
 			result = nil
-			retErr = fmt.Errorf("model transfer stopped but its temporary file could not be removed")
+			retErr = fmt.Errorf("model transfer stopped but its temporary file could not be removed: %w", err)
 		}
+		_ = f.Close()
 	}()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
@@ -258,12 +264,8 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	manifest.Models = append(manifest.Models, llamaCacheRecord{llamaOwnedModel: record, Identity: identity})
 	if err := writeLlamaManifest(dir, manifest); err != nil {
 		// This operation created the final file; do not leave an unowned success.
-		candidate, openErr := llamaCacheOpen(dir, final, false)
-		if openErr == nil {
-			if llamaCacheIdentity(candidate) == identity {
-				_ = llamaCacheRemove(dir, final)
-			}
-			_ = candidate.Close()
+		if cleanupErr := llamaCacheRemoveOwned(dir, final, identity, row.Size); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+			return nil, fmt.Errorf("manifest commit failed: %v; model cleanup: %w", err, cleanupErr)
 		}
 		return nil, err
 	}
@@ -367,17 +369,7 @@ func (e *Executor) deleteLlamaModel(ctx context.Context, id string) (json.RawMes
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		f, err := llamaCacheOpen(dir, m.File, false)
-		if err != nil {
-			return nil, err
-		}
-		info, err := f.Stat()
-		identity := llamaCacheIdentity(f)
-		_ = f.Close()
-		if err != nil || info.Size() != m.Size || identity != m.Identity {
-			return nil, fmt.Errorf("recorded model changed")
-		}
-		if err := llamaCacheRemove(dir, m.File); err != nil {
+		if err := llamaCacheRemoveOwned(dir, m.File, m.Identity, m.Size); err != nil {
 			return nil, err
 		}
 		manifest.Models = append(manifest.Models[:i], manifest.Models[i+1:]...)
