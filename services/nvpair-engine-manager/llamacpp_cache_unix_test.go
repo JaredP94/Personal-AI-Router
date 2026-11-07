@@ -66,6 +66,41 @@ func TestLlamaDeleteRefusesReplacedRecordedFile(t *testing.T) {
 	}
 }
 
+func TestLlamaCommittedDescriptorDoesNotClaimReplacement(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "cache")
+	dir, err := openLlamaCache(cache, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	verified, err := llamaCacheOpen(dir, "temp", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verified.Close()
+	if _, err := verified.Write(llamaTestBytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := llamaCacheCommit(dir, "temp", "model.gguf"); err != nil {
+		t.Fatal(err)
+	}
+	original := llamaCacheIdentity(verified)
+	if original == "" {
+		t.Fatal("missing committed identity")
+	}
+	if err := os.Rename(filepath.Join(cache, "model.gguf"), filepath.Join(cache, "saved.gguf")); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := llamaCacheOpen(dir, "model.gguf", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	if llamaCacheIdentity(verified) == llamaCacheIdentity(replacement) {
+		t.Fatal("replacement acquired verified descriptor identity")
+	}
+}
+
 func TestLlamaCachePinnedDirectoryAndNoClobber(t *testing.T) {
 	root := t.TempDir()
 	cache := filepath.Join(root, "models")

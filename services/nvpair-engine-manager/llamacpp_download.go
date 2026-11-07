@@ -226,9 +226,8 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if err := f.Sync(); err != nil {
 		return nil, err
 	}
-	if err := f.Close(); err != nil {
-		return nil, err
-	}
+	// Keep the verified descriptor open through rename and ownership commit.
+	// A replacement at the final pathname must never acquire this claim.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -236,19 +235,20 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		return nil, err
 	}
 	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
-	committed, err := llamaCacheOpen(dir, final, false)
-	if err != nil {
-		return nil, err
-	}
-	identity := llamaCacheIdentity(committed)
-	_ = committed.Close()
+	identity := llamaCacheIdentity(f)
 	if identity == "" {
 		return nil, fmt.Errorf("cannot identify committed model")
 	}
 	manifest.Models = append(manifest.Models, llamaCacheRecord{llamaOwnedModel: record, Identity: identity})
 	if err := writeLlamaManifest(dir, manifest); err != nil {
 		// This operation created the final file; do not leave an unowned success.
-		_ = llamaCacheRemove(dir, final)
+		candidate, openErr := llamaCacheOpen(dir, final, false)
+		if openErr == nil {
+			if llamaCacheIdentity(candidate) == identity {
+				_ = llamaCacheRemove(dir, final)
+			}
+			_ = candidate.Close()
+		}
 		return nil, err
 	}
 	return json.Marshal(record)
