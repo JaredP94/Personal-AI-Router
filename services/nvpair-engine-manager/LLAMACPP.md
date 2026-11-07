@@ -10,7 +10,11 @@ unsupported. PAIR installs, starts, stops and configures the engine and serves
 it through the dedicated `llamacpp-proxy` worker, default port **1237**. Routing
 uses exact model IDs from the engine's `/v1/models` inventory, with separate
 `llamacpp` attribution. The Go model hub supports catalog, downloads, cancel
-and delete over JSON-RPC; desktop/TUI hub screens and load profiles are deferred.
+and delete over JSON-RPC. Desktop and TUI expose the catalog, local installed
+cache, tracked downloads/cancel/delete and startup model/router-mode selection.
+Peer installed-cache listing has no service method yet, so the clients label
+peer models as served inventory and keep installed-model pickers local.
+Per-model load profiles remain deferred.
 
 The macOS build is **not notarized**, like this fork's PAIR application. The
 release is checksum-pinned, not publisher-trusted by that checksum. Its existing

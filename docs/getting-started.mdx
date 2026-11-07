@@ -166,6 +166,34 @@ Refer to [Managing engines](engine-lifecycle.mdx) for details about:
 - Managing engines in a cluster.
 - Quitting or relaunching PAIR.
 
+### llama.cpp on macOS arm64
+
+Install **llama.cpp** from the local node's engine row after first-run setup.
+Its macOS build is not notarized, like PAIR itself. PAIR downloads the engine
+and models at runtime; neither is bundled in the application.
+
+1. Expand **Models → Add model**. Browse the Go catalog grouped by publisher,
+   or search public models (100 query characters, up to 50 results).
+2. Choose a single-file **Q4_K_M GGUF** model and follow its download progress.
+   **Canceling** means a stop was requested, not confirmed. **Cancelled** confirms
+   release; **Interrupted** offers retry. llama.cpp does not promise resume.
+   Checksum, disk-space and file-identity failures appear as service messages.
+3. In **Settings → Startup model**, select the downloaded catalog ID and
+   **Apply**. PAIR previews the change and confirms a restart if required.
+   **No model (router mode)** removes the startup model; it does not download one.
+4. Start the engine. Use the catalog ID shown in the installed list as the
+   request's model name. The default proxy endpoint is
+   `http://127.0.0.1:1237/v1`.
+5. Stop llama.cpp before deleting an owned downloaded model. Unmanaged files
+   are not deletable through PAIR.
+
+Verified peers support catalog download/cancel using the existing remote
+controls. Their installed cache is not exposed by the current service contract:
+the peer list is labelled **served models only**, and the downloaded-model
+picker is local. To change a peer's startup model, enter a known installed
+catalog ID with `--model` in its Settings arguments and preview/apply normally.
+See [the current limitations](known-issues.mdx#llamacpp-model-hub-limitations).
+
 ## 5. Find Your Endpoint
 
 Your applications connect to PAIR on the local machine, not directly to an
@@ -175,7 +203,7 @@ address an endpoint.
 Select **Endpoints** in the top toolbar to open the **API endpoints** window. It
 lists one copyable URL per engine, labelled by API style: Ollama's native API
 root (`http://127.0.0.1:<port>`) or the OpenAI-compatible base URL for LM Studio
-and oMLX (`http://127.0.0.1:<port>/v1`). The engine header's copy button uses the
+oMLX and llama.cpp (`http://127.0.0.1:<port>/v1`). The engine header's copy button uses the
 same URL and label. Copy the one for the engine you prepared. If it says **No engines are running**, return to step 4 and
 start an engine.
 
@@ -222,8 +250,9 @@ The engine therefore has to understand the style you send.
 | Ollama | Works | Works |
 | LM Studio | Works | Not available |
 | oMLX | Works | Not available |
+| llama.cpp | Works | Not available |
 
-**If you are unsure, send the OpenAI-style request.** It works with all three engines,
+**If you are unsure, send the OpenAI-style request.** It works with all four engines,
 and most tools and SDKs use it. Use the Ollama style
 only when something you already have is written against Ollama's `/api/...` API.
 

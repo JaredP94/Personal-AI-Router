@@ -26,8 +26,9 @@ file is canonical; `services/THIRD_PARTY_NOTICES.md` is only a pointer.
 
 Electron Chromium dependency notices ship separately with the Electron runtime
 as `LICENSES.chromium.html`; they are not reproduced here. Optional inference
-engines (Ollama, LM Studio, oMLX) and the Phoenix container image are installed
-separately, not bundled in the desktop application, and are governed by their
+engines (Ollama, LM Studio, oMLX, llama.cpp), downloaded models and the Phoenix
+container image are installed separately, not bundled in the desktop
+application, and are governed by their
 upstream terms. Vendored Kaizen CSS attribution is outside the npm dependency
 graph and requires separate review, including preservation in built CSS.
 

@@ -124,6 +124,37 @@ with `screen -S pair`, detach with `Ctrl-a d`, and reattach with
 `screen -r pair`. Neither ships with PAIR. Install whichever your distribution
 provides.
 
+## llama.cpp model hub
+
+Select llama.cpp in **Engines** (macOS arm64 only; not notarized, like PAIR).
+All model controls follow the selected node's reported capabilities.
+
+| Key | Action |
+| --- | --- |
+| `m` | Open/close the installed local cache, including while stopped |
+| `b` | Switch catalog/installed; catalog rows sort by publisher and model ID |
+| `/` | Search the public catalog; Enter submits, Esc cancels the editor |
+| `p` | Download the selected catalog ID; otherwise prompt for a model ID |
+| `c` | Request cancellation of the newest cancellable transfer |
+| `d` | Confirm deletion of a PAIR-owned installed model while stopped |
+| `a` | Preview and confirm the selected installed model as the startup model |
+| `0` | Preview and confirm **No model (router mode)** |
+
+Catalog search allows at most 100 characters and 50 results, and only
+single-file Q4_K_M GGUF downloads. Progress, cancel acceptance, confirmed stop
+and errors use the existing download tracker. **canceling** is not stopped;
+an interrupted transfer can be retried. llama.cpp does not promise partial-file
+resume. Checksum, disk-space and file-identity errors remain visible.
+
+Startup selection preserves other tuning arguments, writes a cache-relative
+`--model` option, and uses node-owned revisioned settings preview/apply.
+Confirmation warns if the engine will restart. Display names are catalog IDs.
+
+On verified peers, catalog download/cancel use existing remote methods.
+The current services do not expose peer installed-cache inventory: `m` labels
+the list as served models only, and the startup picker is local. No local
+inventory is presented as a peer's cache.
+
 ## The Screen
 
 The top line shows `NVPAIR TUI` and the connection state on the right:
