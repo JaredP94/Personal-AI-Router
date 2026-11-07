@@ -145,12 +145,20 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	// Every teardown runs after classify(): deferred calls are last-in
+	// first-out, and a cancel during teardown must not relabel a failure.
+	defer func() {
+		classify()
+		release()
+	}()
 	dir, err := openLlamaCache(st.installDir+"-models", true)
 	if err != nil {
 		return nil, fmt.Errorf("open model cache: %w", err)
 	}
-	defer dir.Close()
+	defer func() {
+		classify()
+		_ = dir.Close()
+	}()
 	manifest, err := readLlamaManifest(dir)
 	if err != nil {
 		return nil, err
