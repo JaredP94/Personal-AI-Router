@@ -80,11 +80,11 @@ type recoveryBroker struct {
 }
 
 // fixtureWorkers is a full broker lifecycle snapshot in the startup order the
-// registry publishes, so recovery tests can assert all twelve rows appear.
+// registry publishes, so recovery tests can assert all thirteen rows appear.
 func fixtureWorkers() []workerStatus {
 	names := []string{
 		"scanner", "errors", "settings", "engine-manager", "node-info", "proxy",
-		"lmstudio-proxy", "omlx-proxy", "workload-manager", "manual-nodes",
+		"lmstudio-proxy", "omlx-proxy", "llamacpp-proxy", "workload-manager", "manual-nodes",
 		"cluster-manager", "scheduler",
 	}
 	workers := make([]workerStatus, 0, len(names))
@@ -92,7 +92,7 @@ func fixtureWorkers() []workerStatus {
 		workers = append(workers, workerStatus{
 			Name:          name,
 			State:         "running",
-			RestartOnHang: name != "engine-manager" && name != "proxy" && name != "lmstudio-proxy" && name != "omlx-proxy",
+			RestartOnHang: name != "engine-manager" && name != "proxy" && name != "lmstudio-proxy" && name != "omlx-proxy" && name != "llamacpp-proxy",
 			PID:           1000,
 		})
 	}
@@ -164,7 +164,7 @@ func (b *recoveryBroker) serve() {
 		switch q.Method {
 		case "cluster:get-node-id":
 			result = map[string]string{"nodeUuid": epoch, "nodeId": epoch + "-host", "clusterId": clusterID}
-		case "discovery:get-nodes", "nodes:get-initial", "nodes/list", "proxy:nodes/list", "lmstudio-proxy:nodes/list", "omlx-proxy:nodes/list":
+		case "discovery:get-nodes", "nodes:get-initial", "nodes/list", "proxy:nodes/list", "lmstudio-proxy:nodes/list", "omlx-proxy:nodes/list", "llamacpp-proxy:nodes/list":
 			result = map[string]any{"nodes": []any{}}
 		case "engine:get-installed":
 			result = map[string]any{"engines": []any{}}
@@ -281,7 +281,7 @@ func TestRecoveryReplacesEveryOwningViewAndReinstallsConnectionSubscriptions(t *
 		e.setErrors(old)
 		b.push(t, "B", 1, "heartbeat", map[string]any{})
 		l.until(t, func() bool { return l.m.hydratedEpoch == "B" })
-		if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "B" || len(h.workers) != 12 || len(e.errs) != 0 {
+		if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "B" || len(h.workers) != 13 || len(e.errs) != 0 {
 			t.Fatalf("stale consumers: nodes %v workloads %v identity %v workers %v errors %v", n.nodes, w.byKey, cl.identity, h.workers, e.errs)
 		}
 		b.mu.Lock()
@@ -291,7 +291,7 @@ func TestRecoveryReplacesEveryOwningViewAndReinstallsConnectionSubscriptions(t *
 			counts[k] = v
 		}
 		b.mu.Unlock()
-		if len(order) < 7 || order[6] != "broker:resync" {
+		if len(order) < 8 || order[7] != "broker:resync" {
 			t.Fatalf("subscriptions not before resync/getters: %v", order)
 		}
 		for method, count := range counts {
@@ -459,7 +459,7 @@ func TestRecoveryAppliesHealthyDomainsAndStaysSilentWhenOptionalGettersFail(t *t
 	if l.m.hydratedEpoch != "A" {
 		t.Errorf("epoch not hydrated after a successful resync with optional getter failures: %q", l.m.hydratedEpoch)
 	}
-	if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "A" || len(h.workers) != 12 || len(e.errs) != 0 {
+	if len(n.nodes) != 0 || len(w.byKey) != 0 || cl.identity.NodeUUID != "A" || len(h.workers) != 13 || len(e.errs) != 0 {
 		t.Errorf("healthy domains not applied: nodes %v workloads %v identity %v workers %v errors %v", n.nodes, w.byKey, cl.identity, h.workers, e.errs)
 	}
 	// A failed getter reaches its own view as that view's ordinary error result.
@@ -549,14 +549,14 @@ func TestOverviewHydratesAllTwelveWorkersFromEpochRecovery(t *testing.T) {
 		t.Fatalf("workers:get-status sent %d times, want exactly one recovery read", got)
 	}
 	h := l.m.views[0].(*healthView)
-	if len(h.workers) != 12 {
-		t.Fatalf("hydrated %d workers, want all 12 the broker supervises: %v", len(h.workers), h.workers)
+	if len(h.workers) != 13 {
+		t.Fatalf("hydrated %d workers, want all 13 the broker supervises: %v", len(h.workers), h.workers)
 	}
 	rows := h.table.Rows()
-	if len(rows) != 12 {
-		t.Fatalf("table has %d rows, want 12", len(rows))
+	if len(rows) != 13 {
+		t.Fatalf("table has %d rows, want 13", len(rows))
 	}
-	want := []string{"scanner", "errors", "settings", "engine-manager", "node-info", "proxy", "lmstudio-proxy", "omlx-proxy", "workload-manager", "manual-nodes", "cluster-manager", "scheduler"}
+	want := []string{"scanner", "errors", "settings", "engine-manager", "node-info", "proxy", "lmstudio-proxy", "omlx-proxy", "llamacpp-proxy", "workload-manager", "manual-nodes", "cluster-manager", "scheduler"}
 	for i, name := range want {
 		if rows[i][0] != name {
 			t.Errorf("row %d is %q, want %q in the broker's startup order", i, rows[i][0], name)

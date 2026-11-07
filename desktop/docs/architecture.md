@@ -45,6 +45,7 @@ The canonical runtime inventory is
 | `ollama-proxy`            | Broker           | Ollama-compatible proxy and cluster routing |
 | `lmstudio-proxy`          | Broker, optional | LM Studio OpenAI-compatible proxy           |
 | `omlx-proxy`              | Broker, optional | oMLX OpenAI-compatible proxy                |
+| `llamacpp-proxy`              | Broker, optional | llama.cpp OpenAI-compatible proxy                |
 | `nvpair-node-scanner`     | Broker           | LAN discovery and announcement              |
 | `nvpair-node-info`        | Broker           | Node metadata and telemetry endpoint        |
 | `nvpair-workload-manager` | Broker, optional | Workload replication                        |
@@ -122,9 +123,9 @@ from worker crash supervision or hang detection.
 
 The Go broker separately probes `worker/health` every 30 s (5 s deadline),
 reports `degraded` after two failures, and restarts the eight eligible workers
-after three. Engine-manager and the three proxies never auto-restart on a hang.
+after three. Engine-manager and the four proxies never auto-restart on a hang.
 The bridge recovers `workers:get-status` on each epoch and replaces its cache on
-full `workers:update` snapshots. Settings → Service → Workers renders all twelve
+full `workers:update` snapshots. Settings → Service → Workers renders all thirteen
 rows and relays `workers:restart`; ineligible degraded rows say "Not responding —
 restart manually". Engine-manager and proxy restarts require confirmation because
 they may interrupt engines or inference. Health, initial-spawn retry, missing

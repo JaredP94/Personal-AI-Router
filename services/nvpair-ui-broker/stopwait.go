@@ -58,7 +58,7 @@ const (
 	//
 	// which is the 15s the desktop parent and nvpair-tui both allow. Everything
 	// inside the first line — the three proxy joins, the engine StopAll wait, and
-	// all twelve joins — draws on this one budget, so no step can be lengthened
+	// all thirteen joins — draws on this one budget, so no step can be lengthened
 	// without the others giving way. It must also exceed the largest single worker
 	// grace, or that worker could never be granted it.
 	teardownBudget = 10 * time.Second

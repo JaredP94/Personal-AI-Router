@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 The broker coordinates validation, private persistence, engine stop/restart,
 proxy rebind and service advertisement as one revisioned operation. Desktop
 clients relay commands and render reported state; they do not implement this
-transaction. The fork retains its three separate proxy workers and each
+transaction. The fork retains its four separate proxy workers and each
 worker's existing `set-port` RPC and `ready` port notification.
 
 ## Client requests
@@ -61,13 +61,13 @@ PAIR-owned proxy port can change. Go rejects server-port, argument and
 environment edits with a message directing the user to the oMLX app. A proxy
 rebind never stops or restarts that app, including adopted running instances.
 
-For llama.cpp, the same revision/recovery protocol manages the server port and
-launch text without a proxy worker: `proxyPort` and `effectiveProxyPort` are
-**zero**, the client hides the proxy-port field, and nonzero proxy ports are
-rejected. No service is advertised and no model routing is enabled. A missing
-proxy is not an editing error for this engine. Configured engine ports, existing
-service reservations and live listener collisions still apply. Readiness uses
-`/props` router identity. Load profiles remain LM Studio-only. See the
+For llama.cpp, the same revision/recovery protocol manages server port, proxy
+port and allowlisted launch text. The default server/proxy ports are 8082/1237;
+the dedicated `llamacpp-proxy` uses service `lc` and the same convergence and
+bounded port-write rules as the other proxies. The settings panel edits both
+ports. `--model`/`-m` selects a contained regular cached GGUF, validated in Go;
+readiness uses `/props` router identity without a model, or the exact canonical
+`model_path` with one. Load profiles remain LM Studio-only. See the
 [b12171 launch audit and installation limits](../nvpair-engine-manager/LLAMACPP.md).
 
 ## Per-model LM Studio load options

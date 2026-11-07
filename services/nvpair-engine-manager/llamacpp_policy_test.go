@@ -114,12 +114,12 @@ func TestLlamaAllowlistMatchesPinnedRelease(t *testing.T) {
 		}
 	}
 	for _, mode := range strings.Fields("auto none mmap mlock mmap+mlock dio") {
-		if _, err := normalizeLlamaOptions([]string{"--load-mode", mode}); err != nil {
+		if _, err := normalizeLlamaOptions([]string{"--load-mode", mode}, ""); err != nil {
 			t.Errorf("load mode %s: %v", mode, err)
 		}
 	}
 	for _, rejected := range [][]string{{"--load-mode", "lazy"}, {"--mlock"}, {"--mmap"}, {"--no-mmap"}} {
-		if _, err := normalizeLlamaOptions(rejected); err == nil {
+		if _, err := normalizeLlamaOptions(rejected, ""); err == nil {
 			t.Errorf("%v accepted", rejected)
 		}
 	}

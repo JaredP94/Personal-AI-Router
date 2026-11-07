@@ -27,7 +27,7 @@ func inventoryTestBroker(t *testing.T) *Broker {
 	return b
 }
 func verifiedDirectoryForTest(b *Broker) noderec.DirectoryNode {
-	return noderec.DirectoryNode{HostUUID: "peer", ClusterUUID: "peer", Name: "peer", IP: "192.0.2.2", Trusted: true, IdentityVerification: "verified", PeerRecordID: b.mesh.PeerRecordID("peer"), Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceNodeInfo: {Port: 14318}, noderec.ServiceOllama: {Port: 11434}, noderec.ServiceLMStudio: {Port: 1234}, noderec.ServiceOMLX: {Port: 1236}, noderec.ServiceEngineControl: {Port: 14323}}, Models: []string{"model"}}
+	return noderec.DirectoryNode{HostUUID: "peer", ClusterUUID: "peer", Name: "peer", IP: "192.0.2.2", Trusted: true, IdentityVerification: "verified", PeerRecordID: b.mesh.PeerRecordID("peer"), Services: map[noderec.ServiceKey]noderec.ServiceStatus{noderec.ServiceNodeInfo: {Port: 14318}, noderec.ServiceOllama: {Port: 11434}, noderec.ServiceLMStudio: {Port: 1234}, noderec.ServiceOMLX: {Port: 1236}, noderec.ServiceLlamaCPP: {Port: 1237}, noderec.ServiceEngineControl: {Port: 14323}}, Models: []string{"model"}}
 }
 
 func TestClaimedManualPrincipalIsNotTrustedOrScheduled(t *testing.T) {
@@ -42,7 +42,7 @@ func TestClaimedManualPrincipalIsNotTrustedOrScheduled(t *testing.T) {
 	if got := b.schedulerNodes(); len(got) != 0 {
 		t.Fatalf("unproven inventory in scheduler: %+v", got)
 	}
-	for _, service := range []noderec.ServiceKey{noderec.ServiceOllama, noderec.ServiceLMStudio, noderec.ServiceOMLX, noderec.ServiceEngineControl} {
+	for _, service := range []noderec.ServiceKey{noderec.ServiceOllama, noderec.ServiceLMStudio, noderec.ServiceOMLX, noderec.ServiceLlamaCPP, noderec.ServiceEngineControl} {
 		if got := b.relayDir.Snapshot(service); len(got) != 0 {
 			t.Fatalf("unproven %s target: %+v", service, got)
 		}

@@ -246,7 +246,7 @@ func (e *Executor) refreshPassiveStatus(engine string, st *engineState, key stat
 		return
 	}
 	running, adopted, proc := st.running, st.adopted, st.proc
-	ready := st.plat.Runtime.Ready
+	ready := llamaRuntimeProbes(st.plat.Runtime, st.installDir).Ready
 	mode := st.plat.Runtime.modeOrDefault()
 	st.mu.Unlock()
 
@@ -355,7 +355,7 @@ func (e *Executor) reconcilePresence(ctx context.Context, engine string, st *eng
 	running := st.running
 	adopted := st.adopted
 	proc := st.proc
-	ready := st.plat.Runtime.Ready
+	ready := llamaRuntimeProbes(st.plat.Runtime, st.installDir).Ready
 	st.mu.Unlock()
 
 	// A command-mode engine needs its control CLI. A compatible HTTP endpoint

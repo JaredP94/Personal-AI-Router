@@ -127,14 +127,19 @@ func (b *Broker) blockManagedOllamaFacade(reason string, excludedPorts ...int) i
 // The live move owner releases the gate only after cancellation and rollback
 // have joined. Other startup failures can use blockManagedOllamaFacade above.
 func (b *Broker) blockManagedOllamaFacadePending(reason string, excludedPorts ...int) int {
-	b.managedOllamaFacade.Store(false)
-	b.managedOllamaBackend.Store(0)
 	if backend := int(b.ollamaBackendPort.Load()); backend > 0 {
 		excludedPorts = append(excludedPorts, backend)
 	}
 	fallback := b.setOllamaProxyFallback(excludedPorts...)
-	b.reportPortOwnershipBlocked(reason)
+	b.recordBlockedOllamaFacade(reason)
 	return fallback
+}
+
+// Commit only after an unlocked selection's settings revalidation succeeds.
+func (b *Broker) recordBlockedOllamaFacade(reason string) {
+	b.managedOllamaFacade.Store(false)
+	b.managedOllamaBackend.Store(0)
+	b.reportPortOwnershipBlocked(reason)
 }
 
 func (b *Broker) markOllamaPortReady() {
@@ -144,10 +149,7 @@ func (b *Broker) markOllamaPortReady() {
 }
 
 func (b *Broker) setOllamaProxyFallback(excludedPorts ...int) int {
-	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
-		excludedPorts = append(excludedPorts, aliasPort)
-	}
-	fallback := nextAvailablePortExcluding(managedOllamaBackendStart, excludedPorts, tcpPortAvailable)
+	fallback := b.nextProxyFallbackPort("ollama", managedOllamaBackendStart, excludedPorts, tcpPortAvailable)
 	b.ollamaProxyStartupPort.Store(int32(fallback))
 	return fallback
 }
@@ -377,7 +379,11 @@ func (b *Broker) reconcileProxyPortOnReadyInOperation(boundPort int) {
 				return
 			}
 			if err != nil || rpcErr != nil {
-				b.blockManagedOllamaFacade("the proxy could not bind the compatibility port")
+				if !call(func() { b.setOllamaProxyFallback(int(b.ollamaBackendPort.Load())) }) {
+					return
+				}
+				b.recordBlockedOllamaFacade("the proxy could not bind the compatibility port")
+				b.markOllamaPortReady()
 				slog.Warn("failed to bind managed Ollama facade", "err", err, "rpcErr", rpcErr)
 			}
 			return
@@ -414,7 +420,11 @@ func (b *Broker) reconcileProxyPortOnReadyInOperation(boundPort int) {
 				// The RPC may have applied and then lost its response. Keep the
 				// fallback off both candidate ports, vacate :11434 first, then
 				// best-effort restore the original stopped-engine configuration.
-				fallback := b.blockManagedOllamaFacadePending("the stopped Ollama backend could not be moved", backend)
+				var fallback int
+				if !call(func() { fallback = b.setOllamaProxyFallback(backend, int(b.ollamaBackendPort.Load())) }) {
+					return
+				}
+				b.recordBlockedOllamaFacade("the stopped Ollama backend could not be moved")
 				vacated := false
 				if fallback != 0 {
 					body, _ := json.Marshal(map[string]int{"port": fallback})

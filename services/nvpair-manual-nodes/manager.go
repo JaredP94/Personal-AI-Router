@@ -199,8 +199,11 @@ type ManualNodeStatus struct {
 	LMStudioPort   int         `json:"lmstudio_port"`
 	LMStudioModels []string    `json:"lmstudio_models,omitempty"`
 	OMLXUp         bool        `json:"omlx_up,omitempty"`
+	LlamaCPPUp     bool        `json:"llamacpp_up,omitempty"`
 	OMLXPort       int         `json:"omlx_port,omitempty"`
+	LlamaCPPPort   int         `json:"llamacpp_port,omitempty"`
 	OMLXModels     []string    `json:"omlx_models,omitempty"`
+	LlamaCPPModels []string    `json:"llamacpp_models,omitempty"`
 	NodeInfoUp     bool        `json:"node_info_up"`
 	NodeInfoPort   int         `json:"node_info_port"`
 	TLSEnabled     bool        `json:"tls_enabled,omitempty"`
@@ -724,8 +727,8 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	canProbePlaintextEngines := entry.Kind == "engine"
 
 	var (
-		ollamaUp, lmStudioUp, omlxUp             bool
-		ollamaModels, lmStudioModels, omlxModels []string
+		ollamaUp, lmStudioUp, omlxUp, llamacppUp                 bool
+		ollamaModels, lmStudioModels, omlxModels, llamacppModels []string
 	)
 	if emUp {
 		if finalModelsByEngine != nil {
@@ -741,6 +744,10 @@ func (m *Manager) probeNode(entry ManualEntry) {
 				omlxUp = true
 				omlxModels = omModels
 			}
+			if lcModels, ok := finalModelsByEngine["llamacpp"]; ok {
+				llamacppUp = true
+				llamacppModels = lcModels
+			}
 		}
 		if canProbePlaintextEngines {
 			if !ollamaUp {
@@ -751,6 +758,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			}
 			if !omlxUp {
 				omlxUp, omlxModels = m.probeOMLX(addr, omlxPort)
+			}
+			if !llamacppUp {
+				llamacppUp, llamacppModels = m.probeLlamaCPP(addr, llamacppPort)
 			}
 		}
 		if ollamaUp && (finalModelsByEngine == nil || finalModelsByEngine["ollama"] == nil) && len(ollamaModels) > 0 {
@@ -774,13 +784,21 @@ func (m *Manager) probeNode(entry ManualEntry) {
 			finalModelsByEngine["omlx"] = omlxModels
 			finalModels = mergeModels(finalModels, omlxModels)
 		}
+		if llamacppUp && (finalModelsByEngine == nil || finalModelsByEngine["llamacpp"] == nil) && len(llamacppModels) > 0 {
+			if finalModelsByEngine == nil {
+				finalModelsByEngine = make(map[string][]string)
+			}
+			finalModelsByEngine["llamacpp"] = llamacppModels
+			finalModels = mergeModels(finalModels, llamacppModels)
+		}
 	} else {
 		if canProbePlaintextEngines {
 			ollamaUp, ollamaModels = m.probeOllama(addr, 11434)
 			lmStudioUp, lmStudioModels = m.probeLMStudio(addr, lmStudioPort)
 			omlxUp, omlxModels = m.probeOMLX(addr, omlxPort)
+			llamacppUp, llamacppModels = m.probeLlamaCPP(addr, llamacppPort)
 		}
-		finalModels = mergeModels(ollamaModels, lmStudioModels, omlxModels)
+		finalModels = mergeModels(ollamaModels, lmStudioModels, omlxModels, llamacppModels)
 		finalModelsByEngine = make(map[string][]string)
 		if len(ollamaModels) > 0 {
 			finalModelsByEngine["ollama"] = ollamaModels
@@ -790,6 +808,9 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		}
 		if len(omlxModels) > 0 {
 			finalModelsByEngine["omlx"] = omlxModels
+		}
+		if len(llamacppModels) > 0 {
+			finalModelsByEngine["llamacpp"] = llamacppModels
 		}
 		if len(finalModelsByEngine) == 0 {
 			finalModelsByEngine = nil
@@ -839,8 +860,11 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		LMStudioPort:         lmStudioPort,
 		LMStudioModels:       lmStudioModels,
 		OMLXUp:               omlxUp,
+		LlamaCPPUp:           llamacppUp,
 		OMLXPort:             omlxPort,
+		LlamaCPPPort:         llamacppPort,
 		OMLXModels:           omlxModels,
+		LlamaCPPModels:       llamacppModels,
 		NodeInfoUp:           nodeInfoUp,
 		NodeInfoPort:         nodeInfoPort,
 		TLSEnabled:           entry.TLSPort > 0,
@@ -863,11 +887,13 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		newStatus.OllamaPort = info.PeerMetadata.Services[noderec.ServiceOllama]
 		newStatus.LMStudioPort = info.PeerMetadata.Services[noderec.ServiceLMStudio]
 		newStatus.OMLXPort = info.PeerMetadata.Services[noderec.ServiceOMLX]
+		newStatus.LlamaCPPPort = info.PeerMetadata.Services[noderec.ServiceLlamaCPP]
 		newStatus.OllamaUp = newStatus.OllamaUp && newStatus.OllamaPort > 0
 		newStatus.LMStudioUp = newStatus.LMStudioUp && newStatus.LMStudioPort > 0
 		newStatus.OMLXUp = newStatus.OMLXUp && newStatus.OMLXPort > 0
+		newStatus.LlamaCPPUp = newStatus.LlamaCPPUp && newStatus.LlamaCPPPort > 0
 	}
-	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.OMLXUp || newStatus.NodeInfoUp || emUp
+	reachable := newStatus.OllamaUp || newStatus.LMStudioUp || newStatus.OMLXUp || newStatus.LlamaCPPUp || newStatus.NodeInfoUp || emUp
 
 	m.mu.Lock()
 	tn, exists := m.nodes[id]
@@ -917,13 +943,16 @@ func (m *Manager) probeNode(entry ManualEntry) {
 	changed := prev.IdentityVerification != newStatus.IdentityVerification || prev.PeerRecordID != newStatus.PeerRecordID || prev.OllamaUp != newStatus.OllamaUp ||
 		prev.LMStudioUp != newStatus.LMStudioUp ||
 		prev.OMLXUp != newStatus.OMLXUp ||
+		prev.LlamaCPPUp != newStatus.LlamaCPPUp ||
 		prev.OMLXPort != newStatus.OMLXPort ||
+		prev.LlamaCPPPort != newStatus.LlamaCPPPort ||
 		prev.NodeInfoUp != newStatus.NodeInfoUp ||
 		prev.HostUUID != newStatus.HostUUID ||
 		prev.ClusterUUID != newStatus.ClusterUUID ||
 		!sliceEqual(prev.OllamaModels, newStatus.OllamaModels) ||
 		!sliceEqual(prev.LMStudioModels, newStatus.LMStudioModels) ||
 		!sliceEqual(prev.OMLXModels, newStatus.OMLXModels) ||
+		!sliceEqual(prev.LlamaCPPModels, newStatus.LlamaCPPModels) ||
 		!sliceEqual(prev.Models, newStatus.Models) ||
 		!mapsEqual(prev.ModelsByEngine, newStatus.ModelsByEngine) ||
 		!mapsEqual(prev.LoadedByEngine, newStatus.LoadedByEngine) ||
@@ -994,6 +1023,7 @@ func probeFailedID(nodeID string) string {
 const (
 	lmStudioPort      = 1234
 	omlxPort          = 1236
+	llamacppPort      = 8082
 	engineManagerPort = 14322
 )
 
@@ -1062,6 +1092,45 @@ func (m *Manager) probeLMStudio(addr string, port int) (bool, []string) {
 		}
 	}
 	slog.Debug("manual probe lmstudio up",
+		"addr", addr, "port", port, "models", len(models),
+		"duration_ms", time.Since(start).Milliseconds())
+	return true, models
+}
+
+func (m *Manager) probeLlamaCPP(addr string, port int) (bool, []string) {
+	url := "http://" + net.JoinHostPort(addr, strconv.Itoa(port)) + "/v1/models"
+	start := time.Now()
+	resp, err := m.client.Get(url)
+	if err != nil {
+		slog.Debug("manual probe llama.cpp failed",
+			"addr", addr, "port", port, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		return false, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		slog.Debug("manual probe llama.cpp non-OK",
+			"addr", addr, "port", port, "status", resp.StatusCode,
+			"duration_ms", time.Since(start).Milliseconds())
+		return false, nil
+	}
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, modelsResponseLimit)).Decode(&result); err != nil {
+		// Reachable, but the model list didn't parse — still report it up.
+		slog.Debug("manual probe llama.cpp up (models parse failed)",
+			"addr", addr, "port", port, "err", err)
+		return true, nil
+	}
+	models := make([]string, 0, len(result.Data))
+	for _, d := range result.Data {
+		if d.ID != "" {
+			models = append(models, d.ID)
+		}
+	}
+	slog.Debug("manual probe llama.cpp up",
 		"addr", addr, "port", port, "models", len(models),
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, models

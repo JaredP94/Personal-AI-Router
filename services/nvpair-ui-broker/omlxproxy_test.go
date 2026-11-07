@@ -15,12 +15,12 @@ func TestPrepareOMLXProxyPortWhenLMStudioPresent(t *testing.T) {
 	}
 
 	b.prepareOMLXProxyPortWithPortCheck(free)
-	if got := int(b.omlxProxyStartupPort.Load()); got != 1236 {
-		t.Fatalf("expected fallback port 1236, got %d", got)
+	if got := int(b.omlxProxyStartupPort.Load()); got != 1238 {
+		t.Fatalf("expected fallback port 1238 (1236 engine, 1237 proxy reserved), got %d", got)
 	}
 
 	args := b.omlxProxyArgs()
-	want := []string{"--port", "1236", "--ignore-persisted-port"}
+	want := []string{"--port", "1238", "--ignore-persisted-port"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %v, want %v", args, want)
 	}
@@ -33,8 +33,8 @@ func TestPrepareOMLXProxyPortWhenStandaloneLMStudioOccupies1234(t *testing.T) {
 	b := &Broker{}
 
 	b.prepareOMLXProxyPortWithPortCheck(free)
-	if got := int(b.omlxProxyStartupPort.Load()); got != 1236 {
-		t.Fatalf("expected fallback port 1236, got %d", got)
+	if got := int(b.omlxProxyStartupPort.Load()); got != 1238 {
+		t.Fatalf("expected fallback port 1238 (1236 engine, 1237 proxy reserved), got %d", got)
 	}
 }
 

@@ -212,7 +212,7 @@ func restartConsequence(worker string) string {
 	switch worker {
 	case "engine-manager":
 		return "Engines PAIR started may keep running or stop; running inference may be interrupted."
-	case "proxy", "lmstudio-proxy", "omlx-proxy":
+	case "proxy", "lmstudio-proxy", "omlx-proxy", "llamacpp-proxy":
 		return "Running inference through this proxy will be interrupted."
 	}
 	return "The broker restarts it under its own retry policy."

@@ -45,7 +45,7 @@ func newRoutingUpstream(t *testing.T, status int) *routingUpstream {
 // workers' replies must not supply another proxy's port.
 func waitRoutingProxyReady(t *testing.T, stdin io.Writer, msgs <-chan jsonrpc.Message, prefix string) int {
 	t.Helper()
-	id := map[string]int{"proxy": 10000, "lmstudio-proxy": 20000, "omlx-proxy": 30000}[prefix]
+	id := map[string]int{"proxy": 10000, "lmstudio-proxy": 20000, "omlx-proxy": 30000, "llamacpp-proxy": 40000}[prefix]
 	send := func() {
 		writeRawFrame(t, stdin, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q}`, id, prefix+":get-status"))
 	}
@@ -92,6 +92,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 		"--proxy-path", proxyBin,
 		"--lmstudio-proxy-path", lmstudioProxyBin,
 		"--omlx-proxy-path", omlxProxyBin,
+		"--llamacpp-proxy-path", llamacppProxyBin,
 	)
 	t.Cleanup(cleanup)
 	go func() {
@@ -103,6 +104,7 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 	ollamaPort := waitRoutingProxyReady(t, stdin, msgs, "proxy")
 	lmstudioPort := waitRoutingProxyReady(t, stdin, msgs, "lmstudio-proxy")
 	omlxPort := waitRoutingProxyReady(t, stdin, msgs, "omlx-proxy")
+	llamacppPort := waitRoutingProxyReady(t, stdin, msgs, "llamacpp-proxy")
 
 	type proxyCase struct {
 		name      string
@@ -116,6 +118,8 @@ func TestStrictModelRoutingAcrossProcesses(t *testing.T) {
 		{name: "lmstudio", rpcPrefix: "lmstudio-proxy", path: "/v1/chat/completions", port: lmstudioPort},
 		{name: "lmstudio-anthropic", rpcPrefix: "lmstudio-proxy", path: "/v1/messages", port: lmstudioPort},
 		{name: "omlx-anthropic", rpcPrefix: "omlx-proxy", path: "/v1/messages", port: omlxPort},
+		{name: "llamacpp", rpcPrefix: "llamacpp-proxy", path: "/v1/chat/completions", port: llamacppPort},
+		{name: "llamacpp-anthropic", rpcPrefix: "llamacpp-proxy", path: "/v1/messages", port: llamacppPort},
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)

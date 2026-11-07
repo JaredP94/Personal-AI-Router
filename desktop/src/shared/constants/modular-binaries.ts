@@ -7,6 +7,7 @@ export type ModularProcessName =
     | 'proxy'
     | 'lmstudio-proxy'
     | 'omlx-proxy'
+    | 'llamacpp-proxy'
     | 'broker'
     | 'node-info'
     | 'scanner'
@@ -84,6 +85,14 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         // all interfaces, so it needs firewall access to be reachable.
         processName: 'omlx-proxy',
         baseName: 'omlx-proxy',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
+    },
+    {
+        processName: 'llamacpp-proxy',
+        baseName: 'llamacpp-proxy',
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: true,

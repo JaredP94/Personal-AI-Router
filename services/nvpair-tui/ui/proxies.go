@@ -95,6 +95,7 @@ func newProxiesView(client *rpc.Client) *proxiesView {
 			{label: "Ollama", prefix: "proxy", table: newTable(nil)},
 			{label: "LM Studio", prefix: "lmstudio-proxy", table: newTable(nil)},
 			{label: "oMLX", prefix: "omlx-proxy", table: newTable(nil)},
+			{label: "llama.cpp", prefix: "llamacpp-proxy", table: newTable(nil)},
 		},
 	}
 	return v
@@ -216,6 +217,8 @@ func (v *proxiesView) Update(msg tea.Msg) tea.Cmd {
 func (v *proxiesView) handleNotification(msg *rpc.Message) tea.Cmd {
 	idx := -1
 	switch {
+	case strings.HasPrefix(msg.Method, "llamacpp-proxy:"):
+		idx = 3
 	case strings.HasPrefix(msg.Method, "omlx-proxy:"):
 		idx = 2
 	case strings.HasPrefix(msg.Method, "lmstudio-proxy:"):

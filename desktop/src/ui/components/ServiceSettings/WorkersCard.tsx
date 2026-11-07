@@ -31,7 +31,8 @@ const RESTART_WARNINGS: Record<string, string> = {
         'Engines PAIR started may keep running or stop; running inference may be interrupted.',
     proxy: 'Running inference through this proxy will be interrupted.',
     'lmstudio-proxy': 'Running inference through this proxy will be interrupted.',
-    'omlx-proxy': 'Running inference through this proxy will be interrupted.'
+    'omlx-proxy': 'Running inference through this proxy will be interrupted.',
+    'llamacpp-proxy': 'Running inference through this proxy will be interrupted.'
 }
 
 function WorkerRow({

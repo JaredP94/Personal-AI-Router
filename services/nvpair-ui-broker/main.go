@@ -28,6 +28,7 @@ func main() {
 	proxyPath := flag.String("proxy-path", "", "path to ollama-proxy binary (default: ./ollama-proxy in the current working directory)")
 	lmstudioProxyPath := flag.String("lmstudio-proxy-path", "", "path to lmstudio-proxy binary (default: ./lmstudio-proxy in the current working directory)")
 	omlxProxyPath := flag.String("omlx-proxy-path", "", "path to omlx-proxy binary (default: ./omlx-proxy in the current working directory)")
+	llamacppProxyPath := flag.String("llamacpp-proxy-path", "", "path to llamacpp-proxy binary (default: ./llamacpp-proxy in the current working directory)")
 	workloadMgrPath := flag.String("workload-manager-path", "", "path to nvpair-workload-manager binary (default: ./nvpair-workload-manager in the current working directory)")
 	errorsPath := flag.String("errors-path", "", "path to nvpair-errors binary (default: ./nvpair-errors in the current working directory)")
 	engineMgrPath := flag.String("engine-manager-path", "", "path to nvpair-engine-manager binary (default: ./nvpair-engine-manager in the current working directory)")
@@ -157,6 +158,15 @@ func main() {
 		resolvedOMLXProxy = ""
 	}
 
+	resolvedLlamaCPPProxy, err := resolveLlamaCPPProxyPath(*llamacppProxyPath)
+	if err != nil {
+		if *llamacppProxyPath != "" {
+			fatalf("llamacpp-proxy binary: %v", err)
+		}
+		slog.Warn("llamacpp-proxy binary not found; broker will run without local llama.cpp proxy", "err", err)
+		resolvedLlamaCPPProxy = ""
+	}
+
 	// nvpair-workload-manager is auxiliary too, resolved with the same rules:
 	// an explicit --workload-manager-path that doesn't exist is a loud
 	// operator mistake (fatal), but an absent default sibling just means
@@ -277,6 +287,7 @@ func main() {
 		proxy:                resolvedProxy,
 		lmstudioProxy:        resolvedLMStudioProxy,
 		omlxProxy:            resolvedOMLXProxy,
+		llamacppProxy:        resolvedLlamaCPPProxy,
 		workloadMgr:          resolvedWorkloadMgr,
 		errors:               resolvedErrors,
 		engineMgr:            resolvedEngineMgr,
@@ -351,6 +362,10 @@ func resolveLMStudioProxyPath(override string) (string, error) {
 // proxy" rather than aborting the broker.
 func resolveOMLXProxyPath(override string) (string, error) {
 	return resolveSiblingBinary(override, "omlx-proxy", "--omlx-proxy-path")
+}
+
+func resolveLlamaCPPProxyPath(override string) (string, error) {
+	return resolveSiblingBinary(override, "llamacpp-proxy", "--llamacpp-proxy-path")
 }
 
 // resolveWorkloadManagerPath mirrors resolveProxyPath for the

@@ -24,6 +24,7 @@ const (
 	defaultOllamaPort   = 11434
 	defaultLMStudioPort = 1234
 	defaultOMLXPort     = 1235
+	defaultLlamaCPPPort = 8082
 
 	// engineManagerHTTPPort is the fixed LAN port the broker tells
 	// nvpair-engine-manager to serve its HTTP surface (/v1/models) on, and the port
@@ -351,6 +352,54 @@ func (b *Broker) reconcileAdvertiseOMLX(client *http.Client) {
 	} else {
 		b.unregisterService(noderec.ServiceOMLX)
 		b.setProxyLocalBackend(b.getOMLXProxy(), "omlx", enginePort, false)
+	}
+}
+
+// runAutoAdvertiseLlamaCPP is the llama.cpp counterpart of runAutoAdvertise: it polls
+// the local llama.cpp server and reconciles this node's om service registration
+// against it, so an llama.cpp host appears on the cluster.
+func (b *Broker) runAutoAdvertiseLlamaCPP(ctx context.Context) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(autoAdvertiseInterval)
+	defer ticker.Stop()
+
+	b.reconcileAdvertiseLlamaCPP(client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileAdvertiseLlamaCPP(client)
+		}
+	}
+}
+
+// reconcileAdvertiseLlamaCPP brings this node's om registration into line with
+// the local llama.cpp server: it advertises the promoted proxy port (never the engine)
+// and hands the engine's loopback port to the llama.cpp proxy via node/set-local-backend.
+func (b *Broker) reconcileAdvertiseLlamaCPP(client *http.Client) {
+	b.engineConfigMu.Lock()
+	defer b.engineConfigMu.Unlock()
+	if b.settingsAvailabilityBlockedLocked("llamacpp") {
+		return
+	}
+	if r := b.engineSettings["llamacpp"]; r != nil && r.Snapshot.Phase == "applying" {
+		return
+	}
+	enginePort, probe := b.localEnginePort("llamacpp", defaultLlamaCPPPort)
+	proxyPort := b.llamacppProxyListenPort()
+	if proxyPort != 0 && enginePort == proxyPort {
+		enginePort = 0
+		probe = false
+	}
+	up := probe && proxyPort != 0 && enginePort != proxyPort && checkLMStudioHealth(client, enginePort)
+	if up {
+		b.registerService(noderec.RegisterParams{Service: noderec.ServiceLlamaCPP, Port: proxyPort})
+		b.setProxyLocalBackend(b.getLlamaCPPProxy(), "llamacpp", enginePort, true)
+	} else {
+		b.unregisterService(noderec.ServiceLlamaCPP)
+		b.setProxyLocalBackend(b.getLlamaCPPProxy(), "llamacpp", enginePort, false)
 	}
 }
 

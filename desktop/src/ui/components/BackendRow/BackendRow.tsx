@@ -228,10 +228,7 @@ export function BackendRow({
                         onInstall={handleInstall}
                     />
                     {backend.type === 'llamacpp' && (
-                        <Text kind="body/regular/sm">
-                            Not notarized, like PAIR itself. Does not serve requests through PAIR
-                            yet.
-                        </Text>
+                        <Text kind="body/regular/sm">Not notarized, like PAIR itself.</Text>
                     )}
                     {expanded && <Divider />}
                     {content}

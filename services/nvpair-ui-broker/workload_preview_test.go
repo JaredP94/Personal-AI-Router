@@ -16,7 +16,7 @@ import (
 // Rotating the pin before discovery publishes its renewed proof must not
 // discard the local proxy's authoritative report about an already routed job.
 func TestLocalWorkloadNotLostDuringPeerCertificateRenewal(t *testing.T) {
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		for _, departure := range []string{"renewed-then-lost", "trust-withdrawal", "scanner-retirement"} {
 			t.Run(engine+"/"+departure, func(t *testing.T) {
 				b := inventoryTestBroker(t)

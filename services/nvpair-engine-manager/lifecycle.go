@@ -140,7 +140,7 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	st.mu.Unlock()
 
 	pathInstalled, _ := e.Detect(engine)
-	rt := st.plat.Runtime
+	rt := llamaRuntimeProbes(st.plat.Runtime, st.installDir)
 	port := st.port
 	if opts.Port > 0 {
 		port = opts.Port
@@ -472,7 +472,7 @@ func (e *Executor) Stop(engine string) error {
 
 // doStop performs the stop. Callers must hold st.opMu.
 func (e *Executor) doStop(st *engineState, engine string) error {
-	rt := st.plat.Runtime
+	rt := llamaRuntimeProbes(st.plat.Runtime, st.installDir)
 	mode := rt.modeOrDefault()
 	st.mu.Lock()
 	if !st.running {
@@ -784,7 +784,7 @@ func (e *Executor) reconcileFailedCommandStop(st *engineState, engine string, ru
 		slog.Warn("engine stop command returned an error, but the endpoint is confirmed down", "engine", engine, "err", stopErr)
 		return nil
 	}
-	rt := st.plat.Runtime
+	rt := llamaRuntimeProbes(st.plat.Runtime, st.installDir)
 	var port int
 	var healthCtx context.Context
 	var gen int64
@@ -942,7 +942,7 @@ func (e *Executor) runHealth(ctx context.Context, st *engineState, engine string
 	if plat.Runtime.Health == nil {
 		return
 	}
-	h := *plat.Runtime.Health
+	h := *llamaRuntimeProbes(plat.Runtime, st.installDir).Health
 	interval := 5 * time.Second
 	if h.IntervalS > 0 {
 		interval = time.Duration(h.IntervalS) * time.Second

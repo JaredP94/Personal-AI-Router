@@ -53,6 +53,7 @@ const EXPECTED_RESYNC_CALLS = [
     'proxy:get-status',
     'lmstudio-proxy:get-status',
     'omlx-proxy:get-status',
+    'llamacpp-proxy:get-status',
     'telemetry/get-status'
 ]
 

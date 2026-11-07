@@ -40,7 +40,7 @@ Remove unrelated personal information, prompts, model data, and secrets.
 
 - Electron's renderer reaches main through a typed preload bridge. Electron
   starts only `nvpair-ui-broker`; the terminal client starts its own broker.
-- The broker supervises **12 workers**: scanner, node-info, three engine proxies,
+- The broker supervises **13 workers**: scanner, node-info, four engine proxies,
   engine manager, cluster manager, workload manager, errors, node settings,
   manual nodes, and job scheduler. Scanner startup is required; others are
   optional. Workers run under the user's operating-system account.

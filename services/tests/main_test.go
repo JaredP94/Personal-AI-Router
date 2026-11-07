@@ -23,6 +23,7 @@ var (
 	proxyBin         string
 	lmstudioProxyBin string
 	omlxProxyBin     string
+	llamacppProxyBin string
 	errorsBin        string
 	nodeInfoBin      string
 	scannerBin       string
@@ -49,6 +50,7 @@ func TestMain(m *testing.M) {
 	proxyBin = filepath.Join(tmpDir, "ollama-proxy"+ext)
 	lmstudioProxyBin = filepath.Join(tmpDir, "lmstudio-proxy"+ext)
 	omlxProxyBin = filepath.Join(tmpDir, "omlx-proxy"+ext)
+	llamacppProxyBin = filepath.Join(tmpDir, "llamacpp-proxy"+ext)
 	errorsBin = filepath.Join(tmpDir, "nvpair-errors"+ext)
 	nodeInfoBin = filepath.Join(tmpDir, "nvpair-node-info"+ext)
 	scannerBin = filepath.Join(tmpDir, "nvpair-node-scanner"+ext)
@@ -78,6 +80,12 @@ func TestMain(m *testing.M) {
 	if err := goBuild(filepath.Join("..", "omlx-proxy"), omlxProxyBin); err != nil {
 		os.RemoveAll(tmpDir)
 		log.Fatalf("build omlx-proxy: %v", err)
+	}
+
+	log.Println("building llamacpp-proxy...")
+	if err := goBuild(filepath.Join("..", "llamacpp-proxy"), llamacppProxyBin); err != nil {
+		os.RemoveAll(tmpDir)
+		log.Fatalf("build llamacpp-proxy: %v", err)
 	}
 
 	log.Println("building nvpair-errors...")

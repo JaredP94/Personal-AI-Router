@@ -125,9 +125,6 @@ func (b *Broker) reportLMStudioPortOwnershipBlocked(reason string) {
 }
 
 func (b *Broker) setLMStudioProxyFallback(excludedPorts ...int) int {
-	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
-		excludedPorts = append(excludedPorts, aliasPort)
-	}
 	if backend := int(b.lmstudioBackendPort.Load()); backend > 0 {
 		excludedPorts = append(excludedPorts, backend)
 	} else {
@@ -136,7 +133,7 @@ func (b *Broker) setLMStudioProxyFallback(excludedPorts ...int) int {
 		// free proxy port.
 		excludedPorts = append(excludedPorts, managedLMStudioFacadePort, managedLMStudioBackendStart)
 	}
-	fallback := nextAvailablePortExcluding(managedLMStudioBackendStart, excludedPorts, tcpPortAvailable)
+	fallback := b.nextProxyFallbackPort("lmstudio", managedLMStudioBackendStart, excludedPorts, tcpPortAvailable)
 	b.lmstudioProxyStartupPort.Store(int32(fallback))
 	return fallback
 }

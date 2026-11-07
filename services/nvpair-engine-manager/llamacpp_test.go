@@ -37,8 +37,8 @@ func TestLlamaManifestLifecycleOnly(t *testing.T) {
 	if p.Install.Fetch.SHA256 != "870ef967970fa18bbd31460bc5f7929bbb5f091359d8dc0f58e20133aa4b5fcd" || !strings.HasSuffix(p.Install.Fetch.URL, "/b12171/llama-b12171-bin-macos-arm64.tar.gz") {
 		t.Fatal("unverified release")
 	}
-	if len(m.Actions) != 0 {
-		t.Fatal("model integration must remain deferred")
+	if len(m.Actions) != 1 || m.Actions["list_models"].HTTP.Path != "/v1/models" || m.Actions["list_models"].Result.Field != "id" {
+		t.Fatal("only read-only model inventory is supported")
 	}
 	if p.Runtime.Port != 8082 || p.Runtime.Bind != "127.0.0.1" || p.Runtime.Stop.WaitForExit {
 		t.Fatal("unsafe lifecycle defaults")
@@ -135,7 +135,7 @@ func TestLlamaReadinessIdentity(t *testing.T) {
 	}
 }
 
-func TestLlamaNoProxyLaunchSettings(t *testing.T) {
+func TestLlamaProxyLaunchSettings(t *testing.T) {
 	p, _ := llamaManifest(t).PlatformFor("darwin", "arm64")
 	ex := settingsExecutor(t, true)
 	st := settingsState(t, ex)
@@ -144,16 +144,16 @@ func TestLlamaNoProxyLaunchSettings(t *testing.T) {
 	request := settingsRequest(t, ex)
 	request.Engine = "llamacpp"
 	request.Settings.ServerPort = 8082
-	request.Settings.ProxyPort = 0
+	request.Settings.ProxyPort = 1237
 	request.Settings.LaunchText = "--threads 4"
 	preview, err := ex.PreviewLaunch(request)
-	if err != nil || len(preview.Errors) != 0 || preview.Settings.ProxyPort != 0 {
-		t.Fatalf("proxy-free preview: %+v %v", preview, err)
+	if err != nil || len(preview.Errors) != 0 || preview.Settings.ProxyPort != 1237 {
+		t.Fatalf("proxy preview: %+v %v", preview, err)
 	}
-	request.Settings.ProxyPort = 8081
+	request.Settings.ProxyPort = 0
 	preview, err = ex.PreviewLaunch(request)
 	if err == nil && len(preview.Errors) == 0 {
-		t.Fatal("future proxy accepted")
+		t.Fatal("zero proxy port accepted")
 	}
 }
 

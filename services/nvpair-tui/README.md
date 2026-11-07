@@ -46,7 +46,7 @@ Tabs:
 
 | Tab | Purpose |
 | --- | --- |
-| **Overview** | Broker version/uptime (`ping`) and all twelve workers from `workers:get-status` + full `workers:update` snapshots: state, attempts, last error. `R` restarts the selected worker after confirmation. |
+| **Overview** | Broker version/uptime (`ping`) and all thirteen workers from `workers:get-status` + full `workers:update` snapshots: state, attempts, last error. `R` restarts the selected worker after confirmation. |
 | **Errors** | The service-error datastore (`errors:get-initial` + live `errors:update`); `c` clears the selected entry. |
 | **Nodes** | mDNS-discovered Ollama nodes (`discovery:subscribe` / `discovery:nodes-changed`). |
 | **Proxies** | Ollama, LM Studio and oMLX reverse proxies: status, cache-affinity selection rate, discovered upstreams, select a node (`enter`/`a`), set the listen port (`p`). |
@@ -60,7 +60,7 @@ Tabs:
 Worker snapshots are refreshed on broker epoch recovery, independently of the
 Errors tab. The broker owns probe/retry policy; the TUI only renders its registry
 and relays `workers:restart {name}`. States are `running`, `degraded`,
-`restarting`, `exhausted`, and `missing`. Engine-manager and the three proxies
+`restarting`, `exhausted`, and `missing`. Engine-manager and the four proxies
 never auto-restart on a hang; use `R` if manual recovery is needed. Confirmation
 warns that engines may remain running or stop and inference may be interrupted.
 Restart initiation is not completed recovery; follow subsequent worker updates.
@@ -127,9 +127,10 @@ these command-installed engines. llama.cpp is the exception: stop it first;
 `U` sends only `engine:install` so Go can validate and atomically exchange the
 PAIR-owned archive installation, keeping the previous tree on failure and
 preserving the sibling model cache. The engine list reports llama.cpp lifecycle
-state with a note: its macOS arm64 build is not notarized, like PAIR itself, and
-it does not serve requests through PAIR yet. No new proxy or model controls are
-added.
+state with a note: its macOS arm64 build is not notarized, like PAIR itself.
+The Proxies view includes the dedicated llama.cpp worker on default port 1237,
+and Overview includes it in the 13-worker registry. Model hub/download/delete
+controls remain deferred.
 
 All destructive confirmations (including `u`, cluster remove/leave and manual
 remove) use the shared default-cancel prompt: only `y` dispatches; `n`, Esc and

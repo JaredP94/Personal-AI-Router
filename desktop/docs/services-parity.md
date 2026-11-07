@@ -188,7 +188,7 @@ Personal AI Router supports local:
 Before shutdown, Personal AI Router calls `engine:prepare-shutdown`. This stops managed engine
 processes without changing the persisted desired state; the broker restores
 enabled engines on the next launch. The broker also self-initiates
-`engine:prepare-shutdown` after closing all three proxies concurrently. Started
+`engine:prepare-shutdown` after closing all four proxies concurrently. Started
 workers then join concurrently with bounded stdin-close, terminate, and kill
 escalation. All waits share a 10 s teardown deadline. The first 2 s bound ingress
 and the heartbeat join (proxy EOF grace 1 s, terminate/kill waits 500 ms each),

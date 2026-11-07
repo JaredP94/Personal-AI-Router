@@ -43,7 +43,9 @@ Ollama's `OLLAMA_HOST` and LM Studio's `--port`/`-p`, `--bind`/`--host`,
 `LMS_SERVER_PORT` and `LMS_SERVER_HOST`. llama.cpp also protects `--host`,
 `--port`, `LLAMA_ARG_HOST`, `LLAMA_ARG_PORT`, port-changing presets, reuse-port
 controls and the PAIR-owned cache. See the [complete b12171 audit](LLAMACPP.md#binding-audit-b12171).
-llama.cpp has a server-port field only; its proxy port remains zero until a later PR.
+llama.cpp has both server-port and proxy-port fields (defaults 8082 and 1237).
+`--model`/`-m` accepts only an existing regular GGUF resolved inside the managed
+model cache, in both saved settings and previews.
 
 Saved overrides undergo the same checks before execution. Launch settings do
 not change the existing bind policy: default loopback and the explicit live

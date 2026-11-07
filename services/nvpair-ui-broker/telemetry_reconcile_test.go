@@ -87,13 +87,14 @@ func receiveTelemetryConfig(t *testing.T, ch <-chan telemetryDesiredConfig) tele
 
 func TestReconcileAppliesDesiredToEveryProxy(t *testing.T) {
 	b := &Broker{}
-	seen := make(chan telemetryDesiredConfig, 3)
+	seen := make(chan telemetryDesiredConfig, 4)
 	b.setProxy(newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen)))
 	b.setLMStudioProxy(newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen)))
 	b.setOMLXProxy(newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen)))
+	b.setLlamaCPPProxy(newTelemetryProxyPeer(t, acceptTelemetryConfig(t, seen)))
 	b.cacheDesiredTelemetry(telemetryConfigFixture(7))
 	b.reconcileTelemetry()
-	for range 3 {
+	for range 4 {
 		got := receiveTelemetryConfig(t, seen)
 		if got.Revision != 7 || !got.Enabled || got.CollectorPort != 54317 || !got.RecordPayloads {
 			t.Errorf("configure = %+v", got)
@@ -107,7 +108,7 @@ func TestReconcileAppliesDesiredToEveryProxy(t *testing.T) {
 }
 
 func TestProxyRestartGetsLatestConfig(t *testing.T) {
-	for _, name := range []string{"proxy", "lmstudio-proxy", "omlx-proxy"} {
+	for _, name := range []string{"proxy", "lmstudio-proxy", "omlx-proxy", "llamacpp-proxy"} {
 		t.Run(name, func(t *testing.T) {
 			b := &Broker{}
 			install, notify, index := b.setProxy, b.forwardProxyNotification, 0
@@ -116,6 +117,9 @@ func TestProxyRestartGetsLatestConfig(t *testing.T) {
 			}
 			if name == "omlx-proxy" {
 				install, notify, index = b.setOMLXProxy, b.forwardOMLXProxyNotification, 2
+			}
+			if name == "llamacpp-proxy" {
+				install, notify, index = b.setLlamaCPPProxy, b.forwardLlamaCPPProxyNotification, 3
 			}
 			b.cacheDesiredTelemetry(telemetryConfigFixture(2))
 			seen := make(chan telemetryDesiredConfig, 2)
@@ -265,6 +269,7 @@ func TestStatusReportsDesiredAndEffective(t *testing.T) {
 		{"name": "proxy", "appliedRevision": float64(12), "state": "applied", "error": "", "lastExportOk": "2026-10-18T01:02:03Z", "lastExportError": "delivery failed", "lastExportErrorAt": "2026-10-18T01:02:04Z"},
 		{"name": "lmstudio-proxy", "appliedRevision": float64(0), "state": "unavailable", "error": "", "lastExportOk": nil, "lastExportError": nil, "lastExportErrorAt": nil},
 		{"name": "omlx-proxy", "appliedRevision": float64(0), "state": "unavailable", "error": "", "lastExportOk": nil, "lastExportError": nil, "lastExportErrorAt": nil},
+		{"name": "llamacpp-proxy", "appliedRevision": float64(0), "state": "unavailable", "error": "", "lastExportOk": nil, "lastExportError": nil, "lastExportErrorAt": nil},
 	}
 	if !reflect.DeepEqual(workers, expected) {
 		t.Errorf("workers = %+v, want %+v", workers, expected)
@@ -364,7 +369,7 @@ func TestSettingsNotificationWithoutWorkerCannotEnableTracing(t *testing.T) {
 }
 
 func TestSettingsLossKeepsLastLoadedConfigForRunningAndRestartedProxies(t *testing.T) {
-	for _, name := range []string{"proxy", "lmstudio-proxy", "omlx-proxy"} {
+	for _, name := range []string{"proxy", "lmstudio-proxy", "omlx-proxy", "llamacpp-proxy"} {
 		t.Run(name, func(t *testing.T) {
 			b := &Broker{}
 			install, notify, index := b.setProxy, b.forwardProxyNotification, 0
@@ -373,6 +378,9 @@ func TestSettingsLossKeepsLastLoadedConfigForRunningAndRestartedProxies(t *testi
 			}
 			if name == "omlx-proxy" {
 				install, notify, index = b.setOMLXProxy, b.forwardOMLXProxyNotification, 2
+			}
+			if name == "llamacpp-proxy" {
+				install, notify, index = b.setLlamaCPPProxy, b.forwardLlamaCPPProxyNotification, 3
 			}
 			worker, codec := newTestRPCWorkerPipe(t)
 			b.setSettings(worker)

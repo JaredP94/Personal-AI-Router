@@ -115,7 +115,7 @@ function expand(): void {
 }
 
 describe('BackendRow reported capability gates', () => {
-    it('discloses llama.cpp trust and deferred routing before installation', () => {
+    it('discloses llama.cpp trust before installation', () => {
         act(() =>
             root.render(
                 createElement(BackendRow, {
@@ -131,7 +131,6 @@ describe('BackendRow reported capability gates', () => {
             )
         )
         expect(container.textContent).toContain('Not notarized, like PAIR itself.')
-        expect(container.textContent).toContain('Does not serve requests through PAIR yet.')
         expect(container.querySelector('img[alt="llama.cpp"]')).not.toBeNull()
     })
 
