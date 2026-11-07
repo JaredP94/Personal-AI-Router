@@ -93,8 +93,15 @@ type llamaModelFile struct {
 	alias string
 }
 
+// llamaMaxAlias matches the proxy's telemetry model-name limit, so two
+// distinct aliases can never collapse into the same recorded name.
+const llamaMaxAlias = 256
+
 func llamaFileAlias(rel string) (string, error) {
 	alias := strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
+	if len(alias) > llamaMaxAlias {
+		return "", fmt.Errorf("llama.cpp model path is too long to name the model; use a cache-relative path of at most %d characters without .gguf", llamaMaxAlias)
+	}
 	if !llamaAlias.MatchString(alias) {
 		return "", fmt.Errorf("llama.cpp model alias must use only ASCII letters, digits, underscore, dot, colon, slash or hyphen, starting with a letter or digit")
 	}

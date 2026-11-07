@@ -146,3 +146,18 @@ func TestLlamaAliasProtectedLaunchInputs(t *testing.T) {
 		}
 	}
 }
+
+func TestLlamaModelAliasLengthBound(t *testing.T) {
+	ok := strings.Repeat("a", llamaMaxAlias) + ".gguf"
+	if alias, err := llamaFileAlias(ok); err != nil || len(alias) != llamaMaxAlias {
+		t.Fatalf("alias at the limit rejected: %q %v", alias, err)
+	}
+	long := strings.Repeat("a", llamaMaxAlias+1) + ".gguf"
+	if _, err := llamaFileAlias(long); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("alias over the limit accepted: %v", err)
+	}
+	nested := strings.Repeat("d/", 100) + strings.Repeat("m", 100) + ".gguf"
+	if _, err := llamaFileAlias(nested); err == nil {
+		t.Fatal("nested path producing an over-long alias accepted")
+	}
+}
