@@ -124,6 +124,20 @@ func (e *Executor) reserveLlamaCache(deleting bool) (*engineState, func(), error
 	return st, func() { st.mu.Lock(); st.llamaCacheBusy = false; st.mu.Unlock() }, nil
 }
 func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.RawMessage, retErr error) {
+	// Classify the primary outcome before cleanup. Once a failure has won the
+	// operation fence, a later cancel cannot turn it into cancellation. Cleanup
+	// failures remain errors, even when the primary outcome was cancellation.
+	classified := false
+	classify := func() {
+		if classified {
+			return
+		}
+		classified = true
+		if retErr != nil && e.finishPull(ctx) {
+			result, retErr = nil, context.Canceled
+		}
+	}
+	defer classify()
 	if _, err := llamaRepoID(id); err != nil {
 		return nil, err
 	}
@@ -175,13 +189,29 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		_ = f.Close()
 		return nil, fmt.Errorf("cannot identify temporary model")
 	}
+	published, manifestWritten, completed := false, false, false
+	originalCount := len(manifest.Models)
 	defer func() {
+		if !completed && published {
+			if manifestWritten {
+				manifest.Models = manifest.Models[:originalCount]
+				if err := writeLlamaManifest(dir, manifest); err != nil {
+					result, retErr = nil, fmt.Errorf("model ownership rollback failed: %w", err)
+				}
+			}
+			if err := llamaCacheRemoveOwned(dir, final, identity, row.Size); err != nil && !os.IsNotExist(err) {
+				result, retErr = nil, fmt.Errorf("%v; model cleanup: %w", retErr, err)
+			}
+		}
 		if err := llamaCacheRemoveOwned(dir, temp, identity, -1); err != nil && !os.IsNotExist(err) {
 			result = nil
 			retErr = fmt.Errorf("model transfer stopped but its temporary file could not be removed: %w", err)
 		}
 		_ = f.Close()
 	}()
+	// Run before identity-checked cleanup; the early-phase defer is a no-op
+	// afterwards, so cleanup errors cannot be mistaken for user cancellation.
+	defer classify()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("invalid model download request")
@@ -263,6 +293,7 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if err := e.llamaCommit(dir, temp, final); err != nil {
 		return nil, err
 	}
+	published = true
 	// Rename is pathname-based, even with RENAME_EXCL/NOREPLACE. Check the
 	// published entry against the verified fd; never claim or remove a mismatch.
 	if err := llamaCacheMatch(dir, final, identity, row.Size); err != nil {
@@ -274,12 +305,19 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
 	manifest.Models = append(manifest.Models, llamaCacheRecord{llamaOwnedModel: record, Identity: identity})
 	if err := writeLlamaManifest(dir, manifest); err != nil {
-		// This operation created the final file; do not leave an unowned success.
-		if cleanupErr := llamaCacheRemoveOwned(dir, final, identity, row.Size); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
-			return nil, fmt.Errorf("manifest commit failed: %v; model cleanup: %w", err, cleanupErr)
-		}
 		return nil, err
 	}
+	manifestWritten = true
+	// Completion is fenced against cancel acceptance only after the renamed
+	// file's identity matches and the manifest is written. An earlier accepted
+	// cancel rolls both back; a later request cannot undo a completed download.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if e.finishPull(ctx) {
+		return nil, context.Canceled
+	}
+	completed = true
 	return json.Marshal(record)
 }
 func (e *Executor) listLlamaModels(ctx context.Context) (json.RawMessage, error) {

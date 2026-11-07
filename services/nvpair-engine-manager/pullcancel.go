@@ -49,6 +49,19 @@ func (e *Executor) CancelModelPull(engine, model, opID string) bool {
 	return true
 }
 
+// finishPull fences the adapter's terminal decision against operation-ID cancel
+// acceptance. It never holds pullMu across filesystem or network I/O.
+func (e *Executor) finishPull(ctx context.Context) bool {
+	p, ok := ctx.Value(activePullKey{}).(*activePull)
+	if !ok {
+		return false
+	}
+	e.pullMu.Lock()
+	defer e.pullMu.Unlock()
+	p.canCancel = false
+	return p.requested.Load()
+}
+
 func (e *Executor) trackedPull(ctx context.Context, engine, model, opID string, canCancel bool, run func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
 	if model == "" {
 		return nil, fmt.Errorf("model is required")
