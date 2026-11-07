@@ -65,6 +65,16 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 	if err != nil {
 		return nil, err
 	}
+	if engine == "llamacpp" {
+		if _, err := llamaRepoID(model); err != nil {
+			return nil, err
+		}
+		id := ""
+		if len(operationID) > 0 {
+			id = operationID[0]
+		}
+		return e.trackedPull(ctx, engine, model, id, true, func(ctx context.Context) (json.RawMessage, error) { return e.pullLlamaModel(ctx, model) })
+	}
 	act, ok := st.manifest.Actions[pullModelAction]
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, pullModelAction)

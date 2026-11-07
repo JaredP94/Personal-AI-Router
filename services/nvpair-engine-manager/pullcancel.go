@@ -14,8 +14,9 @@ import (
 )
 
 // Cancel only asks the adapter to stop. Confirmation is emitted by trackedPull
-// after the adapter has released its transfer; no cache files are inspected or
-// removed. A cancellation always addresses one operation, never its replacement.
+// after the adapter has released its transfer. Shared engine caches are never
+// inspected or removed; llama.cpp removes only its operation-owned temp file.
+// A cancellation always addresses one operation, never its replacement.
 type activePull struct {
 	engine, model, id string
 	cancel            context.CancelFunc
@@ -46,6 +47,19 @@ func (e *Executor) CancelModelPull(engine, model, opID string) bool {
 	e.pullMu.Unlock()
 	p.cancel() // context cancellation and every callback happen outside pullMu.
 	return true
+}
+
+// finishPull fences the adapter's terminal decision against operation-ID cancel
+// acceptance. It never holds pullMu across filesystem or network I/O.
+func (e *Executor) finishPull(ctx context.Context) bool {
+	p, ok := ctx.Value(activePullKey{}).(*activePull)
+	if !ok {
+		return false
+	}
+	e.pullMu.Lock()
+	defer e.pullMu.Unlock()
+	p.canCancel = false
+	return p.requested.Load()
 }
 
 func (e *Executor) trackedPull(ctx context.Context, engine, model, opID string, canCancel bool, run func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
@@ -85,6 +99,9 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model, opID string, 
 	} else if p.requested.Load() && errors.Is(err, context.Canceled) {
 		stage = "cancelled"
 		message = "Partial data is kept so the download can resume."
+		if engine == "llamacpp" {
+			message = "Download stopped; this operation's temporary file was removed."
+		}
 		result, err = json.RawMessage(`{"status":"cancelled"}`), nil
 	} else if err != nil {
 		stage = "error"

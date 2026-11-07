@@ -14,7 +14,18 @@ is a JSON manifest, not code.
 [llama.cpp](LLAMACPP.md) is supported on macOS arm64, pinned to b12171. Its
 macOS build is not notarized, like PAIR itself. The dedicated `llamacpp-proxy`
 serves it on port 1237. Select a cached GGUF with the allowlisted `--model`/`-m`;
-`list_models` reads its OpenAI inventory. Hub/download/delete remain deferred.
+`list_models` reads its OpenAI inventory. `engine:model-catalog` accepts
+`{query?: string}` and returns `{models: [{id, file, size?, sha256?}]}` from
+public, ungated, text-generation GGUF repositories. IDs are `owner/repo:Q4_K_M`;
+only one unsplit Q4_K_M file is admitted. Empty query reads ggml-org, bartowski
+and unsloth (50 repositories each). Public search is capped at 50 repositories,
+100 query characters, 20 cached queries and a six-hour TTL. Requests have a
+20-second aggregate timeout (broker: 25 seconds); metadata bodies are bounded
+to 4 MiB. Existing `engine:action` supports llama.cpp `pull_model`,
+`list_downloaded` and `delete_model`, including existing operation-ID progress,
+asynchronous cancel and verified-peer remote management. See [the owned-cache
+contract](LLAMACPP.md#go-model-hub-and-owned-cache) for checks, inventory and
+cleanup. Desktop/TUI catalog screens are deferred to PR 4.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)
@@ -762,8 +773,10 @@ its own.
 Pulls are attributed by both model and operation ID, locally and remotely.
 The pull accepts an optional caller-generated `opId`; cancel requires that exact
 ID plus engine and model. A stale ID cannot cancel a replacement. Concurrent
-different models are independent; a duplicate model in flight is refused.
-No PAIR download queue or cache-file cleanup is introduced.
+different models are independent for engine-managed caches; a duplicate model
+in flight is refused. llama.cpp cache mutations are conservatively serialized
+by rejecting concurrent mutations, not by queuing them. No PAIR download queue
+is introduced.
 
 Cancel returns once accepted, **not** once stopped. Clients keep **Canceling**
 until the original pull reports `cancelled`, `done`, `interrupted`, or `error`. A successful
@@ -794,8 +807,12 @@ progress subscription dropped its last frame.
   cancellation while retaining completed files for retry. No admin-task/session
   integration is added here.
 
-**PAIR never inspects or deletes cache files when cancelling.** Partial data is
-left for the engine to manage; the desktop briefly says “Partial data is kept so
+- **llama.cpp:** PAIR streams and verifies the download itself, and removes only
+  its exclusive operation-owned temp file before reporting cancellation. A
+  cleanup failure reports an error. See the [owned-cache contract](LLAMACPP.md#go-model-hub-and-owned-cache).
+
+**PAIR never inspects or deletes shared engine cache files when cancelling.**
+Ollama/LM Studio partial data is left for the engine to manage; the desktop briefly says “Partial data is kept so
 the download can resume.” This intentionally diverges from
 NVIDIA/Personal-AI-Router#111's snapshot/stillness cleanup: a shared engine cache
 does not establish file ownership, even when a partial appears during our pull.
@@ -841,8 +858,9 @@ and launcher exit; survivors produce an error (also logged on shutdown).
 Signal/kill helpers each get at most 500 ms, and group/job verification shares
 the final 2 s reap deadline: at most 3.5 s per CLI shutdown sequence.
 Inherited-stdio waiting is capped at 1 s. The aggregate download join is 4 s,
-regardless of transfer count. Joins abandon only after the fixed deadline; no
-cache data is inspected or removed.
+regardless of transfer count. Joins abandon only after the fixed deadline;
+shared engine cache data is never inspected or removed. llama.cpp removes only
+its own transfer temp file.
 
 The outward budgets are download stop sequence **3.5 s < aggregate join 4 s <
 broker prepare-shutdown 5 s < engine-manager worker EOF grace 6 s** (see

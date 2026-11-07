@@ -62,6 +62,9 @@ export interface JsonRpcInboundRequest {
     id: JsonRpcId
 }
 
+// Go-owned llama.cpp model hub contract; screens are added separately.
+type LlamaCatalogParams = { query?: string }
+
 interface PendingCall {
     resolve: (value: JsonValue | undefined) => void
     reject: (error: Error) => void
@@ -174,6 +177,16 @@ export class JsonRpcSubprocess extends EventEmitter<JsonRpcSubprocessEvents> {
         })
     }
 
+    call(
+        method: 'engine:model-catalog',
+        params?: LlamaCatalogParams,
+        timeoutMs?: number | null
+    ): Promise<JsonValue | undefined>
+    call(
+        method: string,
+        params?: JsonValue,
+        timeoutMs?: number | null
+    ): Promise<JsonValue | undefined>
     async call(
         method: string,
         params?: JsonValue,

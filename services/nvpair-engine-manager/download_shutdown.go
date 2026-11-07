@@ -11,7 +11,8 @@ import (
 // Downloads stop concurrently with engines. The CLI shutdown sequence has at
 // most 500ms signal helper + 500ms grace + 500ms kill helper + 2s reap (3.5s).
 // Its 4s aggregate join is below the broker's 6s engine-manager EOF grace;
-// StopAll runs alongside it, not afterward. No cache files are touched.
+// StopAll runs alongside it, not afterward. Shared engine caches are untouched;
+// the Go llama.cpp adapter removes only its own transfer temp file.
 const downloadShutdownBudget = 4 * time.Second
 const downloadShutdownSignalBudget = 500 * time.Millisecond
 const downloadShutdownGrace = 500 * time.Millisecond

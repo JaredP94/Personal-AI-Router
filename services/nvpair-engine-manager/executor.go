@@ -42,10 +42,11 @@ type EngineStatus struct {
 
 // engineState is the per-engine runtime state.
 type engineState struct {
-	manifest   *Manifest
-	plat       *Platform
-	logs       *logBuffer
-	installDir string
+	manifest       *Manifest
+	plat           *Platform
+	logs           *logBuffer
+	installDir     string
+	llamaCacheBusy bool // reservation only; no mutex held across I/O
 	// modelsDir is the resolved {models_dir}: the engine's model store, which no
 	// removal this service performs may delete. Empty when the manifest declares
 	// none, in which case uninstall has nothing to preserve.
@@ -120,6 +121,9 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	llamaHub       *llamaHub
+	llamaFreeSpace func(*os.File) (uint64, error)
+	llamaCommit    func(*os.File, string, string) error
 	loadProfilesMu sync.Mutex // disk state only; never held across engine calls or notifications
 	settingsHub    settings.Hub
 	settingsParent func(context.Context, string, settings.Request, string) (json.RawMessage, error)
@@ -182,6 +186,9 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
+		llamaHub:            newLlamaHub(),
+		llamaFreeSpace:      llamaCacheFree,
+		llamaCommit:         llamaCacheCommit,
 		reg:                 reg,
 		tools:               defaultToolEnv(),
 		reporter:            reporter,

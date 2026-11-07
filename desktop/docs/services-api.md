@@ -182,6 +182,7 @@
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:install-tool` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
+| `engine:model-catalog` | request (we call) | ✅ yes |
 | `engine:models` | request (we call) | ✅ yes |
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
@@ -395,6 +396,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `engine:get-load-profile` | request (we call) | ✅ yes |
 | `engine:get-settings` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
+| `engine:model-catalog` | request (we call) | ✅ yes |
 | `engine:preview-load-profile` | request (we call) | ✅ yes |
 | `engine:preview-settings` | request (we call) | ✅ yes |
 | `engine:remote-cancel-pull` | request (we call) | ✅ yes |
