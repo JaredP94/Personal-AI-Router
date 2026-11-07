@@ -13,8 +13,12 @@ model hub, download/delete adapter or load profile in this change.
 The macOS build is **not notarized**, like this fork's PAIR application. The
 release is checksum-pinned, not publisher-trusted by that checksum. Its existing
 ad-hoc signature is preserved and checked for integrity with the system
-`codesign --verify --strict`; missing codesign or a broken signature fails
-installation. Quarantined files fail installation naming the file; PAIR never
+`codesign --verify --strict --all-architectures` on **every Mach-O file**,
+identified by thin/fat magic bytes rather than extension or execute bits. This
+includes adjacent dylibs, extensionless code and every universal-binary slice.
+Missing codesign or a broken signature fails installation. Quarantine/signature
+checks run again for the same-pin already-installed return and before every
+spawn, with required layout and link containment revalidated. Quarantined files fail installation naming the file; PAIR never
 clears quarantine, re-signs code or bypasses the operating system's checks.
 
 Artifact: `llama-b12171-bin-macos-arm64.tar.gz` from ggml-org/llama.cpp, SHA-256

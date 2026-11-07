@@ -247,6 +247,11 @@ func (e *Executor) bringUp(ctx context.Context, st *engineState, engine string, 
 // bringUpProcess spawns the engine as a foreground process this service
 // owns, then waits for readiness.
 func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	if inst := st.plat.Install; inst != nil && inst.Archive != nil {
+		if err := verifyArchivePlatform(ctx, st.installDir, inst.Archive); err != nil {
+			return err
+		}
+	}
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()

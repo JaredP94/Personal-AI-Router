@@ -4,8 +4,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/macho"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -48,6 +50,87 @@ func TestArchiveSignatureIntegrity(t *testing.T) {
 	}
 	if err := verifyArchivePlatform(context.Background(), root, spec); err == nil {
 		t.Fatal("broken signature accepted")
+	}
+}
+
+func TestArchiveDamagedLibrary(t *testing.T) {
+	for _, name := range []string{"libllama-server-impl.dylib", "no-extension"} {
+		t.Run(name, func(t *testing.T) {
+			root, spec := signedArchiveFixture(t)
+			body, err := os.ReadFile("/usr/lib/dyld") // always on disk, signed and universal
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, name)
+			if err := os.WriteFile(path, body, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyArchivePlatform(context.Background(), root, spec); err != nil {
+				t.Fatal(err)
+			}
+			offset := 1024
+			if fat, err := macho.NewFatFile(bytes.NewReader(body)); err == nil {
+				offset += int(fat.Arches[0].Offset)
+			}
+			body[offset] ^= 0xff
+			if err := os.WriteFile(path, body, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifyArchivePlatform(context.Background(), root, spec); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("damaged Mach-O accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestArchiveSamePinRevalidation(t *testing.T) {
+	for _, damage := range []string{"signature", "quarantine"} {
+		t.Run(damage, func(t *testing.T) {
+			ex, st := archiveExecutor(t)
+			root, spec := signedArchiveFixture(t)
+			body, err := os.ReadFile(filepath.Join(root, "llama-server"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := archiveFixture(t, archiveEntry{name: "bundle/llama-server", body: string(body)}, archiveEntry{name: "bundle/library", body: string(body)})
+			if err := installArchive(context.Background(), source, st.installDir, "archive-fixture", st.plat.Install.Fetch.SHA256, spec, verifyArchivePlatform); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(st.installDir, "library")
+			if damage == "signature" {
+				body[len(body)/2] ^= 0xff
+				if err := os.WriteFile(path, body, 0644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := unix.Setxattr(path, "com.apple.quarantine", []byte("0081;fixture;PAIR;"), 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := ex.Install(context.Background(), "archive-fixture"); err == nil || !strings.Contains(err.Error(), "library") {
+				t.Fatalf("same-pin skipped revalidation: %v", err)
+			}
+		})
+	}
+}
+
+func TestArchivePreStartRevalidation(t *testing.T) {
+	ex, st := archiveExecutor(t)
+	root, _ := signedArchiveFixture(t)
+	st.installDir = root
+	body, err := os.ReadFile(filepath.Join(root, "llama-server"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body[len(body)/2] ^= 0xff
+	if err := os.WriteFile(filepath.Join(root, "library"), body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt := st.plat.Runtime
+	rt.Bin = "/fixture/never-execute"
+	err = ex.bringUpProcess(context.Background(), st, "archive-fixture", rt, 8082, map[string]string{"host": "127.0.0.1", "port": "8082", "install_dir": root})
+	if err == nil || !strings.Contains(err.Error(), "library") {
+		t.Fatalf("start skipped signature checks: %v", err)
 	}
 }
 

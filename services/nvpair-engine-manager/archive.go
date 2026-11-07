@@ -324,6 +324,9 @@ func (e *Executor) installManagedArchive(ctx context.Context, engine string, st 
 		data, readErr := os.ReadFile(installMarkerPath(st.installDir))
 		var marker installMarker
 		if readErr == nil && json.Unmarshal(data, &marker) == nil && marker.Engine == engine && strings.EqualFold(marker.ArtifactSHA256, inst.Fetch.SHA256) {
+			if err := verifyArchivePlatform(ctx, st.installDir, inst.Archive); err != nil {
+				return err
+			}
 			e.reporter.clear(installFailedID(engine))
 			e.emitInstallProgress(engine, "already-installed", 100)
 			return nil
