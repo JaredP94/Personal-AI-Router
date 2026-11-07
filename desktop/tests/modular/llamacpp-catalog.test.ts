@@ -52,6 +52,25 @@ it('browses llama.cpp by publisher and shows bounded service search errors calml
         expect(container.textContent).toContain('ggml-org')
         expect(container.textContent).toContain('unsloth')
         expect(container.textContent).toContain('unsloth/Demo:Q4_K_M')
+        await act(async () =>
+            root.render(
+                createElement(ModelHubContent, {
+                    engine: null,
+                    multiple: false,
+                    onSubmit: () => {}
+                })
+            )
+        )
+        await act(async () =>
+            root.render(
+                createElement(ModelHubContent, {
+                    engine: 'llamacpp',
+                    multiple: false,
+                    onSubmit: () => {}
+                })
+            )
+        )
+        expect(searchHub.mock.calls.filter(call => !call[1])).toHaveLength(2)
         const input = container.querySelector<HTMLInputElement>('input')
         await act(async () => {
             Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(

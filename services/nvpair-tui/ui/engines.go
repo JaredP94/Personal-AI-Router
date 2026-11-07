@@ -219,6 +219,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		if msg.node != v.target || msg.generation != v.models.generation || v.selectedEngine() != "llamacpp" {
 			return nil
 		}
+		v.models.loading = false
 		v.models.err, v.models.catalog, v.models.llama = msg.err, msg.catalog, msg.models
 		v.refreshModels()
 		return nil
@@ -315,6 +316,9 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		switch msg.Msg.Method {
 		case "engine:models-changed":
 			if v.models.open && v.selectedEngine() == "llamacpp" {
+				if v.models.catalog {
+					return nil
+				}
 				return v.loadModelsCmd()
 			}
 			var p struct {
@@ -417,6 +421,9 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			v.models.open, v.models.catalog = true, !v.models.catalog
 			v.models.err, v.models.query = nil, ""
+			v.models.generation++
+			v.models.loading = false
+			v.models.llama = nil
 			if !v.models.catalog && v.target != "" {
 				v.refreshModels()
 				return nil

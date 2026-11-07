@@ -71,7 +71,8 @@ export const ModelHubContent = ({
 
     const loadModels = useCallback(async (backend: EngineType) => {
         const gen = ++fetchGenRef.current
-        const cached = cacheRef.current.get(backend)
+        // Go owns llama.cpp's bounded cache and TTL; do not shadow it for a whole UI session.
+        const cached = backend === 'llamacpp' ? undefined : cacheRef.current.get(backend)
         if (cached) {
             setAllModels(cached)
             setLoading(false)
@@ -81,7 +82,7 @@ export const ModelHubContent = ({
         try {
             const result = await searchEngineHub(backend)
             if (fetchGenRef.current !== gen) return
-            cacheRef.current.set(backend, result)
+            if (backend !== 'llamacpp') cacheRef.current.set(backend, result)
             setAllModels(result)
             setLoading(false)
         } catch (error) {

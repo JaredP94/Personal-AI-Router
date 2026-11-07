@@ -22,6 +22,7 @@ type modelSnapshot struct {
 }
 
 type modelsPane struct {
+	loading             bool
 	catalog             bool
 	searching           bool
 	query               string
@@ -174,6 +175,9 @@ func (v *enginesView) modelsView() string {
 	if v.selectedEngine() == "llamacpp" && v.byName["llamacpp"].Capabilities.ListModels {
 		if v.models.catalog {
 			out = "Catalog — llama.cpp (single-file Q4_K_M; search: 100 characters / 50 results)\n"
+		}
+		if v.models.loading {
+			return out + footerStyle.Render("Loading models…")
 		}
 		if v.models.err != nil {
 			return out + statusErrStyle.Render(v.models.err.Error())

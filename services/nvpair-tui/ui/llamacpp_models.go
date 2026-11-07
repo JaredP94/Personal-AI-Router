@@ -59,6 +59,10 @@ type llamaPreviewMsg struct {
 
 func (v *enginesView) loadLlamaModelsCmd() tea.Cmd {
 	v.models.generation++
+	v.models.loading = true
+	v.models.llama = nil
+	v.models.err = nil
+	v.refreshModels()
 	node, generation, catalog := v.target, v.models.generation, v.models.catalog
 	method := "engine:action"
 	params := map[string]any{"engine": "llamacpp", "action": "list_downloaded"}

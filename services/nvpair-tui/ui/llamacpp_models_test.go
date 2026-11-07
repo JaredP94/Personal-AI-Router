@@ -143,6 +143,34 @@ func TestLlamaCatalogSearchErrorsAndStaleResults(t *testing.T) {
 	}
 }
 
+func TestLlamaCatalogSwitchClearsStaleActionRows(t *testing.T) {
+	v, c := engineWire(t)
+	modelEngine(v, "llamacpp")
+	v.Update(engineRequest(t, v.Update(engineKey("b")), c, "engine:model-catalog", `{"query":""}`, `{"models":[{"id":"ggml-org/Demo:Q4_K_M","file":"catalog.gguf","sha256":"metadata"}]}`))
+	v.Update(engineKey("b")) // cache request has not completed
+	if v.selectedModel() != "" {
+		t.Fatal("catalog result remained selectable as installed inventory")
+	}
+	if cmd := v.Update(engineKey("a")); cmd != nil {
+		t.Fatal("stale catalog row became a startup choice")
+	}
+	v.Update(engineKey("d"))
+	if v.confirm.open() {
+		t.Fatal("stale catalog row became deletable")
+	}
+}
+
+func TestLlamaCatalogIgnoresServedInventoryPush(t *testing.T) {
+	v, c := engineWire(t)
+	modelEngine(v, "llamacpp")
+	v.Update(engineRequest(t, v.Update(engineKey("b")), c, "engine:model-catalog", `{"query":""}`, `{"models":[{"id":"ggml-org/Demo:Q4_K_M","file":"catalog.gguf"}]}`))
+	generation := v.models.generation
+	modelPush(v, `{"modelsByEngine":{"llamacpp":["served"]}}`)
+	if v.models.generation != generation {
+		t.Fatal("served inventory push invalidated the independent catalog")
+	}
+}
+
 func TestLlamaRouterSelectionStartsWithSettingsRead(t *testing.T) {
 	v, c := engineWire(t)
 	modelEngine(v, "llamacpp")
