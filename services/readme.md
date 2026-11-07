@@ -152,8 +152,8 @@ shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all fourteen service executables (Windows)
-build.sh                  Builds all fourteen service executables (Linux/macOS)
+build.bat                 Builds all fifteen service executables (Windows)
+build.sh                  Builds all fifteen service executables (Linux/macOS)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -183,7 +183,7 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all fourteen service executables with
+Both scripts read `versions.json`, build all fifteen service executables with
 `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
@@ -287,7 +287,7 @@ cd shared
 go test ./...
 ```
 
-**Every one of the fourteen service executables has tests**, as do `shared/` and
+**Every one of the fifteen service executables has tests**, as do `shared/` and
 `eap-noob/`. Depth varies with how much behaviour a component carries:
 `nvpair-engine-manager` and `nvpair-cluster-manager` have the largest suites,
 while a component with one test file may still hold twenty test functions in it.

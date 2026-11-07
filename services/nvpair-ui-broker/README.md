@@ -12,7 +12,7 @@ the broker from the same installation directory. The broker is the parent
 process and canonical backend entry point: it supervises the worker subprocesses
 on the UI's behalf, speaking JSON-RPC over stdio.
 
-The broker supervises **twelve** worker subprocesses, so a client gets the whole
+The broker supervises **thirteen** worker subprocesses, so a client gets the whole
 backend behind one endpoint. Each is spawned at startup and relayed under its own
 namespace:
 
