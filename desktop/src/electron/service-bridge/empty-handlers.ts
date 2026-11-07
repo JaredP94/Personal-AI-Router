@@ -753,6 +753,20 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     const selfId = getModularBridgeState().getSelfId()
     if (selfId && payload.nodeId && payload.nodeId !== selfId) {
         if (supervisor.hasProcess('broker')) {
+            if (
+                payload.engineType === 'llamacpp' &&
+                payload.command === 'deleteModel' &&
+                payload.model
+            ) {
+                await supervisor.modelActionRemote(
+                    payload.nodeId,
+                    'llamacpp',
+                    'llamacpp',
+                    payload.model,
+                    'deleteModel'
+                )
+                return null
+            }
             routeRemoteEngineCommand(payload)
             return null
         }
@@ -1396,8 +1410,9 @@ const EMPTY_SERVICE_BRIDGE_HANDLERS: BridgeHandlerMap = {
         ),
     'engine:command': payload => handleEngineCommand(payload),
     'engine:downloaded-models': async payload => {
-        if (!payload || payload.nodeId !== getModularBridgeState().getSelfId())
-            throw new Error('Installed cache listing is not available on paired devices yet.')
+        if (!payload) throw new Error('A device is required.')
+        if (payload.nodeId !== getModularBridgeState().getSelfId())
+            return getModularBridgeState().getPeerDownloadedModels(payload.nodeId)
         const result = await getModularSupervisor().callProcess(
             'broker',
             'engine:action',

@@ -276,12 +276,6 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         <Stack gap="4">
             {backendType === 'llamacpp' && (
                 <>
-                    {!local && (
-                        <Text kind="body/regular/sm">
-                            Paired-device installed cache listing is not available yet. Only served
-                            models are shown.
-                        </Text>
-                    )}
                     {installed.error && (
                         <Text kind="body/regular/sm" role="alert">
                             {installed.error}
@@ -386,7 +380,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                     isRunning={isRunning}
                                     capabilities={caps}
                                     reported={
-                                        backendType === 'llamacpp' && (!local || !model.digest)
+                                        backendType === 'llamacpp' && !model.digest
                                             ? { ...reported, deleteModel: false }
                                             : reported
                                     }

@@ -72,7 +72,8 @@ function render(
     nodeId = 'local',
     engineType: EngineType = 'lm-studio',
     downloaded = true,
-    processStatus: EngineProcessStatus = 'running'
+    processStatus: EngineProcessStatus = 'running',
+    digest = ''
 ): void {
     const backend: BackendInfo = {
         type: engineType,
@@ -81,7 +82,7 @@ function render(
         processStatus,
         port: 1234,
         proxyPort: 54301,
-        models: [{ ...MODEL, downloaded }]
+        models: [{ ...MODEL, downloaded, digest }]
     }
     act(() => root.render(createElement(ModelManager, { backend, nodeId })))
 }
@@ -164,6 +165,48 @@ describe('ModelManager reported capability gates', () => {
         await act(async () => finish())
         expect(container.textContent).not.toContain(MODEL.name)
         expect(container.textContent).toContain('No model/weight files downloaded')
+    })
+
+    it('offers owned peer llama.cpp deletion and explains the running gate', async () => {
+        useNodesStore.setState({
+            nodes: new Map([
+                [
+                    'peer',
+                    {
+                        id: 'peer',
+                        hostUuid: 'peer',
+                        peerRecordId: 'proof',
+                        identityVerification: 'verified',
+                        name: 'Peer',
+                        ipAddress: '192.0.2.10',
+                        port: 14318,
+                        allIpAddresses: [],
+                        status: 'active',
+                        os: 'Linux',
+                        topology: {
+                            gpus: [],
+                            cpu: { model: '', cores: 0, threads: 0 },
+                            ram: 0,
+                            storage: []
+                        }
+                    }
+                ]
+            ])
+        })
+        deleteModel.mockResolvedValue(undefined)
+        report('peer', 'llamacpp', { ...supported, deleteRestartsEngine: false })
+        await act(async () => render('peer', 'llamacpp', true, 'stopped', 'verified'))
+        expect(container.textContent).toContain(MODEL.name)
+        expect(container.textContent).not.toContain('Only served')
+        await act(async () => click('Delete'))
+        expect(deleteModel).toHaveBeenCalledWith('llamacpp', 'peer', MODEL.name)
+        render('peer', 'llamacpp', true, 'running', 'verified')
+        const gate = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+            button => button.textContent === 'Delete (stop engine first)'
+        )
+        expect(gate?.disabled).toBe(true)
+        render('peer', 'llamacpp', true, 'stopped')
+        expect(labels()).not.toContain('Delete')
     })
 
     it('includes Load options in downloaded local LM Studio model rows only', () => {
