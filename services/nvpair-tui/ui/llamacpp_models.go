@@ -32,6 +32,7 @@ type llamaModel struct {
 	File   string `json:"file"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
+	Owned  bool   `json:"owned"`
 }
 
 type llamaModelsMsg struct {

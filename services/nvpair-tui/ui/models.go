@@ -17,8 +17,9 @@ import (
 // modelSnapshot preserves map-key presence: a missing engine is unavailable,
 // whereas a present empty list is a known empty inventory.
 type modelSnapshot struct {
-	ModelsByEngine map[string][]string `json:"modelsByEngine"`
-	LoadedByEngine map[string][]string `json:"loadedByEngine"`
+	ModelsByEngine     map[string][]string     `json:"modelsByEngine"`
+	LoadedByEngine     map[string][]string     `json:"loadedByEngine"`
+	DownloadedByEngine map[string][]llamaModel `json:"downloadedByEngine"`
 }
 
 type modelsPane struct {
@@ -97,7 +98,11 @@ func (v *enginesView) loadModelsCmd() tea.Cmd {
 func peerInventory(node string, nodes []availableNode) modelSnapshot {
 	for _, n := range nodes {
 		if n.HostUUID == node {
-			return modelSnapshot{ModelsByEngine: n.ModelsByEngine, LoadedByEngine: n.LoadedByEngine}
+			inventory := modelSnapshot{ModelsByEngine: n.ModelsByEngine, LoadedByEngine: n.LoadedByEngine}
+			if n.IdentityVerification == "verified" && n.Trusted && n.PeerRecordID != "" {
+				inventory.DownloadedByEngine = n.DownloadedByEngine
+			}
+			return inventory
 		}
 	}
 	return modelSnapshot{}
@@ -116,7 +121,15 @@ func (v *enginesView) peerModelsChanged() {
 }
 
 func (v *enginesView) refreshModels() {
-	if v.selectedEngine() == "llamacpp" && (v.target == "" || v.models.catalog) {
+	if v.selectedEngine() == "llamacpp" {
+		if v.target != "" && !v.models.catalog {
+			v.models.llama = append([]llamaModel(nil), v.models.inventory.DownloadedByEngine["llamacpp"]...)
+			for i := range v.models.llama {
+				if !v.models.llama[i].Owned {
+					v.models.llama[i].SHA256 = ""
+				}
+			}
+		}
 		v.refreshLlamaRows()
 		return
 	}
@@ -187,13 +200,10 @@ func (v *enginesView) modelsView() string {
 		if v.models.err != nil {
 			return out + statusErrStyle.Render(v.models.err.Error())
 		}
-		if v.target == "" || v.models.catalog {
-			if len(v.models.llama) == 0 {
-				return out + footerStyle.Render("No models")
-			}
-			return out + v.models.table.View()
+		if len(v.models.llama) == 0 {
+			return out + footerStyle.Render("No models")
 		}
-		out += "Peer installed-cache listing unavailable; served models only.\n"
+		return out + v.models.table.View()
 	}
 	if !v.byName[v.selectedEngine()].Capabilities.ListModels {
 		return out + footerStyle.Render("Model list unavailable (engine stopped or unsupported)")
@@ -223,7 +233,7 @@ func (v *enginesView) confirmDeleteModel() tea.Cmd {
 			return nil
 		}
 		entry, ok := v.selectedLlamaEntry()
-		if v.models.catalog || node != "" || !ok || entry.SHA256 == "" {
+		if v.models.catalog || !ok || entry.SHA256 == "" {
 			v.status = "Only PAIR-owned installed models can be deleted."
 			return nil
 		}

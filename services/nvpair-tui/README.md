@@ -151,10 +151,13 @@ The model name is its catalog ID, never the inherited launch descriptor.
 PAIR downloads llama.cpp and models at runtime, not as bundled software.
 Only macOS arm64 and single-file Q4_K_M GGUF catalog downloads are supported.
 
-On verified peers, catalog downloads and cancellation use the existing remote
-methods. The current service contract exposes no peer installed-cache listing:
-`m` is explicitly served-model inventory only, and the startup picker is local.
-No invented peer list action or local inventory substituted for a peer is used.
+On verified peers, `m` lists installed llama.cpp cache files from discovery's
+`downloadedByEngine`, including catalog IDs/file names, sizes and ownership.
+Unverified previews receive no cache inventory. `d` deletes PAIR-owned files
+through the existing authenticated remote method; running llama.cpp must be
+stopped first and its refusal reason remains visible. Catalog downloads and
+cancellation retain the existing remote methods. The startup picker remains local;
+no local inventory is substituted for a peer.
 The existing unreleased TUI 1.4.0 minor bump already covers these additive
 features relative to v0.9.0's TUI 1.3.0.
 

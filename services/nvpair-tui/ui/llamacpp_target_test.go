@@ -19,7 +19,7 @@ func TestLlamaPendingModelsDoNotLeakAcrossTargets(t *testing.T) {
 			}
 			next := v.Update(engineKey("n"))
 			v.Update(engineRequest(t, next, c, "engine:remote-get-installed", `{"node":"peer-uuid"}`, `{"engines":[{"engine":"llamacpp","capabilities":{"list_models":true,"pull_model":true}}]}`))
-			v.Update(discoverySnapshotMsg{nodes: []availableNode{{HostUUID: "peer-uuid", Trusted: true, ModelsByEngine: map[string][]string{"llamacpp": {"peer-model"}}}}})
+			v.Update(discoverySnapshotMsg{nodes: []availableNode{{HostUUID: "peer-uuid", Trusted: true, IdentityVerification: "verified", PeerRecordID: "proof", DownloadedByEngine: map[string][]llamaModel{"llamacpp": {{ID: "peer-model", File: "peer.gguf", Size: 24, Owned: true, SHA256: "verified"}}}}}})
 			v.Update(engineKey("m"))
 			method, params := "engine:action", `{"engine":"llamacpp","action":"list_downloaded"}`
 			if key == "b" {
@@ -37,7 +37,7 @@ func TestLlamaPendingCatalogDoesNotLeakIntoReopenedPeerInventory(t *testing.T) {
 	v, c := engineWire(t)
 	next := v.Update(engineKey("n"))
 	v.Update(engineRequest(t, next, c, "engine:remote-get-installed", `{"node":"peer-uuid"}`, `{"engines":[{"engine":"llamacpp","capabilities":{"list_models":true,"pull_model":true}}]}`))
-	v.Update(discoverySnapshotMsg{nodes: []availableNode{{HostUUID: "peer-uuid", Trusted: true, ModelsByEngine: map[string][]string{"llamacpp": {"peer-model"}}}}})
+	v.Update(discoverySnapshotMsg{nodes: []availableNode{{HostUUID: "peer-uuid", Trusted: true, IdentityVerification: "verified", PeerRecordID: "proof", DownloadedByEngine: map[string][]llamaModel{"llamacpp": {{ID: "peer-model", File: "peer.gguf", Size: 24, Owned: true, SHA256: "verified"}}}}}})
 	pending := v.Update(engineKey("b"))
 	v.Update(engineKey("m")) // close the pending catalog
 	v.Update(engineKey("m")) // reopen cached peer inventory
