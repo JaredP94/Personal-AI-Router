@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"nvpair-shared/clustertrust"
 )
 
 func TestLlamaPeerInventoryIncludesStoppedCache(t *testing.T) {
@@ -47,7 +49,7 @@ func TestLlamaPeerInventoryIncludesStoppedCache(t *testing.T) {
 }
 
 func TestLlamaRemoteDeleteUsesIdentityAndRunningGuard(t *testing.T) {
-	for _, mode := range []string{"delete", "running", "replacement"} {
+	for _, mode := range []string{"delete", "running", "replacement", "unpinned"} {
 		t.Run(mode, func(t *testing.T) {
 			ex, cache := llamaDownloadExecutor(t, nil, nil)
 			if err := pullLlamaTest(ex, "peer-delete"); err != nil {
@@ -68,19 +70,41 @@ func TestLlamaRemoteDeleteUsesIdentityAndRunningGuard(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			server := &controlServer{exec: ex}
-			rec := httptest.NewRecorder()
-			server.handleDelete(rec, httptest.NewRequest(http.MethodPost, controlDeletePath, strings.NewReader(`{"engine":"llamacpp","model":"`+llamaTestID+`"}`)))
+			selfCert, selfKey := mintLeaf(t, "delete-owner")
+			peerCert, peerKey := mintLeaf(t, "delete-caller")
+			pins := map[string][]byte{"delete-caller": peerCert}
+			if mode == "unpinned" {
+				pins = nil
+			}
+			owner := clustertrust.Open(clusterDirFor(t, selfCert, selfKey, pins))
+			caller := clustertrust.Open(clusterDirFor(t, peerCert, peerKey, map[string][]byte{"delete-owner": selfCert}))
+			server := &controlServer{exec: ex, mesh: owner}
+			srv := httptest.NewUnstartedServer(server.mux())
+			srv.TLS = owner.ServerTLSConfig()
+			srv.StartTLS()
+			defer srv.Close()
+			cfg, ok := caller.ClientTLSConfig("delete-owner")
+			if !ok {
+				t.Fatal("missing peer pin")
+			}
+			transport := &http.Transport{TLSClientConfig: cfg}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Transport: transport}
+			remote := &remoteClient{http: client, readyHTTP: client, base: srv.URL}
+			result, err := remote.postJSON(context.Background(), controlDeletePath, "llamacpp", modelActionRequest{Engine: "llamacpp", Model: llamaTestID})
 			_, statErr := os.Stat(file)
 			if mode == "delete" {
-				if rec.Code != http.StatusOK || !os.IsNotExist(statErr) {
-					t.Fatalf("delete: %d %s %v", rec.Code, rec.Body.String(), statErr)
+				if err != nil || !os.IsNotExist(statErr) {
+					t.Fatalf("delete: %s %v %v", result, err, statErr)
 				}
-			} else if rec.Code == http.StatusOK || statErr != nil {
-				t.Fatalf("unsafe delete: %d %s %v", rec.Code, rec.Body.String(), statErr)
+			} else if err == nil || statErr != nil {
+				t.Fatalf("unsafe delete: %s %v %v", result, err, statErr)
 			}
-			if mode == "running" && !strings.Contains(rec.Body.String(), "stop the engine") {
-				t.Fatalf("missing refusal reason: %s", rec.Body.String())
+			if mode == "running" && !strings.Contains(err.Error(), "stop the engine") {
+				t.Fatalf("missing refusal reason: %v", err)
+			}
+			if mode == "unpinned" && !strings.Contains(err.Error(), "403") {
+				t.Fatalf("missing peer refusal: %v", err)
 			}
 		})
 	}
