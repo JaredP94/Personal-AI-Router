@@ -329,28 +329,46 @@ func (b *Broker) configuredEnginePorts() (map[int]string, error) {
 func configuredLMStudioProxyPort() int { return configuredProxyPort("lmstudio") }
 
 func configuredProxyPort(engine string) int {
-	file, defaultPort := "proxy-port.json", managedOllamaFacadePort
+	if port := persistedProxyPort(engine); port != 0 {
+		return port
+	}
 	switch engine {
 	case "lmstudio":
-		file, defaultPort = lmstudioProxyPortFile, managedLMStudioFacadePort
+		return managedLMStudioFacadePort
 	case "omlx":
-		file, defaultPort = "omlx-proxy-port.json", 1234
+		return 1236
 	case "llamacpp":
-		file, defaultPort = "llamacpp-proxy-port.json", 1237
+		return 1237
+	default:
+		return managedOllamaFacadePort
+	}
+}
+
+// Return only a saved choice, not a standalone default: oMLX shares its
+// standalone :1234 default with LM Studio, but uses :1236 under the broker.
+func persistedProxyPort(engine string) int {
+	file := "proxy-port.json"
+	switch engine {
+	case "lmstudio":
+		file = lmstudioProxyPortFile
+	case "omlx":
+		file = "omlx-proxy-port.json"
+	case "llamacpp":
+		file = "llamacpp-proxy-port.json"
 	}
 	path, err := appdir.Path(file)
 	if err != nil {
-		return defaultPort
+		return 0
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return defaultPort
+		return 0
 	}
 	var stored struct {
 		Port int `json:"port"`
 	}
 	if json.Unmarshal(data, &stored) != nil || stored.Port < 1 || stored.Port > 65535 {
-		return defaultPort
+		return 0
 	}
 	return stored.Port
 }

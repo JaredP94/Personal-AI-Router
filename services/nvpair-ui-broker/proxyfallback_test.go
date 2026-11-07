@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,133 @@ import (
 	"nvpair-shared/noderec"
 	"nvpair-ui-broker/relay"
 )
+
+func TestProxyFallbackAllowsOwnDefaultAndSavedPorts(t *testing.T) {
+	isolateOllamaHostTestConfig(t)
+	for _, tc := range []struct {
+		engine string
+		port   int
+	}{
+		{"ollama", 11434}, {"lmstudio", 1234}, {"omlx", 1236}, {"llamacpp", 1237},
+	} {
+		t.Run(tc.engine, func(t *testing.T) {
+			b := &Broker{engineSettings: map[string]*engineSettingsRecord{
+				tc.engine: {Snapshot: settings.Snapshot{Settings: settings.Config{ServerPort: 12410, ProxyPort: tc.port}}, Previous: settings.Config{ServerPort: 12412, ProxyPort: 12413}},
+			}, regCache: relay.NewRegistrationCache()}
+			b.settingsStartupPort(tc.engine, 12414)
+			b.regCache.Register(noderec.RegisterParams{Service: engineSettingsService(tc.engine), Port: 12415})
+			// A generation can still report its previous port during recovery.
+			proxy := &proxyProcess{ready: true, port: 12416}
+			switch tc.engine {
+			case "ollama":
+				b.setProxy(proxy)
+			case "lmstudio":
+				b.setLMStudioProxy(proxy)
+			case "omlx":
+				b.setOMLXProxy(proxy)
+			case "llamacpp":
+				b.setLlamaCPPProxy(proxy)
+			}
+			ports := b.proxyFallbackExclusions(tc.engine, []int{12417})
+			for _, own := range []int{tc.port, 12413, 12414, 12415, 12416} {
+				if slices.Contains(ports, own) {
+					t.Errorf("own port %d excluded: %v", own, ports)
+				}
+				if got := b.nextProxyFallbackPort(tc.engine, own, nil, func(int) bool { return true }); got != own {
+					t.Errorf("selected %d, want own port %d", got, own)
+				}
+			}
+			for _, reserved := range []int{11435, 1235, 8082, 12410, 12412, 12417} {
+				if !slices.Contains(ports, reserved) {
+					t.Errorf("reserved port %d allowed", reserved)
+				}
+			}
+			for _, other := range []int{11434, 1234, 1236, 1237} {
+				if other != tc.port && !slices.Contains(ports, other) {
+					t.Errorf("other proxy default %d allowed", other)
+				}
+			}
+			if got := b.nextProxyFallbackPort(tc.engine, tc.port, []int{tc.port}, func(int) bool { return true }); got == tc.port {
+				t.Fatal("caller exclusion ignored for own port")
+			}
+		})
+	}
+}
+
+func TestProxyFallbackPrefersPersistedPort(t *testing.T) {
+	for engine, file := range map[string]string{
+		"ollama": "proxy-port.json", "lmstudio": "lmstudio-proxy-port.json",
+		"omlx": "omlx-proxy-port.json", "llamacpp": "llamacpp-proxy-port.json",
+	} {
+		t.Run(engine, func(t *testing.T) {
+			isolateOllamaHostTestConfig(t)
+			path, err := appdir.Path(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(`{"port":12420}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			b := &Broker{}
+			free := func(int) bool { return true }
+			if got := b.nextProxyFallbackPort(engine, 1236, nil, free); got != 12420 {
+				t.Fatalf("discarded free saved port: got %d, want 12420", got)
+			}
+			if got := b.nextProxyFallbackPort(engine, 1236, []int{12420}, free); got == 12420 {
+				t.Fatal("bind-failure exclusion ignored for saved port")
+			}
+			if got := b.nextProxyFallbackPort(engine, 1236, nil, func(port int) bool { return port != 12420 }); got == 12420 {
+				t.Fatal("occupied saved port reused")
+			}
+			if engine == "omlx" {
+				b.lmstudioProxyPath = "/fixture/lmstudio-proxy"
+				b.prepareOMLXProxyPortWithPortCheck(free)
+				if got := int(b.omlxProxyStartupPort.Load()); got != 12420 {
+					t.Fatalf("oMLX startup port = %d", got)
+				}
+			}
+			if engine == "llamacpp" {
+				b.prepareLlamaCPPProxyPort()
+				if got := int(b.llamacppProxyStartupPort.Load()); got != 12420 {
+					t.Fatalf("llama.cpp startup port = %d", got)
+				}
+			}
+		})
+	}
+}
+
+func TestOMLXStartupPreservesSavedPortAndRevision(t *testing.T) {
+	isolateOllamaHostTestConfig(t)
+	h := newSettingsHarness(t)
+	b := h.b
+	proxy := b.getOMLXProxy()
+	proxy.port = 1236
+	before, err := b.getEngineSettings(context.Background(), settings.Request{Engine: "omlx"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.setOMLXProxy(nil)
+	b.getLMStudioProxy().port = 1234
+	b.getLlamaCPPProxy().port = 1237
+	b.lmstudioProxyPath = "/fixture/lmstudio-proxy"
+	b.prepareOMLXProxyPortWithPortCheck(func(port int) bool { return port != 1234 })
+	port := int(b.omlxProxyStartupPort.Load())
+	if port != 1236 {
+		t.Errorf("startup port = %d, want saved 1236", port)
+	}
+	proxy.port = port
+	b.setOMLXProxy(proxy)
+	after, err := b.getEngineSettings(context.Background(), settings.Request{Engine: "omlx"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision || after.Settings.ProxyPort != before.Settings.ProxyPort {
+		t.Fatalf("startup changed saved settings: before %+v; after %+v", before, after)
+	}
+}
 
 // Inventory enumeration precedes a fallback bind, but never performs an engine
 // status probe against the proxy's not-yet-vacated port.

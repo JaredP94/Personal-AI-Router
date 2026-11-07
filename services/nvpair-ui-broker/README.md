@@ -152,8 +152,11 @@ fatal; auxiliary workers do not gate `app:ready` on readiness. The proxies annou
 their bound ports asynchronously. oMLX's standalone default is `1234`; the broker
 can move it to a free fallback starting at `1236` when LM Studio reserves `1234`.
 All four proxies share fallback exclusions: every configured engine-server port
-(including stopped engines and the proxy's own engine), persisted/accepted and
-live proxy ports, the Ollama alias, and fixed/registered node-service ports.
+(including stopped engines and the proxy's own engine), **other engines'**
+default, persisted/accepted and live proxy ports, the Ollama alias, and
+fixed/registered node-service ports. A proxy does not exclude its own proxy
+ports; a free saved port is tried before searching for an alternate. Caller
+exclusions (such as a failed bind) and all engine-server reservations still win.
 Inventory comes from `engine:configured-ports`, not a live status probe. Settings
 locks are released before worker calls; port writes retain the per-engine
 port-operation serialiser. Use the reported port, not a hardcoded endpoint.

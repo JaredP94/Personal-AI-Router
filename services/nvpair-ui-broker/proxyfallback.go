@@ -6,38 +6,44 @@ package main
 import (
 	"context"
 	"log/slog"
+	"slices"
 )
 
 // Called under the target engine's port-operation serialiser. Snapshot local
 // settings under their short lock, then release it BEFORE any worker call.
 // Stopped engines reserve their configured ports just as running ones do.
 func (b *Broker) proxyFallbackExclusions(engine string, excluded []int) []int {
-	excluded = append(excluded, 11434, 11435, 1234, 1235, 1236, 8082,
+	// Engine-server defaults are never proxy candidates, even for their owner.
+	excluded = append(excluded, 11435, 1235, 8082,
 		engineManagerHTTPPort, engineControlPort, nodeInfoHTTPPort, errorsHTTPPort, workloadHTTPPort, clusterManagerHTTPPort)
 	if port := b.currentOllamaHostAlias().Port; port > 0 {
 		excluded = append(excluded, port)
 	}
 	b.engineConfigMu.Lock()
-	for _, record := range b.engineSettings {
+	for other, record := range b.engineSettings {
 		if record != nil {
-			excluded = append(excluded, record.Snapshot.Settings.ServerPort, record.Snapshot.Settings.ProxyPort,
-				record.Previous.ServerPort, record.Previous.ProxyPort)
+			excluded = append(excluded, record.Snapshot.Settings.ServerPort, record.Previous.ServerPort)
+			if other != engine {
+				excluded = append(excluded, record.Snapshot.Settings.ProxyPort, record.Previous.ProxyPort)
+			}
 		}
 	}
 	b.engineConfigMu.Unlock()
-	for _, other := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
-		excluded = append(excluded, b.proxyStartupPort(other))
+	for other, defaultPort := range map[string]int{"ollama": 11434, "lmstudio": 1234, "omlx": 1236, "llamacpp": 1237} {
+		if other == engine {
+			continue
+		}
+		excluded = append(excluded, defaultPort, b.proxyStartupPort(other), configuredProxyPort(other))
 		if proxy := b.settingsProxy(other); proxy != nil {
 			_, port := proxy.Status()
 			excluded = append(excluded, port)
 		}
-		if other != engine {
-			excluded = append(excluded, configuredProxyPort(other))
-		}
 	}
 	if b.regCache != nil {
 		for _, service := range b.regCache.Snapshot() {
-			excluded = append(excluded, service.Port)
+			if service.Service != engineSettingsService(engine) {
+				excluded = append(excluded, service.Port)
+			}
 		}
 	}
 	if b.getEngineMgr() != nil {
@@ -67,5 +73,14 @@ func (b *Broker) nextProxyFallbackPort(engine string, start int, excluded []int,
 	if ports == nil {
 		return 0
 	}
-	return nextAvailablePortExcluding(start, ports, available)
+	// Startup overrides must not discard a usable saved choice. A bind-failure
+	// caller explicitly excludes the failed port, so recovery still moves on.
+	if saved := persistedProxyPort(engine); saved > 0 && !slices.Contains(ports, saved) && available(saved) {
+		return saved
+	}
+	port := nextAvailablePortExcluding(start, ports, available)
+	if port > 0 {
+		slog.Info("selected proxy fallback port", "engine", engine, "port", port)
+	}
+	return port
 }
