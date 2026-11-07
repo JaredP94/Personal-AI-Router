@@ -176,7 +176,7 @@ func TestStartupUnreadableSettingsJournalBlocksAllManagedEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.b.restoreEnabledEngines(h.b.getEngineMgr())
-	if excluded := settingsRestoreNotification(t, h); !slices.Equal(excluded, []string{"ollama", "lmstudio", "omlx"}) {
+	if excluded := settingsRestoreNotification(t, h); !slices.Equal(excluded, []string{"ollama", "lmstudio", "omlx", "llamacpp"}) {
 		t.Fatalf("unreadable journal exclusions = %v", excluded)
 	}
 	for _, reconcile := range []func(){

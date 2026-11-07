@@ -61,6 +61,21 @@ describe('unified settings bridge', () => {
         )
     })
 
+    it('updates llama.cpp through atomic install without uninstalling the working tree', async () => {
+        await handleServiceBridgeInvoke('engine:command', {
+            command: 'update',
+            engineType: 'llamacpp',
+            nodeId: 'local-node'
+        })
+        expect(mocks.supervisor.sendProcess).toHaveBeenCalledExactlyOnceWith(
+            'broker',
+            'engine:install',
+            { engine: 'llamacpp', start: true },
+            expect.any(Function),
+            true
+        )
+    })
+
     // Applying settings can stop, rebind, and restart an engine, so it needs
     // the Apply deadline rather than the shorter lifecycle request timeout.
     it('sends one node-owned apply with an end-to-end deadline', async () => {

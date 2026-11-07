@@ -35,8 +35,9 @@ type installMarker struct {
 	// in place (install.creates) by its file identity. A copy put there later
 	// — by the user, or by a vendor updater that replaces the bundle — is a
 	// different file, and the claim no longer covers it.
-	Creates  string `json:"creates,omitempty"`
-	Identity string `json:"identity,omitempty"`
+	Creates        string `json:"creates,omitempty"`
+	Identity       string `json:"identity,omitempty"`
+	ArtifactSHA256 string `json:"artifact_sha256,omitempty"`
 }
 
 func installMarkerPath(installDir string) string {

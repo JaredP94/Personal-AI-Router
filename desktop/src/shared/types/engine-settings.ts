@@ -11,7 +11,7 @@ export interface EngineSettingsConfig {
 export interface EngineSettingsTarget {
     nodeId: string
     /** Engine-manager spelling — the settings contract is relayed verbatim. */
-    engine: 'ollama' | 'lmstudio' | 'omlx'
+    engine: 'ollama' | 'lmstudio' | 'omlx' | 'llamacpp'
 }
 
 export interface EngineSettingsRequest extends EngineSettingsTarget {

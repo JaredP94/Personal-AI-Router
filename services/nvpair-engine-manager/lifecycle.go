@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -245,6 +247,11 @@ func (e *Executor) bringUp(ctx context.Context, st *engineState, engine string, 
 // bringUpProcess spawns the engine as a foreground process this service
 // owns, then waits for readiness.
 func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine string, rt Runtime, port int, vars map[string]string) error {
+	if inst := st.plat.Install; inst != nil && inst.Archive != nil {
+		if err := verifyArchivePlatform(ctx, st.installDir, inst.Archive); err != nil {
+			return err
+		}
+	}
 	st.mu.Lock()
 	binPath := st.binPath
 	st.mu.Unlock()
@@ -256,9 +263,14 @@ func (e *Executor) bringUpProcess(ctx context.Context, st *engineState, engine s
 		return err
 	}
 
+	if rt.EditableLaunch.llamaCPP() {
+		if err := rejectLlamaConfigFiles(llamaConfigPaths(launch.Env)...); err != nil {
+			return err
+		}
+	}
 	diagnostics := newStartupOutput(launchDiagnosticArgs(rt), launch.Env)
 	defer diagnostics.close()
-	proc, err := startManagedProc(launch.Bin, launch.Args, launch.Env, func(stream, line string) {
+	proc, err := startManagedProcWithEnvironment(launch.Bin, launch.Args, launch.Env, !rt.EditableLaunch.llamaCPP(), func(stream, line string) {
 		_, _ = diagnostics.Write([]byte(line + "\n"))
 		// Vendor diagnostics may echo arbitrary custom arguments. Keep those
 		// out of exported engine logs; report exit/readiness failures separately.
@@ -1016,12 +1028,27 @@ func (e *Executor) probe(ctx context.Context, p *Probe, port int) bool {
 		if err != nil {
 			return false
 		}
-		httpcon.DrainAndClose(resp.Body)
+		defer httpcon.DrainAndClose(resp.Body)
 		want := p.Status
 		if want == 0 {
 			want = 200
 		}
-		return resp.StatusCode == want
+		if resp.StatusCode != want {
+			return false
+		}
+		if p.JSONMatch != nil {
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
+			if err != nil || len(body) > 65536 {
+				return false
+			}
+			var object map[string]json.RawMessage
+			var value string
+			if json.Unmarshal(body, &object) != nil || json.Unmarshal(object[p.JSONMatch.Field], &value) != nil {
+				return false
+			}
+			return value == p.JSONMatch.Value
+		}
+		return true
 	}
 	if p.TCP != "" {
 		addr, err := resolvePlaceholders(p.TCP, vars)

@@ -91,7 +91,8 @@ type Install struct {
 	// runner mounts it read-only, copies App into Into unless an app is
 	// already there, detaches it and, with Open, opens the app. The runner
 	// owns the mount, so it is detached on every path, cancellation included.
-	DiskImage *DiskImage `json:"disk_image,omitempty"`
+	DiskImage *DiskImage      `json:"disk_image,omitempty"`
+	Archive   *ArchiveInstall `json:"archive,omitempty"`
 	// Creates names what the install puts in place, when that is somewhere a
 	// user's own copy could already be (an app in /Applications). PAIR records
 	// the install as its own only if Creates did not exist before it ran, so
@@ -191,9 +192,13 @@ type Runtime struct {
 }
 
 type EditableLaunch struct {
-	FixedArgs  []string        `json:"fixed_args"`
-	Controls   []LaunchControl `json:"controls"`
-	StartIndex int             `json:"start_index,omitempty"`
+	OptionPolicy             string          `json:"option_policy,omitempty"`
+	ForbiddenFlags           []string        `json:"forbidden_flags,omitempty"`
+	ForbiddenEnv             []string        `json:"forbidden_env,omitempty"`
+	NormalizeFlagUnderscores bool            `json:"normalize_flag_underscores,omitempty"`
+	FixedArgs                []string        `json:"fixed_args"`
+	Controls                 []LaunchControl `json:"controls"`
+	StartIndex               int             `json:"start_index,omitempty"`
 }
 
 // LaunchControl binds CLI/environment syntax to PAIR policy fields. Value is a
@@ -224,12 +229,18 @@ func (r *Runtime) hasCustomLaunch() bool {
 
 // Probe is an HTTP or TCP reachability check. Exactly one of HTTP/TCP
 // should be set; HTTP wins if both are.
+type ProbeJSONMatch struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
 type Probe struct {
-	HTTP      string `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
-	TCP       string `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
-	Status    int    `json:"status,omitempty"` // expected HTTP status (default 200)
-	TimeoutS  int    `json:"timeout_s,omitempty"`
-	IntervalS int    `json:"interval_s,omitempty"`
+	JSONMatch *ProbeJSONMatch `json:"json_match,omitempty"`
+	HTTP      string          `json:"http,omitempty"`   // url template, e.g. "http://127.0.0.1:{port}/"
+	TCP       string          `json:"tcp,omitempty"`    // host:port template, e.g. "127.0.0.1:{port}"
+	Status    int             `json:"status,omitempty"` // expected HTTP status (default 200)
+	TimeoutS  int             `json:"timeout_s,omitempty"`
+	IntervalS int             `json:"interval_s,omitempty"`
 }
 
 // StopSpec is how to terminate the engine. Default is a graceful
@@ -746,6 +757,11 @@ func (p *Platform) validate(key string) error {
 				return fmt.Errorf("platform %q: install.creates must name the app disk_image copies", key)
 			}
 		}
+		if p.Install.Archive != nil {
+			if err := p.Install.validateArchive(); err != nil {
+				return fmt.Errorf("platform %q: %w", key, err)
+			}
+		}
 		if strings.Contains(p.Install.Creates, "{") {
 			return fmt.Errorf("platform %q: install.creates %q must be a literal path", key, p.Install.Creates)
 		}
@@ -755,7 +771,7 @@ func (p *Platform) validate(key string) error {
 			return fmt.Errorf("platform %q: install.mode %q invalid (want \"user\" or \"admin\")", key, p.Install.Mode)
 		}
 	}
-	if strings.Contains(p.ModelsDir, "{") {
+	if strings.Contains(p.ModelsDir, "{") && !(p.Install != nil && p.Install.Archive != nil && p.ModelsDir == "{install_dir}-models") {
 		return fmt.Errorf("platform %q: models_dir %q must be a literal path, not a template — the model store must not be derived from the install directory", key, p.ModelsDir)
 	}
 	if p.Uninstall != nil {
@@ -802,6 +818,9 @@ func (p *Platform) validate(key string) error {
 func validateProbe(key, which string, p *Probe) error {
 	if p == nil {
 		return nil
+	}
+	if p.JSONMatch != nil && (p.HTTP == "" || p.JSONMatch.Field == "" || p.JSONMatch.Value == "") {
+		return fmt.Errorf("platform %q: runtime.%s.json_match requires HTTP, field and value", key, which)
 	}
 	if strings.TrimSpace(p.HTTP) == "" && strings.TrimSpace(p.TCP) == "" {
 		return fmt.Errorf("platform %q: runtime.%s must set either http or tcp", key, which)

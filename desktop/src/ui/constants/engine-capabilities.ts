@@ -13,6 +13,17 @@ import type { EngineCaps } from '@/ui/types/engine-manifest'
  * (`EngineCaps` carries no delete/restart/port policy).
  */
 export const EngineCapabilities: Record<EngineType, EngineCaps> = {
+    llamacpp: {
+        hasExpiry: false,
+        hasEject: false,
+        hasInstall: ['darwin'],
+        hasInstallPath: false,
+        hasProxyWebUI: false,
+        hasPreferredNode: false,
+        hasCrashAlert: false,
+        hasModelSearchOnlyWhenRunning: false,
+        modelOpsWhenStopped: false
+    },
     ollama: {
         // Ollama has no model keep-alive/expiry UI; unload uses unload_model
         // (POST /api/generate with keep_alive: 0). See docs/services-parity.md#models.

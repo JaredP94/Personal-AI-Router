@@ -109,7 +109,9 @@ local engines and verified paired devices. It validates and journals the whole
 change before coordinating the engine lifecycle and the selected one of the
 three existing proxies. The broker, not the desktop, owns revisioning, port
 reservations and recovery. oMLX's app launch remains unchanged; its settings
-permit only the PAIR proxy port.
+permit only the PAIR proxy port. llama.cpp exposes the server port and launch
+text with proxy port zero: no additional worker, service advertisement or routing
+is enabled. Settings recovery and collision checks still apply.
 
 ## Communication
 

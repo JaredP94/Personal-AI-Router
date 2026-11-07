@@ -65,7 +65,7 @@ func (command launchCommand) argumentText(policy *EditableLaunch) (string, error
 	}
 	env := make(map[string]string)
 	for name, value := range command.Env {
-		if policy.environmentControl(name) == nil {
+		if !policy.protectedEnvironment(name) {
 			env[name] = value
 		}
 	}

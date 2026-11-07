@@ -115,6 +115,26 @@ function expand(): void {
 }
 
 describe('BackendRow reported capability gates', () => {
+    it('discloses llama.cpp trust and deferred routing before installation', () => {
+        act(() =>
+            root.render(
+                createElement(BackendRow, {
+                    backend: {
+                        ...backend,
+                        type: 'llamacpp',
+                        displayName: 'llama.cpp',
+                        processStatus: 'not-installed'
+                    },
+                    nodeId: 'local',
+                    statusKnown: true
+                })
+            )
+        )
+        expect(container.textContent).toContain('Not notarized, like PAIR itself.')
+        expect(container.textContent).toContain('Does not serve requests through PAIR yet.')
+        expect(container.querySelector('img[alt="llama.cpp"]')).not.toBeNull()
+    })
+
     beforeEach(() => {
         vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
         vi.stubGlobal('pairApi', {

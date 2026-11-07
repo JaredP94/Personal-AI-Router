@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Divider, Stack } from '@nvidia/foundations-react-core'
+import { Divider, Stack, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import type { EngineProcessStatus } from '@/shared/types/engines'
 import { noEngineCapabilities } from '@/shared/utils/engines'
@@ -188,7 +188,7 @@ export function BackendRow({
                 onUpdate={handleUpdate}
             />
 
-            {canShowAccordions && (
+            {canShowAccordions && backend.type !== 'llamacpp' && (
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
 
@@ -227,6 +227,12 @@ export function BackendRow({
                         canInstall={reported.install}
                         onInstall={handleInstall}
                     />
+                    {backend.type === 'llamacpp' && (
+                        <Text kind="body/regular/sm">
+                            Not notarized, like PAIR itself. Does not serve requests through PAIR
+                            yet.
+                        </Text>
+                    )}
                     {expanded && <Divider />}
                     {content}
                 </Stack>

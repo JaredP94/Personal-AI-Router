@@ -281,7 +281,11 @@ func (e *Executor) state(engine string) (*engineState, error) {
 		installDir: filepath.Join(e.baseDir, engine),
 	}
 	if plat.ModelsDir != "" {
-		st.modelsDir = expandPath(plat.ModelsDir)
+		if plat.Install != nil && plat.Install.Archive != nil && plat.ModelsDir == "{install_dir}-models" {
+			st.modelsDir = st.installDir + "-models"
+		} else {
+			st.modelsDir = expandPath(plat.ModelsDir)
+		}
 	}
 	e.engines[engine] = st
 	return st, nil

@@ -29,6 +29,9 @@ func (e *Executor) Install(ctx context.Context, engine string) error {
 	}
 	st.lockOperation()
 	defer st.unlockOperation()
+	if st.plat.Install != nil && st.plat.Install.Archive != nil {
+		return e.installManagedArchive(ctx, engine, st)
+	}
 	if ok, _ := e.Detect(engine); ok {
 		e.reporter.clear(installFailedID(engine))
 		e.emitInstallProgress(engine, "already-installed", 100)
@@ -218,6 +221,9 @@ func (e *Executor) Uninstall(ctx context.Context, engine string) error {
 		err := fmt.Errorf("cannot uninstall engine %q: NVIDIA PAIR has no record of installing it, so it may be your own installation; remove it with %s's own uninstaller", engine, st.manifest.DisplayName)
 		e.reporter.report(serviceError{ID: uninstallFailedID(engine), Message: err.Error(), Severity: "error", Action: "none", EngineType: engine, Operation: "uninstall"})
 		return err
+	}
+	if st.plat.Install != nil && st.plat.Install.Archive != nil && !installedByPAIR(st.installDir, st.installDir) {
+		return fmt.Errorf("cannot uninstall %s: PAIR has no identity-bound record of installing it", engine)
 	}
 	// Detect proves only that the managed image exists, not whether a process is
 	// serving. Reconcile first so doStop can either stop our exact managed

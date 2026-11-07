@@ -401,7 +401,11 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if v.target != "" || engine == "" || !e.Capabilities.Install || !e.Capabilities.Uninstall {
 			return nil
 		}
-		v.confirm = newConfirm("Update engine?", fmt.Sprintf("Update reinstalls %s: it is uninstalled, then installed and started. Inference stops meanwhile, and files the engine's uninstaller removes are deleted.", engine), v.updateCmd(engine))
+		warning := fmt.Sprintf("Update reinstalls %s: it is uninstalled, then installed and started. Inference stops meanwhile, and files the engine's uninstaller removes are deleted.", engine)
+		if engine == "llamacpp" {
+			warning = "Stop llama.cpp before updating. PAIR atomically replaces its owned engine files and keeps the model cache; failed validation leaves the previous install unchanged."
+		}
+		v.confirm = newConfirm("Update engine?", warning, v.updateCmd(engine))
 		return nil
 	}
 	if key.Matches(msg, engPullKey) {
@@ -494,6 +498,9 @@ func (v *enginesView) submitPort() tea.Cmd {
 // deadline. Do not dispatch install until uninstall has replied successfully.
 func (v *enginesView) updateCmd(engine string) tea.Cmd {
 	client := v.client
+	if engine == "llamacpp" {
+		return callWithTimeout(client, "engine:install", map[string]any{"engine": engine, "start": true}, longOpTimeout, func(_ *rpc.Message, err error) tea.Msg { return engineOpMsg{what: "update", engine: engine, err: err} })
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), longOpTimeout)
 		defer cancel()
@@ -615,6 +622,9 @@ func (v *enginesView) View() string {
 	}
 	if v.models.open {
 		out = v.modelsView()
+	}
+	if v.selectedEngine() == "llamacpp" {
+		out += "\n" + footerStyle.Render("llama.cpp is not notarized, like PAIR itself; it does not serve requests through PAIR yet.")
 	}
 	if v.confirm.open() {
 		out += "\n" + v.confirm.View()

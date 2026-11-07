@@ -1,0 +1,136 @@
+{
+  "engine": "llamacpp",
+  "display_name": "llama.cpp",
+  "manifest_version": 1,
+  "platforms": {
+    "darwin/arm64": {
+      "detect": [
+        "{install_dir}/llama-server"
+      ],
+      "detect_requires": [
+        "{install_dir}/libllama-server-impl.dylib",
+        "{install_dir}/libggml-metal.0.29.0.dylib"
+      ],
+      "install": {
+        "fetch": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12171/llama-b12171-bin-macos-arm64.tar.gz",
+          "sha256": "870ef967970fa18bbd31460bc5f7929bbb5f091359d8dc0f58e20133aa4b5fcd"
+        },
+        "archive": {
+          "required": [
+            "llama-server",
+            "LICENSE",
+            "libllama-server-impl.dylib",
+            "libggml-base.0.29.0.dylib",
+            "libggml-base.0.dylib",
+            "libggml-base.dylib",
+            "libggml-blas.0.29.0.dylib",
+            "libggml-blas.0.dylib",
+            "libggml-blas.dylib",
+            "libggml-cpu.0.29.0.dylib",
+            "libggml-cpu.0.dylib",
+            "libggml-cpu.dylib",
+            "libggml-metal.0.29.0.dylib",
+            "libggml-metal.0.dylib",
+            "libggml-metal.dylib",
+            "libggml-rpc.0.29.0.dylib",
+            "libggml-rpc.0.dylib",
+            "libggml-rpc.dylib",
+            "libggml.0.29.0.dylib",
+            "libggml.0.dylib",
+            "libggml.dylib",
+            "libllama.0.9.0.dylib",
+            "libllama.0.dylib",
+            "libllama.dylib",
+            "libllama-common.0.9.0.dylib",
+            "libllama-common.0.dylib",
+            "libllama-common.dylib",
+            "libmtmd.0.9.0.dylib",
+            "libmtmd.0.dylib",
+            "libmtmd.dylib"
+          ],
+          "codesign": "llama-server"
+        },
+        "mode": "user"
+      },
+      "models_dir": "{install_dir}-models",
+      "uninstall": {
+        "remove": [
+          "{install_dir}"
+        ]
+      },
+      "runtime": {
+        "mode": "process",
+        "bin": "{install_dir}/llama-server",
+        "args": [
+          "--sleep-idle-seconds",
+          "300",
+          "--host",
+          "{host}",
+          "--port",
+          "{port}"
+        ],
+        "env": {
+          "LLAMA_CACHE": "{install_dir}-models",
+          "LLAMA_ARG_REUSE_PORT": "0",
+          "LLAMA_ARG_API_PREFIX": "",
+          "LLAMA_ARG_OFFLINE": "1",
+          "HOME": "{install_dir}/.pair-home",
+          "XDG_CONFIG_HOME": "{install_dir}/.pair-config",
+          "PATH": "/usr/bin:/bin"
+        },
+        "bind": "127.0.0.1",
+        "port": 8082,
+        "editable_launch": {
+          "fixed_args": [
+            "--sleep-idle-seconds",
+            "300"
+          ],
+          "option_policy": "llamacpp-b12171",
+          "controls": [
+            {
+              "flags": [
+                "--host"
+              ],
+              "env": [
+                "LLAMA_ARG_HOST"
+              ],
+              "value": "{server.host}"
+            },
+            {
+              "flags": [
+                "--port"
+              ],
+              "env": [
+                "LLAMA_ARG_PORT"
+              ],
+              "value": "{server.port}"
+            }
+          ]
+        },
+        "ready": {
+          "http": "http://127.0.0.1:{port}/props",
+          "status": 200,
+          "timeout_s": 60,
+          "json_match": {
+            "field": "role",
+            "value": "router"
+          }
+        },
+        "health": {
+          "http": "http://127.0.0.1:{port}/props",
+          "status": 200,
+          "interval_s": 5,
+          "json_match": {
+            "field": "role",
+            "value": "router"
+          }
+        },
+        "stop": {
+          "signal": "term",
+          "grace_s": 10
+        }
+      }
+    }
+  }
+}

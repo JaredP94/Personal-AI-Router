@@ -120,6 +120,9 @@ func TestBundledNetworkingControls(t *testing.T) {
 					}
 					valid = []string{"--port 23456", "--port=23456", "-p 23456", "-p23456", "-p=23456", `"-p" "23456"`, "--port 23456 -p23456", "-- -p23456", "--host 127.0.0.1"}
 					invalid = []string{"-p0", "-p65536", "-p", "-pno", "--port 23456 -p23457", "-vp23456", "-vp=23456", "--bind 0.0.0.0", "--bind=::", "LMS_SERVER_HOST=0.0.0.0", "--host 0.0.0.0", "--host=0.0.0.0", "-- --bind 0.0.0.0"}
+				} else if name == "llamacpp" {
+					valid = []string{"--host 127.0.0.1", "--port 23456", "LLAMA_ARG_HOST=127.0.0.1", "LLAMA_ARG_PORT=23456"}
+					invalid = []string{"--host /tmp/server.sock", "--port 0", "--reuse_port", "LLAMA_ARG_REUSE_PORT=1"}
 				} else {
 					if !reflect.DeepEqual(policy.Controls, []LaunchControl{
 						{Value: "{server.host}:{server.port}", Env: []string{"OLLAMA_HOST"}},

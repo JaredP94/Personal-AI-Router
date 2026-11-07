@@ -504,6 +504,19 @@ function routeEngineManagerCommand(payload: WsInvokeRequest<'engine:command'>): 
             )
             break
         case 'update':
+            if (payload.engineType === 'llamacpp') {
+                // Archive replacement/rollback belongs to Go. Never uninstall
+                // the working copy first; a running engine asks to stop first.
+                state.beginLocalEngineOp(payload.engineType, 'installing')
+                supervisor.sendProcess(
+                    'broker',
+                    'engine:install',
+                    { engine, start: true },
+                    failPendingOp('update', 'install'),
+                    true
+                )
+                break
+            }
             // The engine-manager serializes per-engine ops via its lifecycle
             // lock, so the queued install waits for the uninstall to finish. The
             // uninstall's engine:state-changed briefly clears this, then the

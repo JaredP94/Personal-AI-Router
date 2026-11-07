@@ -19,7 +19,7 @@ func (b *Broker) prepareEngineStart(ctx context.Context, engine, operationID str
 	if ctx.Err() != nil || !b.managedPortAuthorizedLocked(engine, operationID) {
 		return "", fmt.Errorf("%s", settingsRecoveryError)
 	}
-	if engine == "ollama" || engine == "lmstudio" || engine == "omlx" {
+	if engine == "ollama" || engine == "lmstudio" || engine == "omlx" || engine == "llamacpp" {
 		loadErr := b.loadEngineSettingsLocked()
 		record := b.engineSettings[engine]
 		needsRecovery := loadErr != nil || b.settingsRecoveryBlocked[engine] || (record != nil && (record.Snapshot.Phase == "failed" || record.Snapshot.Phase == "applying"))

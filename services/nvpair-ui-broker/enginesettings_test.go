@@ -122,6 +122,9 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 				h.launchMu.Lock()
 				current := launch
 				h.launchMu.Unlock()
+				var request settings.Request
+				_ = json.Unmarshal(msg.Params, &request)
+				current.Engine = request.Engine
 				_ = codec.Respond(msg.ID, current)
 			case "engine:configured-ports":
 				_ = codec.Respond(msg.ID, map[string]any{"engines": []any{map[string]any{"engine": "lmstudio", "port": h.otherEnginePort.Load()}}})
@@ -154,9 +157,13 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 					}
 					var p settings.Configure
 					_ = json.Unmarshal(msg.Params, &p)
-					_, previousProxy := h.b.settingsProxy(p.Engine).Status()
+					previousProxy := 0
+					if proxy := h.b.settingsProxy(p.Engine); proxy != nil {
+						_, previousProxy = proxy.Status()
+					}
 					h.launchMu.Lock()
 					previousLaunch := launch
+					launch.Engine = p.Engine
 					launch.ServerPort = p.Settings.ServerPort
 					launch.LaunchText = p.Settings.LaunchText
 					launch.Running = false

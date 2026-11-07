@@ -46,7 +46,7 @@ type launchBinding struct {
 }
 
 var bindingToken = regexp.MustCompile(`\{([^{}]+)\}`)
-var launchFlagName = regexp.MustCompile(`^(?:-[a-zA-Z]|--[a-zA-Z0-9_-]+)$`)
+var launchFlagName = regexp.MustCompile(`^(?:-[a-zA-Z]|--[a-zA-Z0-9_.-]+)$`)
 
 func (control LaunchControl) binding() (launchBinding, error) {
 	binding := launchBinding{}
@@ -108,7 +108,32 @@ func (p *EditableLaunch) environmentControl(name string) *LaunchControl {
 	return nil
 }
 
+func (p *EditableLaunch) protectedEnvironment(name string) bool {
+	if p.llamaCPP() && validEnvironmentKey(name) {
+		return true
+	}
+	if p.environmentControl(name) != nil {
+		return true
+	}
+	for _, key := range p.ForbiddenEnv {
+		if environmentKey(key) == environmentKey(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *EditableLaunch) normalizeFlag(name string) string {
+	if p.NormalizeFlagUnderscores && strings.HasPrefix(name, "--") {
+		return strings.ReplaceAll(name, "_", "-")
+	}
+	return name
+}
+
 func (p *EditableLaunch) validateControls() error {
+	if p.OptionPolicy != "" && !p.llamaCPP() {
+		return fmt.Errorf("unknown launch option policy")
+	}
 	flags, env, fields := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, control := range p.Controls {
 		binding, err := control.binding()
@@ -135,6 +160,19 @@ func (p *EditableLaunch) validateControls() error {
 			env[key] = true
 		}
 	}
+	for _, name := range p.ForbiddenFlags {
+		if !launchFlagName.MatchString(name) || flags[name] {
+			return fmt.Errorf("invalid or duplicate forbidden option %q", name)
+		}
+		flags[name] = true
+	}
+	for _, name := range p.ForbiddenEnv {
+		key := environmentKey(name)
+		if !validEnvironmentKey(name) || env[key] {
+			return fmt.Errorf("invalid or duplicate forbidden environment name")
+		}
+		env[key] = true
+	}
 	for name, field := range launchFields {
 		if field.managed != nil && !fields[name] {
 			return fmt.Errorf("editable launch controls must bind managed field %s", name)
@@ -147,7 +185,16 @@ func (p *EditableLaunch) validateControls() error {
 // bundle containing a protected option is ambiguous without knowing all other
 // vendor options' arities; reject it instead of guessing or letting it bypass us.
 func (p *EditableLaunch) readControl(tokens []string, index int) (*LaunchControl, string, int, error) {
-	token := tokens[index]
+	token := p.normalizeFlag(tokens[index])
+	if key, _, ok := strings.Cut(token, "="); ok && p.protectedEnvironment(key) {
+		return nil, "", index, fmt.Errorf("managed environment assignment in launch arguments")
+	}
+	name, _, _ := strings.Cut(token, "=")
+	for _, forbidden := range p.ForbiddenFlags {
+		if name == p.normalizeFlag(forbidden) {
+			return nil, "", index, fmt.Errorf("this option changes PAIR-managed launch state")
+		}
+	}
 	for ci := range p.Controls {
 		control := &p.Controls[ci]
 		for _, name := range control.Flags {

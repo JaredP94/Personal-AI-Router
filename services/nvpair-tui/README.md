@@ -122,7 +122,14 @@ followed by a failed engine restart is shown as **deleted, restart failed**.
 engine restart before `engine:set-port`. It does not change the proxy port.
 `U` confirms destructive reinstall: `engine:uninstall` must succeed before
 `engine:install {engine,start:true}` is sent. Failures identify the phase. Files
-removed by the uninstaller are deleted; update has no rollback guarantee.
+removed by the uninstaller are deleted; update has no rollback guarantee for
+these command-installed engines. llama.cpp is the exception: stop it first;
+`U` sends only `engine:install` so Go can validate and atomically exchange the
+PAIR-owned archive installation, keeping the previous tree on failure and
+preserving the sibling model cache. The engine list reports llama.cpp lifecycle
+state with a note: its macOS arm64 build is not notarized, like PAIR itself, and
+it does not serve requests through PAIR yet. No new proxy or model controls are
+added.
 
 All destructive confirmations (including `u`, cluster remove/leave and manual
 remove) use the shared default-cancel prompt: only `y` dispatches; `n`, Esc and

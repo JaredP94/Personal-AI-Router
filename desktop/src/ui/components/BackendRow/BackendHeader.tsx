@@ -13,6 +13,7 @@ import {
     gatewayEndpointDisplayUrl
 } from '@/ui/utils/gateway-inference-paths'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
+import EngineIcon from '@/ui/components/EngineIcon'
 import { statusLabel } from '@/ui/utils/status'
 
 /** Install/uninstall lines include asset names + percentages — allow more room than generic status. */
@@ -103,6 +104,7 @@ export function BackendHeader({
                             className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
                         />
                     )}
+                    {backend.type === 'llamacpp' && <EngineIcon type={backend.type} size={24} />}
                     <Text kind="body/semibold/md">{backend.displayName}</Text>
                 </Flex>
 

@@ -5,6 +5,33 @@ SPDX-License-Identifier: Apache-2.0
 
 # Engine manifest capabilities
 
+## Pinned macOS archive installs
+
+`install.archive` is an alternative to `install.disk_image`, scripts and commands.
+It requires a single checksum-pinned `fetch`, a nonempty `required` relative-file
+list and a `codesign` target in that list. Files are unpacked with one wrapper
+component stripped into a private sibling staging directory, never by a shell.
+The runner rejects absolute/traversing paths, escaping or invalid links, duplicate
+case-alias paths, special files, setuid/setgid modes, quarantine metadata, more
+than 512 entries or 2 GiB of expanded data. Internal library links are preserved.
+Required files must be nonempty regular files (or contained links to them).
+
+On macOS the source archive and every extracted entry are checked for `com.apple.quarantine`; any such
+attribute fails installation naming the file, without changing the attribute.
+The system `/usr/bin/codesign --verify --strict <executable>` must succeed; this
+checks existing signature integrity, not notarization or publisher trust. PAIR
+never re-signs the files. Other platforms fail closed.
+
+The completed staging directory includes an identity-bound PAIR install claim
+and artifact digest. First installation uses exclusive rename; updates atomically
+exchange the complete directories using macOS `RENAME_SWAP`. Extraction,
+validation, claim-write or exchange failure leaves the previous install intact.
+Repeated `engine:install` is a no-op for the same claimed digest; a changed pinned
+digest replaces a stopped, claimed installation. Stop the engine before updating.
+Unclaimed installations are never replaced or uninstalled. Archive installs may
+use the special `models_dir: "{install_dir}-models"` sibling cache; uninstall
+removes only the engine tree, never this cache. There is no separate update RPC.
+
 ## Command-mode shutdown confirmation
 
 `runtime.stop.wait_for_exit` is an optional boolean (default `false`). It
@@ -29,6 +56,15 @@ the deadline. Timeout retains running state and reports an error. The state
 mutex is never held across lookup, command execution, or confirmation; the
 lifecycle operation lock still serializes stop/start. Failed-start cleanup uses
 the same confirmation policy.
+
+## JSON identity probes
+
+HTTP `runtime.ready` and `runtime.health` may declare
+`"json_match": {"field":"role", "value":"router"}`. A successful status alone
+then does not identify the engine: a valid JSON object, within 64 KiB, must
+contain that top-level string value. Invalid, missing, differently typed or
+mismatching fields fail readiness. This uses llama.cpp b12171's `/props` router
+identity; a model-mode instance does not qualify.
 
 ## Editable launch manifest bindings
 
@@ -61,6 +97,11 @@ assignments pass through literally after trusted manifest expansion.
 - The numeric server-port field supplies `server.port`. Existing runtime bind
   policy supplies `server.host`; no user launch setting can replace either.
   These controls are rejected in editable input, including their aliases.
+- `forbidden_flags` and `forbidden_env` reject additional vendor inputs that
+  would undermine managed state without mapping them to a port field.
+  `normalize_flag_underscores` matches vendors that accept long-option underscore
+  aliases. All tokens are checked, including after `--` and assignments supplied
+  in argument positions. Fixed managed defaults are not shown as editable text.
 - The proxy listener belongs to the broker and is never a launch binding.
 
 [manifest.schema.json](manifest.schema.json) supplies editor validation; Go

@@ -47,6 +47,7 @@ import type { WorkerState, WorkerStatus } from '@/shared/types/workers'
 import type { ClusterNode, Invite } from '@/shared/types/cluster'
 import type { WsInvokeResponse } from '@/shared/types/ws-channels'
 import { MODULAR_NODE_INFO_SELF_HOST } from '@/shared/constants/modular-runtime'
+import { EngineTypes } from '@/shared/constants/engines'
 import { WorkloadStates } from '@/shared/constants/workloads'
 import {
     isEngineType,
@@ -1755,10 +1756,10 @@ class ModularBridgeState {
         // known — see {@link resolveRemoteEngineStatus}.
         for (const node of Array.from(this.nodes.values())) {
             if (node.id === selfId || !isPairPeer(node)) continue
-            for (const engine of PROXY_ENGINES) {
+            for (const engine of EngineTypes) {
                 const status = this.resolveRemoteEngineStatus(node.id, engine)
                 if (status) statuses.push(status)
-                models.push(this.toEngineModels(node, engine))
+                if (isProxyEngine(engine)) models.push(this.toEngineModels(node, engine))
             }
         }
 
@@ -2174,11 +2175,10 @@ class ModularBridgeState {
      * decision matches the displayed status.
      */
     isRemoteEngineRunning(nodeId: string, engineType: EngineType): boolean {
-        if (!isProxyEngine(engineType)) return false
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engineType))
         if (facts) return facts.running
         const node = this.nodes.get(nodeId)
-        if (!node || node.clustered || node.trusted) return false
+        if (!node || node.clustered || node.trusted || !isProxyEngine(engineType)) return false
         return node.engines[engineType].up
     }
 
@@ -2301,7 +2301,6 @@ class ModularBridgeState {
     }
 
     private emitRemoteEngineStatus(nodeId: string, engineType: EngineType): void {
-        if (!isProxyEngine(engineType)) return
         if (!this.nodes.has(nodeId)) return
         // Re-emit models alongside status: authoritative facts arriving here can
         // flip which engine is the single active one, which changes model
@@ -2313,7 +2312,15 @@ class ModularBridgeState {
             nodeId,
             engineType,
             status: this.remoteEngineStatusForPush(nodeId, engineType),
-            models: this.discoveryModelsForNode(this.nodes.get(nodeId), engineType, nodeId)
+            ...(isProxyEngine(engineType)
+                ? {
+                      models: this.discoveryModelsForNode(
+                          this.nodes.get(nodeId),
+                          engineType,
+                          nodeId
+                      )
+                  }
+                : {})
         })
     }
 
@@ -2322,7 +2329,7 @@ class ModularBridgeState {
      * placeholder when nothing is known so stale inferred state is cleared
      * without asserting installed-but-off.
      */
-    private remoteEngineStatusForPush(nodeId: string, engine: ProxyEngine): EngineStatusData {
+    private remoteEngineStatusForPush(nodeId: string, engine: EngineType): EngineStatusData {
         const status = this.resolveRemoteEngineStatus(nodeId, engine)
         return status ?? emptyEngineStatus(nodeId, engine)
     }
@@ -2358,12 +2365,9 @@ class ModularBridgeState {
      * The peer's engine port stays private (loopback) and comes only from facts;
      * the LOCAL proxy port is never attributed to a peer.
      */
-    private resolveRemoteEngineStatus(
-        nodeId: string,
-        engine: ProxyEngine
-    ): EngineStatusData | null {
+    private resolveRemoteEngineStatus(nodeId: string, engine: EngineType): EngineStatusData | null {
         const node = this.nodes.get(nodeId)
-        const presence = node?.engines[engine]
+        const presence = node && isProxyEngine(engine) ? node.engines[engine] : undefined
         const facts = this.remoteEngineFacts.get(this.remoteOpKey(nodeId, engine))
         const pending = this.pendingRemoteEngineOps.get(this.remoteOpKey(nodeId, engine))
 
@@ -2386,7 +2390,13 @@ class ModularBridgeState {
                 // The peer's own report of what this engine supports there.
                 capabilities: facts.capabilities
             }
-        } else if (node && presence?.up && !node.clustered && !node.trusted) {
+        } else if (
+            node &&
+            isProxyEngine(engine) &&
+            presence?.up &&
+            !node.clustered &&
+            !node.trusted
+        ) {
             // A live advertisement means the engine is reachable and serving, so
             // `running` is sound even without facts — for an unclustered peer that
             // cannot be polled over ec. Clustered / pinned members must wait for
@@ -2425,12 +2435,12 @@ class ModularBridgeState {
         const obj = objectValue(result)
         const list = obj?.engines
         if (!Array.isArray(list)) return
-        const seen = new Set<ProxyEngine>()
+        const seen = new Set<EngineType>()
         for (const entry of list) {
             const engineObj = objectValue(entry)
             if (!engineObj) continue
             const engineType = engineManagerEngineType(stringValue(engineObj.engine))
-            if (!engineType || !isProxyEngine(engineType)) continue
+            if (!engineType) continue
             this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
                 installed: booleanValue(engineObj.installed),
                 running: booleanValue(engineObj.running),
@@ -2440,7 +2450,7 @@ class ModularBridgeState {
             })
             seen.add(engineType)
         }
-        for (const engine of PROXY_ENGINES) {
+        for (const engine of EngineTypes) {
             if (!seen.has(engine)) {
                 this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
             }
@@ -2458,7 +2468,6 @@ class ModularBridgeState {
         engineType: EngineType,
         result: JsonValue | undefined
     ): void {
-        if (!isProxyEngine(engineType)) return
         const obj = objectValue(result)
         if (!obj) return
         this.remoteEngineFacts.set(this.remoteOpKey(nodeId, engineType), {
@@ -2473,7 +2482,7 @@ class ModularBridgeState {
 
     /** Forget a node's authoritative remote-engine facts (on eviction/leave). */
     private dropRemoteEngineFacts(nodeId: string): void {
-        for (const engine of PROXY_ENGINES) {
+        for (const engine of EngineTypes) {
             this.remoteEngineFacts.delete(this.remoteOpKey(nodeId, engine))
         }
     }

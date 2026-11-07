@@ -19,7 +19,7 @@ worker's existing `set-port` RPC and `ready` port notification.
 | `engine:preview-settings` | `Request` | `Preview`, without saving or runtime mutation |
 | `engine:apply-settings` | `Request`, with `requestId` | `{revision, phase}` receipt |
 
-`engine` is `ollama`, `lmstudio` or `omlx`. Omitted/local `nodeId` addresses
+`engine` is `ollama`, `lmstudio`, `omlx` or `llamacpp`. Omitted/local `nodeId` addresses
 this device; a remote stable host UUID routes through engine-manager's
 verified peer directory and pinned cluster mTLS. Previews and bare manual
 engines do not qualify, even if a claimed identity matches a saved pin.
@@ -38,7 +38,13 @@ engines do not qualify, even if a claimed identity matches a saved pin.
 `launchText` follows
 [`pair-arguments-v1`](../nvpair-engine-manager/LAUNCH_TEXT.md). Bind-address,
 port and proxy-wiring assignments are rejected, not reconciled with numeric
-fields. Unrelated vendor arguments/environment are opaque. `resolution` is
+fields. Unrelated vendor arguments/environment are opaque for Ollama and LM Studio.
+llama.cpp instead uses the pinned, typed inference-only allowlist documented in
+[LLAMACPP.md](../nvpair-engine-manager/LLAMACPP.md#launch-allowlist-b12171), with no
+user environment assignments. Unlike #48's server launch text, its parser exposes
+host execution, agents, tunnels, MCP and downloads: the same closed-policy
+reasoning as #49's load options applies. Persisted invalid settings are reported
+as invalid, never silently applied or discarded. `resolution` is
 accepted as an optional upstream request field but cannot authorize managed
 launch controls; `conflict` remains absent because those controls are rejected.
 
@@ -54,6 +60,15 @@ For oMLX, `serverPort` is read-only and `launchText` must be empty. Only the
 PAIR-owned proxy port can change. Go rejects server-port, argument and
 environment edits with a message directing the user to the oMLX app. A proxy
 rebind never stops or restarts that app, including adopted running instances.
+
+For llama.cpp, the same revision/recovery protocol manages the server port and
+launch text without a proxy worker: `proxyPort` and `effectiveProxyPort` are
+**zero**, the client hides the proxy-port field, and nonzero proxy ports are
+rejected. No service is advertised and no model routing is enabled. A missing
+proxy is not an editing error for this engine. Configured engine ports, existing
+service reservations and live listener collisions still apply. Readiness uses
+`/props` router identity. Load profiles remain LM Studio-only. See the
+[b12171 launch audit and installation limits](../nvpair-engine-manager/LLAMACPP.md).
 
 ## Per-model LM Studio load options
 

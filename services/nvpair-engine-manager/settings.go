@@ -17,6 +17,9 @@ import (
 )
 
 func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]string) (launchCommand, error) {
+	if err := validateLlamaOverrides(rt); err != nil {
+		return launchCommand{}, err
+	}
 	if err := rejectManagedOverrides(rt); err != nil {
 		return launchCommand{}, err
 	}
@@ -81,7 +84,15 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 			command.Args = append(command.Args, control.flag(), value)
 		}
 	}
-	command.Args = append(command.Args, (*rt.LaunchArgs)...)
+	args := *rt.LaunchArgs
+	if p.llamaCPP() {
+		var err error
+		args, err = normalizeLlamaOptions(args)
+		if err != nil {
+			return launchCommand{}, err
+		}
+	}
+	command.Args = append(command.Args, args...)
 
 	return command, nil
 }
@@ -180,7 +191,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	result := settings.Preview{Settings: request.Settings, Args: []string{}, Env: []string{}, Errors: map[string]string{}}
 	fail := func(message string) settings.Preview { result.Errors["launchText"] = message; return result }
 
-	if request.Settings.ProxyPort < 1 || request.Settings.ProxyPort > 65535 {
+	if (request.Engine == "llamacpp" && request.Settings.ProxyPort != 0) || (request.Engine != "llamacpp" && (request.Settings.ProxyPort < 1 || request.Settings.ProxyPort > 65535)) {
 		result.Errors["proxyPort"] = "Enter a proxy port from 1 to 65535."
 		return result
 	}
@@ -227,12 +238,18 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	if err != nil {
 		return fail(err.Error())
 	}
+	if policy.llamaCPP() {
+		tokens, err = normalizeLlamaOptions(tokens)
+		if err != nil {
+			return fail(err.Error())
+		}
+	}
 	for len(tokens) > 0 {
 		key, _, ok := strings.Cut(tokens[0], "=")
 		if !ok || strings.HasPrefix(key, "-") || strings.ContainsAny(key, "/\\") {
 			break
 		}
-		if policy.environmentControl(key) != nil {
+		if policy.protectedEnvironment(key) {
 			return fail(managedLaunchMessage)
 		}
 		result.Env = append(result.Env, tokens[0])
@@ -457,7 +474,7 @@ func rejectManagedOverrides(rt Runtime) error {
 	if rt.LaunchEnv != nil {
 		for _, assignment := range *rt.LaunchEnv {
 			key, _, _ := strings.Cut(assignment, "=")
-			if policy.environmentControl(key) != nil {
+			if policy.protectedEnvironment(key) {
 				return fmt.Errorf("%s", managedLaunchMessage)
 			}
 		}
