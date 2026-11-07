@@ -274,6 +274,18 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 	case "engine:errors":
 		m.codec.Respond(msg.ID, map[string]any{"errors": m.exec.Errors()})
 
+	case "engine:model-catalog":
+		var p struct {
+			Query string `json:"query,omitempty"`
+		}
+		if !m.parse(msg, &p) {
+			return
+		}
+		go func() {
+			rows, err := m.exec.llamaHub.catalog(ctx, p.Query)
+			m.respondOrErr(msg, map[string]any{"models": rows}, err)
+		}()
+
 	case "engine:models":
 		go m.runModels(ctx, msg)
 

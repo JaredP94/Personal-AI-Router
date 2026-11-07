@@ -14,7 +14,14 @@ is a JSON manifest, not code.
 [llama.cpp](LLAMACPP.md) is supported on macOS arm64, pinned to b12171. Its
 macOS build is not notarized, like PAIR itself. The dedicated `llamacpp-proxy`
 serves it on port 1237. Select a cached GGUF with the allowlisted `--model`/`-m`;
-`list_models` reads its OpenAI inventory. Hub/download/delete remain deferred.
+`list_models` reads its OpenAI inventory. `engine:model-catalog` accepts
+`{query?: string}` and returns `{models: [{id, file, size?, sha256?}]}` from
+public, ungated, text-generation GGUF repositories. IDs are `owner/repo:Q4_K_M`;
+only one unsplit Q4_K_M file is admitted. Empty query reads ggml-org, bartowski
+and unsloth (50 repositories each). Public search is capped at 50 repositories,
+100 query characters, 20 cached queries and a six-hour TTL. Requests have a
+20-second aggregate timeout (broker: 25 seconds); metadata bodies are bounded
+to 4 MiB. Desktop/TUI catalog screens are deferred to PR 4.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)

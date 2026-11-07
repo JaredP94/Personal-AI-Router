@@ -3733,6 +3733,8 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 		ctx, cancel = context.WithTimeout(ctx, settings.LMStudioModelRelayBudget)
 	}
 	switch method {
+	case "engine:model-catalog":
+		ctx, cancel = context.WithTimeout(ctx, 25*time.Second)
 	case "engine:cancel-pull", "engine:remote-cancel-pull":
 		ctx, cancel = context.WithTimeout(ctx, engineCancelRelayTimeout)
 	case "engine:remote-pull-model":

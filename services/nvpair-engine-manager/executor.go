@@ -120,6 +120,7 @@ func (st *engineState) unlockOperation() {
 // layer runs the long ones (install, start) in goroutines so the read
 // loop stays responsive.
 type Executor struct {
+	llamaHub       *llamaHub
 	loadProfilesMu sync.Mutex // disk state only; never held across engine calls or notifications
 	settingsHub    settings.Hub
 	settingsParent func(context.Context, string, settings.Request, string) (json.RawMessage, error)
@@ -182,6 +183,7 @@ type Executor struct {
 
 func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), baseDir string) *Executor {
 	return &Executor{
+		llamaHub:            newLlamaHub(),
 		reg:                 reg,
 		tools:               defaultToolEnv(),
 		reporter:            reporter,
