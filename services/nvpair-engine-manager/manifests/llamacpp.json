@@ -94,6 +94,8 @@
             "300"
           ],
           "option_policy": "llamacpp-b12171",
+          "forbidden_flags": ["--alias", "-a"],
+          "forbidden_env": ["LLAMA_ARG_ALIAS"],
           "controls": [
             {
               "flags": [

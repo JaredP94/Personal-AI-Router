@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -72,6 +73,21 @@ func (command launchCommand) argumentText(policy *EditableLaunch) (string, error
 	args := command.Args[len(policy.FixedArgs):]
 	editable := []string{}
 	for i := 0; i < len(args); i++ {
+		// Descriptor paths and API aliases are child-only launch details. Keep
+		// the editor's model selection cache-relative, including after reload.
+		if policy.llamaCPP() && args[i] == "--model" && i+1 < len(args) {
+			root, err := filepath.EvalSymlinks(command.Env["LLAMA_CACHE"])
+			if err != nil {
+				return "", err
+			}
+			rel, err := filepath.Rel(root, args[i+1])
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return "", fmt.Errorf("llama.cpp model selection must be inside the PAIR model cache")
+			}
+			editable = append(editable, "--model", filepath.ToSlash(rel))
+			i++
+			continue
+		}
 		control, _, last, err := policy.readControl(args, i)
 		if err != nil {
 			return "", err

@@ -103,6 +103,7 @@ func TestLlamaResolvedLaunch(t *testing.T) {
 	t.Setenv("LLAMA_ARG_HOST", "/tmp/unwanted.sock")
 	t.Setenv("LLAMA_ARG_PORT", "9999")
 	t.Setenv("LLAMA_ARG_REUSE_PORT", "1")
+	t.Setenv("LLAMA_ARG_ALIAS", "unwanted,aliases")
 	t.Setenv("LLAMA_CACHE", "/tmp/unwanted-cache")
 	args, env := []string{"--threads", "4"}, []string{}
 	p.Runtime.LaunchArgs = &args
@@ -110,6 +111,9 @@ func TestLlamaResolvedLaunch(t *testing.T) {
 	cmd, err := resolveProcessLaunch(p.Runtime, "/fixture/llama-server", map[string]string{"host": "127.0.0.1", "port": "8082", "install_dir": "/fixture"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, exists := cmd.Env["LLAMA_ARG_ALIAS"]; exists {
+		t.Fatal("router launch inherited a model alias")
 	}
 	if strings.Join(cmd.Args, " ") != "--sleep-idle-seconds 300 --host 127.0.0.1 --port 8082 --threads 4" || cmd.Env["LLAMA_CACHE"] != "/fixture-models" || cmd.Env["LLAMA_ARG_HOST"] != "127.0.0.1" || cmd.Env["LLAMA_ARG_PORT"] != "8082" || cmd.Env["LLAMA_ARG_REUSE_PORT"] != "0" {
 		t.Fatalf("unsafe launch: %+v", cmd)

@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func openLlamaModel(cache, value string) (*os.File, error) {
+func openLlamaModel(cache, value string) (*llamaModelFile, error) {
 	if strings.Contains(value, ":Q4_K_M") {
 		name, err := recordedLlamaModelPath(cache, value)
 		if err != nil {
@@ -45,7 +45,7 @@ func openLlamaModel(cache, value string) (*os.File, error) {
 // root is the canonical cache path, not a pathname to resolve again. Walk from
 // / so a symlink swap in ANY ancestor fails rather than redirecting the open.
 // Each successful open pins the next directory even if its name is then moved.
-func openLlamaModelAt(root, rel string) (*os.File, error) {
+func openLlamaModelAt(root, rel string) (*llamaModelFile, error) {
 	parts := strings.Split(rel, string(filepath.Separator))
 	if !filepath.IsAbs(root) || filepath.IsAbs(rel) || rel == "" || !strings.EqualFold(filepath.Ext(rel), ".gguf") {
 		return nil, fmt.Errorf("llama.cpp model must be a regular .gguf file inside the PAIR model cache")
@@ -57,6 +57,10 @@ func openLlamaModelAt(root, rel string) (*os.File, error) {
 	}
 	if llamaSplitName.MatchString(rel) {
 		return nil, fmt.Errorf("split/multi-file GGUF models are not supported yet; select a single-file GGUF")
+	}
+	alias, err := llamaFileAlias(rel)
+	if err != nil {
+		return nil, err
 	}
 	dirFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	dirfd, err := unix.Open("/", dirFlags, 0)
@@ -97,8 +101,12 @@ func openLlamaModelAt(root, rel string) (*os.File, error) {
 			return nil, err
 		}
 		dir := os.NewFile(uintptr(dup), root)
-		err = validateLlamaRecordedFile(dir, rel, file)
+		var recordedAlias string
+		recordedAlias, err = llamaRecordedModelAlias(dir, rel, file)
 		_ = dir.Close()
+		if recordedAlias != "" {
+			alias = recordedAlias
+		}
 		if err != nil {
 			_ = file.Close()
 			return nil, err
@@ -108,5 +116,5 @@ func openLlamaModelAt(root, rel string) (*os.File, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	return file, nil
+	return &llamaModelFile{File: file, alias: alias}, nil
 }
