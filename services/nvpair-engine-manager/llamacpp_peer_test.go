@@ -48,6 +48,28 @@ func TestLlamaPeerInventoryIncludesStoppedCache(t *testing.T) {
 	}
 }
 
+func TestLlamaCacheFailurePreservesOtherEngineInventory(t *testing.T) {
+	ex, cache := llamaDownloadExecutor(t, nil, nil)
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, llamaManifestName), []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mf := testEngineManifest(fakeEngineForTest(t))
+	mf.Actions["list_models"] = Action{HTTP: &ActionHTTP{Method: "GET", Path: "/api/tags"}, Result: &ActionResult{Array: "models", Field: "name"}}
+	ex.reg.engines["fake"] = mf
+	reconciledTestExecutor(ex)
+	t.Cleanup(func() { _ = ex.Stop("fake") })
+	if err := ex.Start(context.Background(), "fake"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ex.modelsResult(context.Background())
+	if err == nil || len(result.ByEngine["fake"]) != 1 || result.ByEngine["fake"][0] != "llama3.2:1b" {
+		t.Fatalf("cache failure erased served inventory: %+v %v", result, err)
+	}
+}
+
 func TestLlamaRemoteDeleteUsesIdentityAndRunningGuard(t *testing.T) {
 	for _, mode := range []string{"delete", "running", "replacement", "unpinned"} {
 		t.Run(mode, func(t *testing.T) {
