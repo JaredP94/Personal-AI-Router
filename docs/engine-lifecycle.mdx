@@ -11,8 +11,8 @@ those engines for you, or work with a copy you already have. A macOS arm64
 **llama.cpp engine** also appears in Engine settings: it can be installed,
 started, stopped and configured, and is served by its own routing proxy on
 **1237** (engine listener **127.0.0.1:8082**). Select a regular GGUF inside PAIR's
-llama.cpp model cache with allowlisted `--model`/`-m`; model hub/download/delete
-are not available yet. Its official b12171 macOS build is **not notarized**, like PAIR itself.
+llama.cpp model cache with allowlisted `--model`/`-m`; the Go service now
+provides catalog/download/cancel/delete RPCs, with desktop/TUI hub screens deferred. Its official b12171 macOS build is **not notarized**, like PAIR itself.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
 
@@ -76,7 +76,10 @@ and launch arguments/environment but no proxy port. PAIR protects all listener
 controls, including Unix-socket host values and port-changing presets. Readiness
 requires the `/props` router identity, not merely HTTP success. Non-loopback
 binding still requires the existing explicit `engine_allow_lan_bind` permission.
-There is no model hub, model download/delete, load profile or routed endpoint yet.
+The Go model hub supplies a bounded public Q4_K_M catalog and PAIR-owned
+verified downloads, asynchronous cancel and manifest-owned delete. See the
+[model hub contract](../services/nvpair-engine-manager/LLAMACPP.md#go-model-hub-and-owned-cache).
+The dedicated proxy routes inference; model hub screens and load profiles remain deferred.
 
 Installation verifies the pinned SHA-256, bounded contained extraction, expected
 server/libraries/Metal layout, absence of quarantine and existing signature

@@ -23,6 +23,13 @@ func llamaModelPath(cache, value string) (string, error) {
 	fail := func() (string, error) {
 		return "", fmt.Errorf("model must be an existing regular .gguf file inside the PAIR llama.cpp model cache")
 	}
+	if strings.Contains(value, ":Q4_K_M") {
+		file, err := recordedLlamaModelPath(cache, value)
+		if err != nil {
+			return fail()
+		}
+		value = file
+	}
 	if cache == "" || value == "" || strings.Contains(value, "://") {
 		return fail()
 	}

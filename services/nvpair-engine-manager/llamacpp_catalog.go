@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -65,7 +64,7 @@ type llamaHub struct {
 }
 
 func newLlamaHub() *llamaHub {
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 10 * time.Second, MaxResponseHeaderBytes: 64 << 10, IdleConnTimeout: 30 * time.Second}
+	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: llamaDial, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 10 * time.Second, MaxResponseHeaderBytes: 64 << 10, IdleConnTimeout: 30 * time.Second}
 	return &llamaHub{endpoint: "https://huggingface.co", now: time.Now, cache: make(map[string]llamaCatalogCache), client: &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if req.URL.Scheme != "https" || req.URL.User != nil || len(via) >= 5 {
 			return fmt.Errorf("unsafe model redirect")

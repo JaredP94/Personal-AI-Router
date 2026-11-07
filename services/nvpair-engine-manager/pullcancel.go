@@ -85,6 +85,9 @@ func (e *Executor) trackedPull(ctx context.Context, engine, model, opID string, 
 	} else if p.requested.Load() && errors.Is(err, context.Canceled) {
 		stage = "cancelled"
 		message = "Partial data is kept so the download can resume."
+		if engine == "llamacpp" {
+			message = "Download stopped; this operation\u0027s temporary file was removed."
+		}
 		result, err = json.RawMessage(`{"status":"cancelled"}`), nil
 	} else if err != nil {
 		stage = "error"

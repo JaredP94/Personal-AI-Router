@@ -49,6 +49,9 @@ func capabilitiesForPlatform(m *Manifest, p Platform, goos string, adopted bool,
 	_, list := m.Actions["list_models"]
 	_, pull := m.Actions["pull_model"]
 	deleteAction, deleteModel := m.Actions["delete_model"]
+	if m.Engine == "llamacpp" {
+		list, pull, deleteModel = true, true, true
+	}
 	uninstall := p.Uninstall != nil && (len(p.Uninstall.Run) > 0 || len(p.Uninstall.Remove) > 0) && !adopted
 	if uninstall && p.Runtime.modeOrDefault() == "command" {
 		// Uninstall declines a command-mode engine PAIR has no record of

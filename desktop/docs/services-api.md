@@ -30,7 +30,6 @@
 - ⚠️ nvpair-engine-manager → engine:errors
 - ⚠️ nvpair-engine-manager → engine:get-launch
 - ⚠️ nvpair-engine-manager → engine:logs
-- ⚠️ nvpair-engine-manager → engine:model-catalog
 - ⚠️ nvpair-engine-manager → engine:preview-launch
 - ⚠️ nvpair-engine-manager → engine:remote-apply-load-profile
 - ⚠️ nvpair-engine-manager → engine:remote-apply-settings
@@ -56,7 +55,6 @@
 - ⚠️ nvpair-node-settings → settings/set-force-ports
 - ⚠️ nvpair-ui-broker → discovery:unsubscribe
 - ⚠️ nvpair-ui-broker → engine:configure-launch
-- ⚠️ nvpair-ui-broker → engine:model-catalog
 - ⚠️ nvpair-ui-broker → engine:set-reserved-port
 - ⚠️ nvpair-ui-broker → engine:unsubscribe
 - ⚠️ nvpair-ui-broker → internal:set-reserved-port
@@ -184,7 +182,7 @@
 | `engine:install` | request (we call) | ✅ yes |
 | `engine:install-tool` | request (we call) | ✅ yes |
 | `engine:logs` | request (we call) | ⚠️ not called |
-| `engine:model-catalog` | request (we call) | ⚠️ not called |
+| `engine:model-catalog` | request (we call) | ✅ yes |
 | `engine:models` | request (we call) | ✅ yes |
 | `engine:prepare-shutdown` | request (we call) | ✅ yes |
 | `engine:preview-launch` | request (we call) | ⚠️ not called |
@@ -398,7 +396,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `engine:get-load-profile` | request (we call) | ✅ yes |
 | `engine:get-settings` | request (we call) | ✅ yes |
 | `engine:install` | request (we call) | ✅ yes |
-| `engine:model-catalog` | request (we call) | ⚠️ not called |
+| `engine:model-catalog` | request (we call) | ✅ yes |
 | `engine:preview-load-profile` | request (we call) | ✅ yes |
 | `engine:preview-settings` | request (we call) | ✅ yes |
 | `engine:remote-cancel-pull` | request (we call) | ✅ yes |

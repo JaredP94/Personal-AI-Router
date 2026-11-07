@@ -118,6 +118,11 @@ func (e *Executor) doStart(ctx context.Context, st *engineState, engine string, 
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	st.mu.Lock()
+	if st.llamaCacheBusy {
+		st.mu.Unlock()
+		cancel()
+		return fmt.Errorf("llama.cpp model cache busy")
+	}
 	st.startCancel = cancel
 	st.mu.Unlock()
 	defer func() {

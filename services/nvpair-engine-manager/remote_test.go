@@ -44,8 +44,13 @@ func callToolRemote(t *testing.T, srv *httptest.Server, mesh *clustertrust.Mesh,
 	}()
 	dec := json.NewDecoder(clientConn)
 	var response Message
-	if err := dec.Decode(&response); err != nil {
-		t.Fatal(err)
+	for {
+		if err := dec.Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.ID != nil {
+			break
+		}
 	}
 	select {
 	case <-returned:

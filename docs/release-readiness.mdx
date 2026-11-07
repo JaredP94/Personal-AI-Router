@@ -16,7 +16,9 @@ The current source adds `llamacpp-proxy` (default port 1237, engine 8082,
 service `lc`): **13 supervised workers / 15 executables**. The broker, desktop
 and TUI inventories, build/install lists and contract documentation include it.
 Native b12171 Messages passthrough and exact-ID model routing are supported;
-model hub/download/delete remain deferred. Historical packaged-app evidence
+the Go model hub provides catalog/download/cancel/delete; desktop/TUI hub
+screens remain deferred. The new hub uses fixture/local-server tests, not live
+model downloads or packaged certification. Historical packaged-app evidence
 below predates this worker and does not certify its packaged or multi-node
 inference behavior. Validate those before release.
 

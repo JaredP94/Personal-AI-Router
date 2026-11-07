@@ -9,8 +9,8 @@ PAIR manages the official **b12171 macOS arm64** build. Other platforms are
 unsupported. PAIR installs, starts, stops and configures the engine and serves
 it through the dedicated `llamacpp-proxy` worker, default port **1237**. Routing
 uses exact model IDs from the engine's `/v1/models` inventory, with separate
-`llamacpp` attribution. There is no model hub, download/delete adapter or load
-profile yet.
+`llamacpp` attribution. The Go model hub supports catalog, downloads, cancel
+and delete over JSON-RPC; desktop/TUI hub screens and load profiles are deferred.
 
 The macOS build is **not notarized**, like this fork's PAIR application. The
 release is checksum-pinned, not publisher-trusted by that checksum. Its existing
@@ -46,7 +46,57 @@ inherited descriptor's `model_path` from `tools/server/server-context.cpp`
 A different service returning HTTP 200 is not an engine match. Foreground-process
 shutdown uses the existing process lifecycle, not command-mode `wait_for_exit`.
 The model cache is `LLAMA_CACHE={install_dir}-models`, a PAIR-managed sibling
-that survives engine uninstall. Nothing in this PR downloads models.
+that survives engine uninstall. PAIR downloads models itself; llama-server is
+kept offline and none of its download launch options are enabled.
+
+## Go model hub and owned cache
+
+`engine:model-catalog {query?: string}` returns `{models: [{id, file, size?,
+sha256?}]}`. Empty query reads ggml-org, bartowski and unsloth, up to 50 repos
+each. Public search admits at most 50 repos and 100 query characters; at most
+20 search queries are cached for six hours. The aggregate metadata deadline is
+20 seconds (broker 25 seconds). Only public, ungated text-generation GGUF repos
+with exactly one single-file Q4_K_M candidate are listed. IDs are
+`owner/repo:Q4_K_M`. All path components use bounded strict ASCII validation.
+
+Existing `engine:action` supports llama.cpp `pull_model {model: id}` with
+`opId`, `list_downloaded` returning `{models: [{id, file, size, sha256,
+finalHost}]}`, and `delete_model {model: id}`. Inventory combines the ownership
+manifest with a bounded (4096 entries) no-follow regular-GGUF scan; manually
+supplied GGUFs have their filename as ID and empty checksum/host and are never
+deletable by PAIR. Recorded files must match their recorded size and valid
+single-file GGUF metadata to appear. The live `list_models` remains the
+llama-server served inventory, not this installed list.
+
+PAIR resolves metadata again before transfer, requiring LFS SHA-256 and size
+and a pinned repository commit. Limit: 64 GiB per file plus 256 MiB free-space
+reserve. Transfers have a 30-minute operation bound, 10-second dial/TLS/header
+bounds, a 64 KiB response-header cap and a 30-second idle-read bound. Redirects
+must stay HTTPS, cannot contain credentials and are limited to five; the final
+host is recorded. Bodies and transfer URLs are never logged. An exclusive
+random temporary file is created inside the pinned cache descriptor; exact
+size, SHA-256 and single-file GGUF metadata are checked before fsync and an
+atomic no-replace rename. The small ownership manifest is fsynced and atomically
+replaced. Existing destinations are never overwritten. A crash between file
+commit and manifest commit can leave an unrecorded file, never a deletable
+owned entry; abandoned crash temp files are not automatically reclaimed.
+
+`engine:cancel-pull` accepts asynchronously; only the terminal progress update
+confirms transfer release and removal of that operation\u0027s own temp file. Unlike
+Ollama/LM Studio in #50, this cache is PAIR-owned: cleaning the uniquely created
+temp is safe; no shared, pre-existing or completed file is removed. Concurrent
+cache mutations are refused (including duplicate pulls), not queued. #50\u0027s
+operation-ID fencing, broker worker-loss interruption and epoch recovery apply
+unchanged. Verified-peer downloads/cancel/delete use the existing authenticated
+remote methods and streams. Start is refused during a cache mutation; deletion
+conservatively requires the engine to be stopped and no lifecycle op in flight.
+Every cache ancestor is opened with openat/no-follow from `/`; mutations stay
+relative to that descriptor even after a parent swap. Delete requires a matching
+ownership manifest record and regular file, and never recursively removes data.
+
+This intentionally differs from NVIDIA/Personal-AI-Router@6d2d67f: PAIR does not
+ask llama-server\u0027s router-mode API to download. All checks and #50 tracking stay
+inside Go. No real model was downloaded during development.
 
 ## Launch allowlist (b12171)
 
@@ -82,9 +132,9 @@ reopens the path with `llama_file` for reads or `mmap` on that descriptor. macOS
 sibling paths, so split filenames and `split.*` metadata (including renamed
 shards) are explicitly rejected at spawn. Metadata inspection is bounded to
 64 MiB; malformed or unsupported GGUF metadata fails closed. Multi-file models
-and mmproj are not supported in this PR. The user supplies a single-file model
-for now; PR 3 adds the hub that fills the cache. Omitting `--model` retains router
-mode.
+and mmproj are not supported. The hub fills the cache with verified single-file
+models. `--model` accepts the installed catalog ID, cache filename or contained
+path. Omitting `--model` retains router mode.
 
 Other allowed value options (documented short aliases included): `--ctx-size/-c`,
 `--batch-size/-b`, `--ubatch-size/-ub` (context 0–1048576, batches 1–1048576),

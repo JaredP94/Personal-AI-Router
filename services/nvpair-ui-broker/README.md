@@ -763,6 +763,11 @@ cache files nor synthesizes stopped state. Cancel acceptance is bounded by
 15 s. `enginePullRelayTimeout` (31 min) bounds pull replies, outside the worker's
 30 min action plus bounded stop and inside the clients' 32 min envelope.
 
+`engine:model-catalog` relays the Go-owned llama.cpp catalog with a 25-second
+budget outside the worker\u0027s 20-second metadata deadline. Existing action/pull,
+cancel and remote methods also support PAIR-owned llama.cpp cache operations;
+see the engine-manager [cache contract](../nvpair-engine-manager/LLAMACPP.md#go-model-hub-and-owned-cache).
+
 Any other `engine:*` request is forwarded to `nvpair-engine-manager` verbatim and its response relayed straight back. This covers the whole engine control plane: `engine:get-installed`, `engine:describe`, `engine:status`, `engine:install`, `engine:uninstall`, `engine:start`, `engine:stop`, `engine:restart`, `engine:set-port`, `engine:action`, `engine:logs`, `engine:errors`, `engine:models`. (`engine:set-port` persists the engine's server port as a manifest override that survives a restart — see the `nvpair-engine-manager` README.) Lifecycle ops run for minutes (reporting progress via the `engine:install-progress` / `engine:state-changed` push events), so the relay imposes **no broker-side timeout** — fire the request and watch the event stream for the outcome. Error `-32000 "engine-manager not available"` when no engine-manager is supervised.
 
 The broker's prepare-shutdown request and subsequent stdin close join the same

@@ -27,6 +27,16 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 	if err != nil {
 		return nil, err
 	}
+	if engine == "llamacpp" {
+		switch action {
+		case "pull_model":
+			return e.PullModelStream(ctx, engine, modelFromParams(params), params)
+		case "list_downloaded":
+			return e.listLlamaModels()
+		case "delete_model":
+			return e.deleteLlamaModel(ctx, modelFromParams(params))
+		}
+	}
 	act, ok := st.manifest.Actions[action]
 	if !ok {
 		return nil, fmt.Errorf("engine %q has no action %q", engine, action)
