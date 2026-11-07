@@ -4,6 +4,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,7 +38,7 @@ func TestLlamaInferenceAllowlist(t *testing.T) {
 			}
 		}
 	}
-	for _, names := range []string{"--cont-batching -cb", "--no-cont-batching -nocb", "--kv-offload -kvo", "--no-kv-offload -nkvo", "--mlock", "--mmap", "--no-mmap", "--metrics", "--slots", "--no-slots"} {
+	for _, names := range []string{"--cont-batching -cb", "--no-cont-batching -nocb", "--kv-offload -kvo", "--no-kv-offload -nkvo", "--metrics", "--slots", "--no-slots"} {
 		for _, name := range strings.Fields(names) {
 			args := []string{name}
 			rt := p.Runtime
@@ -86,6 +88,39 @@ func TestLlamaRejectsUncontrolledLaunch(t *testing.T) {
 		rt.LaunchEnv = &assignments
 		if _, err := resolveProcessLaunch(rt, "/fixture/server", map[string]string{"host": "127.0.0.1", "port": "8082", "install_dir": "/fixture"}); err == nil {
 			t.Errorf("persisted environment accepted %s", env)
+		}
+	}
+}
+
+// Every allowlisted name must exist in the pinned release: b12171 rejects
+// unknown arguments, so a stale name would pass PAIR's validation and then
+// stop llama-server from starting.
+func TestLlamaAllowlistMatchesPinnedRelease(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "llamacpp-b12171-options.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			known[line] = true
+		}
+	}
+	for _, option := range llamaInferenceOptions {
+		for _, name := range strings.Fields(option.names) {
+			if !known[name] {
+				t.Errorf("%s is not a llama-server b12171 option", name)
+			}
+		}
+	}
+	for _, mode := range strings.Fields("auto none mmap mlock mmap+mlock dio") {
+		if _, err := normalizeLlamaOptions([]string{"--load-mode", mode}); err != nil {
+			t.Errorf("load mode %s: %v", mode, err)
+		}
+	}
+	for _, rejected := range [][]string{{"--load-mode", "lazy"}, {"--mlock"}, {"--mmap"}, {"--no-mmap"}} {
+		if _, err := normalizeLlamaOptions(rejected); err == nil {
+			t.Errorf("%v accepted", rejected)
 		}
 	}
 }

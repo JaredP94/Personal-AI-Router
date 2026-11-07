@@ -64,11 +64,14 @@ Allowed value options (documented short aliases included): `--ctx-size/-c`,
 `--chat-template` (only named built-ins from b12171 `src/llama-chat.cpp`),
 `--reasoning-format` (`none/auto/deepseek/deepseek-legacy`),
 `--reasoning/-rea` (`on/off/auto`), `--reasoning-effort`
-(`default/minimal/low/medium/high/xhigh/max`), `--reasoning-budget` (-1–1048576).
+(`default/minimal/low/medium/high/xhigh/max`), `--reasoning-budget` (-1–1048576),
+`--load-mode/-lm` (`auto/none/mmap/mlock/mmap+mlock/dio`).
 `--flag value` and `--flag=value` are normalized to separate argv values because
 b12171's parser requires them. Presence-only boolean switches: `--cont-batching/-cb`,
 `--no-cont-batching/-nocb`, `--kv-offload/-kvo`, `--no-kv-offload/-nkvo`,
-`--mlock`, `--mmap`, `--no-mmap`, `--metrics`, `--slots`, `--no-slots`.
+`--metrics`, `--slots`, `--no-slots`. Every allowlisted name is checked against
+`testdata/llamacpp-b12171-options.txt`, the option names b12171 defines; regenerate
+it from `common/arg.cpp` when the pinned release changes.
 No arbitrary template programs, paths, URLs or non-finite numeric values are allowed.
 
 ## Binding audit (b12171)
