@@ -40,8 +40,9 @@ Default listener: **127.0.0.1:8082**, distinct from the fork's other engine and
 service ports. Configured-port reservations and occupied-port checks still apply.
 Without a model, readiness and health require `/props` to return the top-level
 `"role":"router"` identity, present in b12171 `tools/server/server-models.cpp`
-(`get_router_props`). With `--model`, they instead match the canonical
-`model_path` from `tools/server/server-context.cpp` (`get_res_props`).
+(`get_router_props`). With `--model`, owned-process probes instead match the
+inherited descriptor's `model_path` from `tools/server/server-context.cpp`
+(`get_res_props`); settings and previews retain the user's model selection.
 A different service returning HTTP 200 is not an engine match. Foreground-process
 shutdown uses the existing process lifecycle, not command-mode `wait_for_exit`.
 The model cache is `LLAMA_CACHE={install_dir}-models`, a PAIR-managed sibling
@@ -60,10 +61,24 @@ dropped or applied. No download or template-file option is permitted.
 `--model/-m` selects one existing regular `.gguf` file in the PAIR-owned
 `{install_dir}-models` cache. Absolute and cache-relative paths are accepted;
 both cache and file are resolved with `EvalSymlinks` before containment checks.
-Symlink escapes, URLs, directories, missing files and non-GGUF files are rejected
-in previews, saved settings and before launch. The normalized argv contains the
-canonical absolute path. The user supplies this file for now; PR 3 adds the hub
-that fills the cache. Omitting `--model` retains router mode.
+Symlink escapes, URLs, directories, missing files and non-GGUF names are rejected
+in previews, saved settings and before launch. Previews retain the canonical
+cache path. Immediately before spawning, PAIR opens the file read-only with
+`O_NOFOLLOW`, checks its regular-file type and device/inode against a fresh
+in-cache resolution, and rejects a redirected cache root. Only the child copy
+of this descriptor is inherited, through `exec.Cmd.ExtraFiles`; llama-server
+receives `--model /dev/fd/3`. The parent's copy closes after spawn, including on
+failure. Replacing the original pathname cannot redirect the child's later opens.
+
+The b12171 loader opens metadata with `gguf_init_from_file`/`fopen("rb")`, then
+reopens the path with `llama_file` for reads or `mmap` on that descriptor. macOS
+`/dev/fd/3` duplicates the inherited descriptor on every open. Split GGUFs derive
+sibling paths, so split filenames and `split.*` metadata (including renamed
+shards) are explicitly rejected at spawn. Metadata inspection is bounded to
+64 MiB; malformed or unsupported GGUF metadata fails closed. Multi-file models
+and mmproj are not supported in this PR. The user supplies a single-file model
+for now; PR 3 adds the hub that fills the cache. Omitting `--model` retains router
+mode.
 
 Other allowed value options (documented short aliases included): `--ctx-size/-c`,
 `--batch-size/-b`, `--ubatch-size/-ub` (context 0–1048576, batches 1–1048576),

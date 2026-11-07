@@ -33,7 +33,24 @@ func startManagedProc(bin string, args []string, env map[string]string, onLine f
 }
 
 func startManagedProcWithEnvironment(bin string, args []string, env map[string]string, inherit bool, onLine func(stream, line string)) (*managedProc, error) {
+	// The non-inherited environment is the controlled llama.cpp launch path.
+	// Pin its model immediately before spawning; never hand the child a cache
+	// pathname it could reopen after a symlink swap.
+	var files []*os.File
+	if !inherit {
+		var err error
+		args, files, err = prepareLlamaModelArgs(args, env["LLAMA_CACHE"])
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer func() {
+		for _, file := range files {
+			_ = file.Close() // parent copies, including every failed-start path
+		}
+	}()
 	cmd := exec.Command(bin, args...)
+	cmd.ExtraFiles = files
 	if len(env) > 0 || !inherit {
 		cmd.Env = []string{}
 		if inherit {

@@ -78,7 +78,7 @@ func TestLlamaModelProbeIdentity(t *testing.T) {
 	args := []string{"--model", model}
 	p.Runtime.LaunchArgs = &args
 	rt := llamaRuntimeProbes(p.Runtime, install)
-	if rt.Ready.JSONMatch.Field != "model_path" || rt.Ready.JSONMatch.Value != args[1] || rt.Health.JSONMatch.Value != args[1] {
+	if rt.Ready.JSONMatch.Field != "model_path" || rt.Ready.JSONMatch.Value != llamaModelDescriptorPath || rt.Health.JSONMatch.Value != llamaModelDescriptorPath {
 		t.Fatalf("model probe: %+v", rt.Ready)
 	}
 	if p.Runtime.Ready.JSONMatch.Field != "role" {
