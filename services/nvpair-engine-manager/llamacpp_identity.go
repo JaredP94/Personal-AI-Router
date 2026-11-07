@@ -31,10 +31,10 @@ func llamaCacheRemoveOwned(dir *os.File, name, identity string, size int64) erro
 
 // Compare the actual launch descriptor, not a pathname checked earlier. No
 // re-hash of a potentially 64 GiB file is needed for post-commit replacements.
-func validateLlamaRecordedFile(dir *os.File, name string, file *os.File) error {
+func llamaRecordedModelAlias(dir *os.File, name string, file *os.File) (string, error) {
 	manifest, err := readLlamaManifest(dir)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, m := range manifest.Models {
 		// Default macOS filesystems alias case variants of the same entry.
@@ -44,12 +44,12 @@ func validateLlamaRecordedFile(dir *os.File, name string, file *os.File) error {
 		}
 		info, err := file.Stat()
 		if err != nil || info.Size() != m.Size || llamaCacheIdentity(file) != m.Identity {
-			return fmt.Errorf("recorded model changed; refusing launch; delete the changed entry manually and download again")
+			return "", fmt.Errorf("recorded model changed; refusing launch; delete the changed entry manually and download again")
 		}
-		return nil
+		return m.ID, nil
 	}
 	if llamaManagedFilename(name) {
-		return fmt.Errorf("model is not a verified PAIR-recorded download; refusing launch")
+		return "", fmt.Errorf("model is not a verified PAIR-recorded download; refusing launch")
 	}
-	return nil
+	return "", nil
 }

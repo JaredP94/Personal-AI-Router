@@ -42,7 +42,8 @@ Without a model, readiness and health require `/props` to return the top-level
 `"role":"router"` identity, present in b12171 `tools/server/server-models.cpp`
 (`get_router_props`). With `--model`, owned-process probes instead match the
 inherited descriptor's `model_path` from `tools/server/server-context.cpp`
-(`get_res_props`); settings and previews retain the user's model selection.
+(`get_res_props`); settings retain the cache-relative model selection, never
+the inherited descriptor path or the generated API alias.
 A different service returning HTTP 200 is not an engine match. Foreground-process
 shutdown uses the existing process lifecycle, not command-mode `wait_for_exit`.
 The model cache is `LLAMA_CACHE={install_dir}-models`, a PAIR-managed sibling
@@ -167,9 +168,9 @@ dropped or applied. No download or template-file option is permitted.
 `{install_dir}-models` cache. Absolute and cache-relative paths are accepted;
 both cache and file are resolved with `EvalSymlinks` before containment checks.
 Symlink escapes, URLs, directories, missing files and non-GGUF names are rejected
-in previews, saved settings and before launch. Previews retain the canonical
-cache path. Immediately before spawning, PAIR resolves the cache directory once,
-then opens its canonical path from `/` one directory component at a time using
+in previews, saved settings and before launch. Settings/editor text retains the
+cache-relative selection; preview argv retains the canonical cache path.
+Immediately before spawning, PAIR resolves the cache directory once, then opens its canonical path from `/` one directory component at a time using
 `openat` with `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`. It walks the model's
 cache-relative subdirectories from that descriptor the same way, rejecting
 absolute paths and parent traversal in the relative path. The final file opens
@@ -178,8 +179,30 @@ and single-file GGUF metadata. A parent or subdirectory replaced with a symlink
 is never followed; no fresh pathname resolution can bless an outside file.
 Only the child copy of this descriptor is inherited, through
 `exec.Cmd.ExtraFiles`; llama-server
-receives `--model /dev/fd/3`. The parent's copy closes after spawn, including on
-failure. Replacing the original pathname cannot redirect the child's later opens.
+receives `--model /dev/fd/3` and one PAIR-owned `--alias`. The parent's copy closes
+after spawn, including on failure. Replacing the original pathname cannot
+redirect the child's later opens.
+
+For a manifest-recorded download the alias is its catalog ID
+(`owner/repo:Q4_K_M`), whether selected by ID, generated filename or contained
+path. It is derived from the ownership manifest read through the same pinned
+cache directory as the verified launch descriptor. For an unrecorded file it is
+the cache-relative filename without the `.gguf` suffix (case-insensitive),
+including subdirectories with `/` separators. Aliases use the catalog ID's ASCII
+character set: letters, digits, `_`, `.`, `:`, `/`, `-`, starting with a letter or
+digit. Commas, whitespace, control characters and non-ASCII are rejected, not
+trimmed or substituted.
+
+In b12171 `common/arg.cpp`, `--alias`/`-a` and `LLAMA_ARG_ALIAS` accept a
+comma-separated list, strip surrounding whitespace and store nonempty entries
+in a sorted set. `tools/server/server-context.cpp` uses the first alias as the
+API model name. PAIR deliberately supplies exactly one. Both `/v1/models` and
+`/models` use that name in `data[].id` and `models[].name/model`; `/props` exposes
+it as `model_alias` while `model_path` remains `/dev/fd/3`. Completion responses,
+including streaming chunks, use it in their `model` field. The proxy uses these
+exact inventory/request IDs unchanged for catalog listing, routing and workload
+records; no descriptor-name rewriting is needed in the proxy. Without a selected
+model PAIR adds no alias and router mode is unchanged.
 
 The b12171 loader opens metadata with `gguf_init_from_file`/`fopen("rb")`, then
 reopens the path with `llama_file` for reads or `mmap` on that descriptor. macOS
@@ -235,6 +258,9 @@ All are forbidden in editable launch input, including matching values,
 duplicates, `--flag=value`, underscore spellings (`--reuse_port`, etc.) and tokens
 after `--`. Protected environment assignments are rejected even in argument
 positions. `LLAMA_CACHE` is also protected to keep the managed cache identity.
+The API identity inputs `--alias`, `-a` and `LLAMA_ARG_ALIAS` are explicitly
+PAIR-owned and forbidden in user launch text or saved overrides, including
+separate, equals and attached-short forms.
 The child inherits **no** parent environment. This removes all `LLAMA_ARG_*`,
 `LLAMA_CACHE`, `HF_TOKEN`, `HF_ENDPOINT`, `MODEL_ENDPOINT`, `MTMD_BACKEND_DEVICE`,
 `LLAMA_APP_CMD` and dynamic-loader overrides, rather than maintaining a removal

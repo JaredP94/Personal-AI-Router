@@ -3,11 +3,8 @@
 
 package main
 
-import (
-	"fmt"
-	"os"
-)
+import "fmt"
 
-func openLlamaModel(_, _ string) (*os.File, error) {
+func openLlamaModel(_, _ string) (*llamaModelFile, error) {
 	return nil, fmt.Errorf("llama.cpp model descriptor inheritance is unsupported on Windows")
 }

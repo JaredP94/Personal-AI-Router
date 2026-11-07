@@ -113,6 +113,12 @@ func TestLlamaAllowlistMatchesPinnedRelease(t *testing.T) {
 			}
 		}
 	}
+	// PAIR supplies one API alias itself, outside the editable allowlist.
+	for _, name := range []string{"--alias", "-a"} {
+		if !known[name] {
+			t.Errorf("%s is not a llama-server b12171 option", name)
+		}
+	}
 	for _, mode := range strings.Fields("auto none mmap mlock mmap+mlock dio") {
 		if _, err := normalizeLlamaOptions([]string{"--load-mode", mode}, ""); err != nil {
 			t.Errorf("load mode %s: %v", mode, err)

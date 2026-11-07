@@ -134,6 +134,9 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "llama-alias":
+			serveLlamaAlias()
+			return
 		case "model-inode":
 			if gate := os.Getenv("FAKE_MODEL_GATE"); gate != "" {
 				deadline := time.Now().Add(5 * time.Second)
@@ -146,7 +149,14 @@ func main() {
 			}
 			// b12171 opens the same path for metadata and again for tensors.
 			for i := 0; i < 2; i++ {
-				file, err := os.Open(os.Args[len(os.Args)-1])
+				var model string
+				for j := 2; j+1 < len(os.Args); j++ {
+					if os.Args[j] == "--model" {
+						model = os.Args[j+1]
+						break
+					}
+				}
+				file, err := os.Open(model)
 				if err != nil {
 					os.Exit(2)
 				}

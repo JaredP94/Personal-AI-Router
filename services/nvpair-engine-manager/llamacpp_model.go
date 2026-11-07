@@ -56,6 +56,9 @@ func llamaModelPath(cache, value string) (string, error) {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return fail()
 	}
+	if _, err := llamaFileAlias(rel); err != nil {
+		return "", err
+	}
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(path), ".gguf") {
 		return fail()
@@ -71,7 +74,7 @@ func llamaModelPath(cache, value string) (string, error) {
 			return "", err
 		}
 		defer file.Close()
-		if err := validateLlamaRecordedFile(dir, filepath.Base(path), file); err != nil {
+		if _, err := llamaRecordedModelAlias(dir, filepath.Base(path), file); err != nil {
 			return "", err
 		}
 	}
@@ -81,6 +84,29 @@ func llamaModelPath(cache, value string) (string, error) {
 const llamaModelDescriptorPath = "/dev/fd/3" // first exec.Cmd.ExtraFiles entry
 
 var llamaSplitName = regexp.MustCompile(`(?i)-[0-9]{5}-of-[0-9]{5}\.gguf$`)
+var llamaAlias = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]*$`)
+
+// Keep API identity beside the verified descriptor. Recorded aliases come from
+// the manifest read through the same pinned cache directory as the model open.
+type llamaModelFile struct {
+	*os.File
+	alias string
+}
+
+// llamaMaxAlias matches the proxy's telemetry model-name limit, so two
+// distinct aliases can never collapse into the same recorded name.
+const llamaMaxAlias = 256
+
+func llamaFileAlias(rel string) (string, error) {
+	alias := strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
+	if len(alias) > llamaMaxAlias {
+		return "", fmt.Errorf("llama.cpp model path is too long to name the model; use a cache-relative path of at most %d characters without .gguf", llamaMaxAlias)
+	}
+	if !llamaAlias.MatchString(alias) {
+		return "", fmt.Errorf("llama.cpp model alias must use only ASCII letters, digits, underscore, dot, colon, slash or hyphen, starting with a letter or digit")
+	}
+	return alias, nil
+}
 
 // b12171 opens this path repeatedly (GGUF metadata, fitting, then llama_file
 // reads/mmap). /dev/fd duplicates the inherited descriptor on macOS, so every
@@ -99,7 +125,8 @@ func prepareLlamaModelArgs(args []string, cache string) ([]string, []*os.File, e
 		}
 		childArgs := append([]string(nil), args...)
 		childArgs[i+1] = llamaModelDescriptorPath
-		return childArgs, []*os.File{file}, nil
+		childArgs = append(childArgs, "--alias", file.alias)
+		return childArgs, []*os.File{file.File}, nil
 	}
 	return args, nil, nil
 }
