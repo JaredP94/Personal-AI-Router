@@ -24,6 +24,7 @@ broker supervises every worker and relays its control plane.
 | `ollama-proxy`            | Ollama-compatible routing proxy with cluster-mTLS ingress |
 | `lmstudio-proxy`          | LM Studio routing proxy with cluster-mTLS ingress         |
 | `omlx-proxy`              | oMLX routing proxy with cluster-mTLS ingress              |
+| `llamacpp-proxy`              | llama.cpp routing proxy with cluster-mTLS ingress              |
 | `nvpair-node-scanner`     | Discovery and node announcement                           |
 | `nvpair-node-info`        | Node metadata and telemetry                               |
 | `nvpair-manual-nodes`     | User-managed node entries                                 |
@@ -46,7 +47,7 @@ flowchart TB
     Broker["nvpair-ui-broker"]
     Scanner["nvpair-node-scanner"]
     NodeInfo["nvpair-node-info"]
-    Proxies["ollama-proxy / lmstudio-proxy / omlx-proxy"]
+    Proxies["ollama-proxy / lmstudio-proxy / omlx-proxy / llamacpp-proxy"]
     Engines["nvpair-engine-manager"]
     Cluster["nvpair-cluster-manager"]
     Settings["nvpair-node-settings"]
@@ -137,12 +138,12 @@ inbound-silence deadline and frontend-owned recovery. This is not per-worker han
 
 Worker health is independently broker-owned: `worker/health` probes every 30 s
 with a 5 s deadline; two failures degrade, three restart eligible workers only.
-Engine-manager and the three proxies never auto-restart on a hang. Optional
+Engine-manager and the four proxies never auto-restart on a hang. Optional
 initial spawn failures share the bounded crash/hang budget, while missing default
 binaries remain `missing` until explicit retry. The bridge hydrates
 `workers:get-status` on every epoch, replaces rows on full `workers:update`
 snapshots, and relays `workers:restart {name}`. Settings → Service → Workers
-shows all twelve, attempts and last errors, including "Not responding — restart
+shows all thirteen, attempts and last errors, including "Not responding — restart
 manually" where applicable. Engine-manager and proxy restarts ask for
 confirmation. No health/retry policy is duplicated in TypeScript; see the
 [broker contract](../../services/nvpair-ui-broker/README.md#worker-lifecycle-registry).
@@ -161,7 +162,7 @@ consent policies, loopback-only Arize Phoenix deployment, and trace storage purg
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | `app:ready`                                          | Complete broker startup and refresh snapshots                                                                                   | `state:request-refresh`                                   |
 | `discovery:nodes-changed`                            | Replace discovery snapshot and diff nodes                                                                                       | `discovery:nodes-changed`, `nodes:upsert`, `nodes:remove` |
-| `proxy:ready` / `lmstudio-proxy:ready` / `omlx-proxy:ready`               | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
+| `proxy:ready` / `lmstudio-proxy:ready` / `omlx-proxy:ready` / `llamacpp-proxy:ready`               | Record engine proxy port                                                                                                        | `engines:state-changed`                                   |
 | proxy `node/*`                                       | Update per-engine node presence; the advertised port is the peer's promoted proxy port (not the engine's private loopback port) | node and engine pushes                                    |
 | `engine:ready` / `engine:state-changed`              | Update engine facts and models                                                                                                  | `engines:state-changed`                                   |
 | `engine:install-progress` / `engine:remote-progress` | Update operation progress                                                                                                       | engine progress pushes                                    |
@@ -213,7 +214,7 @@ the orphan-reclaim path, for a process whose `exec.Cmd` handle was lost.
 
 Personal AI Router calls `engine:prepare-shutdown` before broker teardown so local processes
 stop without clearing their persisted desired state. The broker also
-first closes its three proxies concurrently, then self-initiates
+first closes its four proxies concurrently, then self-initiates
 `engine:prepare-shutdown` and joins started workers concurrently. Worker joins use
 bounded stdin-close, terminate, and kill escalation, clipped together with the
 engine shutdown request to a shared 10 s budget. Ingress (including the heartbeat

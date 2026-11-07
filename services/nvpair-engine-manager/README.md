@@ -11,9 +11,10 @@ engine **except serving inference**: detect, user-mode install,
 start/stop/restart, health, and config-declared actions. Adding an engine
 is a JSON manifest, not code.
 
-[llama.cpp](LLAMACPP.md) is a macOS arm64 lifecycle-only preview, pinned to
-b12171. Its macOS build is not notarized, like PAIR itself. It does not serve
-requests through PAIR yet; proxy/routing and model integration are deferred.
+[llama.cpp](LLAMACPP.md) is supported on macOS arm64, pinned to b12171. Its
+macOS build is not notarized, like PAIR itself. The dedicated `llamacpp-proxy`
+serves it on port 1237. Select a cached GGUF with the allowlisted `--model`/`-m`;
+`list_models` reads its OpenAI inventory. Hub/download/delete remain deferred.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)

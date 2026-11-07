@@ -40,7 +40,7 @@ type settingsHarness struct {
 
 func newSettingsHarness(t *testing.T) *settingsHarness {
 	t.Helper()
-	ports := make([]int, 4)
+	ports := make([]int, 5)
 	listeners := []net.Listener{}
 	for i := range ports {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -56,7 +56,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 	h := &settingsHarness{b: &Broker{codec: NewCodec(&bytes.Buffer{}), nodeID: "target", clusterDir: filepath.Join(t.TempDir(), "cluster")}, notifications: make(chan *Message, 100)}
 	worker, codec := newTestRPCWorkerPipe(t)
 	h.b.setEngineMgr(worker)
-	for i, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for i, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
 		proxy := &proxyProcess{peer: proxyWorker.peer, ready: true, port: ports[i+1]}
 		switch engine {
@@ -66,6 +66,8 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 			h.b.setLMStudioProxy(proxy)
 		case "omlx":
 			h.b.setOMLXProxy(proxy)
+		case "llamacpp":
+			h.b.setLlamaCPPProxy(proxy)
 		}
 		go func() {
 			for {

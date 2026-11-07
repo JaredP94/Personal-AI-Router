@@ -69,6 +69,9 @@ Emitted when a manually added node has been probed and its initial status determ
     "omlx_up":true,
     "omlx_port":1236,
     "omlx_models":["mlx-community/Qwen2.5-7B-Instruct-4bit"],
+    "llamacpp_up":true,
+    "llamacpp_port":8082,
+    "llamacpp_models":["model.gguf"],
     "node_info_up":true,
     "node_info_port":14318,
     "gpus":[{"name":"NVIDIA GeForce RTX 3080","utilization_percent":37}],
@@ -89,7 +92,7 @@ Emitted when a manually added node has been probed and its initial status determ
 
 PAIR peers must first prove identity through pinned cluster mTLS node-info on `:14318` (or the configured `tls_port`). Matching certificate, response and broker-owned `peerMetadata` identities are required. Only authenticated metadata supplies service ports; models and engine state are then read over pinned mTLS with no HTTP or operator-CA downgrade. Completed reads recheck the exact current pin and admission-bound `peerRecordId`.
 
-Explicitly user-added bare engines retain independent manual routes: Ollama on `:11434`, LM Studio on `:1234`, and oMLX on `:1236`. They remain labelled `identityVerification: "manual"`, never acquire peer trust, and provide no hardware scheduling telemetry. Each entry stores `kind: "pair"` or `kind: "engine"`. PAIR entries that cannot authenticate are `unverified` previews keyed `preview:<sha>`, never engine bypasses, including after worker/broker restarts or when no PAIR endpoint answers. Only an explicit `engine` choice creates a `manual:<hash>` bypass; it reads no PAIR identity, hardware, inventory or telemetry claims. The broker atomically persists kind in `configs/manual-nodes.json` and replays entries into replacement workers. Historical entries without kind are explicitly migrated on disk to `pair`: a former bare engine must be removed and re-added as **Engine only** to resume direct routing. Unknown kinds fail closed.
+Explicitly user-added bare engines retain independent manual routes: Ollama on `:11434`, LM Studio on `:1234`, oMLX on `:1236`, and llama.cpp on `:8082`. They remain labelled `identityVerification: "manual"`, never acquire peer trust, and provide no hardware scheduling telemetry. Each entry stores `kind: "pair"` or `kind: "engine"`. PAIR entries that cannot authenticate are `unverified` previews keyed `preview:<sha>`, never engine bypasses, including after worker/broker restarts or when no PAIR endpoint answers. Only an explicit `engine` choice creates a `manual:<hash>` bypass; it reads no PAIR identity, hardware, inventory or telemetry claims. The broker atomically persists kind in `configs/manual-nodes.json` and replays entries into replacement workers. Historical entries without kind are explicitly migrated on disk to `pair`: a former bare engine must be removed and re-added as **Engine only** to resume direct routing. Unknown kinds fail closed.
 
 `engineNative` is the remote engine's own report of itself — the counters, the rates and the active models the node's engine-manager publishes at `GET /v1/engine-stats`. It is read over the same transport as the model list beside it, because it is the same kind of data: a peer's engine counters are cluster data, so a clustered peer is read over cluster mTLS pinned to the principal the node advertises, and there is no weaker fallback for a peer. The field is absent when the node publishes no view — an engine with no admin API, an engine that could not be reached, or a node this one cannot read. A node whose view could not be re-read keeps the view it had (the last-good rule the node-scanner follows for a discovered node). It is read on a slower cadence than the probe (once a minute), because the engine's counters move slowly and every reading is a fresh observation.
 
@@ -210,9 +213,9 @@ Each manual node is probed every 10 seconds, with a 3-second timeout per leg, fo
 - **LM Studio** on port 1234: `GET /v1/models`, which doubles as the liveness check and the model list
 - **Node Info** on port 14318, or `tls_port`: pinned cluster mTLS hardware inventory, matching identity and authenticated service metadata (`GET /v1/node-info`). Public responses cannot establish identity or scheduling measurements.
 
-PAIR entries use only pinned cluster mTLS node-info and authenticated engine-manager inventory. Engine entries probe Ollama, LM Studio and oMLX (`:1236`) directly and never read node-info. A node can have any combination of eligible engines, or none if unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
+PAIR entries use only pinned cluster mTLS node-info and authenticated engine-manager inventory. Engine entries probe Ollama, LM Studio, oMLX (`:1236`) and llama.cpp (`:8082`) directly and never read node-info. A node can have any combination of eligible engines, or none if unreachable. Status changes trigger `node/updated` events. Because change detection compares CPU, memory, and GPU values, a node running node-info emits a `node/updated` on most probe cycles as utilization moves.
 
-Bare-engine ports are fixed (`11434`, `1234`, `1236`). PAIR engine ports come only from authenticated broker-owned service metadata; `tls_port` can override its node-info port. Unverified peers cannot supply ports or model inventory.
+Bare-engine ports are fixed (`11434`, `1234`, `1236`, `8082`). PAIR engine ports come only from authenticated broker-owned service metadata; `tls_port` can override its node-info port. Unverified peers cannot supply ports or model inventory.
 
 ## Shutdown
 

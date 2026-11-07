@@ -624,7 +624,7 @@ func (v *enginesView) View() string {
 		out = v.modelsView()
 	}
 	if v.selectedEngine() == "llamacpp" {
-		out += "\n" + footerStyle.Render("llama.cpp is not notarized, like PAIR itself; it does not serve requests through PAIR yet.")
+		out += "\n" + footerStyle.Render("llama.cpp is not notarized, like PAIR itself.")
 	}
 	if v.confirm.open() {
 		out += "\n" + v.confirm.View()

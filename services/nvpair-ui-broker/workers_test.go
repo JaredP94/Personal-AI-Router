@@ -23,7 +23,7 @@ import (
 
 func TestWorkersSnapshotOrderAndEligibility(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{&bytes.Buffer{}}), workerPaths{})
-	want := []string{"scanner", "errors", "settings", "engine-manager", "node-info", "proxy", "lmstudio-proxy", "omlx-proxy", "workload-manager", "manual-nodes", "cluster-manager", "scheduler"}
+	want := []string{"scanner", "errors", "settings", "engine-manager", "node-info", "proxy", "lmstudio-proxy", "omlx-proxy", "llamacpp-proxy", "workload-manager", "manual-nodes", "cluster-manager", "scheduler"}
 	got := b.workerSnapshot().Workers
 	if len(got) != len(want) {
 		t.Fatalf("got %d workers", len(got))
@@ -32,7 +32,7 @@ func TestWorkersSnapshotOrderAndEligibility(t *testing.T) {
 		if got[i].Name != name {
 			t.Fatalf("worker %d = %s, want %s", i, got[i].Name, name)
 		}
-		eligible := name != "engine-manager" && name != "proxy" && name != "lmstudio-proxy" && name != "omlx-proxy"
+		eligible := name != "engine-manager" && name != "proxy" && name != "lmstudio-proxy" && name != "omlx-proxy" && name != "llamacpp-proxy"
 		policy := b.workerEntries[i].sup.hang.withDefaults()
 		if policy.interval != 30*time.Second || policy.deadline != 5*time.Second || policy.degradeAfter != 2 || policy.restartAfter != 3 {
 			t.Fatalf("policy = %+v", policy)
@@ -46,11 +46,11 @@ func TestWorkersSnapshotOrderAndEligibility(t *testing.T) {
 func TestWorkersMissingRestartAndNotifications(t *testing.T) {
 	var out bytes.Buffer
 	b := NewBroker(NewCodec(writeOnlyReadWriter{&out}), workerPaths{})
-	entry := b.workerEntries[9] // manual-nodes
+	entry := b.workerEntries[10] // manual-nodes
 	entry.expectedPath = filepath.Join(t.TempDir(), "nvpair-manual-nodes")
 	h := newFakeHandle()
 	entry.sup.spawn = func() (supervisedHandle, error) { return h, nil }
-	before := b.workerSnapshot().Workers[9]
+	before := b.workerSnapshot().Workers[10]
 	if before.State != WorkerMissing || !strings.Contains(before.LastError, "nvpair-manual-nodes") {
 		t.Fatalf("missing: %+v", before)
 	}
@@ -66,7 +66,7 @@ func TestWorkersMissingRestartAndNotifications(t *testing.T) {
 	}
 	defer entry.sup.Stop()
 	deadline := time.After(time.Second)
-	for b.workerSnapshot().Workers[9].State != WorkerRunning {
+	for b.workerSnapshot().Workers[10].State != WorkerRunning {
 		select {
 		case <-deadline:
 			t.Fatal("never running")
@@ -90,10 +90,10 @@ func TestWorkersMissingRestartAndNotifications(t *testing.T) {
 		if err := json.Unmarshal(msg.Params, &snapshot); err != nil {
 			t.Fatal(err)
 		}
-		if len(snapshot.Workers) != 12 {
+		if len(snapshot.Workers) != 13 {
 			t.Fatal("not a full snapshot")
 		}
-		states = append(states, snapshot.Workers[9].State)
+		states = append(states, snapshot.Workers[10].State)
 	}
 	if len(states) != 2 || states[0] != WorkerRestarting || states[1] != WorkerRunning {
 		t.Fatalf("updates = %v", states)
@@ -156,7 +156,7 @@ func TestWorkersRPCSurface(t *testing.T) {
 	if err := json.Unmarshal(msg.Result, &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Workers) != 12 {
+	if len(result.Workers) != 13 {
 		t.Fatalf("get-status: %+v", msg)
 	}
 }
@@ -204,7 +204,7 @@ func TestWorkersRestartDoesNotWaitForStop(t *testing.T) {
 
 func TestWorkersMissingRestartDoesNotWaitForSpawn(t *testing.T) {
 	b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
-	entry := b.workerEntries[9]
+	entry := b.workerEntries[10]
 	entry.expectedPath = filepath.Join(t.TempDir(), "nvpair-manual-nodes")
 	if err := os.WriteFile(entry.expectedPath, []byte("fixture"), 0700); err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestWorkersCrashReason(t *testing.T) {
 			b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})
 			var sink bytes.Buffer
 			b.setErrors(&errorsProcess{peer: NewPeer(NewCodec(writeOnlyReadWriter{&sink}))})
-			status := b.workerSnapshot().Workers[11]
+			status := b.workerSnapshot().Workers[12]
 			status.State, status.LastError = WorkerRestarting, reason
 			b.updateWorker(status)
 			crash, _ := b.crashReporter("scheduler")
@@ -299,6 +299,7 @@ func TestWorkersProxyReadyDoesNotClearCrashError(t *testing.T) {
 		{"proxy", (*Broker).forwardProxyNotification},
 		{"lmstudio-proxy", (*Broker).forwardLMStudioProxyNotification},
 		{"omlx-proxy", (*Broker).forwardOMLXProxyNotification},
+		{"llamacpp-proxy", (*Broker).forwardLlamaCPPProxyNotification},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := NewBroker(NewCodec(writeOnlyReadWriter{io.Discard}), workerPaths{})

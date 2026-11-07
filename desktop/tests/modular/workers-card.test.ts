@@ -93,7 +93,7 @@ it('sends no engine-manager restart on cancel, then exactly one on confirm throu
     })
 })
 
-it.each(['proxy', 'lmstudio-proxy', 'omlx-proxy'])(
+it.each(['proxy', 'lmstudio-proxy', 'omlx-proxy', 'llamacpp-proxy'])(
     'confirms interruption before restarting %s',
     async name => {
         await act(async () => useWorkersStore.setState({ workers: [{ ...worker, name }] }))

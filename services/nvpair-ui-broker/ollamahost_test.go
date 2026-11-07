@@ -192,7 +192,7 @@ func brokerWithEngineInventory(t *testing.T, ports map[string]int) *Broker {
 				return
 			}
 			_ = codec.Respond(request.ID, map[string]any{"port": ports[params.Engine]})
-		case "engine:get-installed":
+		case "engine:get-installed", "engine:configured-ports":
 			engines := make([]map[string]any, 0, len(ports))
 			for engine, port := range ports {
 				engines = append(engines, map[string]any{"engine": engine, "port": port})

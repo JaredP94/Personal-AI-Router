@@ -11,7 +11,7 @@ local network: each node advertises itself over mDNS as one consolidated
 node offers and where to reach them.
 
 What a discovered node can actually serve is a separate question, answered after
-discovery. A node may run [Ollama](https://ollama.com/), LM Studio, oMLX, any
+discovery. A node may run [Ollama](https://ollama.com/), LM Studio, oMLX, llama.cpp, any
 supported combination, or none. Model inventory is fetched from engine-manager
 rather than crammed into mDNS TXT records. The bundled oMLX engine manifest
 supports macOS arm64 only and has no model pull/delete actions.
@@ -31,7 +31,8 @@ never intercepted.
 The oMLX proxy defaults to `1234` standalone. Under the broker, when LM Studio
 occupies or reserves `1234`, oMLX is assigned a free fallback starting at `1236`,
 excluding reserved ports. Use reported proxy status rather than assuming its
-endpoint. Model inventory is served on `14322`; node-info on `14318` serves
+endpoint. llama.cpp uses its own proxy on **1237**, forwarding to the managed
+engine on **127.0.0.1:8082**; its discovery service is `lc`. Model inventory is served on `14322`; node-info on `14318` serves
 hardware, utilization, and identity telemetry, not the model list.
 
 PAIR ships a graphical UI alongside these services. The UI launches
@@ -64,7 +65,7 @@ change's runtime validation covers Darwin and Linux only.
 
 ## Architecture
 
-This tree builds 14 service executables: `nvpair-ui-broker`, 12 supervised
+This tree builds 15 service executables: `nvpair-ui-broker`, 13 supervised
 workers, and `nvpair-tui`. The broker attempts to start available workers at
 startup. Standalone, only the scanner is required; missing default auxiliary
 binaries and initial auxiliary spawn failures are non-fatal. Invalid explicit
@@ -80,14 +81,14 @@ Each worker answers `worker/health` with `{"ok":true}`. The broker probes every
 interval. Two consecutive failures report `degraded`; a successful probe restores
 `running` and clears the failure count. Three failures restart scanner, errors,
 settings, node-info, workload-manager, manual-nodes, cluster-manager, and scheduler.
-Engine-manager and the three proxies never auto-restart on a hang: restart them
+Engine-manager and the four proxies never auto-restart on a hang: restart them
 explicitly if needed. This checks control responsiveness, not inference readiness.
 
-`workers:get-status` and full-snapshot `workers:update` expose all twelve workers;
+`workers:get-status` and full-snapshot `workers:update` expose all thirteen workers;
 `workers:restart` requests a restart or retry even after budget exhaustion.
 Desktop renders the registry under Settings → Service → Workers (including
 "Not responding — restart manually" for ineligible hung workers). TUI Overview
-shows all twelve and offers `R` with confirmation. Worker probing is separate
+shows all thirteen and offers `R` with confirmation. Worker probing is separate
 from the broker's 15 s heartbeat and clients' 45 s inbound-silence handling.
 Cross-process hang tests are Unix-only; Windows hang behavior remains unproven.
 
@@ -102,6 +103,7 @@ Windows named pipe, with relay protocol v2 notification envelopes. See
 | `ollama-proxy` | Ollama-compatible HTTP reverse proxy. Routes only to advertised model owners, with owner failover and scheduler priorities. |
 | `lmstudio-proxy` | LM Studio counterpart to `ollama-proxy`, forwarding OpenAI-compatible inference routes with equivalent owner-only routing and failover behavior. |
 | `omlx-proxy` | OpenAI-compatible routing proxy for oMLX, with owner-only routing, failover, and cache-affinity hints. |
+| `llamacpp-proxy` | llama.cpp routing proxy on 1237, with exact IDs, model-list aggregation and native Messages passthrough. |
 | `nvpair-node-info` | Local HTTP service on `:14318` exposing GPU, CPU, and memory inventory at `/v1/node-info`. |
 | `nvpair-node-scanner` | Consolidated discovery daemon. Advertises and browses `_nvpair-node._tcp`, maintains the node directory, and enriches peers with hardware and model information over HTTP. |
 | `nvpair-manual-nodes` | Manages user-added nodes that don't appear via mDNS; probes them every 10 s, delivering compact scheduling telemetry every ~2 s. |
@@ -135,6 +137,7 @@ nvpair-ui-broker/        Parent service / JSON-RPC API surface
 ollama-proxy/            Ollama-compatible routing proxy
 lmstudio-proxy/          OpenAI-compatible routing proxy for LM Studio
 omlx-proxy/              OpenAI-compatible routing proxy for oMLX
+llamacpp-proxy/          OpenAI-compatible routing proxy for llama.cpp
 nvpair-node-info/        Local GPU-inventory HTTP service
 nvpair-node-scanner/     Consolidated _nvpair-node._tcp discovery daemon
 nvpair-manual-nodes/     Manual-node manager
@@ -149,8 +152,8 @@ shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all fourteen service executables (Windows)
-build.sh                  Builds all fourteen service executables (Linux/macOS)
+build.bat                 Builds all fifteen service executables (Windows)
+build.sh                  Builds all fifteen service executables (Linux/macOS)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -180,7 +183,7 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all fourteen service executables with
+Both scripts read `versions.json`, build all fifteen service executables with
 `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
@@ -284,7 +287,7 @@ cd shared
 go test ./...
 ```
 
-**Every one of the fourteen service executables has tests**, as do `shared/` and
+**Every one of the fifteen service executables has tests**, as do `shared/` and
 `eap-noob/`. Depth varies with how much behaviour a component carries:
 `nvpair-engine-manager` and `nvpair-cluster-manager` have the largest suites,
 while a component with one test file may still hold twenty test functions in it.

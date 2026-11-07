@@ -76,6 +76,11 @@ func bstr(m map[string]any, k string) string {
 	return ""
 }
 
+func filePresent(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func main() {
 	// Registration is test-only and precedes every subcommand, including
 	// detached download children. It also follows copies of this executable.
@@ -129,6 +134,30 @@ func main() {
 	// exit (no server), standing in for a daemon's control CLI.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "model-inode":
+			if gate := os.Getenv("FAKE_MODEL_GATE"); gate != "" {
+				deadline := time.Now().Add(5 * time.Second)
+				for !filePresent(gate) {
+					if time.Now().After(deadline) {
+						os.Exit(2)
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+			// b12171 opens the same path for metadata and again for tensors.
+			for i := 0; i < 2; i++ {
+				file, err := os.Open(os.Args[len(os.Args)-1])
+				if err != nil {
+					os.Exit(2)
+				}
+				info, err := file.Stat()
+				if err != nil {
+					os.Exit(2)
+				}
+				_ = json.NewEncoder(os.Stdout).Encode(info.Sys())
+				_ = file.Close()
+			}
+			return
 		case "shutdown-download-fixture":
 			if len(os.Args) < 4 {
 				os.Exit(2)

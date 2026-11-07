@@ -80,6 +80,8 @@ describe('manual-nodes service bridge handlers', () => {
                 lmstudio_port: 0,
                 omlx_up: false,
                 omlx_port: 0,
+                llamacpp_up: false,
+                llamacpp_port: 0,
                 node_info_up: false,
                 node_info_port: 0,
                 tls_enabled: false,

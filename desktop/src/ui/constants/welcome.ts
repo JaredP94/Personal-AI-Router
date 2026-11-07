@@ -21,7 +21,7 @@ export const WELCOME_ENGINE_DEFAULT_SELECTED: Record<EngineType, boolean> = {
 export function getWelcomeEngineCandidates(os: PlatformDisplayName): EngineType[] {
     const platform = displayNameToPlatform(os)
     return EnabledEngineTypes.filter(t => {
-        if (t === 'llamacpp') return false // lifecycle-only preview; install from its node row
+        if (t === 'llamacpp') return false // install from its node row; model hub is not available yet
         const caps = EngineCapabilities[t]
         if (!caps.hasInstall.length) return false
         if (caps.hasInstallPath) return false

@@ -177,7 +177,12 @@ func (b *Broker) reconcileCurrentOllamaPorts(boundPort int) {
 		}))
 		b.ollamaBackendPort.Store(int32(status.Port))
 		if plan.Blocked != "" {
-			b.blockManagedOllamaFacade(plan.Blocked, status.Port)
+			if !b.ollamaPortIOUnlockedLocked(func() { b.setOllamaProxyFallback(status.Port) }) {
+				b.engineConfigMu.Unlock()
+				continue
+			}
+			b.recordBlockedOllamaFacade(plan.Blocked)
+			b.markOllamaPortReady()
 		} else {
 			b.managedOllamaBackend.Store(int32(plan.BackendPort))
 		}

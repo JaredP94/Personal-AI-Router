@@ -39,6 +39,7 @@ enum Firewall {
         "ollama-proxy",
         "lmstudio-proxy",
         "omlx-proxy",
+        "llamacpp-proxy",
         "nvpair-node-info",
         "nvpair-node-scanner",
         "nvpair-workload-manager",

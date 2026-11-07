@@ -16,11 +16,11 @@ import (
 )
 
 func TestSettingsRebindOnlySelectedProxy(t *testing.T) {
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		t.Run(engine, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			before := map[string]int{}
-			for _, name := range []string{"ollama", "lmstudio", "omlx"} {
+			for _, name := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 				_, before[name] = h.b.settingsProxy(name).Status()
 			}
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -45,8 +45,8 @@ func TestSettingsRebindOnlySelectedProxy(t *testing.T) {
 	}
 }
 
-func TestSettingsReservesAllThreeProxies(t *testing.T) {
-	for _, engine := range []string{"lmstudio", "omlx"} {
+func TestSettingsReservesAllFourProxies(t *testing.T) {
+	for _, engine := range []string{"lmstudio", "omlx", "llamacpp"} {
 		t.Run(engine, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			request := h.request(t)
@@ -59,6 +59,8 @@ func TestSettingsReservesAllThreeProxies(t *testing.T) {
 			h.b.engineSettings[engine] = &engineSettingsRecord{Explicit: true, Snapshot: settings.Snapshot{Settings: settings.Config{ProxyPort: port}}}
 			if engine == "omlx" {
 				h.b.setOMLXProxy(nil)
+			} else if engine == "llamacpp" {
+				h.b.setLlamaCPPProxy(nil)
 			} else {
 				h.b.setLMStudioProxy(nil)
 			}

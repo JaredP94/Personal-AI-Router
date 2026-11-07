@@ -161,23 +161,23 @@ afterEach(async () => {
 })
 
 describe('engine launch settings panel', () => {
-    it('edits llama.cpp server and launch settings without a proxy port', async () => {
+    it('edits llama.cpp server, proxy and launch settings', async () => {
         getSettings.mockImplementation(async target => ({
             ...baseline,
             ...target,
-            settings: { serverPort: 8082, proxyPort: 0, launchText: '' },
+            settings: { serverPort: 8082, proxyPort: 1237, launchText: '' },
             effectiveServerPort: 8082,
-            effectiveProxyPort: 0
+            effectiveProxyPort: 1237
         }))
         await render('llamacpp')
-        expect(container.querySelector('[aria-label="Proxy port"]')).toBeNull()
+        expect(field('Proxy port').disabled).toBe(false)
         expect(field('Server port').disabled).toBe(false)
-        await change('Engine arguments', 'CUSTOM=value --threads 4')
+        await change('Engine arguments', '--threads 4')
         await click('Apply')
         expect(previewSettings).toHaveBeenCalledWith(
             expect.objectContaining({
                 engine: 'llamacpp',
-                settings: { serverPort: 8082, proxyPort: 0, launchText: 'CUSTOM=value --threads 4' }
+                settings: { serverPort: 8082, proxyPort: 1237, launchText: '--threads 4' }
             })
         )
         expect(applySettings).toHaveBeenCalledOnce()

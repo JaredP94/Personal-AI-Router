@@ -36,7 +36,7 @@ type recoveryRead func() tea.Msg
 
 func (m Model) setupConnection() tea.Cmd {
 	return func() tea.Msg {
-		methods := []string{"discovery:subscribe", "workloads:subscribe", "engine:subscribe", "proxy:subscribe", "lmstudio-proxy:subscribe", "omlx-proxy:subscribe"}
+		methods := []string{"discovery:subscribe", "workloads:subscribe", "engine:subscribe", "proxy:subscribe", "lmstudio-proxy:subscribe", "omlx-proxy:subscribe", "llamacpp-proxy:subscribe"}
 		for _, method := range methods {
 			ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 			_, err := m.client.Call(ctx, method, nil)
@@ -150,7 +150,7 @@ func (m *Model) beginRecovery() tea.Cmd {
 }
 
 func proxyPush(method string) bool {
-	return strings.HasPrefix(method, "proxy:") || strings.HasPrefix(method, "lmstudio-proxy:") || strings.HasPrefix(method, "omlx-proxy:")
+	return strings.HasPrefix(method, "proxy:") || strings.HasPrefix(method, "lmstudio-proxy:") || strings.HasPrefix(method, "omlx-proxy:") || strings.HasPrefix(method, "llamacpp-proxy:")
 }
 
 func (m Model) recoveryResultSuperseded(result tea.Msg) bool {
@@ -166,7 +166,7 @@ func (m Model) recoveryResultSuperseded(result tea.Msg) bool {
 	if idx < 0 {
 		return false
 	}
-	prefixes := []string{"proxy:", "lmstudio-proxy:", "omlx-proxy:"}
+	prefixes := []string{"proxy:", "lmstudio-proxy:", "omlx-proxy:", "llamacpp-proxy:"}
 	for _, push := range m.recoveryPushes {
 		if strings.HasPrefix(push.Msg.Method, prefixes[idx]) {
 			return true

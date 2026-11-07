@@ -83,7 +83,7 @@ func TestPortOperationConvergenceFailureBlocksStart(t *testing.T) {
 }
 
 func TestPortOperationCorrectsStaleReadyToAcceptedPort(t *testing.T) {
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		t.Run(engine, func(t *testing.T) {
 			h := newSettingsHarness(t)
 			request := h.request(t)
@@ -108,6 +108,8 @@ func TestPortOperationCorrectsStaleReadyToAcceptedPort(t *testing.T) {
 				h.b.reconcileProxyPortOnReady(11434)
 			case "lmstudio":
 				h.b.reconcileLMStudioProxyPortOnReady(11434)
+			case "llamacpp":
+				h.b.reconcileLlamaCPPProxyPortOnReadyForGeneration(0, 11434)
 			case "omlx":
 				h.b.reconcileOMLXProxyPortOnReadyForGeneration(0, 11434)
 			}

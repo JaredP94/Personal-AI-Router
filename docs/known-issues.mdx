@@ -77,9 +77,9 @@ hardware would help. Refer to
 
 ## Worker Health: Manual Recovery and Platform Limits
 
-The broker probes all twelve workers, marks them `degraded` after two consecutive
+The broker probes all thirteen workers, marks them `degraded` after two consecutive
 failed probes, and restarts eight eligible workers after three. Engine-manager
-and the three proxies are **never auto-restarted on a hang**: doing so could
+and the four proxies are **never auto-restarted on a hang**: doing so could
 orphan engines or interrupt inference streams. Their degraded desktop rows show
 "Not responding — restart manually" under **Settings → Service → Workers**.
 Restarting engine-manager may leave engines running or stop them; proxy restarts

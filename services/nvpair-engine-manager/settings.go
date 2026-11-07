@@ -17,7 +17,7 @@ import (
 )
 
 func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]string) (launchCommand, error) {
-	if err := validateLlamaOverrides(rt); err != nil {
+	if err := validateLlamaOverrides(rt, vars["install_dir"]+"-models"); err != nil {
 		return launchCommand{}, err
 	}
 	if err := rejectManagedOverrides(rt); err != nil {
@@ -87,7 +87,7 @@ func applyLiteralLaunch(rt Runtime, command launchCommand, vars map[string]strin
 	args := *rt.LaunchArgs
 	if p.llamaCPP() {
 		var err error
-		args, err = normalizeLlamaOptions(args)
+		args, err = normalizeLlamaOptions(args, vars["install_dir"]+"-models")
 		if err != nil {
 			return launchCommand{}, err
 		}
@@ -191,7 +191,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 	result := settings.Preview{Settings: request.Settings, Args: []string{}, Env: []string{}, Errors: map[string]string{}}
 	fail := func(message string) settings.Preview { result.Errors["launchText"] = message; return result }
 
-	if (request.Engine == "llamacpp" && request.Settings.ProxyPort != 0) || (request.Engine != "llamacpp" && (request.Settings.ProxyPort < 1 || request.Settings.ProxyPort > 65535)) {
+	if request.Settings.ProxyPort < 1 || request.Settings.ProxyPort > 65535 {
 		result.Errors["proxyPort"] = "Enter a proxy port from 1 to 65535."
 		return result
 	}
@@ -239,7 +239,7 @@ func (e *Executor) previewLaunchLocked(st *engineState, request settings.Request
 		return fail(err.Error())
 	}
 	if policy.llamaCPP() {
-		tokens, err = normalizeLlamaOptions(tokens)
+		tokens, err = normalizeLlamaOptions(tokens, st.installDir+"-models")
 		if err != nil {
 			return fail(err.Error())
 		}

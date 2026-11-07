@@ -191,17 +191,7 @@ func (b *Broker) setOMLXProxyFallback(excludedPorts ...int) int {
 }
 
 func (b *Broker) setOMLXProxyFallbackWithPortCheck(portAvailable func(int) bool, excludedPorts ...int) int {
-	if aliasPort := b.currentOllamaHostAlias().Port; aliasPort > 0 {
-		excludedPorts = append(excludedPorts, aliasPort)
-	}
-	if lmPort := b.lmstudioProxyListenPort(); lmPort > 0 {
-		excludedPorts = append(excludedPorts, lmPort)
-	}
-	if lmStPort := int(b.lmstudioProxyStartupPort.Load()); lmStPort > 0 {
-		excludedPorts = append(excludedPorts, lmStPort)
-	}
-	excludedPorts = append(excludedPorts, 1234, 1235)
-	fallback := nextAvailablePortExcluding(1236, excludedPorts, portAvailable)
+	fallback := b.nextProxyFallbackPort("omlx", 1236, excludedPorts, portAvailable)
 	b.omlxProxyStartupPort.Store(int32(fallback))
 	return fallback
 }

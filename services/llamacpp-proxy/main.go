@@ -1,0 +1,126 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"log/slog"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"nvpair-shared/applog"
+	"nvpair-shared/clustertrust"
+	"nvpair-shared/nodeid"
+	"nvpair-shared/telemetry"
+)
+
+func main() {
+	port := flag.Int("port", defaultProxyPort, "HTTP listen port")
+	ignorePersistedPort := flag.Bool("ignore-persisted-port", false, "use --port even when a persisted port exists")
+	responseHeaderTimeout := flag.String("response-header-timeout", "", "upstream response-header timeout (Go duration, e.g. 10m); default: $NVPAIR_PROXY_RESPONSE_HEADER_TIMEOUT or 120s")
+	firstBodyTimeout := flag.String("first-body-timeout", "", "opt-in inference first-body timeout (Go duration, e.g. 10m; 0 disables); default: $NVPAIR_PROXY_FIRST_BODY_TIMEOUT or disabled")
+	ipcPath := flag.String("ipc", "", "IPC endpoint: Unix domain socket path or Windows named pipe (default: stdin/stdout)")
+	clusterDir := flag.String("cluster-dir", "", "cluster trust directory (node.crt/key + trusted pins); enables the LAN mTLS inference ingress when this node is clustered")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
+	flag.Parse()
+	proxyResponseTimeout = resolveResponseHeaderTimeout(*responseHeaderTimeout)
+	proxyFirstBodyTimeout = resolveFirstBodyTimeout(*firstBodyTimeout)
+
+	if *showVersion {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
+
+	applog.Init("llamacpp-proxy", resolveLevel())
+
+	var transport io.ReadWriteCloser
+	if *ipcPath != "" {
+		conn, err := dialIPC(*ipcPath)
+		if err != nil {
+			log.Fatalf("failed to connect to IPC endpoint %q: %v", *ipcPath, err)
+		}
+		transport = conn
+		log.Printf("using IPC transport: %s", *ipcPath)
+	} else {
+		transport = newStdioTransport()
+		log.Print("using stdio transport")
+	}
+	defer transport.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			log.Printf("received %s, shutting down", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	// Restore a previously chosen port (set via set-port) over the
+	// --port/default, so the proxy comes back up where the user last put it.
+	persisted, hasPersisted := loadPersistedPort()
+	effectivePort := chooseStartupPort(*port, *ignorePersistedPort, persisted, hasPersisted)
+	if hasPersisted && !*ignorePersistedPort && effectivePort == persisted {
+		log.Printf("restored persisted proxy port %d", persisted)
+	}
+
+	tel := telemetry.NewManager("nvpair-llamacpp-proxy", telemetry.OTLPExporter)
+
+	codec := NewCodec(transport)
+	defer codec.Close() // flush accepted frames before closing the transport
+	disc := NewDiscovery()
+	proxy := NewProxy(codec, disc, effectivePort, tel)
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		_ = tel.Shutdown(shutdownCtx)
+	}()
+	// Open a live view of this node's cluster mTLS trust fabric. While unclustered
+	// the proxy serves only the loopback plaintext personality; once this node is
+	// a member the same listener also serves the pin-gated LAN mTLS ingress, and
+	// peers become routable candidates. The proxy needs no restart to notice
+	// either transition — it re-derives membership per request and on a watch.
+	//
+	// Membership is gated on an active admission or a pin, never on keypair
+	// presence: a left/removed node keeps its keypair by design, and would
+	// otherwise keep logging cluster_ingress with no cluster peers to serve.
+	proxy.mesh = clustertrust.Open(*clusterDir)
+
+	// Resolve this node's stable per-host id from the same on-disk identity
+	// the broker and the scanner use. A request forwarded to a cluster peer
+	// carries it, so the peer knows which node the job originated on and
+	// attributes the live frame it publishes to that origin rather than to
+	// itself. The base is the parent of the cluster dir (which is
+	// <base>/cluster), exactly as the broker resolves it.
+	base := ""
+	if *clusterDir != "" {
+		base = filepath.Dir(*clusterDir)
+	}
+	proxy.nodeID = nodeid.Resolve(base)
+	if proxy.nodeID == "" {
+		slog.Warn("could not resolve this node's id; a forwarded request will not name its origin")
+	}
+	go proxy.mesh.Watch(ctx, func(clustered bool) {
+		slog.Info("cluster inference ingress switched personality", "cluster_ingress", clustered)
+		proxy.dropUnpinnedPeerTransports()
+	})
+
+	if err := proxy.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Fatalf("proxy error: %v", err)
+	}
+	log.Print("shutdown complete")
+}

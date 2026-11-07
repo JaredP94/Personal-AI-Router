@@ -106,5 +106,9 @@ func (b *Broker) recoverProxyBindFailure(engine string, generation uint64, port 
 		if generation == b.omlxProxyGeneration.Load() {
 			b.setOMLXProxyFallback(port)
 		}
+	case "llamacpp":
+		if generation == b.llamacppProxyGeneration.Load() {
+			b.setLlamaCPPProxyFallback(port)
+		}
 	}
 }

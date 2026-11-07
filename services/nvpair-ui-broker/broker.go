@@ -204,6 +204,7 @@ type Broker struct {
 	ollamaExplicitSettings    atomic.Bool
 	lmstudioExplicitSettings  atomic.Bool
 	omlxExplicitSettings      atomic.Bool
+	llamacppExplicitSettings  atomic.Bool
 	workerStatusMu            sync.Mutex
 	workerEntries             []*workerEntry
 	workerHealthInterval      time.Duration
@@ -221,6 +222,7 @@ type Broker struct {
 	proxyPath         string
 	lmstudioProxyPath string
 	omlxProxyPath     string
+	llamacppProxyPath string
 	workloadMgrPath   string
 	errorsPath        string
 	engineMgrPath     string
@@ -236,7 +238,7 @@ type Broker struct {
 	telemetryReconcileMu  sync.Mutex
 	telemetryDesired      telemetryDesiredConfig
 	telemetryGeneration   uint64
-	telemetryApplications [3]telemetryApplication
+	telemetryApplications [4]telemetryApplication
 	telemetryMu           sync.Mutex
 	telemetryStarting     atomic.Bool
 	telemetryCancelStart  context.CancelFunc
@@ -271,8 +273,11 @@ type Broker struct {
 	lmstudioPortReadyOnce            sync.Once
 	lmstudioReadyMu                  sync.Mutex
 	omlxProxyStartupPort             atomic.Int32
+	llamacppProxyStartupPort         atomic.Int32
 	omlxProxyGeneration              atomic.Uint64
+	llamacppProxyGeneration          atomic.Uint64
 	omlxProxyPublishedGeneration     atomic.Uint64
+	llamacppProxyPublishedGeneration atomic.Uint64
 	store                            *discoveryStore
 	telemetry                        *telemetryCache
 	// relayDir is the discovery directory, fed by the promoted daemon's
@@ -301,6 +306,7 @@ type Broker struct {
 	proxy                      *proxyProcess
 	lmstudioProxy              *proxyProcess
 	omlxProxy                  *proxyProcess
+	llamacppProxy              *proxyProcess
 	workloadMgr                *workloadManagerProcess
 	errorsProc                 *errorsProcess
 	engineMgr                  *rpcWorker
@@ -317,6 +323,7 @@ type Broker struct {
 	proxySup         *supervisor
 	lmstudioProxySup *supervisor
 	omlxProxySup     *supervisor
+	llamacppProxySup *supervisor
 	workloadMgrSup   *supervisor
 	errorsSup        *supervisor
 	engineMgrSup     *supervisor
@@ -343,6 +350,7 @@ type Broker struct {
 	proxySubscribed         bool
 	lmstudioProxySubscribed bool
 	omlxProxySubscribed     bool
+	llamacppProxySubscribed bool
 
 	// workloadsMu guards workloadsSubscribed. The workloads:* stream is
 	// opt-in too: emitWorkloadEvent (called on the proxy reader goroutine
@@ -478,6 +486,7 @@ type workerPaths struct {
 	proxy                string
 	lmstudioProxy        string
 	omlxProxy            string
+	llamacppProxy        string
 	workloadMgr          string
 	errors               string
 	engineMgr            string
@@ -525,6 +534,7 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 		proxyPath:               paths.proxy,
 		lmstudioProxyPath:       paths.lmstudioProxy,
 		omlxProxyPath:           paths.omlxProxy,
+		llamacppProxyPath:       paths.llamacppProxy,
 		workloadMgrPath:         paths.workloadMgr,
 		errorsPath:              paths.errors,
 		engineMgrPath:           paths.engineMgr,
@@ -1703,8 +1713,8 @@ func (b *Broker) survivingAliasLocked(key string) (manualNodeStatusEntry, bool) 
 		if status.NodeInfoUp {
 			rank = 1
 		}
-		if status.OllamaUp || status.LMStudioUp || status.OMLXUp ||
-			len(status.OllamaModels)+len(status.LMStudioModels)+len(status.OMLXModels)+len(status.ModelsByEngine) > 0 {
+		if status.OllamaUp || status.LMStudioUp || status.OMLXUp || status.LlamaCPPUp ||
+			len(status.OllamaModels)+len(status.LMStudioModels)+len(status.OMLXModels)+len(status.LlamaCPPModels)+len(status.ModelsByEngine) > 0 {
 			rank = 2
 		}
 		if rank > bestRank || (rank == bestRank && id < best) {
@@ -1883,6 +1893,8 @@ func (b *Broker) proxyForEngine(engine string) *proxyProcess {
 		return b.getLMStudioProxy()
 	case "omlx":
 		return b.getOMLXProxy()
+	case "llamacpp":
+		return b.getLlamaCPPProxy()
 	default:
 		return nil
 	}
@@ -2108,6 +2120,9 @@ func (b *Broker) Serve(ctx context.Context) error {
 		b.prepareOMLXProxyPort()
 	}
 	b.startWorker("omlx-proxy")
+	b.prepareLlamaCPPProxyPort()
+	b.startWorker("llamacpp-proxy")
+	go b.runAutoAdvertiseLlamaCPP(ctx)
 
 	// Ownership gates remain closed through retries and open only on readiness
 	// or terminal exhaustion/missing, never just a transient spawn failure.
@@ -2406,7 +2421,7 @@ func (b *Broker) routeProxyWorkload(method string, params json.RawMessage) {
 // to the cluster, but never into the catalog — it is a snapshot of a running
 // request, not a state transition.
 //
-// All three proxies publish both kinds, so the routing is shared: a frame
+// All four proxies publish both kinds, so the routing is shared: a frame
 // that only the Ollama proxy's path recognised would leave the LM Studio and
 // oMLX jobs without a live view.
 func (b *Broker) routeProxyWorkloadMethod(method string, params json.RawMessage) bool {
@@ -2610,6 +2625,11 @@ func (b *Broker) forwardLogLevel(level string) {
 	if p := b.getOMLXProxy(); p != nil {
 		if err := p.SetLogLevel(level); err != nil {
 			slog.Warn("failed to forward log/set-level to omlx-proxy", "err", err)
+		}
+	}
+	if p := b.getLlamaCPPProxy(); p != nil {
+		if err := p.SetLogLevel(level); err != nil {
+			slog.Warn("failed to forward log/set-level to llamacpp-proxy", "err", err)
 		}
 	}
 	if wm := b.getWorkloadMgr(); wm != nil {
@@ -3390,6 +3410,47 @@ func (b *Broker) handleMessage(msg *Message) {
 			log.Printf("failed to respond to omlx-proxy:unsubscribe: %v", err)
 		}
 
+	case "llamacpp-proxy:set-port":
+		go b.handleSettingsPortRPC(msg, "llamacpp")
+
+	case "llamacpp-proxy:get-status":
+		var result ProxyStatusResult
+		if p := b.getLlamaCPPProxy(); p != nil {
+			ready, port := p.Status()
+			result.Ready = ready
+			result.Port = port
+			result.Requests, result.CacheAffinityHits = p.routingStatus()
+		}
+		if err := b.codec.Respond(msg.ID, result); err != nil {
+			log.Printf("failed to respond to llamacpp-proxy:get-status: %v", err)
+		}
+
+	case "llamacpp-proxy:subscribe":
+		b.proxyMu.Lock()
+		wasSubscribed := b.llamacppProxySubscribed
+		b.llamacppProxySubscribed = true
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: true}); err != nil {
+			log.Printf("failed to respond to llamacpp-proxy:subscribe: %v", err)
+		}
+		if !wasSubscribed {
+			if p := b.getLlamaCPPProxy(); p != nil {
+				if rp := p.ReadyParams(); rp != nil {
+					if err := b.codec.Notify("llamacpp-proxy:ready", rp); err != nil {
+						slog.Warn("emit baseline llamacpp-proxy:ready failed", "err", err)
+					}
+				}
+			}
+		}
+
+	case "llamacpp-proxy:unsubscribe":
+		b.proxyMu.Lock()
+		b.llamacppProxySubscribed = false
+		b.proxyMu.Unlock()
+		if err := b.codec.Respond(msg.ID, SubscriptionResult{Subscribed: false}); err != nil {
+			log.Printf("failed to respond to llamacpp-proxy:unsubscribe: %v", err)
+		}
+
 	case "workloads:subscribe":
 		b.workloadsMu.Lock()
 		b.workloadsSubscribed = true
@@ -3504,6 +3565,10 @@ func (b *Broker) handleMessage(msg *Message) {
 		// keeping them first makes the engine namespaces explicit.
 		if strings.HasPrefix(msg.Method, "omlx-proxy:") {
 			b.relayToOMLXProxy(msg)
+			return
+		}
+		if strings.HasPrefix(msg.Method, "llamacpp-proxy:") {
+			b.relayToLlamaCPPProxy(msg)
 			return
 		}
 		if strings.HasPrefix(msg.Method, "lmstudio-proxy:") {
