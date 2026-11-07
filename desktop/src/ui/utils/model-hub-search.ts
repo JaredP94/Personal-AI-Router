@@ -48,7 +48,10 @@ function hubModelToEntry(m: EngineHubModel): ModelEntry {
 export async function searchEngineHub(engine: EngineType, query?: string): Promise<ModelEntry[]> {
     if (engine !== 'llamacpp' && !getEngineHub(engine)) return []
     const { models } = await window.pairApi.engines.searchHub(engine, query)
-    return models.map(hubModelToEntry)
+    return models.map(model => ({
+        ...hubModelToEntry(model),
+        displayName: engine === 'llamacpp' ? model.id : undefined
+    }))
 }
 
 /**

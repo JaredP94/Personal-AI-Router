@@ -51,6 +51,7 @@ it('browses llama.cpp by publisher and shows bounded service search errors calml
         )
         expect(container.textContent).toContain('ggml-org')
         expect(container.textContent).toContain('unsloth')
+        expect(container.textContent).toContain('unsloth/Demo:Q4_K_M')
         const input = container.querySelector<HTMLInputElement>('input')
         await act(async () => {
             Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(

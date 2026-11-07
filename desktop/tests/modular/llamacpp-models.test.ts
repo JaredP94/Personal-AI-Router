@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from 'vitest'
+import { formatModelDisplayName } from '@/ui/utils/format-model-display-name'
 import { groupCatalog, selectLlamaModel, selectedLlamaModel } from '@/ui/utils/llamacpp-models'
 import { modelActionItems } from '@/ui/utils/engine-capability-gates'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
@@ -28,6 +29,13 @@ describe('llama.cpp model management', () => {
         expect(selectedLlamaModel('--ctx-size 4096 --model "new.gguf"')).toBe('new.gguf')
         expect(selectLlamaModel('-m=old.gguf --threads 4', '')).toBe('--threads 4')
     })
+    it('shows the exact catalog ID instead of a prettified model name', () => {
+        expect(formatModelDisplayName('ggml-org/Demo-GGUF:Q4_K_M', 'llamacpp')).toBe(
+            'ggml-org/Demo-GGUF:Q4_K_M'
+        )
+        expect(formatModelDisplayName('/dev/fd/3', 'llamacpp')).toBe('Unavailable model')
+    })
+
     it('never retains a descriptor path as a selection', () => {
         expect(selectedLlamaModel('--model /dev/fd/3')).toBe('')
         expect(selectLlamaModel('--model /dev/fd/3', 'cache.gguf')).not.toContain('/dev/fd/')
