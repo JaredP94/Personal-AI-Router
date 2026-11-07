@@ -15,7 +15,8 @@ const mocks = vi.hoisted(() => ({
         callProcess: vi.fn(),
         callProxy: vi.fn(),
         sendProcess: vi.fn(),
-        reportError: vi.fn()
+        reportError: vi.fn(),
+        deleteModel: vi.fn()
     }
 }))
 
@@ -96,6 +97,35 @@ describe('unified settings bridge', () => {
         await expect(
             handleServiceBridgeInvoke('engine:downloaded-models', { nodeId: 'peer' })
         ).rejects.toThrow('not available')
+    })
+
+    it('acknowledges local llama.cpp delete only after the owning operation settles', async () => {
+        let finish = (): void => {}
+        mocks.supervisor.deleteModel.mockImplementation(
+            () =>
+                new Promise<void>(resolve => {
+                    finish = resolve
+                })
+        )
+        let acknowledged = false
+        const response = handleServiceBridgeInvoke('engine:command', {
+            command: 'deleteModel',
+            engineType: 'llamacpp',
+            nodeId: 'local-node',
+            model: 'ggml-org/Demo:Q4_K_M'
+        })
+        void response.then(() => {
+            acknowledged = true
+        })
+        await Promise.resolve()
+        expect(acknowledged).toBe(false)
+        finish()
+        await response
+        expect(mocks.supervisor.deleteModel).toHaveBeenCalledWith(
+            'llamacpp',
+            'llamacpp',
+            'ggml-org/Demo:Q4_K_M'
+        )
     })
 
     it('updates llama.cpp through atomic install without uninstalling the working tree', async () => {

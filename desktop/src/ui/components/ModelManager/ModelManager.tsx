@@ -194,7 +194,14 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                         })
                         break
                     }
-                    window.pairApi.engines.deleteModel(backendType, nodeId, modelName)
+                    if (backendType === 'llamacpp') {
+                        void window.pairApi.engines
+                            .deleteModel(backendType, nodeId, modelName)
+                            .then(
+                                () => installed.reload(),
+                                () => installed.reload()
+                            )
+                    } else window.pairApi.engines.deleteModel(backendType, nodeId, modelName)
                     break
             }
         },
@@ -206,6 +213,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             confirmBeforeDelete,
             nodeId,
             reported.deleteModel,
+            installed,
             displayName
         ]
     )

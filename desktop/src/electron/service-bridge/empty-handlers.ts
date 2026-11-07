@@ -772,6 +772,16 @@ async function handleEngineCommand(payload?: WsInvokeRequest<'engine:command'>):
     // Lifecycle + model management is the local engine-manager's job, reached
     // through the broker's `engine:*` relay (the broker supervises it).
     if (supervisor.hasProcess('broker')) {
+        // The installed-cache UI needs the authoritative completion, not a
+        // fire-and-forget acknowledgement that could refresh before deletion.
+        if (
+            payload.engineType === 'llamacpp' &&
+            payload.command === 'deleteModel' &&
+            payload.model
+        ) {
+            await supervisor.deleteModel('llamacpp', 'llamacpp', payload.model)
+            return null
+        }
         routeEngineManagerCommand(payload)
         return null
     }
