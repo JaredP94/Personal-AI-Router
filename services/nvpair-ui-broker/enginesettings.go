@@ -204,9 +204,14 @@ func (b *Broker) settingsSnapshotLocked(ctx context.Context, engine string) (set
 		ready, proxyPort = proxy.Status()
 	}
 	record := b.engineSettings[engine]
-	configuredProxy := proxyPort
-	if record != nil && (!ready || record.Explicit) {
+	// Runtime binds may be temporary fallbacks. Seed a new record from the
+	// component's saved choice/default, then keep the journal's desired port
+	// regardless of readiness or whether the user has explicitly edited it.
+	var configuredProxy int
+	if record != nil {
 		configuredProxy = record.Snapshot.Settings.ProxyPort
+	} else {
+		configuredProxy = configuredProxyPort(engine)
 	}
 	current := settings.Config{ServerPort: launch.ServerPort, ProxyPort: configuredProxy, LaunchText: launch.LaunchText}
 	if record == nil {

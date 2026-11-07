@@ -119,6 +119,7 @@ func TestOMLXStartupPreservesSavedPortAndRevision(t *testing.T) {
 	b := h.b
 	proxy := b.getOMLXProxy()
 	proxy.port = 1236
+	saveSettingsHarnessProxyPort(t, "omlx", 1236)
 	before, err := b.getEngineSettings(context.Background(), settings.Request{Engine: "omlx"}, "")
 	if err != nil {
 		t.Fatal(err)

@@ -227,6 +227,15 @@ transport-wide stdout backpressure remains a separate concern.
 stream loss emits `engine:settings-disconnected` with `{nodeId}`. Sequence and
 epoch here belong to the settings domain, independently of relay envelopes.
 
+Saved `settings.proxyPort` is desired configuration, not the proxy's observed
+listener. Refreshes retain it even for records the user has never edited; a
+temporary startup fallback appears only in `effectiveProxyPort` and does not
+advance the configuration revision. First-time records use the proxy component's
+saved port or the broker's default, never an observed fallback. The existing
+startup port selection retries the saved component choice when it becomes free.
+Configured server ports and launch text still reconcile from the engine manager's
+component configuration; `effectiveServerPort` remains observation-only.
+
 Show Apply progress from `applying`; use the snapshot's single failure message
 instead of opening a duplicate global lifecycle failure dialog. A failed apply
 restores the previous persisted configuration, proxy port and running state under
