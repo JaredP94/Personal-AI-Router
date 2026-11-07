@@ -22,9 +22,10 @@ func candidateRecordKey(raw RawNode) string {
 	return noderec.PreviewRecordID(discovery.AdvertisementKey(raw), "")
 }
 
-// Bound each attempt without permanently discarding later interfaces. Prefer
-// the endpoint which previously proved its key; otherwise rotate four-address
-// batches on the retry cadence. No cursor map is needed for untrusted names.
+// Production browse lists are already capped at four by netpick.Candidates.
+// Defensively bound larger caller-supplied lists too, preferring a proven
+// endpoint and otherwise rotating batches; this cannot recover addresses that
+// netpick excluded from the production list.
 func (d *daemon) candidateHosts(node noderec.DirectoryNode, hosts []string, now time.Time) []string {
 	if len(hosts) <= 4 {
 		return hosts
@@ -73,13 +74,25 @@ func (d *daemon) newCandidateBrowser() *Discovery {
 
 // rememberCandidate separately bounds the scanner, including direct browse
 // events and candidates retained across scans. A proven endpoint can displace
-// an unproven one, never the reverse. Removed previews are withdrawn below,
-// outside the candidate lock.
-func (d *daemon) rememberCandidate(node noderec.DirectoryNode) bool {
+// an unproven one, never the reverse. Revisions from the same normalized
+// instance/SRV host retire pending candidates and previews, never a verified
+// HostUUID record. Removed previews are withdrawn outside the candidate lock.
+func (d *daemon) rememberCandidate(node noderec.DirectoryNode, advertiser string) bool {
 	key := node.RecordKey()
 	d.candidateMu.Lock()
 	if d.candidates == nil {
 		d.candidates = make(map[string]noderec.DirectoryNode)
+	}
+	if d.candidateAdvertisers == nil {
+		d.candidateAdvertisers = make(map[string]string)
+	}
+	var retired []string
+	for k, source := range d.candidateAdvertisers {
+		if k != key && advertiser != "" && source == advertiser {
+			delete(d.candidates, k)
+			delete(d.candidateAdvertisers, k)
+			retired = append(retired, k)
+		}
 	}
 	_, exists := d.candidates[key]
 	count := 0
@@ -112,14 +125,17 @@ func (d *daemon) rememberCandidate(node noderec.DirectoryNode) bool {
 	}
 	if droppedKey != "" {
 		delete(d.candidates, droppedKey)
+		delete(d.candidateAdvertisers, droppedKey)
+		retired = append(retired, droppedKey)
 	}
 	if admitted {
 		d.candidates[key] = node
+		d.candidateAdvertisers[key] = advertiser
 	}
 	d.candidateMu.Unlock()
-	if droppedKey != "" {
-		if prior, ok := d.dir.get(droppedKey); ok {
-			d.dir.remove(droppedKey)
+	for _, retiredKey := range retired {
+		if prior, ok := d.dir.get(retiredKey); ok {
+			d.dir.remove(retiredKey)
 			d.emit(noderec.NotifyNodeRemoved, prior)
 		}
 	}

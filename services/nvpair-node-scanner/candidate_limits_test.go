@@ -103,19 +103,19 @@ func TestGlobalCandidateAttemptBudgetAndClaimMutation(t *testing.T) {
 	}
 	for i := range candidatePerClaimLimit {
 		n, _ := toDirectoryNode(RawNode{ID: fmt.Sprintf("same-%d", i), TXT: []string{"uuid=one"}})
-		if !d.rememberCandidate(n) {
+		if !d.rememberCandidate(n, "") {
 			t.Fatal("candidate bound ended early")
 		}
 	}
 	raw := RawNode{ID: "changing", TXT: []string{"uuid=two"}}
 	old, _ := toDirectoryNode(raw)
-	if !d.rememberCandidate(old) {
+	if !d.rememberCandidate(old, "") {
 		t.Fatal("second claim rejected early")
 	}
 	d.dir.upsert(old)
 	changed := old
 	changed.HostUUID = "one"
-	if d.rememberCandidate(changed) {
+	if d.rememberCandidate(changed, "") {
 		t.Fatal("UUID mutation bypassed per-claim bound")
 	}
 	if _, exists := d.dir.get(old.RecordKey()); exists {
@@ -126,9 +126,14 @@ func TestGlobalCandidateAttemptBudgetAndClaimMutation(t *testing.T) {
 	}
 }
 
-func TestCandidateAddressBatchesPreserveLaterInterfaces(t *testing.T) {
+func TestCandidateAddressLimitMatchesProductionPipeline(t *testing.T) {
 	d := newSelfTestDaemon("self", "127.0.0.1")
-	hosts := []string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "192.0.2.5", "192.0.2.6"}
+	raw := RawNode{ID: "peer", TXT: []string{"uuid=peer", "ips=192.0.2.1,192.0.2.2,192.0.2.3,192.0.2.4,192.0.2.5,192.0.2.6"}}
+	node, ok := toDirectoryNode(raw)
+	if !ok || len(node.CandidateIPs()) != noderec.MaxAdvertisedIPs {
+		t.Fatal("production address cap not applied")
+	}
+	hosts := node.CandidateIPs()
 	seen := make(map[string]bool)
 	for _, now := range []time.Time{time.Unix(0, 0), time.Unix(15, 0)} {
 		batch := d.candidateHosts(noderec.DirectoryNode{}, hosts, now)
@@ -140,14 +145,12 @@ func TestCandidateAddressBatchesPreserveLaterInterfaces(t *testing.T) {
 		}
 	}
 	if len(seen) != len(hosts) {
-		t.Fatal("later interfaces permanently discarded")
+		t.Fatal("an admitted production address was discarded")
 	}
-	raw := RawNode{ID: "proven", TXT: []string{"uuid=peer", "ip=192.0.2.6", "ni=1"}}
-	recordProvenEndpoint(d, raw)
-	node, _ := toDirectoryNode(raw)
-	batch := d.candidateHosts(node, hosts, time.Unix(0, 0))
-	if len(batch) != 1 || batch[0] != "192.0.2.6" {
-		t.Fatal("proven endpoint was not preferred")
+	// This is an input bound, not evidence that the fifth/sixth advertised
+	// addresses rotate back into the production candidate list.
+	if seen["192.0.2.5"] || seen["192.0.2.6"] {
+		t.Fatal("production pipeline bypassed netpick address cap")
 	}
 }
 

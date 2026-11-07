@@ -40,6 +40,13 @@ func AdvertisementKey(n Node) string {
 	return fmt.Sprintf("%s\x00%s\x00%d\x00%q\x00%q", strings.ToLower(n.ID), strings.ToLower(n.Host), n.Port, addresses, record)
 }
 
+// AdvertiserKey groups revisions from one mDNS responder by normalized instance
+// and SRV host. It is an unauthenticated continuity hint, never a peer identity.
+// Distinct hosts using the same instance remain independent advertisers.
+func AdvertiserKey(n Node) string {
+	return strings.ToLower(strings.TrimSuffix(n.ID, ".")) + "\x00" + strings.ToLower(strings.TrimSuffix(n.Host, "."))
+}
+
 // WithCandidateLimits bounds both a scan and the retained browser map. The
 // optional preference must be a cheap, concurrency-safe lookup of previously
 // authenticated endpoints, never a test of advertised identity. Excess unproven

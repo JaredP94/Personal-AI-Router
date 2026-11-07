@@ -31,8 +31,10 @@ func TestBrowserDeliversSameUUIDCandidatesInBothOrders(t *testing.T) {
 			genuine := RawNode{ID: "genuine", Host: "genuine.local.", Port: 14318, Addresses: []string{host}, TXT: []string{"uuid=uuid-peer", "cluster-uuid=uuid-peer", "ip=" + host, "ni=" + port}}
 			lookalike := RawNode{ID: "lookalike", Host: "lookalike.local.", Port: 14318, Addresses: []string{ph}, TXT: []string{"uuid=uuid-peer", "ip=" + ph, "ni=" + pp}}
 			if tc.sameName {
+				// Reusing an instance on a distinct SRV host is an independent
+				// advertiser, not an obsolete revision of the genuine one.
+				// Copying both is covered by TestLookalikeAdvertiserCannotRemoveVerifiedPeer.
 				lookalike.ID = genuine.ID
-				lookalike.Host = genuine.Host
 			}
 			browser := newDaemon(nil, d.mesh, d.clusterDir, nil).browser
 			inputs := []RawNode{genuine, lookalike}

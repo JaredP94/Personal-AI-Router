@@ -422,6 +422,22 @@ func (b *Browser) reconcile(seen map[string]Node) []Event {
 	b.mu.Lock()
 	var pending []Event
 
+	// A live endpoint is not evidence that an obsolete TXT/SRV/address variant
+	// is still advertised. Retire absent revisions when the same responder is
+	// heard with a new revision, before capacity admission or liveness probing.
+	// Concurrent variants in this scan remain candidates for authentication.
+	advertisers := make(map[string]bool, len(seen))
+	for _, n := range seen {
+		advertisers[AdvertiserKey(n)] = true
+	}
+	for k, n := range b.nodes {
+		if _, present := seen[k]; !present && advertisers[AdvertiserKey(n)] {
+			pending = append(pending, Event{Type: Removed, Node: n})
+			delete(b.nodes, k)
+			delete(b.misses, k)
+		}
+	}
+
 	// Apply the same capacity bound across scans, not just within one scan.
 	// Capacity withdrawals are per advertisement, like ordinary miss eviction.
 	retained := make(map[string]Node, len(b.nodes))

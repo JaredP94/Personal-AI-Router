@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/discovery"
 	"nvpair-shared/enginenative"
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
@@ -68,6 +69,7 @@ type daemon struct {
 	inventoryMu           sync.Mutex
 	candidateMu           sync.Mutex
 	candidates            map[string]noderec.DirectoryNode
+	candidateAdvertisers  map[string]string
 	candidateAttempts     map[string]candidateAttemptWindow
 	candidateAttemptStart time.Time
 	candidateAttemptCount int
@@ -515,6 +517,7 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 	if ev.Type == "removed" {
 		d.candidateMu.Lock()
 		delete(d.candidates, key)
+		delete(d.candidateAdvertisers, key)
 		d.candidateMu.Unlock()
 		if prior, exists := d.dir.get(key); exists {
 			d.dir.remove(key)
@@ -524,7 +527,7 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		// authenticated peer. Its own mTLS refresh/expiry owns that lifetime.
 		return
 	}
-	if !d.rememberCandidate(node) {
+	if !d.rememberCandidate(node, discovery.AdvertiserKey(ev.Node)) {
 		return
 	}
 	if d.claimCandidateAttempt(node, time.Now()) {
