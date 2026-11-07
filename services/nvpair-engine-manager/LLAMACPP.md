@@ -82,7 +82,8 @@ commit and manifest commit can leave an unrecorded file, never a deletable
 owned entry; abandoned crash temp files are not automatically reclaimed.
 
 `engine:cancel-pull` accepts asynchronously; only the terminal progress update
-confirms transfer release and removal of that operation\u0027s own temp file. Unlike
+confirms transfer release and removal of that operation\u0027s own temp file.
+If temp cleanup fails, the terminal state is an error, not successful cancellation. Unlike
 Ollama/LM Studio in #50, this cache is PAIR-owned: cleaning the uniquely created
 temp is safe; no shared, pre-existing or completed file is removed. Concurrent
 cache mutations are refused (including duplicate pulls), not queued. #50\u0027s

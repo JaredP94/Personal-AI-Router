@@ -114,7 +114,7 @@ func (e *Executor) reserveLlamaCache(deleting bool) (*engineState, func(), error
 	st.mu.Unlock()
 	return st, func() { st.mu.Lock(); st.llamaCacheBusy = false; st.mu.Unlock() }, nil
 }
-func (e *Executor) pullLlamaModel(ctx context.Context, id string) (json.RawMessage, error) {
+func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.RawMessage, retErr error) {
 	if _, err := llamaRepoID(id); err != nil {
 		return nil, err
 	}
@@ -157,7 +157,13 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (json.RawMessa
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = f.Close(); _ = llamaCacheRemove(dir, temp) }()
+	defer func() {
+		_ = f.Close()
+		if err := llamaCacheRemove(dir, temp); err != nil && !os.IsNotExist(err) {
+			result = nil
+			retErr = fmt.Errorf("model transfer stopped but its temporary file could not be removed")
+		}
+	}()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("invalid model download request")

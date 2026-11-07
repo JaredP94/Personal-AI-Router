@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !windows
+
 package main
 
 import (
@@ -201,6 +203,49 @@ func TestLlamaDownloadCancelDuplicateAndInterrupted(t *testing.T) {
 		})
 	}
 }
+func TestLlamaDownloadCancelCleanupFailureIsNotConfirmed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires an unprivileged user")
+	}
+	started := make(chan struct{})
+	ex, cache := llamaDownloadExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write(llamaTestBytes()[:8])
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	}, nil)
+	events, unsub := ex.progress.subscribe("llamacpp")
+	defer unsub()
+	done := make(chan error, 1)
+	go func() { done <- pullLlamaTest(ex, "cleanup") }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("not started")
+	}
+	if err := os.Chmod(cache, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cache, 0700) })
+	if !ex.CancelModelPull("llamacpp", llamaTestID, "cleanup") {
+		t.Fatal("cancel refused")
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "could not be removed") {
+			t.Fatalf("cleanup failure hidden: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop did not settle")
+	}
+	for len(events) > 0 {
+		if ev := <-events; ev.Stage == "cancelled" {
+			t.Fatal("claimed temp cleanup succeeded")
+		}
+	}
+}
+
 func TestLlamaDownloadFreeSpaceAndHTTPRedirect(t *testing.T) {
 	ex, cache := llamaDownloadExecutor(t, nil, nil)
 	ex.llamaFreeSpace = func(*os.File) (uint64, error) { return 0, nil }
