@@ -3,12 +3,10 @@
 
 package main
 
-// The mDNS browser now lives in the shared nvpair-shared/discovery package (the
-// mDNS dedup) — nvpair-node-scanner was the canonical source it was lifted from, so
-// behavior is identical (5s scans, the shared miss threshold, order-insensitive
-// compare, uuid= collision warning, evict at threshold). These aliases keep
-// scanner.go and main.go on the local names. The order-insensitivity and
-// UUIDFromTXT tests moved to the shared package.
+// The shared mDNS browser owns scan/diff, order-insensitive comparison and
+// per-record miss eviction. These aliases keep the scanner's local names;
+// advertisement identity, admission and authentication budgets are configured
+// in candidates.go. UUID claims are never browser identity keys.
 
 import "nvpair-shared/discovery"
 
@@ -26,13 +24,11 @@ var NewDiscovery = discovery.New
 // used to run themselves before discovery was consolidated onto the daemon.
 var WithLivenessProbe = discovery.WithLivenessProbe
 
-// WithKeyFunc re-exports the shared option so the daemon keys its node map by
-// uuid= rather than the mDNS instance name (matching cluster-manager). Two hosts
-// that share a hostname but hold distinct UUIDs must not collapse into one entry.
+// WithKeyFunc re-exports the shared option for advertisement endpoint keys.
+// A claimed UUID is not an authenticated identity and cannot be the browser key.
 var WithKeyFunc = discovery.WithKeyFunc
 
-// UUIDFromTXT re-exports the shared uuid= extractor, used as the browser's key
-// function (see WithKeyFunc).
+// UUIDFromTXT re-exports the shared claimed-UUID extractor.
 var UUIDFromTXT = discovery.UUIDFromTXT
 
 // sameStringSet re-exports the shared order-insensitive multiset compare so the

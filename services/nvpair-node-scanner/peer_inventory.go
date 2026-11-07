@@ -35,6 +35,7 @@ func (d *daemon) authenticatedInfo(ctx context.Context, node noderec.DirectoryNo
 	if !ok {
 		return NodeInfoResponse{}, "", false
 	}
+	hosts = d.candidateHosts(node, hosts, time.Now())
 	for _, host := range hosts {
 		var info NodeInfoResponse
 		url := "https://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/v1/node-info"

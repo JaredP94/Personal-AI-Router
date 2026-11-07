@@ -229,7 +229,7 @@ func TestPeerLeavingItsClusterClearsInviteGate(t *testing.T) {
 		ID:  "peer",
 		TXT: []string{"v=1", "uuid=" + peerUUID, "cluster-uuid=their-cluster", "ip=192.168.1.9"},
 	}})
-	n, ok := d.dir.get(noderec.PreviewRecordID("peer", peerUUID))
+	n, ok := d.dir.get(candidateRecordKey(RawNode{ID: "peer", TXT: []string{"v=1", "uuid=" + peerUUID, "cluster-uuid=their-cluster", "ip=192.168.1.9"}}))
 	if !ok {
 		t.Fatal("peer advertising a cluster principal was not recorded")
 	}
@@ -242,7 +242,7 @@ func TestPeerLeavingItsClusterClearsInviteGate(t *testing.T) {
 		ID:  "peer",
 		TXT: []string{"v=1", "uuid=" + peerUUID, "ip=192.168.1.9"},
 	}})
-	n, ok = d.dir.get(noderec.PreviewRecordID("peer", peerUUID))
+	n, ok = d.dir.get(candidateRecordKey(RawNode{ID: "peer", TXT: []string{"v=1", "uuid=" + peerUUID, "ip=192.168.1.9"}}))
 	if !ok {
 		t.Fatal("peer dropped from the directory when it left its cluster")
 	}

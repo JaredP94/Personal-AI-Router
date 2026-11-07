@@ -129,7 +129,7 @@ func TestPublicPreviewHasIndependentKeyAndCannotRemoveVerifiedPeer(t *testing.T)
 	ph, pp, _ := net.SplitHostPort(public.Listener.Addr().String())
 	hint := RawNode{ID: "forged-preview", Addresses: []string{ph}, TXT: []string{"v=1", "uuid=uuid-peer", "ip=" + ph, "ni=" + pp, "ol=1"}}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: hint})
-	key := noderec.PreviewRecordID(hint.ID, "uuid-peer")
+	key := candidateRecordKey(hint)
 	preview, exists := d.dir.get(key)
 	if !exists || preview.RecordKey() != key || preview.IdentityVerification != "unverified" || preview.Trusted {
 		t.Fatalf("preview not independently keyed: %+v", preview)

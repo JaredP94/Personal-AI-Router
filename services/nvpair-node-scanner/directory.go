@@ -17,8 +17,8 @@ import (
 
 // toDirectoryNode converts a browsed _nvpair-node instance into a directory entry
 // — identity + advertised services — without enrichment or liveness (those
-// decorate it later in the daemon). The directory is keyed by hostUuid (the
-// stable identity invite/attribution correlate on); name is the mDNS instance
+// decorate it later in the daemon). Proven records use authenticated hostUuid;
+// previews use the advertisement endpoint identity. Name is the mDNS instance
 // (hostname). Every browse record starts as an independently keyed unverified
 // preview; only a completed authenticated inventory read can promote a peer.
 //
@@ -60,7 +60,7 @@ func toDirectoryNode(raw RawNode) (noderec.DirectoryNode, bool) {
 		ClusterUUID:          rec.ClusterUUID,
 		Trusted:              false,
 		IdentityVerification: "unverified",
-		PeerRecordID:         noderec.PreviewRecordID(raw.ID, rec.HostUUID),
+		PeerRecordID:         candidateRecordKey(raw),
 		Services:             svcs,
 		// Models is enriched separately from engine-manager's em /v1/models
 		// (daemon.enrichModelsAt), not carried in the record's TXT.
@@ -69,7 +69,8 @@ func toDirectoryNode(raw RawNode) (noderec.DirectoryNode, bool) {
 }
 
 // directory is the daemon's view of all LAN nodes (this node included), keyed by
-// hostUuid. Mutations come from the browse-event goroutine; reads come from
+// authenticated hostUuid or independent preview key. Mutations come from the
+// browse-event goroutine; reads come from
 // discovery:get-nodes handlers, so it's an RWMutex map.
 type directory struct {
 	mu    sync.RWMutex
