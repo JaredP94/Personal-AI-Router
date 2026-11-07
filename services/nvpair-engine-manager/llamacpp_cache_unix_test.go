@@ -66,6 +66,20 @@ func TestLlamaDeleteRefusesReplacedRecordedFile(t *testing.T) {
 	}
 }
 
+func TestLlamaOwnershipManifestEntryBound(t *testing.T) {
+	dir, err := openLlamaCache(filepath.Join(t.TempDir(), "cache"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := writeLlamaManifest(dir, llamaCacheManifest{Models: make([]llamaCacheRecord, 4097)}); err == nil {
+		t.Fatal("wrote a manifest the reader must reject")
+	}
+	if _, err := llamaCacheOpen(dir, llamaManifestName, false); !os.IsNotExist(err) {
+		t.Fatal("oversized manifest was committed")
+	}
+}
+
 func TestLlamaCommittedDescriptorDoesNotClaimReplacement(t *testing.T) {
 	cache := filepath.Join(t.TempDir(), "cache")
 	dir, err := openLlamaCache(cache, true)

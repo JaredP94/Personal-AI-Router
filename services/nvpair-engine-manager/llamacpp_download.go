@@ -73,6 +73,9 @@ func llamaTempName() string {
 	return ".pair-" + hex.EncodeToString(bytes[:]) + ".tmp"
 }
 func writeLlamaManifest(dir *os.File, m llamaCacheManifest) error {
+	if len(m.Models) > 4096 {
+		return fmt.Errorf("model ownership manifest full")
+	}
 	data, err := json.Marshal(m)
 	if err != nil || len(data) > 1<<20 {
 		return fmt.Errorf("model ownership manifest full")
@@ -131,6 +134,9 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	manifest, err := readLlamaManifest(dir)
 	if err != nil {
 		return nil, err
+	}
+	if len(manifest.Models) >= 4096 {
+		return nil, fmt.Errorf("model ownership manifest full")
 	}
 	for _, m := range manifest.Models {
 		if m.ID == id {
