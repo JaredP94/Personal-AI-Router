@@ -12,6 +12,7 @@ import (
 // Reserve the generated download namespace: an unrecorded or rejected commit
 // must not reappear as a manually supplied model in inventory or launch.
 func llamaManagedFilename(name string) bool {
+	name = strings.ToLower(name)
 	return strings.HasSuffix(name, ".gguf") && llamaSHA.MatchString(strings.TrimSuffix(name, ".gguf"))
 }
 
@@ -36,7 +37,9 @@ func validateLlamaRecordedFile(dir *os.File, name string, file *os.File) error {
 		return err
 	}
 	for _, m := range manifest.Models {
-		if m.File != name {
+		// Default macOS filesystems alias case variants of the same entry.
+		// Reserve and compare generated names case-insensitively on every OS.
+		if !strings.EqualFold(m.File, name) {
 			continue
 		}
 		info, err := file.Stat()

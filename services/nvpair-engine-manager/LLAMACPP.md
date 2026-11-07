@@ -100,7 +100,9 @@ AT_SYMLINK_NOFOLLOW compares the final entry's dev/ino and size to the verified
 file. A mismatch fails with no ownership record and leaves the unrelated entry
 untouched. Only a match permits directory fsync and manifest commit; the manifest
 records dev/ino (`fileIdentity`), size and SHA-256. Generated 64-hex `.gguf` names
-are reserved: unrecorded commits cannot become selectable manual models.
+are reserved case-insensitively, matching default macOS filesystem semantics:
+unrecorded commits cannot become selectable manual models, and case aliases
+cannot bypass recorded-model identity checks.
 Selection and the actual opened launch descriptor must match a recorded model's
 dev/ino/size; replaced files are refused without re-hashing up to 64 GiB.
 
