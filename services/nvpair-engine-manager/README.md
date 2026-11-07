@@ -40,10 +40,11 @@ to 4 MiB. Existing `engine:action` supports llama.cpp `pull_model`,
 `list_downloaded` and `delete_model`, including existing operation-ID progress,
 asynchronous cancel and verified-peer remote management. See [the owned-cache
 contract](LLAMACPP.md#go-model-hub-and-owned-cache) for checks, inventory and
-cleanup. Desktop/TUI catalog and local installed-cache controls are documented
-in the [engine guide](../../docs/engine-lifecycle.mdx#llamacpp-preview).
-There is no peer installed-cache listing method; peer download/cancel/delete
-support must not be mistaken for installed-inventory parity.
+cleanup. Desktop/TUI catalog and local/verified-peer installed-cache controls are
+documented in the [engine guide](../../docs/engine-lifecycle.mdx#llamacpp-preview).
+Peer cache inventory travels in `downloadedByEngine` on the existing model
+inventory and discovery path; deletion uses the existing authenticated remote
+operation, not a separate cache-control endpoint.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)

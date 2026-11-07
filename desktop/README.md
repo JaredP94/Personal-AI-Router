@@ -86,10 +86,12 @@ arguments editor; Apply still previews, checks revisions and confirms restarts.
 The build is not notarized, like PAIR. PAIR downloads the engine and models at
 runtime; neither is bundled with the desktop app.
 
-Verified peers use the existing download/cancel controls. The current service
-contract does not expose their installed cache inventory: the desktop labels
-the peer list as served models only and does not pretend it is an installed list.
-Peer startup selection still accepts a known installed catalog ID in arguments.
+Verified peers show installed llama.cpp cache files from authenticated discovery
+inventory, including while stopped. Owned rows offer Delete; stop the peer's
+engine first. Unrecorded files are visible but not deletable, and previews receive
+no inventory. Download/cancel/delete reuse the existing remote controls.
+The startup picker remains local; peer Settings arguments still accept a known
+installed catalog ID.
 
 ## Develop
 
