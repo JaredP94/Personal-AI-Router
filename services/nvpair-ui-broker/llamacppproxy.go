@@ -158,20 +158,7 @@ func (b *Broker) prepareLlamaCPPProxyPort() {
 }
 
 func (b *Broker) setLlamaCPPProxyFallback(excluded ...int) int {
-	excluded = append(excluded, 11434, 11435, 1234, 1235, 1236, 8082, 14318, 14319, 14320, 14321, 14322, 14323)
-	if port := b.currentOllamaHostAlias().Port; port > 0 {
-		excluded = append(excluded, port)
-	}
-	for _, engine := range []string{"ollama", "lmstudio", "omlx"} {
-		if port := b.proxyStartupPort(engine); port > 0 {
-			excluded = append(excluded, port)
-		}
-		if p := b.settingsProxy(engine); p != nil {
-			_, port := p.Status()
-			excluded = append(excluded, port)
-		}
-	}
-	port := nextAvailablePortExcluding(1237, excluded, tcpPortAvailable)
+	port := b.nextProxyFallbackPort("llamacpp", 1237, excluded, tcpPortAvailable)
 	b.llamacppProxyStartupPort.Store(int32(port))
 	return port
 }

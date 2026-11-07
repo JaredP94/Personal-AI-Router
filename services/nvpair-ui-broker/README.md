@@ -151,7 +151,12 @@ listed above over stdio before emitting `app:ready`. Scanner initial spawn is
 fatal; auxiliary workers do not gate `app:ready` on readiness. The proxies announce
 their bound ports asynchronously. oMLX's standalone default is `1234`; the broker
 can move it to a free fallback starting at `1236` when LM Studio reserves `1234`.
-Use the reported port, not a hardcoded endpoint.
+All four proxies share fallback exclusions: every configured engine-server port
+(including stopped engines and the proxy's own engine), persisted/accepted and
+live proxy ports, the Ollama alias, and fixed/registered node-service ports.
+Inventory comes from `engine:configured-ports`, not a live status probe. Settings
+locks are released before worker calls; port writes retain the per-engine
+port-operation serialiser. Use the reported port, not a hardcoded endpoint.
 
 **`nvpair-node-scanner`** (the consolidated discovery daemon) is spawned first. It pushes `discovery:node-discovered`, `discovery:node-updated`, and `discovery:node-removed` notifications into the broker, which maintains them in an in-memory map keyed by `id`. Clients query that map via `discovery:get-nodes` and — once they've opted in via `discovery:subscribe` — receive a `discovery:nodes-changed` notification on every store mutation. The raw `discovery:node-*` notifications are never forwarded as-is. The scanner polls healthy node-info endpoints on a staggered two-second cadence, backs consecutive remote failures off to a 30-second cap, and emits compact `discovery:node-telemetry` observations containing maximum GPU utilization, validity, and age; these remain internal to broker scheduling. Those polls carry an `X-NVPAIR-Poll` intent the broker owns: `telemetry/set-scheduling-demand` tells the scanner (and `nvpair-manual-nodes`, which polls node-info on the same terms) whether any workload anywhere — queued, running, local, or a peer's — still needs fresh telemetry. While it does, the polls renew each node's five-second scheduling lease; when the last workload reaches a terminal state the broker pushes `{active:false}` and every poll becomes a background read that renews no lease, so each node falls back to its ten-second idle cadence. Both workers start inactive and are re-told on every respawn, so a restart cannot pin the fleet to a faster cadence by itself. The broker registers this node's local service ports (`ni`/`er`/`wl`/`cl`/`em`, plus `ol`/`lm`/`om` from the engine pollers) with the daemon over the same link, so the daemon can advertise them all in one `_nvpair-node` record.
 

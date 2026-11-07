@@ -865,7 +865,7 @@ func TestUnmanagedLMStudioCollisionRebindsBeforeStatusProbe(t *testing.T) {
 		}
 	}()
 	go func() {
-		msg, err := engineCodec.Read()
+		msg, err := readPastFallbackInventory(engineCodec, 12400)
 		if err != nil {
 			return
 		}
@@ -930,7 +930,7 @@ func TestUnknownLMStudioBackendMovesProxyBeforeStatusProbe(t *testing.T) {
 		}
 	}()
 	go func() {
-		msg, err := engineCodec.Read()
+		msg, err := readPastFallbackInventory(engineCodec, managedLMStudioBackendStart)
 		if err != nil {
 			return
 		}
@@ -1074,7 +1074,7 @@ func TestEngineManagerRespawnReconcilesUnknownCustomBackendBeforeRestore(t *test
 		order <- status.Method
 		_ = newEngineCodec.Respond(status.ID, ollamaPortStatus{Port: 12400})
 
-		restore, err := newEngineCodec.Read()
+		restore, err := readPastFallbackInventory(newEngineCodec, 12400)
 		if err == nil {
 			order <- restore.Method
 		}

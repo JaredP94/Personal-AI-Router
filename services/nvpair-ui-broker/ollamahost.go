@@ -326,20 +326,31 @@ func (b *Broker) configuredEnginePorts() (map[int]string, error) {
 // configuredLMStudioProxyPort mirrors lmstudio-proxy's small persisted-port
 // contract so the Ollama alias cannot win its bind race. Invalid/missing state
 // means the proxy will use its default.
-func configuredLMStudioProxyPort() int {
-	path, err := appdir.Path(lmstudioProxyPortFile)
+func configuredLMStudioProxyPort() int { return configuredProxyPort("lmstudio") }
+
+func configuredProxyPort(engine string) int {
+	file, defaultPort := "proxy-port.json", managedOllamaFacadePort
+	switch engine {
+	case "lmstudio":
+		file, defaultPort = lmstudioProxyPortFile, managedLMStudioFacadePort
+	case "omlx":
+		file, defaultPort = "omlx-proxy-port.json", 1234
+	case "llamacpp":
+		file, defaultPort = "llamacpp-proxy-port.json", 1237
+	}
+	path, err := appdir.Path(file)
 	if err != nil {
-		return managedLMStudioFacadePort
+		return defaultPort
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return managedLMStudioFacadePort
+		return defaultPort
 	}
 	var stored struct {
 		Port int `json:"port"`
 	}
 	if json.Unmarshal(data, &stored) != nil || stored.Port < 1 || stored.Port > 65535 {
-		return managedLMStudioFacadePort
+		return defaultPort
 	}
 	return stored.Port
 }
