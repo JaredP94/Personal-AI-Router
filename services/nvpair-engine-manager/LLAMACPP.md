@@ -84,6 +84,27 @@ replaced. Existing destinations are never overwritten. A crash between file
 commit and manifest commit can leave an unrecorded file, never a deletable
 owned entry; abandoned crash temp files are not automatically reclaimed.
 
+The cache is in the user's own app data: entry swaps require another process
+running as the same user, not a different unprivileged user. Staging uses
+`openat(cacheFd, randomName, O_CREAT|O_EXCL|O_NOFOLLOW|O_RDWR|O_CLOEXEC, 0600)`
+through the no-follow directory walk and records dev/ino immediately with fstat.
+After hashing and fsync through that descriptor, commit uses renameatx_np with
+RENAME_EXCL on macOS (renameat2 RENAME_NOREPLACE on Linux), then fstatat with
+AT_SYMLINK_NOFOLLOW compares the final entry's dev/ino and size to the verified
+file. A mismatch fails with no ownership record and leaves the unrelated entry
+untouched. Only a match permits directory fsync and manifest commit; the manifest
+records dev/ino (`fileIdentity`), size and SHA-256. Generated 64-hex `.gguf` names
+are reserved: unrecorded commits cannot become selectable manual models.
+Selection and the actual opened launch descriptor must match a recorded model's
+dev/ino/size; replaced files are refused without re-hashing up to 64 GiB.
+
+macOS provides no rename-by-descriptor or unlink-by-descriptor. A same-user
+process can still change an entry after the last identity check; the residual
+check-to-use window is the minimum the OS allows, not an atomicity guarantee.
+Launch validates the inherited descriptor, so a later pathname replacement
+cannot redirect llama-server. These checks detect entry replacement, not writes
+in place by a process already authorized as the same user.
+
 `engine:cancel-pull` accepts asynchronously; only the terminal progress update
 confirms transfer release and removal of that operation's own temp file.
 If temp cleanup fails, the terminal state is an error, not successful cancellation. Unlike

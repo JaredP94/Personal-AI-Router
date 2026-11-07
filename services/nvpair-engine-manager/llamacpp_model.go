@@ -26,7 +26,7 @@ func llamaModelPath(cache, value string) (string, error) {
 	if strings.Contains(value, ":Q4_K_M") {
 		file, err := recordedLlamaModelPath(cache, value)
 		if err != nil {
-			return fail()
+			return "", err
 		}
 		value = file
 	}
@@ -59,6 +59,21 @@ func llamaModelPath(cache, value string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(path), ".gguf") {
 		return fail()
+	}
+	if filepath.Dir(path) == root {
+		dir, err := openLlamaCache(root, false)
+		if err != nil {
+			return "", err
+		}
+		defer dir.Close()
+		file, err := llamaCacheOpen(dir, filepath.Base(path), false)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
+		if err := validateLlamaRecordedFile(dir, filepath.Base(path), file); err != nil {
+			return "", err
+		}
 	}
 	return path, nil
 }

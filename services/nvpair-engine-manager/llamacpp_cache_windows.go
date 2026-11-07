@@ -17,4 +17,5 @@ func llamaCacheRemove(*os.File, string) error                 { return llamaCach
 func llamaCacheRename(*os.File, string, string) error         { return llamaCacheUnsupported() }
 func llamaCacheCommit(*os.File, string, string) error         { return llamaCacheUnsupported() }
 func llamaCacheIdentity(*os.File) string                      { return "" }
+func llamaCacheMatch(*os.File, string, string, int64) error   { return llamaCacheUnsupported() }
 func llamaCacheFree(*os.File) (uint64, error)                 { return 0, llamaCacheUnsupported() }

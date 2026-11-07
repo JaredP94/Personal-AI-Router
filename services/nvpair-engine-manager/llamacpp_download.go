@@ -163,6 +163,12 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if err != nil {
 		return nil, err
 	}
+	// Capture dev/ino immediately, before network I/O or writes.
+	identity := llamaCacheIdentity(f)
+	if identity == "" {
+		_ = f.Close()
+		return nil, fmt.Errorf("cannot identify temporary model")
+	}
 	defer func() {
 		_ = f.Close()
 		if err := llamaCacheRemove(dir, temp); err != nil && !os.IsNotExist(err) {
@@ -240,11 +246,15 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if err := e.llamaCommit(dir, temp, final); err != nil {
 		return nil, err
 	}
-	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
-	identity := llamaCacheIdentity(f)
-	if identity == "" {
-		return nil, fmt.Errorf("cannot identify committed model")
+	// Rename is pathname-based, even with RENAME_EXCL/NOREPLACE. Check the
+	// published entry against the verified fd; never claim or remove a mismatch.
+	if err := llamaCacheMatch(dir, final, identity, row.Size); err != nil {
+		return nil, fmt.Errorf("committed model changed; download not recorded: %w", err)
 	}
+	if err := dir.Sync(); err != nil {
+		return nil, err
+	}
+	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
 	manifest.Models = append(manifest.Models, llamaCacheRecord{llamaOwnedModel: record, Identity: identity})
 	if err := writeLlamaManifest(dir, manifest); err != nil {
 		// This operation created the final file; do not leave an unowned success.
@@ -313,7 +323,7 @@ func (e *Executor) listLlamaModels(ctx context.Context) (json.RawMessage, error)
 			return nil, err
 		}
 		name := entry.Name()
-		if recorded[name] || !validLlamaFile(name) {
+		if recorded[name] || llamaManagedFilename(name) || !validLlamaFile(name) {
 			continue
 		}
 		f, err := llamaCacheOpen(dir, name, false)
@@ -411,6 +421,9 @@ func recordedLlamaModelPath(cache, value string) (string, error) {
 	}
 	for _, m := range manifest.Models {
 		if value == m.ID || value == m.File || value == strings.TrimSuffix(dir.Name(), "/")+"/"+m.File {
+			if err := llamaCacheMatch(dir, m.File, m.Identity, m.Size); err != nil {
+				return "", fmt.Errorf("recorded model changed; download it again: %w", err)
+			}
 			return m.File, nil
 		}
 	}

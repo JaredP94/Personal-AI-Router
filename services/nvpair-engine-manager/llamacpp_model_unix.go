@@ -15,6 +15,13 @@ import (
 )
 
 func openLlamaModel(cache, value string) (*os.File, error) {
+	if strings.Contains(value, ":Q4_K_M") {
+		name, err := recordedLlamaModelPath(cache, value)
+		if err != nil {
+			return nil, err
+		}
+		value = name
+	}
 	root, err := filepath.Abs(cache)
 	if cache == "" || err != nil {
 		return nil, fmt.Errorf("llama.cpp model cache must be an existing directory")
@@ -81,6 +88,21 @@ func openLlamaModelAt(root, rel string) (*os.File, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		_ = file.Close()
 		return nil, fmt.Errorf("llama.cpp model must be a regular .gguf file inside the PAIR model cache")
+	}
+	if len(parts) == 1 {
+		// Pin the same cache directory used for the launch open and manifest.
+		dup, err := unix.Dup(dirfd)
+		if err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		dir := os.NewFile(uintptr(dup), root)
+		err = validateLlamaRecordedFile(dir, rel, file)
+		_ = dir.Close()
+		if err != nil {
+			_ = file.Close()
+			return nil, err
+		}
 	}
 	if err := rejectSplitGGUF(file); err != nil {
 		_ = file.Close()

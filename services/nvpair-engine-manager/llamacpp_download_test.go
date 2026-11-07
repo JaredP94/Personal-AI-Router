@@ -86,8 +86,8 @@ func TestLlamaDownloadCommitSwapCannotClaimOrDeleteReplacement(t *testing.T) {
 		}
 		return os.WriteFile(path, llamaTestBytes(), 0600)
 	}
-	if err := pullLlamaTest(ex, "commit-swap"); err != nil {
-		t.Fatal(err)
+	if err := pullLlamaTest(ex, "commit-swap"); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("commit replacement accepted: %v", err)
 	}
 	if _, err := ex.ModelDelete(context.Background(), "llamacpp", llamaTestID); err == nil {
 		t.Fatal("claimed and deleted a post-commit replacement")

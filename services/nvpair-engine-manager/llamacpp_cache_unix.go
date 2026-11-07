@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -102,12 +101,27 @@ func llamaCacheIdentity(f *os.File) string {
 	if err != nil {
 		return ""
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil || !info.Mode().IsRegular() {
 		return ""
 	}
-	return fileIdentityFromStat(st)
+	return fmt.Sprintf("%d:%d", st.Dev, st.Ino)
 }
+
+// The cache belongs to the user; swaps require another same-user process.
+// fstatat never follows a substituted link. macOS has no rename/unlink by fd:
+// callers must check at the last possible point and fail closed on mismatch.
+func llamaCacheMatch(dir *os.File, name, identity string, size int64) error {
+	var st unix.Stat_t
+	if err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if identity == "" || fmt.Sprintf("%d:%d", st.Dev, st.Ino) != identity || st.Mode&unix.S_IFMT != unix.S_IFREG || (size >= 0 && st.Size != size) {
+		return fmt.Errorf("model cache entry changed; refusing unverified file")
+	}
+	return nil
+}
+
 func llamaCacheFree(dir *os.File) (uint64, error) {
 	var st unix.Statfs_t
 	err := unix.Fstatfs(int(dir.Fd()), &st)
