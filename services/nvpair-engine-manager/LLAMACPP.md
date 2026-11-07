@@ -63,10 +63,16 @@ dropped or applied. No download or template-file option is permitted.
 both cache and file are resolved with `EvalSymlinks` before containment checks.
 Symlink escapes, URLs, directories, missing files and non-GGUF names are rejected
 in previews, saved settings and before launch. Previews retain the canonical
-cache path. Immediately before spawning, PAIR opens the file read-only with
-`O_NOFOLLOW`, checks its regular-file type and device/inode against a fresh
-in-cache resolution, and rejects a redirected cache root. Only the child copy
-of this descriptor is inherited, through `exec.Cmd.ExtraFiles`; llama-server
+cache path. Immediately before spawning, PAIR resolves the cache directory once,
+then opens its canonical path from `/` one directory component at a time using
+`openat` with `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`. It walks the model's
+cache-relative subdirectories from that descriptor the same way, rejecting
+absolute paths and parent traversal in the relative path. The final file opens
+read-only with `O_NOFOLLOW` and is checked by descriptor for regular-file type
+and single-file GGUF metadata. A parent or subdirectory replaced with a symlink
+is never followed; no fresh pathname resolution can bless an outside file.
+Only the child copy of this descriptor is inherited, through
+`exec.Cmd.ExtraFiles`; llama-server
 receives `--model /dev/fd/3`. The parent's copy closes after spawn, including on
 failure. Replacing the original pathname cannot redirect the child's later opens.
 
