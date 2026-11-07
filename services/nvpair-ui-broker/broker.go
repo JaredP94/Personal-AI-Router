@@ -3741,10 +3741,16 @@ func (b *Broker) relayToEngineNow(msg *Message) {
 		ctx, cancel = context.WithTimeout(ctx, enginePullRelayTimeout)
 	case "engine:action":
 		var p struct {
+			Engine string `json:"engine"`
 			Action string `json:"action"`
 		}
-		if json.Unmarshal(msg.Params, &p) == nil && p.Action == "pull_model" {
-			ctx, cancel = context.WithTimeout(ctx, enginePullRelayTimeout)
+		if json.Unmarshal(msg.Params, &p) == nil {
+			if p.Action == "pull_model" {
+				ctx, cancel = context.WithTimeout(ctx, enginePullRelayTimeout)
+			}
+			if p.Engine == "llamacpp" && p.Action == "list_downloaded" {
+				ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+			}
 		}
 	}
 	if cancel != nil {

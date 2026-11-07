@@ -253,7 +253,12 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	}
 	return json.Marshal(record)
 }
-func (e *Executor) listLlamaModels() (json.RawMessage, error) {
+func (e *Executor) listLlamaModels(ctx context.Context) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, modelsTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	st, err := e.state("llamacpp")
 	if err != nil {
 		return nil, err
@@ -282,6 +287,9 @@ func (e *Executor) listLlamaModels() (json.RawMessage, error) {
 	}
 	recorded := map[string]bool{}
 	for _, m := range manifest.Models {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		recorded[m.File] = true
 		f, err := llamaCacheOpen(dir, m.File, false)
 		if err != nil {
@@ -295,6 +303,9 @@ func (e *Executor) listLlamaModels() (json.RawMessage, error) {
 		}
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		name := entry.Name()
 		if recorded[name] || !validLlamaFile(name) {
 			continue
@@ -309,6 +320,9 @@ func (e *Executor) listLlamaModels() (json.RawMessage, error) {
 		if valid {
 			models = append(models, llamaOwnedModel{ID: name, File: name, Size: info.Size()})
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return json.Marshal(map[string]any{"models": models})
 }

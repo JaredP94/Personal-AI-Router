@@ -66,6 +66,9 @@ func (e *Executor) PullModelStream(ctx context.Context, engine, model string, pa
 		return nil, err
 	}
 	if engine == "llamacpp" {
+		if _, err := llamaRepoID(model); err != nil {
+			return nil, err
+		}
 		id := ""
 		if len(operationID) > 0 {
 			id = operationID[0]

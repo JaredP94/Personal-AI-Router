@@ -66,7 +66,10 @@ manifest with a bounded (4096 entries) no-follow regular-GGUF scan; manually
 supplied GGUFs have their filename as ID and empty checksum/host and are never
 deletable by PAIR. Recorded files must match their descriptor-derived file identity, size and valid
 single-file GGUF metadata to appear. The live `list_models` remains the
-llama-server served inventory, not this installed list.
+llama-server served inventory, not this installed list. Installed scans check a
+five-second context budget between bounded per-file metadata reads (broker ten
+seconds; future clients fifteen seconds). Filesystem syscall latency itself
+cannot be preempted by a Go context.
 
 PAIR resolves metadata again before transfer, requiring LFS SHA-256 and size
 and a pinned repository commit. Limit: 64 GiB per file plus 256 MiB free-space

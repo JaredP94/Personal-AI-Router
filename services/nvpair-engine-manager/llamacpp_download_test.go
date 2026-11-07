@@ -65,6 +65,15 @@ func pullLlamaTest(ex *Executor, id string) error {
 	_, err := ex.PullModelStream(context.Background(), "llamacpp", llamaTestID, nil, id)
 	return err
 }
+func TestLlamaInstalledInventoryHonorsCancellation(t *testing.T) {
+	ex, _ := llamaDownloadExecutor(t, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ex.Action(ctx, "llamacpp", "list_downloaded", nil); err != context.Canceled {
+		t.Fatalf("ignored inventory cancellation: %v", err)
+	}
+}
+
 func TestLlamaDownloadChecksumAndDelete(t *testing.T) {
 	ex, cache := llamaDownloadExecutor(t, nil, nil)
 	if err := pullLlamaTest(ex, "success"); err != nil {

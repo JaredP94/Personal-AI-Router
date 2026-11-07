@@ -32,7 +32,7 @@ func (e *Executor) Action(ctx context.Context, engine, action string, params jso
 		case "pull_model":
 			return e.PullModelStream(ctx, engine, modelFromParams(params), params)
 		case "list_downloaded":
-			return e.listLlamaModels()
+			return e.listLlamaModels(ctx)
 		case "delete_model":
 			return e.deleteLlamaModel(ctx, modelFromParams(params))
 		}
