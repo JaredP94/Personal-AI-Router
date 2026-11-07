@@ -40,6 +40,7 @@ type settingsHarness struct {
 
 func newSettingsHarness(t *testing.T) *settingsHarness {
 	t.Helper()
+	isolateOllamaHostTestConfig(t)
 	ports := make([]int, 5)
 	listeners := []net.Listener{}
 	for i := range ports {
@@ -57,6 +58,7 @@ func newSettingsHarness(t *testing.T) *settingsHarness {
 	worker, codec := newTestRPCWorkerPipe(t)
 	h.b.setEngineMgr(worker)
 	for i, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
+		saveSettingsHarnessProxyPort(t, engine, ports[i+1])
 		proxyWorker, proxyCodec := newTestRPCWorkerPipe(t)
 		proxy := &proxyProcess{peer: proxyWorker.peer, ready: true, port: ports[i+1]}
 		switch engine {
