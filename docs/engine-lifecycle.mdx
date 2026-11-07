@@ -72,9 +72,10 @@ Refer also to [Getting started](getting-started.mdx).
 
 Install llama.cpp from its node row (not first-run automatic selection). The
 managed listener defaults to `127.0.0.1:8082`; Settings exposes the server port
-and launch arguments/environment but no proxy port. PAIR protects all listener
+and proxy ports and launch arguments/environment. PAIR protects all listener
 controls, including Unix-socket host values and port-changing presets. Readiness
-requires the `/props` router identity, not merely HTTP success. Non-loopback
+requires the `/props` router identity (or the inherited model descriptor in
+single-model mode), not merely HTTP success. Non-loopback
 binding still requires the existing explicit `engine_allow_lan_bind` permission.
 The Go model hub supplies a bounded public Q4_K_M catalog and PAIR-owned
 verified downloads, asynchronous cancel and manifest-owned delete. See the

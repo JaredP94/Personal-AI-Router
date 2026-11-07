@@ -14,8 +14,9 @@ import (
 )
 
 // Cancel only asks the adapter to stop. Confirmation is emitted by trackedPull
-// after the adapter has released its transfer; no cache files are inspected or
-// removed. A cancellation always addresses one operation, never its replacement.
+// after the adapter has released its transfer. Shared engine caches are never
+// inspected or removed; llama.cpp removes only its operation-owned temp file.
+// A cancellation always addresses one operation, never its replacement.
 type activePull struct {
 	engine, model, id string
 	cancel            context.CancelFunc
