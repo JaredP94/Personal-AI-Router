@@ -91,7 +91,7 @@ func openLlamaModelAt(root, rel string) (*os.File, error) {
 	}
 	if len(parts) == 1 {
 		// Pin the same cache directory used for the launch open and manifest.
-		dup, err := unix.Dup(dirfd)
+		dup, err := unix.FcntlInt(uintptr(dirfd), unix.F_DUPFD_CLOEXEC, 0)
 		if err != nil {
 			_ = file.Close()
 			return nil, err
