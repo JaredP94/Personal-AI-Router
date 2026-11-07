@@ -74,6 +74,29 @@ func TestLlamaInstalledInventoryHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestLlamaDownloadCommitSwapCannotClaimOrDeleteReplacement(t *testing.T) {
+	ex, cache := llamaDownloadExecutor(t, nil, nil)
+	ex.llamaCommit = func(dir *os.File, from, to string) error {
+		if err := llamaCacheCommit(dir, from, to); err != nil {
+			return err
+		}
+		path := filepath.Join(cache, to)
+		if err := os.Rename(path, path+".saved"); err != nil {
+			return err
+		}
+		return os.WriteFile(path, llamaTestBytes(), 0600)
+	}
+	if err := pullLlamaTest(ex, "commit-swap"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.ModelDelete(context.Background(), "llamacpp", llamaTestID); err == nil {
+		t.Fatal("claimed and deleted a post-commit replacement")
+	}
+	if _, err := os.Stat(filepath.Join(cache, llamaOwnedFilename(llamaTestID))); err != nil {
+		t.Fatal("replacement disappeared")
+	}
+}
+
 func TestLlamaDownloadChecksumAndDelete(t *testing.T) {
 	ex, cache := llamaDownloadExecutor(t, nil, nil)
 	if err := pullLlamaTest(ex, "success"); err != nil {

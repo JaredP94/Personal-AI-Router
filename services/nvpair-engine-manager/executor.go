@@ -123,6 +123,7 @@ func (st *engineState) unlockOperation() {
 type Executor struct {
 	llamaHub       *llamaHub
 	llamaFreeSpace func(*os.File) (uint64, error)
+	llamaCommit    func(*os.File, string, string) error
 	loadProfilesMu sync.Mutex // disk state only; never held across engine calls or notifications
 	settingsHub    settings.Hub
 	settingsParent func(context.Context, string, settings.Request, string) (json.RawMessage, error)
@@ -187,6 +188,7 @@ func NewExecutor(reg *Registry, reporter *Reporter, emit func(string, any), base
 	return &Executor{
 		llamaHub:            newLlamaHub(),
 		llamaFreeSpace:      llamaCacheFree,
+		llamaCommit:         llamaCacheCommit,
 		reg:                 reg,
 		tools:               defaultToolEnv(),
 		reporter:            reporter,

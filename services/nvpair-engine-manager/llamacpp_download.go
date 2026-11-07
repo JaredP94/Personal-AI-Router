@@ -231,7 +231,7 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if err := llamaCacheCommit(dir, temp, final); err != nil {
+	if err := e.llamaCommit(dir, temp, final); err != nil {
 		return nil, err
 	}
 	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
