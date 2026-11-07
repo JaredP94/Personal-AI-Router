@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,22 +119,50 @@ func (r llamaHubRepo) entry(requireLFS bool) (LlamaCatalogEntry, bool) {
 	}
 	return entries[0], true
 }
+
+// Preserve cancellation and deadline causes without exposing request URLs or
+// remote response contents in user-facing errors or the engine error pipeline.
+func llamaRequestError(message string, err error) error {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, cause) {
+			return fmt.Errorf("%s: %w", message, cause)
+		}
+	}
+	return errors.New(message)
+}
+
+func llamaReadError(ctx context.Context, message string, err error) error {
+	// Some transports return a plain read error when cancellation tears down
+	// the body. Only at that read boundary may the operation context supply
+	// the missing cause; never use this for integrity or filesystem failures.
+	if ctx.Err() != nil {
+		p, tracked := ctx.Value(activePullKey{}).(*activePull)
+		if !tracked || p.requested.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = ctx.Err()
+		}
+	}
+	return llamaRequestError(message, err)
+}
+
 func (h *llamaHub) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.endpoint+path, nil)
 	if err != nil {
-		return fmt.Errorf("invalid catalog request")
+		return llamaRequestError("invalid catalog request", err)
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("model metadata request failed")
+		return llamaRequestError("model metadata request failed", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("model metadata returned HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20+1))
-	if err != nil || len(data) > 4<<20 {
-		return fmt.Errorf("model metadata exceeds limit or could not be read")
+	if err != nil {
+		return llamaReadError(ctx, "model metadata could not be read", err)
+	}
+	if len(data) > 4<<20 {
+		return fmt.Errorf("model metadata exceeds limit")
 	}
 	if json.Unmarshal(data, out) != nil {
 		return fmt.Errorf("invalid model metadata")

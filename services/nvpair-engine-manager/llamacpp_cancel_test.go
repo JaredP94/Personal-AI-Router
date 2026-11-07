@@ -45,7 +45,7 @@ func TestLlamaDownloadCancellationPhases(t *testing.T) {
 				ex.llamaFreeSpace = func(*os.File) (uint64, error) {
 					cancel()
 					if phase == "free-space" {
-						return 0, fmt.Errorf("space check interrupted")
+						return 0, fmt.Errorf("space check interrupted: %w", context.Canceled)
 					}
 					// Deny staging creation after cancellation; no temp exists yet.
 					if err := os.Chmod(cache, 0500); err != nil {
@@ -74,7 +74,7 @@ func TestLlamaDownloadCancellationPhases(t *testing.T) {
 				ex.llamaCommit = func(dir *os.File, from, to string) error {
 					cancel()
 					if phase == "rename" {
-						return fmt.Errorf("rename interrupted")
+						return fmt.Errorf("rename interrupted: %w", context.Canceled)
 					}
 					if err := llamaCacheCommit(dir, from, to); err != nil {
 						return err

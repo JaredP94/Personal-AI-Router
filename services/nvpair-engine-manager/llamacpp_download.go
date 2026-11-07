@@ -50,7 +50,10 @@ func readLlamaManifest(dir *os.File) (llamaCacheManifest, error) {
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
-	if err != nil || len(data) > 1<<20 {
+	if err != nil {
+		return out, fmt.Errorf("read model ownership manifest: %w", err)
+	}
+	if len(data) > 1<<20 {
 		return out, fmt.Errorf("invalid model ownership manifest")
 	}
 	if json.Unmarshal(data, &out) != nil || len(out.Models) > 4096 {
@@ -124,20 +127,9 @@ func (e *Executor) reserveLlamaCache(deleting bool) (*engineState, func(), error
 	return st, func() { st.mu.Lock(); st.llamaCacheBusy = false; st.mu.Unlock() }, nil
 }
 func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.RawMessage, retErr error) {
-	// Classify the primary outcome before cleanup. Once a failure has won the
-	// operation fence, a later cancel cannot turn it into cancellation. Cleanup
-	// failures remain errors, even when the primary outcome was cancellation.
-	classified := false
-	classify := func() {
-		if classified {
-			return
-		}
-		classified = true
-		if retErr != nil && e.finishPull(ctx) {
-			result, retErr = nil, context.Canceled
-		}
-	}
-	defer classify()
+	// trackedPull classifies by the returned cause, never by cancel timing.
+	// Disable further cancels on every exit, after releasing operation resources.
+	defer e.finishPull(ctx)
 	if _, err := llamaRepoID(id); err != nil {
 		return nil, err
 	}
@@ -145,20 +137,12 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	if err != nil {
 		return nil, err
 	}
-	// Every teardown runs after classify(): deferred calls are last-in
-	// first-out, and a cancel during teardown must not relabel a failure.
-	defer func() {
-		classify()
-		release()
-	}()
+	defer release()
 	dir, err := openLlamaCache(st.installDir+"-models", true)
 	if err != nil {
 		return nil, fmt.Errorf("open model cache: %w", err)
 	}
-	defer func() {
-		classify()
-		_ = dir.Close()
-	}()
+	defer dir.Close()
 	manifest, err := readLlamaManifest(dir)
 	if err != nil {
 		return nil, err
@@ -176,31 +160,32 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		return nil, err
 	}
 	free, err := e.llamaFreeSpace(dir)
-	if err != nil || free < uint64(row.Size)+(256<<20) {
+	if err != nil {
+		return nil, fmt.Errorf("check model disk space: %w", err)
+	}
+	if free < uint64(row.Size)+(256<<20) {
 		return nil, fmt.Errorf("not enough disk space: free space must cover the model and 256 MiB reserve")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	final := llamaOwnedFilename(id)
 	if f, err := llamaCacheOpen(dir, final, false); err == nil {
-		result, retErr = nil, fmt.Errorf("destination already exists; unrecorded files are never replaced")
-		classify()
 		_ = f.Close()
-		return result, retErr
+		return nil, fmt.Errorf("destination already exists; unrecorded files are never replaced")
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 	temp := llamaTempName()
 	f, err := llamaCacheOpen(dir, temp, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create temporary model: %w", err)
 	}
 	// Capture dev/ino immediately, before network I/O or writes.
 	identity := llamaCacheIdentity(f)
 	if identity == "" {
-		// Take the outcome fence before closing, as on every other exit path.
-		result, retErr = nil, fmt.Errorf("cannot identify temporary model")
-		classify()
 		_ = f.Close()
-		return result, retErr
+		return nil, fmt.Errorf("cannot identify temporary model")
 	}
 	published, manifestWritten, completed := false, false, false
 	originalCount := len(manifest.Models)
@@ -222,27 +207,15 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		}
 		_ = f.Close()
 	}()
-	// Run before identity-checked cleanup; the early-phase defer is a no-op
-	// afterwards, so cleanup errors cannot be mistaken for user cancellation.
-	defer classify()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("invalid model download request")
+		return nil, llamaRequestError("invalid model download request", err)
 	}
 	resp, err := e.llamaHub.client.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("model transfer failed")
+		return nil, llamaRequestError("model transfer failed", err)
 	}
-	// Deferred calls run last-in first-out: classify the primary outcome
-	// before closing the body, so a cancel that arrives while Close blocks
-	// cannot relabel an observed failure as cancellation.
-	defer func() {
-		classify()
-		_ = resp.Body.Close()
-	}()
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("model download returned HTTP %d", resp.StatusCode)
 	}
@@ -271,7 +244,10 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 			// No state lock is held during fstatfs or network/file waits.
 			if total-spaceCheckedAt >= 256<<20 || time.Since(lastSpaceCheck) >= 5*time.Second {
 				free, err := e.llamaFreeSpace(f)
-				if err != nil || free < uint64(row.Size-total)+(256<<20) {
+				if err != nil {
+					return nil, fmt.Errorf("check remaining model disk space: %w", err)
+				}
+				if free < uint64(row.Size-total)+(256<<20) {
 					return nil, fmt.Errorf("not enough disk space for remaining model data and 256 MiB reserve")
 				}
 				spaceCheckedAt, lastSpaceCheck = total, time.Now()
@@ -282,14 +258,14 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 				e.emitPullUpdate(ctx, ProgressEvent{Stage: "downloading", Percent: pct})
 			}
 		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			return nil, fmt.Errorf("model transfer interrupted")
+			return nil, llamaReadError(ctx, "model transfer interrupted", readErr)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 	}
 	if total != row.Size {
@@ -310,7 +286,7 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 		return nil, ctx.Err()
 	}
 	if err := e.llamaCommit(dir, temp, final); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("commit model: %w", err)
 	}
 	published = true
 	// Rename is pathname-based, even with RENAME_EXCL/NOREPLACE. Check the
@@ -323,8 +299,11 @@ func (e *Executor) pullLlamaModel(ctx context.Context, id string) (result json.R
 	}
 	record := llamaOwnedModel{ID: id, File: final, Size: row.Size, SHA256: row.SHA256, FinalHost: resp.Request.URL.Hostname()}
 	manifest.Models = append(manifest.Models, llamaCacheRecord{llamaOwnedModel: record, Identity: identity})
-	if err := writeLlamaManifest(dir, manifest); err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if err := writeLlamaManifest(dir, manifest); err != nil {
+		return nil, fmt.Errorf("write model ownership manifest: %w", err)
 	}
 	manifestWritten = true
 	// Completion is fenced against cancel acceptance only after the renamed

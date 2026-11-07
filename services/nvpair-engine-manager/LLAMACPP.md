@@ -115,12 +115,15 @@ in place by a process already authorized as the same user.
 
 `engine:cancel-pull` accepts asynchronously; only the terminal progress update
 confirms transfer release and removal of that operation's own temp file.
-An operation-ID cancel wins over errors observed afterwards in metadata fetch,
-free-space checks, temp creation, streaming, hashing/verification and commit.
-The adapter returns context cancellation to #50's shared pull tracker, which
-emits `cancelled`, returns `{"status":"cancelled"}` for the original pull RPC,
-and does not report a `pull-failed` engine error. A primary failure fenced before
-a cancel request remains a failure; independent cleanup failures remain errors.
+The shared pull tracker reports `cancelled` only when that operation's user
+cancel was requested and the returned error wraps `context.Canceled`. Metadata
+requests and streaming reads preserve that cause, including transports whose
+body read errors lose it when cancellation tears down the connection. The pull
+then returns `{"status":"cancelled"}` without a `pull-failed` engine error.
+Unrelated failures (including checksum/size mismatch, HTTP status, disk space,
+identity checks and manifest writes) remain errors regardless of cancel timing,
+even when cancellation arrives during teardown. Independent cleanup failures
+also remain errors.
 Completion is fenced against cancel acceptance after the post-rename identity
 check and successful manifest write/fsync. A cancel accepted before that fence
 rolls back any newly written manifest entry and removes the operation's
