@@ -276,6 +276,82 @@ afterEach(async () => {
 })
 
 describe('engine launch settings panel', () => {
+    describe.each<EngineType>(['ollama', 'lm-studio', 'omlx', 'llamacpp'])(
+        '%s effective ports',
+        engineType => {
+            it.each(['local', 'peer'])(
+                'shows fallback notes on %s without offering to save them',
+                async nodeId => {
+                    getSettings.mockImplementation(async target => ({
+                        ...baseline,
+                        ...target,
+                        effectiveServerPort: 11501,
+                        effectiveProxyPort: 11500
+                    }))
+                    await render(engineType, nodeId)
+                    expect(container.textContent).toContain(
+                        'Running on port 11500 because 11434 was busy. PAIR will try 11434 again next start.'
+                    )
+                    expect(container.textContent).toContain(
+                        'Running on port 11501 because 11435 was busy. PAIR will try 11435 again next start.'
+                    )
+                    expect(field('Proxy port').value).toBe('11434')
+                    expect(field('Server port').value).toBe('11435')
+                    expect(button('Apply').disabled).toBe(true)
+                    expect(previewSettings).not.toHaveBeenCalled()
+                    expect(applySettings).not.toHaveBeenCalled()
+                }
+            )
+
+            it('shows no note for matching effective proxy and server ports', async () => {
+                await render(engineType)
+                expect(container.textContent).not.toContain('Running on port')
+            })
+
+            it('shows no note for unknown effective proxy and server ports', async () => {
+                getSettings.mockImplementation(async target => ({
+                    ...baseline,
+                    ...target,
+                    running: false,
+                    effectiveServerPort: 0,
+                    effectiveProxyPort: 0
+                }))
+                await render(engineType)
+                expect(container.textContent).not.toContain('Running on port')
+                expect(field('Proxy port').value).toBe('11434')
+                expect(field('Server port').value).toBe('11435')
+            })
+
+            it('updates runtime notes without changing a dirty draft', async () => {
+                await render(engineType)
+                await change('Proxy port', '12000')
+                await act(async () =>
+                    deliver({
+                        ...baseline,
+                        engine: engineType === 'lm-studio' ? 'lmstudio' : engineType,
+                        sequence: 2,
+                        effectiveProxyPort: 11500
+                    })
+                )
+                expect(container.textContent).toContain('11500 because 11434 was busy')
+                expect(container.textContent).not.toContain('because 12000 was busy')
+                expect(field('Proxy port').value).toBe('12000')
+                await act(async () =>
+                    deliver({
+                        ...baseline,
+                        engine: engineType === 'lm-studio' ? 'lmstudio' : engineType,
+                        sequence: 3,
+                        effectiveProxyPort: 0,
+                        effectiveServerPort: 0,
+                        running: false
+                    })
+                )
+                expect(container.textContent).not.toContain('Running on port')
+                expect(field('Proxy port').value).toBe('12000')
+            })
+        }
+    )
+
     it('edits llama.cpp server, proxy and launch settings', async () => {
         getSettings.mockImplementation(async target => ({
             ...baseline,

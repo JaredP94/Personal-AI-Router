@@ -71,6 +71,15 @@ export function EngineSettingsSection({
     )
 }
 
+function EffectivePortNote({ configured, effective }: { configured?: number; effective?: number }) {
+    if (!configured || !effective || effective === configured) return null
+    return (
+        <Text kind="body/regular/sm">
+            {`Running on port ${effective} because ${configured} was busy. PAIR will try ${configured} again next start.`}
+        </Text>
+    )
+}
+
 function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; disabled: boolean }) {
     const { nodeId, engine } = target
     const key = engineSettingsKey(target)
@@ -293,6 +302,14 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                             inputMode="numeric"
                             aria-invalid={!!errors.serverPort}
                         />
+                        <EffectivePortNote
+                            configured={snapshot?.settings.serverPort}
+                            effective={
+                                entry?.unavailable || offline || !connected
+                                    ? 0
+                                    : snapshot?.effectiveServerPort
+                            }
+                        />
                     </FormField>
                     {
                         <FormField slotLabel="Proxy port">
@@ -304,6 +321,14 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                                 disabled={locked}
                                 inputMode="numeric"
                                 aria-invalid={!!errors.proxyPort}
+                            />
+                            <EffectivePortNote
+                                configured={snapshot?.settings.proxyPort}
+                                effective={
+                                    entry?.unavailable || offline || !connected
+                                        ? 0
+                                        : snapshot?.effectiveProxyPort
+                                }
                             />
                         </FormField>
                     }
