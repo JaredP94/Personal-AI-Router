@@ -276,6 +276,142 @@ afterEach(async () => {
 })
 
 describe('engine launch settings panel', () => {
+    it('describes a legacy saved LM Studio proxy port under managed ownership neutrally', async () => {
+        getSettings.mockImplementation(async target => ({
+            ...baseline,
+            ...target,
+            settings: { serverPort: 1235, proxyPort: 12420, launchText: '' },
+            effectiveServerPort: 1235,
+            effectiveProxyPort: 1234
+        }))
+        await render('lm-studio')
+        expect(container.textContent).toContain('Running on port 1234 (saved setting: 12420).')
+        expect(container.textContent).not.toContain('busy')
+        expect(container.textContent).not.toContain('next start')
+        expect(field('Proxy port').value).toBe('12420')
+        expect(button('Apply').disabled).toBe(true)
+    })
+
+    it.each([false, true])(
+        'isolates peer pushes from the local note and editor (dirty: %s)',
+        async dirty => {
+            getSettings.mockImplementation(async target => ({
+                ...baseline,
+                ...target,
+                effectiveServerPort: 11501,
+                effectiveProxyPort: 11500
+            }))
+            await render()
+            if (dirty) await change('Server port', '12000')
+            const before = container.textContent
+            await act(async () =>
+                deliver({
+                    ...baseline,
+                    nodeId: 'peer',
+                    sequence: 99,
+                    settings: { serverPort: 22000, proxyPort: 22002, launchText: '' },
+                    effectiveServerPort: 22001,
+                    effectiveProxyPort: 22003
+                })
+            )
+            expect(container.textContent).toBe(before)
+            expect(field('Server port').value).toBe(dirty ? '12000' : '11435')
+            expect(field('Proxy port').value).toBe('11434')
+            expect(container.textContent).not.toContain('22001')
+            await act(async () => deliver({ ...baseline, sequence: 2, effectiveProxyPort: 11502 }))
+            expect(container.textContent).toContain('Running on port 11502')
+            expect(field('Server port').value).toBe(dirty ? '12000' : '11435')
+        }
+    )
+
+    describe.each<EngineType>(['ollama', 'lm-studio', 'omlx', 'llamacpp'])(
+        '%s effective ports',
+        engineType => {
+            it.each(['local', 'peer'])(
+                'shows differing effective ports on %s without offering to save them',
+                async nodeId => {
+                    getSettings.mockImplementation(async target => ({
+                        ...baseline,
+                        ...target,
+                        effectiveServerPort: 11501,
+                        effectiveProxyPort: 11500
+                    }))
+                    await render(engineType, nodeId)
+                    expect(container.textContent).toContain(
+                        'Running on port 11500 (saved setting: 11434).'
+                    )
+                    expect(container.textContent).toContain(
+                        'Running on port 11501 (saved setting: 11435).'
+                    )
+                    expect(field('Proxy port').value).toBe('11434')
+                    expect(field('Server port').value).toBe('11435')
+                    expect(button('Apply').disabled).toBe(true)
+                    expect(previewSettings).not.toHaveBeenCalled()
+                    expect(applySettings).not.toHaveBeenCalled()
+                }
+            )
+
+            it('shows no note for matching effective proxy and server ports', async () => {
+                await render(engineType)
+                expect(container.textContent).not.toContain('Running on port')
+            })
+
+            it('shows no note for unknown effective proxy and server ports', async () => {
+                getSettings.mockImplementation(async target => ({
+                    ...baseline,
+                    ...target,
+                    running: false,
+                    effectiveServerPort: 0,
+                    effectiveProxyPort: 0
+                }))
+                await render(engineType)
+                expect(container.textContent).not.toContain('Running on port')
+                expect(field('Proxy port').value).toBe('11434')
+                expect(field('Server port').value).toBe('11435')
+            })
+
+            it('hides a stopped server’s retained runtime port', async () => {
+                getSettings.mockImplementation(async target => ({
+                    ...baseline,
+                    ...target,
+                    running: false,
+                    effectiveServerPort: 11501,
+                    effectiveProxyPort: 0
+                }))
+                await render(engineType)
+                expect(container.textContent).not.toContain('Running on port')
+            })
+
+            it('updates runtime notes without changing a dirty draft', async () => {
+                await render(engineType)
+                await change('Proxy port', '12000')
+                await act(async () =>
+                    deliver({
+                        ...baseline,
+                        engine: engineType === 'lm-studio' ? 'lmstudio' : engineType,
+                        sequence: 2,
+                        effectiveProxyPort: 11500
+                    })
+                )
+                expect(container.textContent).toContain('11500 (saved setting: 11434)')
+                expect(container.textContent).not.toContain('saved setting: 12000')
+                expect(field('Proxy port').value).toBe('12000')
+                await act(async () =>
+                    deliver({
+                        ...baseline,
+                        engine: engineType === 'lm-studio' ? 'lmstudio' : engineType,
+                        sequence: 3,
+                        effectiveProxyPort: 0,
+                        effectiveServerPort: 0,
+                        running: false
+                    })
+                )
+                expect(container.textContent).not.toContain('Running on port')
+                expect(field('Proxy port').value).toBe('12000')
+            })
+        }
+    )
+
     it('edits llama.cpp server, proxy and launch settings', async () => {
         getSettings.mockImplementation(async target => ({
             ...baseline,

@@ -121,6 +121,17 @@ warning when `delete_restarts_engine` is true. Local delete uses `engine:action`
 with `delete_model`; peer delete uses `engine:remote-delete-model`. A deletion
 followed by a failed engine restart is shown as **deleted, restart failed**.
 
+For the selected local engine, the Engines tab adds a note for each reported
+server or proxy port that differs from the configured port. It shows the running
+and saved ports without inferring a cause or promising a retry. Matching
+or unknown effective ports and stopped servers show no note; no runtime port is
+offered for saving. The server-port editor uses the configured value, or starts
+empty if its settings snapshot has not arrived; it never suggests a runtime port.
+Settings pushes are accepted only for the local host UUID; peer snapshots never
+replace local notes or prefill the local port editor.
+Peer engine status has only a single port, so these notes are local-only in the
+TUI; the desktop's paired-device settings panels receive both ports.
+
 `e` accepts an integer server port from 1–65535, then confirms a possible running
 engine restart before `engine:set-port`. It does not change the proxy port.
 `U` confirms destructive reinstall: `engine:uninstall` must succeed before

@@ -358,7 +358,9 @@ port, proxy port, arguments and leading environment assignments. oMLX keeps its
 [Launch notation](LAUNCH_TEXT.md) and [manifest bindings](MANIFEST.md) describe
 literal pass-through, managed-networking rejection, private persistence and
 secret-safe diagnostics. Remote settings require verified pinned peers; bare
-manual engines and discovery previews are never settings targets.
+manual engines and discovery previews are never settings targets. Peer settings
+streams forward live snapshots for Ollama, LM Studio, oMLX and llama.cpp, stamped
+with the verified peer's node identity, including later effective-port changes.
 
 A failed apply compensates under the same engine operation lock: the exact
 previous override (or its absence), proxy port and running state are restored.

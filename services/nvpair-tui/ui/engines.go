@@ -49,6 +49,7 @@ type enginesView struct {
 	table          table.Model
 	order          []string
 	byName         map[string]engineStatus
+	enginePorts    enginePortSnapshots
 	status         string
 	input          textinput.Model
 	pulling        bool
@@ -162,6 +163,9 @@ func (v *enginesView) SetSize(w, h int) {
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case epochChangedMsg:
+		v.loadGeneration++
+		v.enginePorts = nil
+		v.identity = clusterIdentity{}
 		v.models.selectionGeneration++
 		if v.selectedEngine() == "llamacpp" {
 			v.confirm = nil
@@ -185,6 +189,11 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case clusterIdentityMsg:
+		if msg.err == nil && v.identity.NodeUUID != msg.id.NodeUUID {
+			v.identity = msg.id
+			v.enginePorts = nil
+			return v.loadEnginePortsCmd()
+		}
 		if msg.err == nil {
 			v.identity = msg.id
 		}
@@ -211,7 +220,13 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		}
 		v.refreshModels()
 		if v.models.open && v.target == "" {
-			return v.loadModelsCmd()
+			return tea.Batch(v.loadModelsCmd(), v.loadEnginePortsCmd())
+		}
+		return v.loadEnginePortsCmd()
+
+	case enginePortsMsg:
+		if msg.err == nil && v.target == "" && msg.generation == v.loadGeneration {
+			v.receiveEnginePorts(msg.snapshot)
 		}
 		return nil
 
@@ -314,6 +329,11 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		switch msg.Msg.Method {
+		case "engine:settings-changed":
+			var result enginePortsMsg
+			if decodeParams(msg.Msg.Params, &result.snapshot) == nil {
+				v.receiveEnginePorts(result.snapshot)
+			}
 		case "engine:models-changed":
 			if v.models.open && v.selectedEngine() == "llamacpp" {
 				if v.models.catalog {
@@ -461,7 +481,10 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.portEngine = engine
 		v.editingPort = true
 		v.input.Placeholder = "engine server port (1–65535)"
-		v.input.SetValue(strconv.Itoa(v.byName[engine].Port))
+		v.input.SetValue("")
+		if snapshot, ok := v.enginePorts[engine]; ok {
+			v.input.SetValue(strconv.Itoa(snapshot.Settings.ServerPort))
+		}
 		v.input.Focus()
 		return textinput.Blink
 	}
@@ -702,6 +725,7 @@ func (v *enginesView) View() string {
 	if v.models.open {
 		out = v.modelsView()
 	}
+	out += v.enginePortNotes()
 	if v.selectedEngine() == "llamacpp" {
 		out += "\n" + footerStyle.Render("llama.cpp: macOS arm64 only; not notarized, like PAIR. Single-file Q4_K_M GGUF catalog.")
 	}
@@ -809,6 +833,7 @@ func (v *enginesView) cycleTarget() tea.Cmd {
 		}
 	}
 	v.target = next
+	v.enginePorts = nil
 	v.models.loading = false
 	v.models.searching = false
 	v.models.query = ""

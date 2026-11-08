@@ -306,6 +306,7 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `engine:models-changed` | notification (TUI consumes) | ✅ yes |
 | `engine:pull-progress` | notification (TUI consumes) | ✅ yes |
 | `engine:remote-progress` | notification (TUI consumes) | ✅ yes |
+| `engine:settings-changed` | notification (TUI consumes) | ✅ yes |
 | `engine:state-changed` | notification (TUI consumes) | ✅ yes |
 | `errors:update` | notification (TUI consumes) | ✅ yes |
 | `nodes:changed` | notification (TUI consumes) | ✅ yes |

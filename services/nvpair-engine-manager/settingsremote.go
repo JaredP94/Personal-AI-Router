@@ -247,7 +247,7 @@ func (m *Manager) consumeSettingsStream(parent context.Context, peer ecPeer) {
 			return
 		}
 		for _, snapshot := range snapshots {
-			if snapshot.Engine != "ollama" && snapshot.Engine != "lmstudio" && snapshot.Engine != "omlx" {
+			if snapshot.Engine != "ollama" && snapshot.Engine != "lmstudio" && snapshot.Engine != "omlx" && snapshot.Engine != "llamacpp" {
 				continue
 			}
 			snapshot.NodeID = peer.nodeID
