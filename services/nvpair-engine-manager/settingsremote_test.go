@@ -199,6 +199,75 @@ func TestSettingsPairedMutationPushObserversAndRevocation(t *testing.T) {
 	read(again, 2)
 }
 
+func TestPeerSettingsStreamIncludesLlamaCppUpdates(t *testing.T) {
+	authority := &Executor{progress: newProgressHub()}
+	authority.settingsParent = func(context.Context, string, settings.Request, string) (json.RawMessage, error) {
+		return nil, nil
+	}
+	rows := []settings.Snapshot{}
+	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp", "unsupported"} {
+		rows = append(rows, settings.Snapshot{NodeID: "authority-claim", Engine: engine, Epoch: "peer-epoch", Sequence: 1,
+			Settings: settings.Config{ServerPort: 8082, ProxyPort: 1237}, EffectiveProxyPort: 1238})
+	}
+	authority.settingsHub.Publish(rows)
+	server, mesh := newToolControlPeer(t, authority, true)
+	received := make(chan settings.Snapshot, 10)
+	observer := &Executor{emit: func(method string, value any) {
+		if method != "engine:settings-changed" {
+			t.Errorf("unexpected method %s", method)
+			return
+		}
+		raw, _ := json.Marshal(value)
+		var snapshot settings.Snapshot
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			t.Error(err)
+		}
+		received <- snapshot
+	}}
+	manager := NewManager(NewCodec(&bytes.Buffer{}), observer, mesh)
+	defer manager.remoteHTTP.CloseIdle()
+	defer manager.readyHTTP.CloseIdle()
+	defer manager.settingsHTTP.CloseIdle()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.consumeSettingsStream(ctx, ecPeer{nodeID: "host-server", clusterUUID: "uuid-server", addresses: []string{"127.0.0.1"}, port: listenerPort(t, server)})
+	}()
+	read := func(sequence uint64, proxyPort int) {
+		t.Helper()
+		seen := map[string]bool{}
+		for len(seen) < 4 {
+			select {
+			case snapshot := <-received:
+				if snapshot.NodeID != "host-server" || snapshot.Epoch != "peer-epoch" || snapshot.Sequence != sequence || snapshot.EffectiveProxyPort != proxyPort || snapshot.Engine == "unsupported" {
+					t.Fatalf("incorrect peer snapshot: %+v", snapshot)
+				}
+				seen[snapshot.Engine] = true
+			case <-ctx.Done():
+				t.Fatalf("missing peer engine snapshots at sequence %d: %v", sequence, seen)
+			}
+		}
+		if !seen["llamacpp"] {
+			t.Fatal("missing llama.cpp settings")
+		}
+	}
+	read(1, 1238)
+	for i := range rows {
+		rows[i].Sequence = 2
+		rows[i].EffectiveProxyPort = 1240
+	}
+	authority.settingsHub.Publish(rows)
+	read(2, 1240)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("peer settings stream did not cancel")
+	}
+}
+
 func TestSettingsRelayCorrelationCancellationAndCleanup(t *testing.T) {
 	sent := make(chan settings.Relay, 2)
 	canceled := make(chan string, 1)
