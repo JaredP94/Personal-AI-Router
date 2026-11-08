@@ -63,7 +63,7 @@ func TestEngineEffectivePortsLoadAndOrdering(t *testing.T) {
 	v.merge(engineStatus{Engine: "ollama"})
 	msg := engineRequest(t, v.loadEnginePortsCmd(), c, "engine:get-settings", `{"engine":"ollama"}`, `{"nodeId":"local","engine":"ollama","epoch":"one","sequence":1,"settings":{"serverPort":11435,"proxyPort":11434},"effectiveProxyPort":11500}`)
 	v.Update(msg)
-	if !strings.Contains(v.View(), "11500 because 11434 was busy") {
+	if !strings.Contains(v.View(), "11500 (saved setting: 11434)") {
 		t.Fatal("initial settings read did not show the runtime port")
 	}
 	v.receiveEnginePorts(settings.Snapshot{NodeID: "local", Engine: "ollama", Epoch: "one", Sequence: 2})
@@ -104,6 +104,24 @@ func TestEnginePortEditorKeepsConfiguredPort(t *testing.T) {
 	}
 }
 
+func TestEngineManagedLMStudioPortNote(t *testing.T) {
+	v := newEnginesView(nil)
+	v.SetSize(120, 30)
+	v.identity = clusterIdentity{NodeUUID: "local"}
+	v.merge(engineStatus{Engine: "lmstudio", Running: true})
+	// A non-explicit legacy saved proxy port can differ under managed ownership,
+	// even when it was free. The snapshot does not report a cause or retry policy.
+	v.receiveEnginePorts(settings.Snapshot{NodeID: "local", Engine: "lmstudio", Running: true,
+		Settings:            settings.Config{ServerPort: 1235, ProxyPort: 12420},
+		EffectiveServerPort: 1235, EffectiveProxyPort: 1234})
+	if !strings.Contains(v.View(), "Proxy port: Running on port 1234 (saved setting: 12420).") {
+		t.Fatalf("missing neutral managed-port note: %s", v.View())
+	}
+	if strings.Contains(v.View(), "busy") || strings.Contains(v.View(), "next start") {
+		t.Fatal("port mismatch invented a cause or retry promise")
+	}
+}
+
 func TestEngineEffectivePortNotes(t *testing.T) {
 	for _, engine := range []string{"ollama", "lmstudio", "omlx", "llamacpp"} {
 		t.Run(engine, func(t *testing.T) {
@@ -124,8 +142,8 @@ func TestEngineEffectivePortNotes(t *testing.T) {
 			}
 			push()
 			for _, note := range []string{
-				"Server port: Running on port 11501 because 11435 was busy. PAIR will try 11435 again next start.",
-				"Proxy port: Running on port 11500 because 11434 was busy. PAIR will try 11434 again next start.",
+				"Server port: Running on port 11501 (saved setting: 11435).",
+				"Proxy port: Running on port 11500 (saved setting: 11434).",
 			} {
 				if !strings.Contains(v.View(), note) {
 					t.Fatalf("missing %q in %s", note, v.View())

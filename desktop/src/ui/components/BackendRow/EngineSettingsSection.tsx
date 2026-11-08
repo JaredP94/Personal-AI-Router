@@ -75,7 +75,7 @@ function EffectivePortNote({ configured, effective }: { configured?: number; eff
     if (!configured || !effective || effective === configured) return null
     return (
         <Text kind="body/regular/sm">
-            {`Running on port ${effective} because ${configured} was busy. PAIR will try ${configured} again next start.`}
+            {`Running on port ${effective} (saved setting: ${configured}).`}
         </Text>
     )
 }

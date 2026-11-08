@@ -68,8 +68,8 @@ engines have no Settings panel. Unsupported devices/formats and disconnected
 devices remain read-only. Launch text is displayed only in its editor.
 
 When a reported effective server or proxy port differs from its saved port, a
-quiet note beside that field shows the running port and explains that PAIR will
-retry the saved port next start. This works for all four engines on local and
+quiet note beside that field shows “Running on port 1234 (saved setting: 12420).”
+It does not infer why the ports differ or promise a retry. This works for all four engines on local and
 verified paired devices. Unknown or matching effective ports and stopped servers show no note;
 runtime fallback ports never replace the form's saved values or enable Apply.
 

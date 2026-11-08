@@ -78,7 +78,7 @@ func (v *enginesView) enginePortNotes() string {
 		{"Proxy port", snapshot.Settings.ProxyPort, snapshot.EffectiveProxyPort},
 	} {
 		if port.configured > 0 && port.effective > 0 && port.configured != port.effective {
-			fmt.Fprintf(&out, "\n%s: Running on port %d because %d was busy. PAIR will try %d again next start.", port.label, port.effective, port.configured, port.configured)
+			fmt.Fprintf(&out, "\n%s: Running on port %d (saved setting: %d).", port.label, port.effective, port.configured)
 		}
 	}
 	return out.String()

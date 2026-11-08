@@ -276,6 +276,22 @@ afterEach(async () => {
 })
 
 describe('engine launch settings panel', () => {
+    it('describes a legacy saved LM Studio proxy port under managed ownership neutrally', async () => {
+        getSettings.mockImplementation(async target => ({
+            ...baseline,
+            ...target,
+            settings: { serverPort: 1235, proxyPort: 12420, launchText: '' },
+            effectiveServerPort: 1235,
+            effectiveProxyPort: 1234
+        }))
+        await render('lm-studio')
+        expect(container.textContent).toContain('Running on port 1234 (saved setting: 12420).')
+        expect(container.textContent).not.toContain('busy')
+        expect(container.textContent).not.toContain('next start')
+        expect(field('Proxy port').value).toBe('12420')
+        expect(button('Apply').disabled).toBe(true)
+    })
+
     it.each([false, true])(
         'isolates peer pushes from the local note and editor (dirty: %s)',
         async dirty => {
@@ -312,7 +328,7 @@ describe('engine launch settings panel', () => {
         '%s effective ports',
         engineType => {
             it.each(['local', 'peer'])(
-                'shows fallback notes on %s without offering to save them',
+                'shows differing effective ports on %s without offering to save them',
                 async nodeId => {
                     getSettings.mockImplementation(async target => ({
                         ...baseline,
@@ -322,10 +338,10 @@ describe('engine launch settings panel', () => {
                     }))
                     await render(engineType, nodeId)
                     expect(container.textContent).toContain(
-                        'Running on port 11500 because 11434 was busy. PAIR will try 11434 again next start.'
+                        'Running on port 11500 (saved setting: 11434).'
                     )
                     expect(container.textContent).toContain(
-                        'Running on port 11501 because 11435 was busy. PAIR will try 11435 again next start.'
+                        'Running on port 11501 (saved setting: 11435).'
                     )
                     expect(field('Proxy port').value).toBe('11434')
                     expect(field('Server port').value).toBe('11435')
@@ -377,8 +393,8 @@ describe('engine launch settings panel', () => {
                         effectiveProxyPort: 11500
                     })
                 )
-                expect(container.textContent).toContain('11500 because 11434 was busy')
-                expect(container.textContent).not.toContain('because 12000 was busy')
+                expect(container.textContent).toContain('11500 (saved setting: 11434)')
+                expect(container.textContent).not.toContain('saved setting: 12000')
                 expect(field('Proxy port').value).toBe('12000')
                 await act(async () =>
                     deliver({
