@@ -213,7 +213,7 @@ func TestFailedProofExpiresVerifiedRecordWithOriginalToken(t *testing.T) {
 	}
 	var removed bool
 	for _, n := range d.dir.snapshot("") {
-		removed = removed || n.RecordKey() == noderec.PreviewRecordID("genuine", "uuid-peer")
+		removed = removed || n.IdentityVerification == "unverified" && n.Name == "genuine" && n.HostUUID == "uuid-peer"
 	}
 	if removed {
 		t.Fatal("withdrawal incorrectly relabelled old proof as a public preview")

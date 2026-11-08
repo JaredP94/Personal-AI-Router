@@ -34,6 +34,61 @@ Concretely, the daemon:
 - **A scan that loses everything is treated as our own fault:** when more than one node is known and a scan returns *none* of them, no node is penalized for it — for up to six consecutive scans (~30s), after which they count normally. Independent machines do not leave the network in the same five-second window, but a process too starved to drain its multicast socket within `scanTimeout` hears silence from all of them at once; without this, one saturated machine dropped its entire cluster, idle peers included, in a single reconcile. The suppression needs two or more known nodes to engage: losing a lone peer looks the same whether it left or we stopped listening, so that case falls through to the ordinary threshold.
 - **Converges without mDNS:** every 15s, pending candidates retry authentication and verified peers refresh their authenticated inventory before model refresh. Candidate removal affects only its preview. A verified peer expires after 45s without authenticated inventory unless recent inference activity proves it is busy; authorization changes withdraw it immediately. Older peers lacking authenticated service metadata remain untrusted previews until upgraded, with no plaintext downgrade.
 
+## Candidate identity and admission bounds
+
+The raw browser and preview keys identify the advertisement: case-normalized
+service instance and SRV host, SRV port, the sorted endpoint set from
+`ip=`/`ips=` (resolved addresses when those hints are absent), and the remaining
+TXT record sorted by value. Service/principal hint changes remain separate
+record variants rather than overwriting a concurrent record. Claimed `uuid=`
+is never the identity key on its own. Interface-specific A/AAAA subsets of the same PAIR
+advertisement are merged within the scan; address order does not create another
+candidate. Concurrent browser variants remain available for authentication;
+different instances or SRV hosts remain independent advertisers. A renamed
+instance can therefore coexist with its old advertisement, but both
+converge to one authenticated host-UUID record after pinned-mTLS verification.
+A TXT, SRV-port or address change supersedes an absent older advertisement from
+that normalized instance and SRV host in the next scan, without probing its
+endpoint. Endpoint liveness cannot prolong obsolete revisions. The scanner also
+retires that advertiser’s older pending candidates and previews when a new
+revision arrives. Verification removes the promoting preview even when inventory
+is unchanged; it never cleans up by claimed UUID alone. Different instances or
+SRV hosts remain independent previews, even if they claim the same UUID.
+Preview IDs remain opaque `preview:<sha>` values.
+
+Instance and SRV host are unauthenticated continuity hints. A LAN attacker copying
+both can churn another advertiser’s unverified preview/pending hints (as claimed
+UUID collisions could on the former UUID-keyed browser), but cannot remove its
+independently verified HostUUID record. Concurrent browser variants remain
+available for pinned-mTLS authentication; genuine proofs still converge to one
+HostUUID record, including after an address/port move. This is not a guarantee
+against an unlimited active LAN flood.
+
+Both the current scan/retained browser and the scanner's pending map are bounded
+at **8 advertisements per claimed UUID and 256 total**. Previously authenticated
+endpoints have admission priority. Excess unproven candidates get fresh randomized
+ranks each scan, rather than letting a fixed first-arriving flood own the slots
+forever. Capacity eviction withdraws only that advertisement's preview; miss
+counters and ordinary removal are also per advertisement. Cached inventory and
+inference activity protect only a matching proven endpoint, not every record
+claiming its UUID.
+
+Unproven enrichment/authentication attempts are limited to **8 per claimed UUID
+and 64 total per 15-second window**, with a bounded 256-entry window table that
+survives advertisement removal/name changes. A previously proven endpoint has a
+separate reserved attempt per UUID/window. Verified inventory/telemetry refresh
+retains its independent cadence and is not charged to the unproven budget.
+Production address lists pass through `netpick.Candidates`, capped at four;
+addresses beyond that cap are not rotated into later attempts. Each attempt or
+liveness probe considers at most those four addresses. Defensive batching of
+larger internal caller-supplied lists does not relax the production cap. These are
+bounded-resource and already-proven-peer protections, not a guarantee of first
+discovery against an unlimited active LAN flood.
+
+Other services consume the scanner's authenticated relay records; their uses of
+shared discovery types/helpers do not reintroduce claimed-UUID browser keying.
+The shared browser's default key and optional custom-key API remain unchanged.
+
 ## Discovery transport lifetime
 
 Periodic browsing reuses IPv4/IPv6 receive sockets and source-bound UDP 5353

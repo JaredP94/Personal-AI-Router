@@ -43,7 +43,7 @@ func TestAuthenticatedRefreshPromotesPendingPeerWithoutMDNSChange(t *testing.T) 
 	mismatch.Store(true)
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "pending", Addresses: []string{host}, TXT: []string{"v=1", "uuid=uuid-peer", "cluster-uuid=uuid-peer", "ip=" + host, "ni=" + p}}})
 	mismatch.Store(false)
-	if !d.refreshNodeClusterIdentityCandidates(noderec.PreviewRecordID("pending", "uuid-peer"), []string{"127.0.0.2", host}, port) {
+	if !d.refreshNodeClusterIdentityCandidates(candidateRecordKey(RawNode{ID: "pending", Addresses: []string{host}, TXT: []string{"v=1", "uuid=uuid-peer", "cluster-uuid=uuid-peer", "ip=" + host, "ni=" + p}}), []string{"127.0.0.2", host}, port) {
 		t.Fatal("pending peer not authenticated via answering address")
 	}
 	got, _ := d.dir.get("uuid-peer")

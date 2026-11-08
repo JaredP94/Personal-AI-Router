@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/discovery"
 	"nvpair-shared/enginenative"
 	"nvpair-shared/mdns"
 	"nvpair-shared/netmon"
@@ -65,10 +66,14 @@ type daemon struct {
 	peerInfoOnce  sync.Once
 	// inventoryMu orders verified publication, conditional removal, cache cleanup
 	// and their notifications. Network probes run outside this lock.
-	inventoryMu     sync.Mutex
-	candidateMu     sync.Mutex
-	candidates      map[string]noderec.DirectoryNode
-	peerInfoClients *clustertrust.PeerClientPool
+	inventoryMu           sync.Mutex
+	candidateMu           sync.Mutex
+	candidates            map[string]noderec.DirectoryNode
+	candidateAdvertisers  map[string]string
+	candidateAttempts     map[string]candidateAttemptWindow
+	candidateAttemptStart time.Time
+	candidateAttemptCount int
+	peerInfoClients       *clustertrust.PeerClientPool
 	// tlsHTTP, when non-nil (the operator passed --client-cert/--client-key/
 	// --ca-bundle), fetches node-info over HTTPS on the ni port instead of plain
 	// HTTP. Dormant by default (nil): node-info is plain per the transport policy,
@@ -429,14 +434,9 @@ func newDaemon(codec *Codec, mesh *clustertrust.Mesh, clusterDir string, tlsHTTP
 	// Inference ports (ol/lm) are never probed — they are the promoted proxies
 	// and SYN spam there contributed to accept-queue exhaustion on macOS.
 	//
-	// Key by uuid= (not the mDNS instance name): two hosts sharing a hostname but
-	// holding distinct UUIDs must not collapse into one directory entry (matching
-	// cluster-manager's browser). Self re-stamps are handled separately in
-	// reloadIdentity, which moves this node's own directory entry to the new uuid.
-	d.browser = NewDiscovery(noderec.ServiceType, noderec.Domain,
-		WithLivenessProbe(func(n RawNode) bool { return d.reachable(n) }),
-		WithKeyFunc(func(n RawNode) string { return UUIDFromTXT(n.TXT) }),
-	)
+	// Key candidates by their advertisement endpoints, never their claimed UUID.
+	// Authentication, not packet order, owns the eventual host-UUID entry.
+	d.browser = d.newCandidateBrowser()
 	if resp, err := mdns.NewResponder(instance, noderec.ServiceType, noderec.Domain, noderec.SRVPort, reg.txt()); err != nil {
 		slog.Warn("mDNS advertising disabled for _nvpair-node", "err", err)
 	} else {
@@ -517,6 +517,7 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 	if ev.Type == "removed" {
 		d.candidateMu.Lock()
 		delete(d.candidates, key)
+		delete(d.candidateAdvertisers, key)
 		d.candidateMu.Unlock()
 		if prior, exists := d.dir.get(key); exists {
 			d.dir.remove(key)
@@ -526,13 +527,14 @@ func (d *daemon) onBrowse(ev DiscoveryEvent) {
 		// authenticated peer. Its own mTLS refresh/expiry owns that lifetime.
 		return
 	}
-	d.candidateMu.Lock()
-	if d.candidates == nil {
-		d.candidates = make(map[string]noderec.DirectoryNode)
+	if !d.rememberCandidate(node, discovery.AdvertiserKey(ev.Node)) {
+		return
 	}
-	d.candidates[key] = node
-	d.candidateMu.Unlock()
-	d.enrich(&node)
+	if d.claimCandidateAttempt(node, time.Now()) {
+		d.enrich(&node)
+	} else if d.knownCandidate(node) {
+		return // Keep the independently refreshed verified row, not a duplicate preview.
+	}
 	if node.ServicePeer() {
 		d.publishVerified(node, key)
 		return
@@ -1022,6 +1024,11 @@ const loopbackHost = "127.0.0.1"
 func (d *daemon) reachable(n RawNode) bool {
 	rec := noderec.ParseTXT(n.TXT)
 	candidates := netpick.Candidates(n.TXT, n.Addresses)
+	hint := noderec.DirectoryNode{}
+	if rec.HostUUID != "" {
+		hint, _ = toDirectoryNode(n)
+	}
+	candidates = d.candidateHosts(hint, candidates, time.Now())
 	if len(candidates) == 0 {
 		return false
 	}
@@ -1029,7 +1036,7 @@ func (d *daemon) reachable(n RawNode) bool {
 		candidates = []string{loopbackHost}
 	}
 
-	if rec.HostUUID != "" {
+	if rec.HostUUID != "" && (d.localNode(rec.HostUUID) || d.knownCandidate(hint)) {
 		d.infoMu.Lock()
 		at, had := d.lastInfoAt[rec.HostUUID]
 		d.infoMu.Unlock()
@@ -1205,6 +1212,7 @@ func (d *daemon) enrichInfoAt(node *noderec.DirectoryNode, host string) {
 // that answered last sweep by itself, and the rest together only if it stopped.
 func (d *daemon) enrichInfoCandidates(node *noderec.DirectoryNode, hosts []string) {
 	if !d.localNode(node.HostUUID) {
+		hosts = d.candidateHosts(*node, hosts, time.Now())
 		node.Trusted = false
 		node.IdentityVerification = "unverified"
 		if ni, ok := node.Services[noderec.ServiceNodeInfo]; ok {
@@ -1952,6 +1960,9 @@ func (d *daemon) refreshNodeClusterIdentityCandidates(hostUUID string, hosts []s
 		d.candidateMu.Unlock()
 	}
 	if !exists || d.localNode(old.HostUUID) {
+		return false
+	}
+	if !old.ServicePeer() && !d.claimCandidateAttempt(old, time.Now()) {
 		return false
 	}
 	info, host, verified := d.authenticatedInfo(context.Background(), old, hosts, niPort)

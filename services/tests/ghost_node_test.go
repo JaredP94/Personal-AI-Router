@@ -159,12 +159,14 @@ func TestScannerEvictsPreviewSupersededAtItsAddress(t *testing.T) {
 
 	// requireMulticast already made the environment decision. Discovery failure
 	// here is a regression, not grounds for an inconclusive self-skip.
-	key := noderec.PreviewRecordID(peerInstance, originalUUID)
-	preview, ok := awaitNodeEvent(events, noderec.NotifyNodeUpdated, key, 30*time.Second)
+	preview, ok := awaitNodeEventMatching(events, noderec.NotifyNodeUpdated, func(n noderec.DirectoryNode) bool {
+		return n.Name == peerInstance && n.HostUUID == originalUUID && n.IdentityVerification == "unverified"
+	}, 30*time.Second)
+	key := preview.RecordKey()
 	if !ok {
 		t.Fatalf("preview record was never discovered after requireMulticast succeeded")
 	}
-	if preview.IdentityVerification != "unverified" || preview.Trusted || preview.PeerRecordID != key {
+	if preview.IdentityVerification != "unverified" || preview.Trusted || !strings.HasPrefix(key, "preview:") || preview.PeerRecordID != key {
 		t.Fatalf("plaintext fixture unexpectedly proved an identity: %+v", preview)
 	}
 
@@ -223,6 +225,10 @@ func startScannerForGhostTest(t *testing.T, clusterDir string) <-chan jsonrpc.Me
 // awaitNodeEvent matches the independent record key, never a preview's claimed
 // host UUID. Other events (self, enrichment, other candidates) are ignored.
 func awaitNodeEvent(events <-chan jsonrpc.Message, method, recordKey string, timeout time.Duration) (noderec.DirectoryNode, bool) {
+	return awaitNodeEventMatching(events, method, func(n noderec.DirectoryNode) bool { return n.RecordKey() == recordKey }, timeout)
+}
+
+func awaitNodeEventMatching(events <-chan jsonrpc.Message, method string, match func(noderec.DirectoryNode) bool, timeout time.Duration) (noderec.DirectoryNode, bool) {
 	deadline := time.After(timeout)
 	for {
 		select {
@@ -237,7 +243,7 @@ func awaitNodeEvent(events <-chan jsonrpc.Message, method, recordKey string, tim
 			if err := json.Unmarshal(msg.Params, &ev); err != nil {
 				continue
 			}
-			if ev.Node.RecordKey() == recordKey {
+			if match(ev.Node) {
 				return ev.Node, true
 			}
 		case <-deadline:

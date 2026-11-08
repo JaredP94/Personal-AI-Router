@@ -310,11 +310,11 @@ func TestPeerStillAgesOut(t *testing.T) {
 	d := newSelfTestDaemon("self-uuid", "192.168.1.17")
 	peerTXT := []string{"v=1", "uuid=peer-uuid", "ip=192.168.1.99"}
 	d.onBrowse(DiscoveryEvent{Type: "discovered", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	if _, ok := d.dir.get(noderec.PreviewRecordID("peer", "peer-uuid")); !ok {
+	if _, ok := d.dir.get(candidateRecordKey(RawNode{ID: "peer", TXT: peerTXT})); !ok {
 		t.Fatal("a discovered peer should be added to the directory")
 	}
 	d.onBrowse(DiscoveryEvent{Type: "removed", Node: RawNode{ID: "peer", TXT: peerTXT}})
-	if _, ok := d.dir.get(noderec.PreviewRecordID("peer", "peer-uuid")); ok {
+	if _, ok := d.dir.get(candidateRecordKey(RawNode{ID: "peer", TXT: peerTXT})); ok {
 		t.Error("a genuine remote peer must still age out when it leaves")
 	}
 }
@@ -409,6 +409,8 @@ func TestReachableAntiFlap(t *testing.T) {
 	d.lastInfo["host-cached"] = NodeInfoResponse{}
 	d.lastInfoAt["host-cached"] = time.Now()
 	cached := RawNode{TXT: []string{"v=1", "uuid=host-cached", "ip=127.0.0.1", fmt.Sprintf("ni=%d", deadPort)}}
+	d.dir = newDirectory()
+	recordProvenEndpoint(d, cached)
 	if !d.reachable(cached) {
 		t.Error("fresh lastInfo should keep the node without a successful probe")
 	}

@@ -23,9 +23,10 @@
 //   - WithLivenessProbe — TCP-probe a threshold-missed node before evicting it;
 //     if it still answers, keep it (the proxies' anti-flap guard).
 //   - WithSelfFilter — drop our own advertisement from results (workload-manager).
-//   - WithKeyFunc — key the node map by something other than the instance name
-//     (cluster-manager keys by uuid= so two hosts sharing an instance name but
-//     distinct UUIDs don't collide).
+//   - WithKeyFunc — key the node map by something other than the instance name;
+//     scanner uses AdvertisementKey so claims cannot displace other endpoints.
+//   - WithCandidateLimits — bound untrusted candidates with preference for
+//     previously authenticated endpoints.
 //
 // Two consumption shapes are supported over the same core:
 //   - Run(ctx, events) — push: a background loop that emits Discovered/Updated/
@@ -40,6 +41,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"strings"
 	"sync"
@@ -150,14 +152,17 @@ type Event struct {
 }
 
 type options struct {
-	interval      time.Duration
-	scanTimeout   time.Duration
-	missThreshold int
-	noEvict       bool
-	liveness      func(Node) bool
-	selfInstance  string
-	keyFunc       func(Node) string
-	warnCollision bool
+	interval       time.Duration
+	scanTimeout    time.Duration
+	missThreshold  int
+	noEvict        bool
+	liveness       func(Node) bool
+	selfInstance   string
+	keyFunc        func(Node) string
+	warnCollision  bool
+	perClaimLimit  int
+	candidateLimit int
+	preferred      func(Node) bool
 }
 
 // Option configures a Browser.
@@ -192,15 +197,16 @@ func WithSelfFilter(selfInstance string) Option {
 }
 
 // WithKeyFunc keys the node map by fn(node) instead of the instance name. Return
-// "" to fall back to the instance name for that node. cluster-manager keys by
-// uuid= so two hosts sharing an instance name but distinct UUIDs don't collide.
+// "" to fall back to the instance name for that node. Unauthenticated UUID
+// claims must not be used as identity keys; use AdvertisementKey for candidates.
 func WithKeyFunc(fn func(Node) string) Option { return func(o *options) { o.keyFunc = fn } }
 
 // Browser maintains a reconciled set of discovered nodes for one service type.
 type Browser struct {
-	service string
-	domain  string
-	opt     options
+	service       string
+	domain        string
+	opt           options
+	candidateSalt uint64 // guarded by mu
 
 	// scanMu serializes network ownership and scan windows (Run or Poll).
 	scanMu  sync.Mutex
@@ -234,8 +240,9 @@ func New(service, domain string, opts ...Option) *Browser {
 		domain = "local"
 	}
 	b := &Browser{
-		service: service,
-		domain:  domain,
+		service:       service,
+		domain:        domain,
+		candidateSalt: rand.Uint64(),
 		opt: options{
 			interval:      5 * time.Second,
 			scanTimeout:   3 * time.Second,
@@ -272,7 +279,12 @@ func (b *Browser) Seed(nodes ...Node) {
 	defer b.mu.Unlock()
 	for _, n := range nodes {
 		k := b.key(n)
-		b.nodes[k] = n
+		b.addCandidate(b.nodes, n)
+		for missed := range b.misses {
+			if _, exists := b.nodes[missed]; !exists {
+				delete(b.misses, missed)
+			}
+		}
 		delete(b.misses, k)
 	}
 }
@@ -409,6 +421,46 @@ func (b *Browser) scanEmit(ctx context.Context, events chan<- Event) {
 func (b *Browser) reconcile(seen map[string]Node) []Event {
 	b.mu.Lock()
 	var pending []Event
+
+	// A live endpoint is not evidence that an obsolete TXT/SRV/address variant
+	// is still advertised. Retire absent revisions when the same responder is
+	// heard with a new revision, before capacity admission or liveness probing.
+	// Concurrent variants in this scan remain candidates for authentication.
+	advertisers := make(map[string]bool, len(seen))
+	for _, n := range seen {
+		advertisers[AdvertiserKey(n)] = true
+	}
+	for k, n := range b.nodes {
+		if _, present := seen[k]; !b.opt.noEvict && !present && advertisers[AdvertiserKey(n)] {
+			pending = append(pending, Event{Type: Removed, Node: n})
+			delete(b.nodes, k)
+			delete(b.misses, k)
+		}
+	}
+
+	// Apply the same capacity bound across scans, not just within one scan.
+	// Capacity withdrawals are per advertisement, like ordinary miss eviction.
+	retained := make(map[string]Node, len(b.nodes))
+	for k, n := range b.nodes {
+		retained[k] = n
+	}
+	for _, n := range seen {
+		b.addCandidate(retained, n)
+	}
+	for k, n := range b.nodes {
+		if _, ok := retained[k]; !ok {
+			pending = append(pending, Event{Type: Removed, Node: n})
+			delete(b.nodes, k)
+			delete(b.misses, k)
+		}
+	}
+	for k := range seen {
+		if kept, ok := retained[k]; ok {
+			seen[k] = kept
+		} else {
+			delete(seen, k)
+		}
+	}
 
 	for k, node := range seen {
 		existing, exists := b.nodes[k]
@@ -548,6 +600,9 @@ func (b *Browser) browse(ctx context.Context) map[string]Node {
 
 	b.scanMu.Lock()
 	defer b.scanMu.Unlock()
+	b.mu.Lock()
+	b.candidateSalt = rand.Uint64()
+	b.mu.Unlock()
 	network := b.network
 	if network == nil {
 		owner := b.runCtx
@@ -589,7 +644,9 @@ drained:
 			return seen
 		case packet := <-r.packets:
 			for _, node := range b.nodesFromPacket(packet) {
-				seen[b.key(node)] = node
+				b.mu.Lock()
+				b.observeCandidate(seen, node)
+				b.mu.Unlock()
 			}
 		}
 	}
@@ -680,9 +737,8 @@ func sendMulticastQueryOnInterface(
 }
 
 // UUIDFromTXT returns the value of the "uuid=" TXT record, or "" if absent. It's
-// the stable per-host identity carried on the node-scanner daemon's single
-// _nvpair-node record, and was triplicated across the two proxies and the scanner
-// before consolidation.
+// a claimed host identity, not proof of a principal or a safe browser key.
+// The extractor was shared by proxies and the scanner before consolidation.
 func UUIDFromTXT(txt []string) string { return uuidFromTXT(txt) }
 
 // SameStringSet reports whether two slices hold the same elements regardless of

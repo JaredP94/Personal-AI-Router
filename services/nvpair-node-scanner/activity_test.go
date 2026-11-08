@@ -23,7 +23,7 @@ import (
 // has no HTTP client and no registry: the point of every test here is what
 // happens when nothing answers.
 func activityDaemon() *daemon {
-	return &daemon{lastActivityAt: make(map[string]time.Time)}
+	return &daemon{lastActivityAt: make(map[string]time.Time), dir: newDirectory()}
 }
 
 // unreachableNode advertises a node-info port nothing is listening on, so the
@@ -49,6 +49,7 @@ func TestFreshActivityKeepsANodeNoProbeCanReach(t *testing.T) {
 		t.Fatal("precondition: a node with no listener must fail the probe when nothing vouches for it")
 	}
 
+	recordProvenEndpoint(d, n)
 	d.noteActivity("busy-node", 0)
 	if !d.reachable(n) {
 		t.Fatal("a node that just returned inference bytes must be kept despite an unanswerable probe")

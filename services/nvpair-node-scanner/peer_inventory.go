@@ -35,6 +35,7 @@ func (d *daemon) authenticatedInfo(ctx context.Context, node noderec.DirectoryNo
 	if !ok {
 		return NodeInfoResponse{}, "", false
 	}
+	hosts = d.candidateHosts(node, hosts, time.Now())
 	for _, host := range hosts {
 		var info NodeInfoResponse
 		url := "https://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/v1/node-info"
@@ -92,6 +93,15 @@ func (d *daemon) publishVerified(node noderec.DirectoryNode, candidateKey string
 			return false
 		}
 	}
+	// Retire the promoting preview even if the proven inventory is unchanged.
+	// Other revisions of this advertiser were retired on browse. Never match
+	// previews by claimed UUID alone: another instance/host is independent.
+	if candidateKey != "" {
+		if preview, exists := d.dir.get(candidateKey); exists {
+			d.dir.remove(candidateKey)
+			d.emit(noderec.NotifyNodeRemoved, preview)
+		}
+	}
 	if prior, exists := d.dir.get(node.HostUUID); exists && prior.PeerRecordID == node.PeerRecordID {
 		if node.Models == nil {
 			node.Models, node.ModelsByEngine, node.LoadedByEngine = prior.Models, prior.ModelsByEngine, prior.LoadedByEngine
@@ -105,12 +115,6 @@ func (d *daemon) publishVerified(node noderec.DirectoryNode, candidateKey string
 		}
 	} else if exists {
 		d.forget(node.HostUUID)
-	}
-	if candidateKey != "" {
-		if preview, exists := d.dir.get(candidateKey); exists {
-			d.dir.remove(candidateKey)
-			d.emit(noderec.NotifyNodeRemoved, preview)
-		}
 	}
 	d.dir.upsert(node)
 	d.emit(noderec.NotifyNodeUpdated, node)
