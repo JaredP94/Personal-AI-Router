@@ -60,12 +60,16 @@ func (v *enginesView) enginePortNotes() string {
 	if !ok {
 		return ""
 	}
+	serverPort := 0
+	if snapshot.Running {
+		serverPort = snapshot.EffectiveServerPort
+	}
 	var out strings.Builder
 	for _, port := range []struct {
 		label                 string
 		configured, effective int
 	}{
-		{"Server port", snapshot.Settings.ServerPort, snapshot.EffectiveServerPort},
+		{"Server port", snapshot.Settings.ServerPort, serverPort},
 		{"Proxy port", snapshot.Settings.ProxyPort, snapshot.EffectiveProxyPort},
 	} {
 		if port.configured > 0 && port.effective > 0 && port.configured != port.effective {

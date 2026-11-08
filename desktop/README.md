@@ -70,7 +70,7 @@ devices remain read-only. Launch text is displayed only in its editor.
 When a reported effective server or proxy port differs from its saved port, a
 quiet note beside that field shows the running port and explains that PAIR will
 retry the saved port next start. This works for all four engines on local and
-verified paired devices. Unknown or matching effective ports show no note;
+verified paired devices. Unknown or matching effective ports and stopped servers show no note;
 runtime fallback ports never replace the form's saved values or enable Apply.
 
 The renderer consumes the node-owned settings protocol described in

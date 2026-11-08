@@ -53,7 +53,7 @@ func TestEngineEffectivePortNotes(t *testing.T) {
 			v := newEnginesView(nil)
 			v.SetSize(120, 30)
 			v.merge(engineStatus{Engine: engine, Running: true, Port: 11501})
-			snapshot := settings.Snapshot{Engine: engine, Epoch: "one", Sequence: 1,
+			snapshot := settings.Snapshot{Engine: engine, Epoch: "one", Sequence: 1, Running: true,
 				Settings:            settings.Config{ServerPort: 11435, ProxyPort: 11434},
 				EffectiveServerPort: 11501, EffectiveProxyPort: 11500}
 			push := func() {
@@ -84,6 +84,12 @@ func TestEngineEffectivePortNotes(t *testing.T) {
 			push()
 			if strings.Contains(v.View(), "Running on port") {
 				t.Fatal("unknown ports showed a note")
+			}
+			snapshot.Sequence++
+			snapshot.Running, snapshot.EffectiveServerPort = false, 11501
+			push()
+			if strings.Contains(v.View(), "Running on port") {
+				t.Fatal("stopped server's retained port showed a note")
 			}
 			snapshot.Sequence++
 			snapshot.EffectiveProxyPort = 11500

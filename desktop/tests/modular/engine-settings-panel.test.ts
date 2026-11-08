@@ -322,6 +322,18 @@ describe('engine launch settings panel', () => {
                 expect(field('Server port').value).toBe('11435')
             })
 
+            it('hides a stopped server’s retained runtime port', async () => {
+                getSettings.mockImplementation(async target => ({
+                    ...baseline,
+                    ...target,
+                    running: false,
+                    effectiveServerPort: 11501,
+                    effectiveProxyPort: 0
+                }))
+                await render(engineType)
+                expect(container.textContent).not.toContain('Running on port')
+            })
+
             it('updates runtime notes without changing a dirty draft', async () => {
                 await render(engineType)
                 await change('Proxy port', '12000')

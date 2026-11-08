@@ -305,9 +305,9 @@ function SettingsEditor({ target, disabled }: { target: EngineSettingsTarget; di
                         <EffectivePortNote
                             configured={snapshot?.settings.serverPort}
                             effective={
-                                entry?.unavailable || offline || !connected
+                                entry?.unavailable || offline || !connected || !snapshot?.running
                                     ? 0
-                                    : snapshot?.effectiveServerPort
+                                    : snapshot.effectiveServerPort
                             }
                         />
                     </FormField>
