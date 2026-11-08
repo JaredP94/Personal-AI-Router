@@ -13,6 +13,34 @@ import (
 	"nvpair-tui/rpc"
 )
 
+func TestEnginePortsWaitForLocalIdentity(t *testing.T) {
+	v, c := engineWire(t)
+	v.merge(engineStatus{Engine: "ollama"})
+	snapshot := settings.Snapshot{NodeID: "local", Engine: "ollama", Epoch: "one", Sequence: 1,
+		Settings: settings.Config{ProxyPort: 11434}, EffectiveProxyPort: 11500}
+	v.receiveEnginePorts(snapshot)
+	if len(v.enginePorts) != 0 {
+		t.Fatal("cached settings without a known local authority")
+	}
+	cmd := v.Update(clusterIdentityMsg{id: clusterIdentity{NodeUUID: "local", NodeID: "local-host"}})
+	msg := engineRequest(t, cmd, c, "engine:get-settings", `{"engine":"ollama"}`, `{"nodeId":"local","engine":"ollama","epoch":"one","sequence":1,"settings":{"proxyPort":11434},"effectiveProxyPort":11500}`)
+	v.Update(msg)
+	if !strings.Contains(v.enginePortNotes(), "Running on port 11500") {
+		t.Fatal("learning local identity did not recover the port snapshot")
+	}
+	snapshot.NodeID = "local-host"
+	snapshot.Sequence = 99
+	v.receiveEnginePorts(snapshot)
+	if v.enginePorts["ollama"].Sequence != 1 {
+		t.Fatal("accepted host name instead of stable local UUID")
+	}
+	v.Update(epochChangedMsg{})
+	v.receiveEnginePorts(snapshot)
+	if len(v.enginePorts) != 0 || v.identity.NodeUUID != "" {
+		t.Fatal("retained the old authority across an epoch change")
+	}
+}
+
 func TestEnginePortsIgnorePeerSettings(t *testing.T) {
 	for _, editing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("editing=%t", editing), func(t *testing.T) {
