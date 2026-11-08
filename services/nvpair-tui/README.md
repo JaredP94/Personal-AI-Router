@@ -153,6 +153,10 @@ Only macOS arm64 and single-file Q4_K_M GGUF catalog downloads are supported.
 
 On verified peers, `m` lists installed llama.cpp cache files from discovery's
 `downloadedByEngine`, including catalog IDs/file names, sizes and ownership.
+The additive `downloadErrorsByEngine.llamacpp: "cache_unavailable"` diagnostic
+shows “Couldn't read llama.cpp's downloaded models” in llama.cpp's installed
+models pane only; other engines' served models and liveness are unchanged.
+A successful cache read clears the diagnostic.
 Unverified previews receive no cache inventory. `d` deletes PAIR-owned files
 through the existing authenticated remote method; running llama.cpp must be
 stopped first and its refusal reason remains visible. Catalog downloads and

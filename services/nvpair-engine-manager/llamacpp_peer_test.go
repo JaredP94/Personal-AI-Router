@@ -79,8 +79,33 @@ func TestLlamaCacheFailurePreservesOtherEngineInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := ex.modelsResult(context.Background())
-	if err == nil || len(result.ByEngine["fake"]) != 1 || result.ByEngine["fake"][0] != "llama3.2:1b" {
+	if len(result.ByEngine["fake"]) != 1 || result.ByEngine["fake"][0] != "llama3.2:1b" {
 		t.Fatalf("cache failure erased served inventory: %+v %v", result, err)
+	}
+	selfCert, selfKey := mintLeaf(t, "inventory-owner")
+	peerCert, peerKey := mintLeaf(t, "inventory-caller")
+	owner := clustertrust.Open(clusterDirFor(t, selfCert, selfKey, map[string][]byte{"inventory-caller": peerCert}))
+	caller := clustertrust.Open(clusterDirFor(t, peerCert, peerKey, map[string][]byte{"inventory-owner": selfCert}))
+	_, mux := emSurface(ex, owner)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = owner.ServerTLSConfig()
+	srv.StartTLS()
+	defer srv.Close()
+	cfg, _ := caller.ClientTLSConfig("inventory-owner")
+	transport := &http.Transport{TLSClientConfig: cfg}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(srv.URL + modelsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Models []string          `json:"models"`
+		Errors map[string]string `json:"downloadErrorsByEngine"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || resp.StatusCode != http.StatusOK || len(body.Models) != 1 || body.Errors["llamacpp"] != "cache_unavailable" || len(body.Errors) != 1 {
+		t.Fatalf("cache error failed pinned HTTP inventory: status=%d body=%+v err=%v", resp.StatusCode, body, err)
 	}
 }
 

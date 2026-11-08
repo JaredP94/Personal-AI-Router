@@ -77,8 +77,9 @@ type EnrichedNode struct {
 	// (normally a subset of ModelsByEngine), enriched by the daemon from the
 	// peer's engine-manager /v1/models loadedByEngine field. Carried through to
 	// AvailableNode so a remote node's cards can reflect loaded state.
-	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
-	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	LoadedByEngine         map[string][]string                  `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine     map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	DownloadErrorsByEngine map[string]string                    `json:"downloadErrorsByEngine,omitempty"`
 	// EngineNative is the engine's own report of itself: the counters, the
 	// rates and the models it lists as active, as the engine published them.
 	// Enriched by the daemon from the node's engine-manager
@@ -114,25 +115,26 @@ func directoryToEnriched(n noderec.DirectoryNode) EnrichedNode {
 		port = ni.Port
 	}
 	return EnrichedNode{
-		ID:                   n.Name,
-		HostUUID:             n.HostUUID,
-		Host:                 n.Name,
-		Port:                 port,
-		Addresses:            addrs,
-		TXT:                  txt,
-		GPUs:                 n.GPUs,
-		CPU:                  n.CPU,
-		Memory:               n.Memory,
-		Trusted:              n.Trusted,
-		PeerRecordID:         n.PeerRecordID,
-		IdentityVerification: n.IdentityVerification,
-		ClusterUUID:          n.ClusterUUID,
-		Clustered:            n.Clustered(),
-		Models:               n.Models,
-		ModelsByEngine:       n.ModelsByEngine,
-		LoadedByEngine:       n.LoadedByEngine,
-		DownloadedByEngine:   n.DownloadedByEngine,
-		EngineNative:         n.EngineNative,
+		ID:                     n.Name,
+		HostUUID:               n.HostUUID,
+		Host:                   n.Name,
+		Port:                   port,
+		Addresses:              addrs,
+		TXT:                    txt,
+		GPUs:                   n.GPUs,
+		CPU:                    n.CPU,
+		Memory:                 n.Memory,
+		Trusted:                n.Trusted,
+		PeerRecordID:           n.PeerRecordID,
+		IdentityVerification:   n.IdentityVerification,
+		ClusterUUID:            n.ClusterUUID,
+		Clustered:              n.Clustered(),
+		Models:                 n.Models,
+		ModelsByEngine:         n.ModelsByEngine,
+		LoadedByEngine:         n.LoadedByEngine,
+		DownloadedByEngine:     n.DownloadedByEngine,
+		DownloadErrorsByEngine: n.DownloadErrorsByEngine,
+		EngineNative:           n.EngineNative,
 	}
 }
 
@@ -355,7 +357,7 @@ func enrichedNodeEqual(a, b EnrichedNode) bool {
 			return false
 		}
 	}
-	if !reflect.DeepEqual(a.DownloadedByEngine, b.DownloadedByEngine) {
+	if !reflect.DeepEqual(a.DownloadedByEngine, b.DownloadedByEngine) || !reflect.DeepEqual(a.DownloadErrorsByEngine, b.DownloadErrorsByEngine) {
 		return false
 	}
 	if len(a.LoadedByEngine) != len(b.LoadedByEngine) {
@@ -419,22 +421,23 @@ func (sn storedNode) toAvailable() AvailableNode {
 		hostUUID = n.storeKey()
 	}
 	return AvailableNode{
-		PeerRecordID:         n.PeerRecordID,
-		IdentityVerification: n.IdentityVerification,
-		ID:                   n.ID,
-		Name:                 n.ID,
-		HostUUID:             hostUUID,
-		IPAddress:            primary,
-		IPAddresses:          candidates,
-		Port:                 n.Port,
-		LastSeen:             sn.lastSeen.Unix(),
-		Trusted:              n.Trusted,
-		Clustered:            n.Clustered,
-		Models:               n.Models,
-		ModelsByEngine:       n.ModelsByEngine,
-		LoadedByEngine:       n.LoadedByEngine,
-		DownloadedByEngine:   n.DownloadedByEngine,
-		EngineNative:         n.EngineNative,
+		PeerRecordID:           n.PeerRecordID,
+		IdentityVerification:   n.IdentityVerification,
+		ID:                     n.ID,
+		Name:                   n.ID,
+		HostUUID:               hostUUID,
+		IPAddress:              primary,
+		IPAddresses:            candidates,
+		Port:                   n.Port,
+		LastSeen:               sn.lastSeen.Unix(),
+		Trusted:                n.Trusted,
+		Clustered:              n.Clustered,
+		Models:                 n.Models,
+		ModelsByEngine:         n.ModelsByEngine,
+		LoadedByEngine:         n.LoadedByEngine,
+		DownloadedByEngine:     n.DownloadedByEngine,
+		DownloadErrorsByEngine: n.DownloadErrorsByEngine,
+		EngineNative:           n.EngineNative,
 	}
 }
 
@@ -730,6 +733,7 @@ func (s *scannerProcess) handleNotify(method string, params json.RawMessage) {
 			}
 			ev.Node.Models, ev.Node.ModelsByEngine, ev.Node.LoadedByEngine = nil, nil, nil
 			ev.Node.DownloadedByEngine = nil
+			ev.Node.DownloadErrorsByEngine = nil
 			ev.Node.EngineNative = nil
 		}
 		if s.store != nil && method != noderec.NotifyNodeRemoved && ev.Node.ServicePeer() {

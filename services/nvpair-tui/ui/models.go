@@ -17,9 +17,10 @@ import (
 // modelSnapshot preserves map-key presence: a missing engine is unavailable,
 // whereas a present empty list is a known empty inventory.
 type modelSnapshot struct {
-	ModelsByEngine     map[string][]string     `json:"modelsByEngine"`
-	LoadedByEngine     map[string][]string     `json:"loadedByEngine"`
-	DownloadedByEngine map[string][]llamaModel `json:"downloadedByEngine"`
+	ModelsByEngine         map[string][]string     `json:"modelsByEngine"`
+	LoadedByEngine         map[string][]string     `json:"loadedByEngine"`
+	DownloadedByEngine     map[string][]llamaModel `json:"downloadedByEngine"`
+	DownloadErrorsByEngine map[string]string       `json:"downloadErrorsByEngine,omitempty"`
 }
 
 type modelsPane struct {
@@ -101,6 +102,7 @@ func peerInventory(node string, nodes []availableNode) modelSnapshot {
 			inventory := modelSnapshot{ModelsByEngine: n.ModelsByEngine, LoadedByEngine: n.LoadedByEngine}
 			if n.IdentityVerification == "verified" && n.Trusted && n.PeerRecordID != "" {
 				inventory.DownloadedByEngine = n.DownloadedByEngine
+				inventory.DownloadErrorsByEngine = n.DownloadErrorsByEngine
 			}
 			return inventory
 		}
@@ -199,6 +201,9 @@ func (v *enginesView) modelsView() string {
 		}
 		if v.models.err != nil {
 			return out + statusErrStyle.Render(v.models.err.Error())
+		}
+		if !v.models.catalog && v.models.inventory.DownloadErrorsByEngine["llamacpp"] == "cache_unavailable" {
+			return out + footerStyle.Render("Couldn't read llama.cpp's downloaded models")
 		}
 		if len(v.models.llama) == 0 {
 			return out + footerStyle.Render("No models")

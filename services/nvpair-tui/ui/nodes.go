@@ -30,11 +30,12 @@ type availableNode struct {
 	// to some cluster (advertises a cluster-uuid), whether or not we're paired
 	// with it. Either one makes it non-invitable — an already-clustered peer
 	// rejects a fresh pairing (it must leave/be removed first).
-	Trusted            bool                    `json:"trusted"`
-	Clustered          bool                    `json:"clustered"`
-	ModelsByEngine     map[string][]string     `json:"modelsByEngine"`
-	LoadedByEngine     map[string][]string     `json:"loadedByEngine"`
-	DownloadedByEngine map[string][]llamaModel `json:"downloadedByEngine"`
+	Trusted                bool                    `json:"trusted"`
+	Clustered              bool                    `json:"clustered"`
+	ModelsByEngine         map[string][]string     `json:"modelsByEngine"`
+	LoadedByEngine         map[string][]string     `json:"loadedByEngine"`
+	DownloadedByEngine     map[string][]llamaModel `json:"downloadedByEngine"`
+	DownloadErrorsByEngine map[string]string       `json:"downloadErrorsByEngine,omitempty"`
 }
 
 // key is the node's stable identity (hostUuid) for cluster actions; the name

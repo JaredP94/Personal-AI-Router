@@ -220,11 +220,12 @@ type ManualNodeStatus struct {
 	// keys on. Empty when node-info didn't report one.
 	HostUUID string `json:"hostUuid,omitempty"`
 	// ClusterUUID is the remote node's cluster principal.
-	ClusterUUID        string                               `json:"clusterUuid,omitempty"`
-	Models             []string                             `json:"models,omitempty"`
-	ModelsByEngine     map[string][]string                  `json:"modelsByEngine,omitempty"`
-	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
-	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	ClusterUUID            string                               `json:"clusterUuid,omitempty"`
+	Models                 []string                             `json:"models,omitempty"`
+	ModelsByEngine         map[string][]string                  `json:"modelsByEngine,omitempty"`
+	LoadedByEngine         map[string][]string                  `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine     map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	DownloadErrorsByEngine map[string]string                    `json:"downloadErrorsByEngine,omitempty"`
 	// EngineNative is the remote engine's own report of itself: the
 	// counters, the rates and the active models the node's engine-manager
 	// publishes at GET /v1/engine-stats. It is read over the same transport
@@ -847,43 +848,44 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		verification = "verified"
 	}
 	newStatus := ManualNodeStatus{
-		Kind:                 entry.Kind,
-		FromCluster:          fromCluster,
-		IdentityVerification: verification,
-		PeerRecordID:         info.PeerRecordID,
-		PeerMetadata:         info.PeerMetadata,
-		ID:                   id,
-		Name:                 entry.Name,
-		Address:              addr,
-		OllamaUp:             ollamaUp,
-		OllamaPort:           11434,
-		OllamaModels:         ollamaModels,
-		LMStudioUp:           lmStudioUp,
-		LMStudioPort:         lmStudioPort,
-		LMStudioModels:       lmStudioModels,
-		OMLXUp:               omlxUp,
-		LlamaCPPUp:           llamacppUp,
-		OMLXPort:             omlxPort,
-		LlamaCPPPort:         llamacppPort,
-		OMLXModels:           omlxModels,
-		LlamaCPPModels:       llamacppModels,
-		NodeInfoUp:           nodeInfoUp,
-		NodeInfoPort:         nodeInfoPort,
-		TLSEnabled:           entry.TLSPort > 0,
-		MTLSRequired:         entry.TLSPort > 0 && entry.MTLS,
-		GPUs:                 info.GPUs,
-		CPU:                  info.CPU,
-		Memory:               info.Memory,
-		TelemetryValid:       info.TelemetryValid,
-		MSSince:              msSince,
-		SampleSeq:            info.SampleSeq,
-		HostUUID:             info.HostUUID,
-		ClusterUUID:          clusterUUID,
-		Models:               finalModels,
-		ModelsByEngine:       finalModelsByEngine,
-		LoadedByEngine:       finalLoadedByEngine,
-		DownloadedByEngine:   emRes.DownloadedByEngine,
-		EngineNative:         engineNative,
+		Kind:                   entry.Kind,
+		FromCluster:            fromCluster,
+		IdentityVerification:   verification,
+		PeerRecordID:           info.PeerRecordID,
+		PeerMetadata:           info.PeerMetadata,
+		ID:                     id,
+		Name:                   entry.Name,
+		Address:                addr,
+		OllamaUp:               ollamaUp,
+		OllamaPort:             11434,
+		OllamaModels:           ollamaModels,
+		LMStudioUp:             lmStudioUp,
+		LMStudioPort:           lmStudioPort,
+		LMStudioModels:         lmStudioModels,
+		OMLXUp:                 omlxUp,
+		LlamaCPPUp:             llamacppUp,
+		OMLXPort:               omlxPort,
+		LlamaCPPPort:           llamacppPort,
+		OMLXModels:             omlxModels,
+		LlamaCPPModels:         llamacppModels,
+		NodeInfoUp:             nodeInfoUp,
+		NodeInfoPort:           nodeInfoPort,
+		TLSEnabled:             entry.TLSPort > 0,
+		MTLSRequired:           entry.TLSPort > 0 && entry.MTLS,
+		GPUs:                   info.GPUs,
+		CPU:                    info.CPU,
+		Memory:                 info.Memory,
+		TelemetryValid:         info.TelemetryValid,
+		MSSince:                msSince,
+		SampleSeq:              info.SampleSeq,
+		HostUUID:               info.HostUUID,
+		ClusterUUID:            clusterUUID,
+		Models:                 finalModels,
+		ModelsByEngine:         finalModelsByEngine,
+		LoadedByEngine:         finalLoadedByEngine,
+		DownloadedByEngine:     emRes.DownloadedByEngine,
+		DownloadErrorsByEngine: emRes.DownloadErrorsByEngine,
+		EngineNative:           engineNative,
 	}
 
 	if nodeInfoUp {
@@ -960,6 +962,7 @@ func (m *Manager) probeNode(entry ManualEntry) {
 		!mapsEqual(prev.ModelsByEngine, newStatus.ModelsByEngine) ||
 		!mapsEqual(prev.LoadedByEngine, newStatus.LoadedByEngine) ||
 		!reflect.DeepEqual(prev.DownloadedByEngine, newStatus.DownloadedByEngine) ||
+		!reflect.DeepEqual(prev.DownloadErrorsByEngine, newStatus.DownloadErrorsByEngine) ||
 		!gpusEqual(prev.GPUs, newStatus.GPUs) ||
 		!cpuEqual(prev.CPU, newStatus.CPU) ||
 		!memoryEqual(prev.Memory, newStatus.Memory) ||
@@ -1032,10 +1035,11 @@ const (
 )
 
 type engineManagerModels struct {
-	Models             []string                             `json:"models"`
-	ModelsByEngine     map[string][]string                  `json:"modelsByEngine"`
-	LoadedByEngine     map[string][]string                  `json:"loadedByEngine"`
-	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	Models                 []string                             `json:"models"`
+	ModelsByEngine         map[string][]string                  `json:"modelsByEngine"`
+	LoadedByEngine         map[string][]string                  `json:"loadedByEngine"`
+	DownloadedByEngine     map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	DownloadErrorsByEngine map[string]string                    `json:"downloadErrorsByEngine,omitempty"`
 }
 
 // engineNativeDue reports whether this node's engine view is due for a fresh

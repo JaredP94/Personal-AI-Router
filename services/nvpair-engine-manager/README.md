@@ -14,6 +14,14 @@ This cache list is available while stopped and remains separate from served
 limited to 4096 entries and uses the existing bounded inventory response.
 Scanner enrichment and verified manual peers carry it over pinned cluster mTLS;
 the broker preserves it in discovery snapshots. Unverified previews receive none.
+A cache-validation/read failure does not fail the served inventory: HTTP remains
+200 and `engine:models` still returns all served/loaded engine models.
+`downloadErrorsByEngine: {"llamacpp":"cache_unavailable"}` reports that the
+llama.cpp cache is unknown (its downloaded list is omitted). This fixed public
+code never contains paths or underlying error text. Manual-node updates and
+scanner/broker discovery snapshots preserve it separately from engine liveness;
+a successful cache read clears it. Genuine whole-inventory failures still fail
+the HTTP request with 503 and retain their existing consumer behavior.
 Deletion reuses `engine:remote-delete-model` and authenticated ec
 `POST /v1/models/delete`, ending in engine-manager's identity-checked
 `delete_model`. Unrecorded files are not deletable; a running/busy llama.cpp

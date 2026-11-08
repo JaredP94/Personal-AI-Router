@@ -62,7 +62,7 @@ func TestClaimedPinnedPrincipalCannotPublishServiceInventory(t *testing.T) {
 
 // secureInventoryFixture uses real mutually pinned cluster leaves and listeners;
 // no synthetic TLS state or mock transport can accidentally confer provenance.
-func secureInventoryFixture(t *testing.T, principal string) (*daemon, *httptest.Server, *atomic.Bool) {
+func secureInventoryFixture(t *testing.T, principal string, configure ...func(string)) (*daemon, *httptest.Server, *atomic.Bool) {
 	t.Helper()
 	selfDir, peerDir := t.TempDir(), t.TempDir()
 	clustertrusttest.WriteKeypair(t, selfDir, "uuid-self")
@@ -71,6 +71,9 @@ func secureInventoryFixture(t *testing.T, principal string) (*daemon, *httptest.
 	clustertrusttest.WriteAdmission(t, peerDir, "cluster-test", 1)
 	writePinFromCert(t, selfDir, principal, filepath.Join(peerDir, "node.crt"))
 	writePinFromCert(t, peerDir, "uuid-self", filepath.Join(selfDir, "node.crt"))
+	for _, setup := range configure {
+		setup(peerDir)
+	}
 	mesh := clustertrust.Open(peerDir)
 	d := newSelfTestDaemon("uuid-self", "192.0.2.1")
 	d.mesh = clustertrust.Open(selfDir)

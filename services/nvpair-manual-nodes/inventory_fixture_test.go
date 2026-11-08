@@ -49,11 +49,13 @@ func bindTestManager(t *testing.T, m *Manager) {
 // pin. Node-info advertises this same authenticated endpoint for both services.
 // Payloads are supplied through rt so tests can change availability between reads.
 type inventoryPeer struct {
-	entry     ManualEntry
-	server    *httptest.Server
-	principal string
-	polls     chan string
-	newConns  atomic.Int32
+	entry      ManualEntry
+	server     *httptest.Server
+	principal  string
+	clusterDir string
+	enginePort int
+	polls      chan string
+	newConns   atomic.Int32
 }
 
 func newInventoryPeer(t *testing.T, m *Manager, rt *fakeRoundTripper, alias, principal string) *inventoryPeer {
@@ -66,7 +68,7 @@ func newInventoryPeer(t *testing.T, m *Manager, rt *fakeRoundTripper, alias, pri
 	writePinFromCert(t, peerDir, "uuid-self", filepath.Join(selfDir, "node.crt"))
 	m.mesh = clustertrust.Open(selfDir)
 	peerMesh := clustertrust.Open(peerDir)
-	p := &inventoryPeer{principal: principal, polls: make(chan string, 64)}
+	p := &inventoryPeer{principal: principal, clusterDir: peerDir, polls: make(chan string, 64)}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := peerMesh.VerifyClientPin(r); !ok {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -96,9 +98,13 @@ func newInventoryPeer(t *testing.T, m *Manager, rt *fakeRoundTripper, alias, pri
 			}
 			info.HostUUID = principal
 			info.ClusterUUID = &p.principal
+			emPort := p.entry.TLSPort
+			if p.enginePort != 0 {
+				emPort = p.enginePort
+			}
 			info.PeerMetadata = &noderec.PeerMetadataParams{HostUUID: principal, Services: map[noderec.ServiceKey]int{
 				noderec.ServiceNodeInfo:      p.entry.TLSPort,
-				noderec.ServiceEngineManager: p.entry.TLSPort,
+				noderec.ServiceEngineManager: emPort,
 				noderec.ServiceOllama:        11434,
 				noderec.ServiceLMStudio:      1234,
 				noderec.ServiceOMLX:          1236,

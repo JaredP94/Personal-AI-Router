@@ -125,8 +125,9 @@ type AvailableNode struct {
 	// peer's engine-manager /v1/models loadedByEngine field. Lets a per-engine
 	// consumer show which of a remote node's models are loaded. Omitted
 	// when no engine reports loaded state.
-	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
-	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	LoadedByEngine         map[string][]string                  `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine     map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	DownloadErrorsByEngine map[string]string                    `json:"downloadErrorsByEngine,omitempty"`
 	// EngineNative is the engine's own report of itself: the counters, the
 	// rates and the models it lists as active, as the engine published them.
 	// Enriched by the daemon from the node's engine-manager

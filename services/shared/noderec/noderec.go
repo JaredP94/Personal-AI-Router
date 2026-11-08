@@ -606,8 +606,9 @@ type DirectoryNode struct {
 	// model cards can reflect loaded state too. An engine key with an
 	// empty list means "running, nothing loaded"; a missing key means the peer
 	// didn't report loaded state for it. Omitted when the peer reports none.
-	LoadedByEngine     map[string][]string          `json:"loadedByEngine,omitempty"`
-	DownloadedByEngine map[string][]DownloadedModel `json:"downloadedByEngine,omitempty"`
+	LoadedByEngine         map[string][]string          `json:"loadedByEngine,omitempty"`
+	DownloadedByEngine     map[string][]DownloadedModel `json:"downloadedByEngine,omitempty"`
+	DownloadErrorsByEngine map[string]string            `json:"downloadErrorsByEngine,omitempty"`
 	// EngineNative is the engine's own report of itself: the counters, the
 	// rates and the models it lists as active, as the engine published them.
 	// Enriched from engine-manager's em /v1/engine-stats, over the same

@@ -42,10 +42,13 @@ const modelsTimeout = 5 * time.Second
 // ByEngine/Models entry until the next successful sweep. Its own omitempty drops
 // the whole map when no engine reports loaded state.
 type ModelsResult struct {
-	DownloadedByEngine map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
-	Models             []string                             `json:"models"`
-	ByEngine           map[string][]string                  `json:"modelsByEngine,omitempty"`
-	LoadedByEngine     map[string][]string                  `json:"loadedByEngine,omitempty"`
+	// DownloadErrorsByEngine contains bounded public codes, never filesystem errors.
+	// Cache failures do not affect served inventory or engine liveness.
+	DownloadErrorsByEngine map[string]string                    `json:"downloadErrorsByEngine,omitempty"`
+	DownloadedByEngine     map[string][]noderec.DownloadedModel `json:"downloadedByEngine,omitempty"`
+	Models                 []string                             `json:"models"`
+	ByEngine               map[string][]string                  `json:"modelsByEngine,omitempty"`
+	LoadedByEngine         map[string][]string                  `json:"loadedByEngine,omitempty"`
 }
 
 // Models returns the union of model names served by every installed, running
@@ -208,20 +211,21 @@ func (e *Executor) modelsResult(ctx context.Context) (ModelsResult, error) {
 	// separate from served models: proxies use the latter to choose owners.
 	if _, err := e.state("llamacpp"); err == nil {
 		raw, err := e.listLlamaModels(ctx)
-		if err != nil {
-			return res, err
-		}
 		var cache struct {
 			Models []llamaOwnedModel `json:"models"`
 		}
-		if err := json.Unmarshal(raw, &cache); err != nil {
-			return res, err
+		if err == nil {
+			err = json.Unmarshal(raw, &cache)
 		}
-		rows := make([]noderec.DownloadedModel, 0, len(cache.Models))
-		for _, model := range cache.Models {
-			rows = append(rows, noderec.DownloadedModel{ID: model.ID, File: model.File, Size: model.Size, SHA256: model.SHA256, Owned: model.SHA256 != ""})
+		if err != nil {
+			res.DownloadErrorsByEngine = map[string]string{"llamacpp": "cache_unavailable"}
+		} else {
+			rows := make([]noderec.DownloadedModel, 0, len(cache.Models))
+			for _, model := range cache.Models {
+				rows = append(rows, noderec.DownloadedModel{ID: model.ID, File: model.File, Size: model.Size, SHA256: model.SHA256, Owned: model.SHA256 != ""})
+			}
+			res.DownloadedByEngine = map[string][]noderec.DownloadedModel{"llamacpp": rows}
 		}
-		res.DownloadedByEngine = map[string][]noderec.DownloadedModel{"llamacpp": rows}
 	}
 	if err := ctx.Err(); err != nil {
 		return res, err

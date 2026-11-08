@@ -12,6 +12,42 @@ import (
 
 const llamaPeerInventory = `[{"hostUuid":"peer-uuid","name":"GPU-box","trusted":true,"identityVerification":"verified","peerRecordId":"proof","modelsByEngine":{"llamacpp":["served-only"]},"downloadedByEngine":{"llamacpp":[{"id":"ggml-org/Demo:Q4_K_M","file":"cache.gguf","size":42,"sha256":"verified","owned":true},{"id":"manual.gguf","file":"manual.gguf","size":24,"owned":false}]}}]`
 
+func TestLlamaPeerCacheErrorIsEngineScoped(t *testing.T) {
+	v, c := engineWire(t)
+	switchEnginePeer(t, v, c)
+	modelEngine(v, "llamacpp")
+	v.table.SetCursor(len(v.order) - 1)
+	payload := strings.Replace(llamaPeerInventory, `"downloadedByEngine":`, `"downloadErrorsByEngine":{"llamacpp":"cache_unavailable"},"downloadedByEngine":`, 1)
+	payload = strings.Replace(payload, `"modelsByEngine":{`, `"modelsByEngine":{"ollama":["ollama-model"],"lmstudio":["lmstudio-model"],`, 1)
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "discovery:nodes-changed", Params: json.RawMessage(payload)}})
+	v.Update(engineKey("m"))
+	if !strings.Contains(v.modelsView(), "Couldn't read llama.cpp's downloaded models") {
+		t.Fatalf("missing cache error: %s", v.modelsView())
+	}
+	for _, name := range []string{"ollama", "lmstudio"} {
+		modelEngine(v, name)
+		for i, engine := range v.order {
+			if engine == name {
+				v.table.SetCursor(i)
+			}
+		}
+		v.refreshModels()
+		if view := v.modelsView(); strings.Contains(view, "Couldn't read llama.cpp") || !strings.Contains(view, name+"-model") {
+			t.Fatalf("cache error damaged %s view: %s", name, view)
+		}
+	}
+	modelEngine(v, "llamacpp")
+	for i, engine := range v.order {
+		if engine == "llamacpp" {
+			v.table.SetCursor(i)
+		}
+	}
+	v.Update(NotificationMsg{Msg: &rpc.Message{Method: "discovery:nodes-changed", Params: json.RawMessage(llamaPeerInventory)}})
+	if strings.Contains(v.modelsView(), "Couldn't read llama.cpp") {
+		t.Fatal("recovered cache retained error")
+	}
+}
+
 func TestLlamaPeerInstalledListAndDelete(t *testing.T) {
 	v, c := engineWire(t)
 	switchEnginePeer(t, v, c)
