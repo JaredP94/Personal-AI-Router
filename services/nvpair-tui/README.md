@@ -125,7 +125,8 @@ For the selected local engine, the Engines tab adds a note for each reported
 server or proxy port that differs from the configured port. It shows the running
 port and explains that PAIR will retry the configured port next start. Matching
 or unknown effective ports and stopped servers show no note; no fallback is
-offered for saving.
+offered for saving. The server-port editor uses the configured value, or starts
+empty if its settings snapshot has not arrived; it never suggests a runtime port.
 Peer engine status has only a single port, so these notes are local-only in the
 TUI; the desktop's paired-device settings panels receive both ports.
 

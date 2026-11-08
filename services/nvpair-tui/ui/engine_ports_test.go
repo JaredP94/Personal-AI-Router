@@ -36,6 +36,16 @@ func TestEngineEffectivePortsLoadAndOrdering(t *testing.T) {
 	}
 }
 
+func TestEnginePortEditorDoesNotSuggestUnknownConfiguredPort(t *testing.T) {
+	v := newEnginesView(nil)
+	v.SetSize(120, 30)
+	v.merge(engineStatus{Engine: "ollama", Port: 11501, Capabilities: engineCapabilities{SetPort: true}})
+	v.Update(engineKey("e"))
+	if v.input.Value() != "" {
+		t.Fatalf("editor suggested runtime port %s before configured settings arrived", v.input.Value())
+	}
+}
+
 func TestEnginePortEditorKeepsConfiguredPort(t *testing.T) {
 	v := newEnginesView(nil)
 	v.SetSize(120, 30)

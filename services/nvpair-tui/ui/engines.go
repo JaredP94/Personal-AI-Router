@@ -475,11 +475,10 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		v.portEngine = engine
 		v.editingPort = true
 		v.input.Placeholder = "engine server port (1–65535)"
-		port := v.byName[engine].Port
+		v.input.SetValue("")
 		if snapshot, ok := v.enginePorts[engine]; ok {
-			port = snapshot.Settings.ServerPort
+			v.input.SetValue(strconv.Itoa(snapshot.Settings.ServerPort))
 		}
-		v.input.SetValue(strconv.Itoa(port))
 		v.input.Focus()
 		return textinput.Blink
 	}
