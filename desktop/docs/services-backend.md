@@ -13,6 +13,13 @@ Personal AI Router does not reimplement backend behavior in TypeScript. Electron
 process startup, translates JSON-RPC into the stable frontend contract, and
 projects backend notifications into renderer state.
 
+Model inventory carries the additive `downloadErrorsByEngine` map through verified
+manual peers, scanner enrichment and broker discovery. The fixed llama.cpp code
+`cache_unavailable` becomes an engine-scoped `EngineModels.downloadError`; only
+llama.cpp's installed-models panel shows “Couldn't read llama.cpp's downloaded
+models”. No filesystem errors are displayed, no other engine is marked down,
+and the next successful cache read clears the message.
+
 ## Runtime ownership
 
 `nvpair-ui-broker` is the only backend process Electron starts directly. The

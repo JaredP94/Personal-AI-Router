@@ -17,6 +17,7 @@ import { noEngineCapabilities } from '@/shared/utils/engines'
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
 import { ModelHubModal } from '@/ui/components/ModelHub/ModelHubModal'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
+import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
@@ -50,11 +51,16 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         const node = state.nodes.get(nodeId)
         return !!node && isPairPeer(node)
     })
+    const downloadError = useEngineModelsStore(
+        state => state.models.get(`${nodeId}:${backend.type}`)?.downloadError
+    )
     const eligible = local || peer
     const installed = useLlamaInstalledModels(
         nodeId,
         backend.type === 'llamacpp' && local && reported.listModels
     )
+    const hasDownloadError =
+        backend.type === 'llamacpp' && !!(local ? installed.error : downloadError)
     const sourceModels: ModelItem[] =
         backend.type === 'llamacpp' && local
             ? installed.models.map(model => ({
@@ -276,9 +282,9 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         <Stack gap="4">
             {backendType === 'llamacpp' && (
                 <>
-                    {installed.error && (
-                        <Text kind="body/regular/sm" role="alert">
-                            {installed.error}
+                    {hasDownloadError && (
+                        <Text kind="body/regular/sm" role="status">
+                            {"Couldn't read llama.cpp's downloaded models"}
                         </Text>
                     )}
                     {local && (
@@ -335,6 +341,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             {!isBusy && (
                 <>
                     {reported.listModels &&
+                        !hasDownloadError &&
                         (isRunning || modelOpsWhenStopped) &&
                         models.length === 0 &&
                         incomingSyncs.length === 0 && (

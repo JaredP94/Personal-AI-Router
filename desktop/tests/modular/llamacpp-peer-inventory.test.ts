@@ -68,6 +68,47 @@ describe('llama.cpp verified peer installed inventory', () => {
         expect(models()).toEqual([])
     })
 
+    it('projects cache errors only onto llama.cpp and clears them on recovery', () => {
+        const state = getModularBridgeState()
+        const node = {
+            hostUuid: 'cache-error-peer',
+            peerRecordId: 'proof',
+            identityVerification: 'verified',
+            trusted: true,
+            name: 'Peer',
+            ipAddress: '192.0.2.91',
+            port: 14318,
+            modelsByEngine: { ollama: ['ollama-model'], lmstudio: ['lmstudio-model'] },
+            downloadErrorsByEngine: { llamacpp: 'cache_unavailable' }
+        }
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: { nodes: [node] }
+        })
+        const rows = () =>
+            state.getEngineInitialState().models.filter(row => row.nodeId === node.hostUuid)
+        expect(rows().find(row => row.engineType === 'llamacpp')).toMatchObject({
+            downloadError: "Couldn't read llama.cpp's downloaded models"
+        })
+        expect(rows().find(row => row.engineType === 'ollama')).toMatchObject({
+            models: [{ name: 'ollama-model' }]
+        })
+        expect(rows().find(row => row.engineType === 'lm-studio')).toMatchObject({
+            models: [{ name: 'lmstudio-model' }]
+        })
+        for (const row of rows().filter(row => row.engineType !== 'llamacpp'))
+            expect(row).not.toHaveProperty('downloadError')
+        state.handleNotification({
+            source: 'broker',
+            method: 'discovery:nodes-changed',
+            params: { nodes: [{ ...node, downloadErrorsByEngine: {} }] }
+        })
+        expect(rows().find(row => row.engineType === 'llamacpp')).toMatchObject({
+            downloadError: undefined
+        })
+    })
+
     it('never projects cache inventory from an unverified preview', () => {
         const state = getModularBridgeState()
         state.handleNotification({

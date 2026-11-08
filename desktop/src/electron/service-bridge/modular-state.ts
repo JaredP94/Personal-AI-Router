@@ -197,6 +197,7 @@ interface ModularNode extends NodeRecordIdentity {
     // empty object means no successful attribution (or a peer that predates
     // per-engine attribution) and falls back to {@link models}. Mirrors
     // noderec.DirectoryNode.EngineModels.
+    downloadError: string | undefined
     downloadedByEngine: Record<
         string,
         { id: string; file: string; size: number; sha256: string; owned: boolean }[]
@@ -1323,6 +1324,7 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // proxy-sourced node contributes engine presence only, never models.
         models: [],
         modelsByEngine: {},
+        downloadError: undefined,
         downloadedByEngine: {},
         // A proxy `node/*` event carries no loaded-model state either; the
         // broker-enriched value is preserved across the proxy merge (see mergeNode).
@@ -1421,6 +1423,12 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // peer that predates per-engine attribution) drives the
         // {@link modelsForEngine} fallback to the flat union.
         modelsByEngine: parseModelsByEngine(obj.modelsByEngine),
+        downloadError:
+            (identity.identityVerification === 'verified' ||
+                identity.identityVerification === 'local') &&
+            objectValue(obj.downloadErrorsByEngine)?.llamacpp === 'cache_unavailable'
+                ? "Couldn't read llama.cpp's downloaded models"
+                : undefined,
         downloadedByEngine:
             identity.identityVerification === 'verified' ||
             identity.identityVerification === 'local'
@@ -1487,6 +1495,7 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         sameTelemetry(left, right.gpus, right.cpu, right.memory, right.inferenceHardwareIds) &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
+        left.downloadError === right.downloadError &&
         JSON.stringify(left.downloadedByEngine) === JSON.stringify(right.downloadedByEngine) &&
         // A residency-only change (a model loaded/evicted with the installed set
         // unchanged) must still count as a node change so the loaded dot updates.
@@ -2711,6 +2720,7 @@ class ModularBridgeState {
         return {
             engineType: engine,
             nodeId: node.id,
+            ...(engine === 'llamacpp' ? { downloadError: node.downloadError } : {}),
             models:
                 engine === 'llamacpp'
                     ? (node.downloadedByEngine.llamacpp ?? []).map(model => ({
@@ -3361,6 +3371,7 @@ class ModularBridgeState {
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
             downloadedByEngine: existing.downloadedByEngine,
+            downloadError: existing.downloadError,
             loadedByEngine: existing.loadedByEngine,
             // A proxy event carries no engine-native view; keep the
             // broker-enriched one we already merged.

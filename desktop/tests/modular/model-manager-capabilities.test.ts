@@ -10,6 +10,7 @@ import type { BackendInfo, ModelItem } from '@/ui/types/engine-info'
 import { ModelManager } from '@/ui/components/ModelManager/ModelManager'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
 import type { EngineProgress } from '@/shared/types/engines'
+import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
@@ -73,7 +74,8 @@ function render(
     engineType: EngineType = 'lm-studio',
     downloaded = true,
     processStatus: EngineProcessStatus = 'running',
-    digest = ''
+    digest = '',
+    models: ModelItem[] = [{ ...MODEL, downloaded, digest }]
 ): void {
     const backend: BackendInfo = {
         type: engineType,
@@ -82,7 +84,7 @@ function render(
         processStatus,
         port: 1234,
         proxyPort: 54301,
-        models: [{ ...MODEL, downloaded, digest }]
+        models
     }
     act(() => root.render(createElement(ModelManager, { backend, nodeId })))
 }
@@ -134,9 +136,41 @@ describe('ModelManager reported capability gates', () => {
         Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
         useEngineStatusStore.setState({ statusByNode: new Map() })
         useEngineProgressStore.setState({ progress: new Map() })
+        useEngineModelsStore.setState({ models: new Map() })
         useConnectionStore.setState({ connected: false, selfId: null })
         useNodesStore.setState({ nodes: new Map() })
         vi.unstubAllGlobals()
+    })
+
+    it('shows a peer cache error calmly on llama.cpp only', () => {
+        report('peer', 'llamacpp', supported)
+        act(() =>
+            useEngineModelsStore.setState({
+                models: new Map([
+                    [
+                        'peer:llamacpp',
+                        {
+                            nodeId: 'peer',
+                            engineType: 'llamacpp',
+                            models: [],
+                            downloadError: "Couldn't read llama.cpp's downloaded models"
+                        }
+                    ]
+                ])
+            })
+        )
+        render('peer', 'llamacpp', true, 'stopped', '', [])
+        expect(container.textContent).toContain("Couldn't read llama.cpp's downloaded models")
+        expect(container.textContent).not.toContain('No model/weight files downloaded')
+        report('peer', 'lm-studio', supported)
+        render('peer', 'lm-studio')
+        expect(container.textContent).not.toContain("Couldn't read llama.cpp's downloaded models")
+        expect(container.textContent).toContain('demo')
+        report('peer', 'llamacpp', supported)
+        render('peer', 'llamacpp', true, 'stopped', '', [])
+        act(() => useEngineModelsStore.setState({ models: new Map() }))
+        expect(container.textContent).not.toContain("Couldn't read llama.cpp's downloaded models")
+        expect(container.textContent).toContain('No model/weight files downloaded')
     })
 
     it('refreshes the stopped llama.cpp installed list only after deletion finishes', async () => {
