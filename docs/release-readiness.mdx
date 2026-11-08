@@ -5,41 +5,129 @@ SPDX-License-Identifier: Apache-2.0
 
 # Next Release Readiness
 
-This is the follow-up checklist from the 2026-10-17 documentation/dependency
-notice audit. It describes the current checkout, not a certification of the next
-release. No release was published and no installed app was replaced by this
-audit.
+The next planned fork release is **0.10.0**. This checklist describes source
+changes since `v0.9.0` through `877e99f` (fork PRs #55–#67), not a released
+artifact. Release numbering, packaging and publication are separate work; this
+documentation update changes no versions or installed applications. Historical
+validation and maintenance notes below remain evidence only for their stated
+builds and dates.
 
-## Unreleased llama.cpp routing
+## Included in 0.10.0
 
-The current source adds `llamacpp-proxy` (default port 1237, engine 8082,
-service `lc`): **13 supervised workers / 15 executables**. The broker, desktop
-and TUI inventories, build/install lists and contract documentation include it.
-Native b12171 Messages passthrough and exact-ID model routing are supported;
-the Go model hub provides catalog/download/cancel/delete. Desktop and TUI now
-expose publisher-grouped/sorted catalog browsing, bounded search errors,
-installed local models, tracked downloads/cancel, stopped-engine owned deletion
-and previewed startup model/router-mode selection. TUI retains the existing
-unreleased **1.4.0** minor bump relative to v0.9.0's **1.3.0**.
-The new hub uses fixture/local-server and client tests, not live model downloads
-or packaged certification.
+- **Fourth engine: llama.cpp** (#60–#64): SHA-256-pinned b12171 install for
+  macOS arm64, preserving its checked ad-hoc signatures; it is not notarized.
+  Default engine listener `127.0.0.1:8082`, dedicated `llamacpp-proxy` on
+  **1237**, exact catalog-ID routing and native Messages passthrough. The
+  inventory is now **13 supervised workers / 15 executables**, including the
+  unsupervised TUI. Model selection is confined to PAIR's cache.
+- **Go-owned model management** (#62–#64): publisher-grouped catalog, public
+  search, SHA-256/size/GGUF-checked downloads, asynchronous cancel and owned
+  deletion. Desktop and TUI show installed files locally and on verified peers,
+  including while stopped. Unrecorded files are not PAIR-deletable. Catalog
+  scope is public, ungated, single-file Q4_K_M text-generation models only.
+  Startup-model/router-mode pickers remain local; desktop peer Settings
+  arguments can select a known installed catalog ID. A llama.cpp cache error
+  stays engine-scoped instead of withdrawing other engines' healthy inventory.
+- **Peer reachability and discovery** (#55, #58, #66): durable address hints
+  learned only from pin-verified sources, bounded scanner startup grace,
+  retries after partial mDNS receive setup, and independent verified-peer
+  records that same-UUID lookalike advertisements cannot hide. These are not
+  guarantees of recovery after every address is lost or unlimited LAN flooding.
+- **Engine and IPC reliability** (#56–#59): stale oMLX launcher detection,
+  SHA-256-pinned fresh Ollama v0.40.15 installs, ordered bounded JSON-RPC
+  writes, oMLX process-exit confirmation when its PID is known, and Windows
+  kill-on-close jobs for owned processes (vendor-managed daemons stay
+  independent). #58 restores four previously reviewed commits, including the
+  opt-in stop policy and lifecycle test synchronization/cleanup. Status races
+  and fake-engine fixture cleanup are fixed; FreeBSD compilation is not runtime
+  support.
+- **Saved versus running ports** (#61, #65, #67): fallback selection keeps a
+  usable saved/own proxy port eligible while reserving other engines' and
+  services' ports; observed fallbacks do not overwrite saved ports/revisions.
+  Desktop local/verified-peer and TUI local settings show neutral running-port
+  notes. llama.cpp peer settings updates now stay live. Previously overwritten
+  saved choices are not reconstructed automatically.
 
-Verified-peer installed-list/delete parity now reuses the existing pinned-mTLS
-engine inventory, scanner/manual enrichment and broker discovery relay.
-Desktop and TUI show cache IDs/file names, size and ownership; unrecorded files
-cannot be deleted. Remote owned deletion retains the identity/running guards
-and visible refusal reasons. Previews receive none. Startup dropdowns remain
-local (as for the other engines); peer Settings arguments still accept a known
-installed catalog ID. Live-peer and packaged smoke testing remain release gates.
+See [Unreleased](../CHANGELOG.md#unreleased) for the user-facing notes and
+[known issues](known-issues.mdx#llamacpp-model-hub-limitations) for model limits.
+Runtime engine/model downloads are not bundled dependencies; their own terms
+apply. A checksum verifies bytes, not publisher trust or notarization.
 
-The license generator documents llama.cpp and models as runtime downloads,
-not bundled components; no unbundled engine/model was added to the dependency
-attribution manifest. Release smoke testing must cover macOS arm64 install,
-update/rollback, real model download/cancel/shutdown, checksum/disk-space/identity
-failures, selection/inference, stop/restart and owned deletion. The upstream
-binary remains unnotarized; the checksum does not certify publisher trust. Historical packaged-app evidence
-below predates this worker and does not certify its packaged or multi-node
-inference behavior. Validate those before release.
+## Automated validation by PR
+
+The following are the latest PR-head check results retrieved from GitHub, not
+claims that every original attempt passed. The six jobs cover SPDX, desktop,
+Go modules on Linux/macOS and cross-process tests on Linux/macOS. Earlier PR
+bodies sometimes retain pre-rerun results; the linked runs distinguish these.
+Neither hosted Unix CI nor local cross-vet establishes Windows runtime behavior.
+
+| PR | Latest PR-head CI run | Result |
+| --- | --- | --- |
+| [#55](https://github.com/JaredP94/Personal-AI-Router/pull/55) | [42202311657](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42202311657) | 5/6 passed; macOS Go modules cancelled |
+| [#56](https://github.com/JaredP94/Personal-AI-Router/pull/56) | [42223890513](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42223890513) | 6/6 passed |
+| [#57](https://github.com/JaredP94/Personal-AI-Router/pull/57) | [42209861891](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42209861891) | 6/6 passed |
+| [#58](https://github.com/JaredP94/Personal-AI-Router/pull/58) | [42231052487](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42231052487) | 5/6 passed; macOS Go modules cancelled |
+| [#59](https://github.com/JaredP94/Personal-AI-Router/pull/59) | [42254231449](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42254231449) | 6/6 passed |
+| [#60](https://github.com/JaredP94/Personal-AI-Router/pull/60) | [42377470781](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42377470781) | 6/6 passed |
+| [#61](https://github.com/JaredP94/Personal-AI-Router/pull/61) | [42393452547](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42393452547) | 6/6 passed |
+| [#62](https://github.com/JaredP94/Personal-AI-Router/pull/62) | [42412304611](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42412304611) | 6/6 passed |
+| [#63](https://github.com/JaredP94/Personal-AI-Router/pull/63) | [42417680880](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42417680880) | 6/6 passed |
+| [#64](https://github.com/JaredP94/Personal-AI-Router/pull/64) | [42459543208](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42459543208) | 6/6 passed |
+| [#65](https://github.com/JaredP94/Personal-AI-Router/pull/65) | [42419840583](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42419840583) | 6/6 passed |
+| [#66](https://github.com/JaredP94/Personal-AI-Router/pull/66) | [42456214803](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42456214803) | 6/6 passed |
+| [#67](https://github.com/JaredP94/Personal-AI-Router/pull/67) | [42464431790](https://github.com/JaredP94/Personal-AI-Router/actions/runs/42464431790) | 6/6 passed |
+
+These checks validate source/fixtures, not the final combined package or live
+multi-node inference. PR #60–#62 contain earlier local packaged smoke evidence
+with their own incomplete checks; that evidence does not certify #63–#67 or a
+0.10.0 artifact. The 2026-11-05 evidence below predates all these changes.
+
+## Live validation (pending)
+
+**Placeholder — no combined 0.10.0 live-validation result is recorded yet.**
+Before release, record the exact commit, package digest, macOS versions,
+machine architecture, method, observed results and anything not exercised.
+
+- [ ] Install the candidate packaged app on two backed-up macOS arm64 Macs;
+  verify upgrade/data retention, broker plus all 13 workers, app relaunch,
+  signatures/notarization status and restore/rollback procedure.
+- [ ] Through PAIR, install llama.cpp; download/cancel/retry a catalog model;
+  confirm size/checksum and catalog ID; run streaming/non-streaming inference
+  through port 1237 (chat and Messages); stop/restart, delete the owned model,
+  and uninstall while checking cache retention. Exercise failed integrity,
+  disk-space and identity checks without treating an error as cancellation.
+- [ ] In desktop and TUI, check verified-peer installed models, stopped-engine
+  owned deletion, running/unowned refusal, inventory refresh and cache-error
+  recovery; confirm the peer startup-picker limitation and settings updates.
+- [ ] Check the running-port note locally and on a verified desktop peer;
+  exercise an occupied port, confirm the saved value/revision stays unchanged,
+  and ensure viewing/editing a peer cannot alter a local editor. Do not infer
+  a next-start retry from the note.
+- [ ] Check discovery/pairing on both Macs, address roaming with a remaining
+  authenticated path, manual-address precedence, peer removal and same-UUID
+  preview/verified-row separation. Recheck unclustered LAN reachability.
+
+Windows runtime, Linux desktop, Intel Macs and final published artifacts are
+not validated by this placeholder. Windows process jobs, console behavior and
+installer lifecycle need a real Windows test before any runtime-support claim.
+
+## 0.10.0 open decisions
+
+- Complete and record the combined live checklist above, then decide the exact
+  release commit and publication scope. Inspect the actual fork assets rather
+  than inheriting upstream signing, notarization or platform claims. The latest
+  published fork release remains unsigned/unnotarized macOS arm64 **0.9.0**.
+- Decide whether to accept the documented llama.cpp scope: macOS arm64,
+  single-file Q4_K_M catalog, no peer startup-model picker, no promised partial
+  download resume, and stopped-engine owned deletion. Packaged update/rollback
+  and multi-node inference remain gates, not completed certification.
+- Keep the existing unclustered macOS reachability limitation and remaining
+  platform/metrics/profiling checks below visible; no new benchmark or
+  zero-overhead claim is made by this update.
+
+### Held items
+
+items awaiting an upstream response
 
 ## Packaged-app validation (2026-11-05)
 
@@ -85,24 +173,19 @@ engine has already stopped has unit coverage only: the port-conflict test
 refused the change before anything stopped. Desktop UI interaction and
 published release assets were not validated.
 
-### Follow-ups
+### Follow-up status for 0.10.0
 
-The validation notes record these as non-blocking follow-ups, not fixes:
+The historical findings above are not new release certification. Source fixes
+since v0.9.0 address roaming hints/startup grace (#55), stale oMLX launchers,
+fresh Ollama download pinning, status races/test cleanup and FreeBSD compilation
+(#56), bounded JSON-RPC output (#57), restored mDNS retry/stop-policy fixes
+(#58), and Windows owned-process jobs (#59). oMLX stop now confirms serving-PID
+exit when available; LM Studio's persistent host is not required to exit.
+Windows runtime remains untested. These findings are no longer listed as
+unfixed source defects; combined packaged validation is still pending above.
 
-- [Roaming peer addresses](known-issues.mdx#roaming-peers-need-a-saved-address),
-  [leftover oMLX launchers](known-issues.mdx#leftover-omlx-launchers-count-as-installed)
-  and [Ollama's unpinned install download](known-issues.mdx#ollama-install-download-is-not-checksum-pinned)
-  have user-facing limitations and workarounds.
-- Starting oMLX 0.7.4.dev1 immediately after stopping it failed; waiting briefly
-  allowed it to start. A startup scanner probe can warn before node-info is up.
-- Windows downloads use job objects, but engine stopping still uses
-  `taskkill`; runtime validation and cleanup unification remain follow-ups.
-- JSON-RPC notifications have no write deadline, so a stalled stdout reader can
-  stall lock-holding callers. Engine-manager tests can leave fake-engine
-  helpers running, and engine-manager does not build for FreeBSD.
-
-llama.cpp was not included in that historical packaged-app validation. Its
-unreleased routing/model surfaces and remaining release gates are tracked above.
+llama.cpp was not included in the 2026-11-05 build. Its later PR-specific smoke
+checks do not replace the combined-release checklist.
 
 ## Documentation and Installer Maintenance
 

@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Source changes for the planned **0.10.0** release; not yet published or
+certified as packaged artifacts. Live validation of the combined changes is
+[pending](docs/release-readiness.mdx#live-validation-pending). llama.cpp support
+is macOS arm64 only; Windows runtime behavior remains untested.
+
+### Added
+- **llama.cpp as a fourth engine (`nvpair-engine-manager`, `desktop`, `nvpair-tui`)**: PAIR can install, start, stop and configure llama.cpp on macOS arm64. Installation uses the SHA-256-pinned b12171 archive, preserves and checks its existing ad-hoc signatures, and does not make it notarized. The engine defaults to `127.0.0.1:8082`; uninstall keeps its model cache (#60).
+- **A dedicated llama.cpp endpoint (`llamacpp-proxy`)**: The new proxy defaults to port **1237** and routes exact model IDs locally and through verified peers, including streaming OpenAI-compatible chat and native `/v1/messages`. PAIR now supervises 13 workers and ships 15 service executables, including the separate TUI. Selected model files must be regular GGUF files inside PAIR's llama.cpp cache; outside paths and escaping symlinks are refused (#61).
+- **PAIR-managed llama.cpp models (`nvpair-engine-manager`, `desktop`, `nvpair-tui`)**: Browse a publisher-grouped catalog or search public models, download with progress and asynchronous cancellation, select a local startup model or router mode, and delete PAIR-owned downloads after stopping the engine. Downloads are resolved to a repository commit and checked against SHA-256, size and single-file GGUF metadata before being recorded. The catalog supports only public, ungated, single-file **Q4_K_M** text-generation models. Desktop and TUI also list installed files and delete owned models on verified peers; peer startup-model pickers are not provided (#62, #64).
+
+### Changed
+- **Paired machines can reconnect after an address change (`nvpair-cluster-manager`, `nvpair-manual-nodes`)**: PAIR remembers a bounded set of addresses learned only from pin-verified cluster connections, not public discovery or relayed third-party claims. Saved manual addresses keep their precedence. At least one authenticated path must remain; if both machines lose every known address, add a reachable **PAIR machine** address (#55).
+- **Running ports are visible without changing saved choices (`desktop`, `nvpair-tui`)**: Engine settings show “Running on port … (saved setting: …)” when a known running server or proxy port differs. The note does not infer a cause or promise a next-start retry, and does not enable Apply. Desktop covers local and verified peer engines; TUI notes are local-only (#67).
+
+### Fixed
+- **Slow JSON-RPC readers no longer block callers indefinitely (`services`)**: A bounded, ordered writer preserves request, response and notification order. Queue overflow, write failure or the five-second write deadline terminates the stream instead of silently dropping events and continuing; existing supervision and recovery policy is unchanged (#57).
+- **Missing oMLX apps are offered for installation (`nvpair-engine-manager`)**: A leftover launcher without its app CLI target no longer counts as installed or triggers saved automatic-start intent. PAIR does not remove the leftover files (#56).
+- **Engine stop/restart respects daemon lifetimes (`nvpair-engine-manager`)**: oMLX stop waits for the serving process to exit when its PID can be resolved, not just for its listener to close; a timeout does not falsely report stopped. LM Studio's persistent host is allowed to remain alive. Restored reviewed fixes also retry partial mDNS receive setup and stabilize lifecycle test cleanup (#56, #58).
+- **Owned Windows engine processes use kill-on-close jobs (`nvpair-engine-manager`)**: Servers, downloads and helpers are assigned to owned jobs before executing, replacing PID-tree `taskkill` cleanup. Command-mode controls intentionally leave vendor-managed daemons independent; legacy orphan cleanup targets only a proven process, not unproven descendants. Windows runtime testing remains outstanding (#59).
+- **Proxy fallback selection keeps usable ports (`nvpair-ui-broker`)**: Ollama, LM Studio and oMLX proxies no longer exclude their own port merely because it belongs to that proxy. A usable saved port is tried first; other proxies' reservations, engine-server ports (including stopped engines) and node-service ports remain excluded. This also avoids unnecessarily moving a free oMLX proxy from 1236 on startup (#61).
+- **Temporary fallback ports stay out of saved settings (`nvpair-ui-broker`)**: A settings refresh keeps the desired proxy port and revision rather than saving the observed fallback. Ports already overwritten by an older broker cannot be reconstructed automatically (#65).
+- **llama.cpp keeps its catalog model name (`nvpair-engine-manager`)**: Recorded downloads advertise their catalog ID rather than an inherited file-descriptor path, so clients, peer routing and workload records agree on the name. Manually supplied cache files use their validated filename without `.gguf` (#63).
+- **llama.cpp cache errors do not hide other engines' models (`services`, `desktop`, `nvpair-tui`)**: An unreadable cache leaves healthy served-model inventory intact and shows a llama.cpp-specific error instead of claiming the cache is empty. Verified peers also receive live llama.cpp settings updates (#64, #67).
+- **Startup and development reliability**: The scanner gives its first local node-info read a bounded readiness grace before warning; sustained and subsequent outages still report errors (#55). Engine-manager fixes status races and fake-engine test cleanup, and builds for FreeBSD without claiming runtime support (#56, #58).
+
+### Security
+- **A same-UUID lookalike cannot hide an already verified peer (`nvpair-node-scanner`, shared discovery)**: Discovery candidates stay separate until authentication, and advertisement updates/removals cannot remove the independently verified peer record. This is an availability improvement, not protection against unlimited LAN flooding (#66).
+- **Fresh Ollama installs are checksum-pinned (`nvpair-engine-manager`)**: PAIR installs **v0.40.15** with a per-artifact SHA-256 check instead of a floating, unhashed download. Vendor updates afterward are unchanged; a checksum is not publisher-trust or artifact certification (#56).
+
 ## [0.9.0] - 2026-11-06
 
 Unsigned, unnotarized **macOS arm64 release** for this fork. Windows, Linux
