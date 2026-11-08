@@ -45,10 +45,13 @@ function hubModelToEntry(m: EngineHubModel): ModelEntry {
  * module owns the upstream source (Ollama library scrape, LM Studio community
  * catalog); the renderer filters/sorts the returned rows locally.
  */
-export async function searchEngineHub(engine: EngineType): Promise<ModelEntry[]> {
-    if (!getEngineHub(engine)) return []
-    const { models } = await window.pairApi.engines.searchHub(engine)
-    return models.map(hubModelToEntry)
+export async function searchEngineHub(engine: EngineType, query?: string): Promise<ModelEntry[]> {
+    if (engine !== 'llamacpp' && !getEngineHub(engine)) return []
+    const { models } = await window.pairApi.engines.searchHub(engine, query)
+    return models.map(model => ({
+        ...hubModelToEntry(model),
+        displayName: engine === 'llamacpp' ? model.id : undefined
+    }))
 }
 
 /**

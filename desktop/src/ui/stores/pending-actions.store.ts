@@ -125,6 +125,7 @@ interface PendingActionsState {
     pending: Map<string, PendingAction>
     /** Record an optimistic pending entry for a fired command. No-op for non-lifecycle/non-model commands. */
     begin(payload: EngineCommandPayload): void
+    completeModelAction(nodeId: string, engineType: EngineType, model: string): void
     /** The pending lifecycle action for an engine, or undefined when none is in flight. */
     getLifecyclePending(nodeId: string, engineType: EngineType): EngineCommandType | undefined
     /** The pending action for a specific model, or undefined when none is in flight. */
@@ -225,6 +226,11 @@ export const usePendingActionsStore = create<PendingActionsState>((set, get) => 
             set({ pending: next })
             ensureSweepTimer(get, set)
         }
+    },
+
+    completeModelAction: (nodeId, engineType, model) => {
+        const pending = new Map(get().pending)
+        if (pending.delete(modelKey(nodeId, engineType, model))) set({ pending })
     },
 
     getLifecyclePending: (nodeId, engineType) =>

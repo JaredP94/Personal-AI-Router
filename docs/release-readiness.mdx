@@ -16,9 +16,28 @@ The current source adds `llamacpp-proxy` (default port 1237, engine 8082,
 service `lc`): **13 supervised workers / 15 executables**. The broker, desktop
 and TUI inventories, build/install lists and contract documentation include it.
 Native b12171 Messages passthrough and exact-ID model routing are supported;
-the Go model hub provides catalog/download/cancel/delete; desktop/TUI hub
-screens remain deferred. The new hub uses fixture/local-server tests, not live
-model downloads or packaged certification. Historical packaged-app evidence
+the Go model hub provides catalog/download/cancel/delete. Desktop and TUI now
+expose publisher-grouped/sorted catalog browsing, bounded search errors,
+installed local models, tracked downloads/cancel, stopped-engine owned deletion
+and previewed startup model/router-mode selection. TUI retains the existing
+unreleased **1.4.0** minor bump relative to v0.9.0's **1.3.0**.
+The new hub uses fixture/local-server and client tests, not live model downloads
+or packaged certification.
+
+Verified-peer installed-list/delete parity now reuses the existing pinned-mTLS
+engine inventory, scanner/manual enrichment and broker discovery relay.
+Desktop and TUI show cache IDs/file names, size and ownership; unrecorded files
+cannot be deleted. Remote owned deletion retains the identity/running guards
+and visible refusal reasons. Previews receive none. Startup dropdowns remain
+local (as for the other engines); peer Settings arguments still accept a known
+installed catalog ID. Live-peer and packaged smoke testing remain release gates.
+
+The license generator documents llama.cpp and models as runtime downloads,
+not bundled components; no unbundled engine/model was added to the dependency
+attribution manifest. Release smoke testing must cover macOS arm64 install,
+update/rollback, real model download/cancel/shutdown, checksum/disk-space/identity
+failures, selection/inference, stop/restart and owned deletion. The upstream
+binary remains unnotarized; the checksum does not certify publisher trust. Historical packaged-app evidence
 below predates this worker and does not certify its packaged or multi-node
 inference behavior. Validate those before release.
 
@@ -82,8 +101,8 @@ The validation notes record these as non-blocking follow-ups, not fixes:
   stall lock-holding callers. Engine-manager tests can leave fake-engine
   helpers running, and engine-manager does not build for FreeBSD.
 
-llama.cpp is deferred to a later release because it needs a thirteenth proxy
-worker, unsigned-binary review and its own download-cancellation path.
+llama.cpp was not included in that historical packaged-app validation. Its
+unreleased routing/model surfaces and remaining release gates are tracked above.
 
 ## Documentation and Installer Maintenance
 

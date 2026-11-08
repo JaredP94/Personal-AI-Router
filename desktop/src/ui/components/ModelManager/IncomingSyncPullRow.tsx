@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Flex, Text } from '@nvidia/foundations-react-core'
+import { Button, Flex, Text } from '@nvidia/foundations-react-core'
 import { formatPullProgressLabel } from '@/ui/utils/formatters'
 import type { IncomingSyncRow } from '@/ui/types/model-manager'
 
@@ -9,10 +9,12 @@ import { ModelDownloadControls } from './ModelDownloadControls'
 
 export function IncomingSyncPullRow({
     row,
-    onCancel
+    onCancel,
+    onRetry
 }: {
     row: IncomingSyncRow
     onCancel?: () => void
+    onRetry?: () => void
 }) {
     return (
         <Flex
@@ -39,11 +41,21 @@ export function IncomingSyncPullRow({
                         kind="body/regular/sm"
                         className="text-subtle-color whitespace-nowrap italic capitalize"
                     >
-                        {formatPullProgressLabel(row)}
+                        {row.engineType === 'llamacpp' && row.status === 'cancelled'
+                            ? 'Cancelled'
+                            : row.engineType === 'llamacpp' && row.status === 'interrupted'
+                              ? 'Download interrupted — retry'
+                              : formatPullProgressLabel(row)}
                     </Text>
                 </Flex>
             </Flex>
-            <ModelDownloadControls {...row} onCancel={onCancel} />
+            {onRetry && (row.status === 'cancelled' || row.status === 'interrupted') ? (
+                <Button size="small" kind="secondary" onClick={onRetry}>
+                    Retry
+                </Button>
+            ) : (
+                <ModelDownloadControls {...row} onCancel={onCancel} />
+            )}
         </Flex>
     )
 }

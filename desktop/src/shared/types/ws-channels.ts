@@ -145,7 +145,14 @@ export interface WsInvokeChannelMap {
     'engines:preview-settings': { request: EngineSettingsRequest; response: EngineSettingsPreview }
     'engines:apply-settings': { request: EngineSettingsRequest; response: EngineSettingsReceipt }
     'engine:command': { request: EngineCommandPayload; response: null }
-    'engine:search-hub': { request: { engineType: EngineType }; response: EngineHubSearchResponse }
+    'engine:search-hub': {
+        request: { engineType: EngineType; query?: string }
+        response: EngineHubSearchResponse
+    }
+    'engine:downloaded-models': {
+        request: { nodeId: string }
+        response: import('@/shared/types/engine-api').DownloadedModel[]
+    }
     // Exact-name lookup, used only when a search matches nothing, so the
     // catalog the app ships with cannot hide a model the engine could pull.
     'engine:lookup-hub-model': {

@@ -19,6 +19,7 @@ const HUB_REGISTRY_ARROW = ' \u2192 '
 const MAX_FORMAT_INPUT_CHARS = 256
 
 export function formatModelDisplayName(name: string, engineType?: string | null): string {
+    if (engineType === 'llamacpp') return name.startsWith('/dev/fd/') ? 'Unavailable model' : name
     if (!name) {
         return name
     }

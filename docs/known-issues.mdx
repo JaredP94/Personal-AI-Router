@@ -26,6 +26,34 @@ entirely (avoiding repeated prompts). In the desktop application, navigate to
 guidance on allowing inbound connections when macOS prompts appear so other nodes
 can reach this machine.
 
+## llama.cpp Model Hub Limitations
+
+**Unreleased source, not certification of a published package.** The managed
+b12171 engine supports macOS arm64 only and is not notarized, like PAIR.
+PAIR's catalog currently admits only public, ungated, single-file Q4_K_M GGUF
+text-generation models. Search allows 100 characters and up to 50 results;
+service timeouts or validation errors are displayed rather than treated as an
+empty successful search.
+
+Stop llama.cpp before deleting a downloaded model. PAIR refuses deletion while
+it is running or a lifecycle/cache mutation is active, and deletes only an
+identity-matched owned entry. Unmanaged files are listed but not deletable.
+Cancellation is asynchronous; wait for its terminal state. llama.cpp removes
+only its own identity-matched transfer temporary file and does not promise
+partial-download resume. A checksum, disk-space or identity failure is an error,
+not successful cancellation.
+
+Verified peers expose installed llama.cpp cache files in desktop and TUI,
+including while stopped. Unrecorded files are visible but not deletable;
+owned deletion uses the existing authenticated remote operation and refuses
+while llama.cpp is running. Unverified previews receive no inventory.
+Downloaded-model startup pickers remain local, as with the other engines.
+The desktop Settings arguments can select a known installed peer catalog ID.
+
+PAIR downloads the engine and models at runtime; they are not bundled and have
+their own upstream terms. Packaged install/update/rollback, real downloads,
+inference, stop/restart and multi-node smoke testing remain release gates.
+
 ## Unified-Memory Systems Report Misleading GPU Memory
 
 **Implemented in source, pending release testing.** GPU memory now has an explicit

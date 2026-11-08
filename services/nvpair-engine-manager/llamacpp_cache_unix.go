@@ -66,7 +66,7 @@ func openLlamaCacheAt(root string) (*os.File, error) {
 		next, err := unix.Openat(fd, part, flags, 0)
 		_ = unix.Close(fd)
 		if err != nil {
-			return nil, fmt.Errorf("cache directory changed or unavailable")
+			return nil, fmt.Errorf("cache directory changed or unavailable: %w", err)
 		}
 		fd = next
 	}

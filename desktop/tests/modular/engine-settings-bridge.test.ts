@@ -6,6 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
     state: {
         getSelfId: vi.fn(() => 'local-node'),
+        getPeerDownloadedModels: vi.fn(() => [
+            { id: 'peer-model', file: 'peer.gguf', size: 24, sha256: 'peer-verified' }
+        ]),
         getProxyPort: vi.fn(() => 11434),
         beginLocalEngineOp: vi.fn(),
         failLocalEngineOp: vi.fn()
@@ -15,7 +18,9 @@ const mocks = vi.hoisted(() => ({
         callProcess: vi.fn(),
         callProxy: vi.fn(),
         sendProcess: vi.fn(),
-        reportError: vi.fn()
+        reportError: vi.fn(),
+        deleteModel: vi.fn(),
+        modelActionRemote: vi.fn()
     }
 }))
 
@@ -58,6 +63,105 @@ describe('unified settings bridge', () => {
         vi.clearAllMocks()
         mocks.supervisor.callProcess.mockImplementation(async (_name: string, method: string) =>
             method === 'engine:get-settings' ? baseline : { revision: 5, phase: 'succeeded' }
+        )
+    })
+
+    it('relays llama.cpp catalog queries and preserves service errors', async () => {
+        mocks.supervisor.callProcess.mockResolvedValueOnce({
+            models: [{ id: 'ggml-org/Small:Q4_K_M', file: 'hash.gguf', size: 42 }]
+        })
+        const result = await handleServiceBridgeInvoke('engine:search-hub', {
+            engineType: 'llamacpp',
+            query: 'Small'
+        })
+        expect(result.models[0]?.name).toBe('ggml-org/Small:Q4_K_M')
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledWith(
+            'broker',
+            'engine:model-catalog',
+            { query: 'Small' },
+            30_000
+        )
+        mocks.supervisor.callProcess.mockRejectedValueOnce(new Error('not enough disk space'))
+        await expect(
+            handleServiceBridgeInvoke('engine:search-hub', { engineType: 'llamacpp' })
+        ).rejects.toThrow('not enough disk space')
+    })
+
+    it('uses local actions for self and verified discovery inventory for a peer', async () => {
+        mocks.supervisor.callProcess.mockResolvedValueOnce({
+            models: [
+                { id: 'ggml-org/Small:Q4_K_M', file: 'hash.gguf', size: 42, sha256: 'verified' }
+            ]
+        })
+        expect(
+            await handleServiceBridgeInvoke('engine:downloaded-models', { nodeId: 'local-node' })
+        ).toEqual([
+            { id: 'ggml-org/Small:Q4_K_M', file: 'hash.gguf', size: 42, sha256: 'verified' }
+        ])
+        expect(
+            await handleServiceBridgeInvoke('engine:downloaded-models', { nodeId: 'peer' })
+        ).toEqual([{ id: 'peer-model', file: 'peer.gguf', size: 24, sha256: 'peer-verified' }])
+        expect(mocks.state.getPeerDownloadedModels).toHaveBeenCalledWith('peer')
+        expect(mocks.supervisor.callProcess).toHaveBeenCalledTimes(1)
+    })
+
+    it('awaits the existing remote llama.cpp delete operation', async () => {
+        let finish = (): void => {}
+        mocks.supervisor.modelActionRemote.mockImplementation(
+            () =>
+                new Promise<void>(resolve => {
+                    finish = resolve
+                })
+        )
+        let acknowledged = false
+        const response = handleServiceBridgeInvoke('engine:command', {
+            command: 'deleteModel',
+            engineType: 'llamacpp',
+            nodeId: 'peer',
+            model: 'peer-model'
+        })
+        void response.then(() => {
+            acknowledged = true
+        })
+        await Promise.resolve()
+        expect(acknowledged).toBe(false)
+        expect(mocks.supervisor.modelActionRemote).toHaveBeenCalledWith(
+            'peer',
+            'llamacpp',
+            'llamacpp',
+            'peer-model',
+            'deleteModel'
+        )
+        finish()
+        await response
+    })
+
+    it('acknowledges local llama.cpp delete only after the owning operation settles', async () => {
+        let finish = (): void => {}
+        mocks.supervisor.deleteModel.mockImplementation(
+            () =>
+                new Promise<void>(resolve => {
+                    finish = resolve
+                })
+        )
+        let acknowledged = false
+        const response = handleServiceBridgeInvoke('engine:command', {
+            command: 'deleteModel',
+            engineType: 'llamacpp',
+            nodeId: 'local-node',
+            model: 'ggml-org/Demo:Q4_K_M'
+        })
+        void response.then(() => {
+            acknowledged = true
+        })
+        await Promise.resolve()
+        expect(acknowledged).toBe(false)
+        finish()
+        await response
+        expect(mocks.supervisor.deleteModel).toHaveBeenCalledWith(
+            'llamacpp',
+            'llamacpp',
+            'ggml-org/Demo:Q4_K_M'
         )
     })
 

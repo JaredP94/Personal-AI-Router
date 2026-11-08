@@ -49,6 +49,8 @@ func (b *Broker) normalizeManualStatus(s manualNodeStatus) manualNodeStatus {
 	s.LlamaCPPUp = false
 	s.Models, s.OllamaModels, s.LMStudioModels, s.OMLXModels, s.LlamaCPPModels = nil, nil, nil, nil, nil
 	s.ModelsByEngine, s.LoadedByEngine = nil, nil
+	s.DownloadedByEngine = nil
+	s.DownloadErrorsByEngine = nil
 	s.GPUs, s.CPU, s.Memory = nil, nil, nil
 	s.EngineNative = nil
 	s.TelemetryValid = false

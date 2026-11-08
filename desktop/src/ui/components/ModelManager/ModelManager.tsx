@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useCallback, useMemo, useState } from 'react'
+import { useLlamaInstalledModels } from '@/ui/hooks/useLlamaInstalledModels'
+import { useConnectionStore } from '@/ui/stores/connection.store'
+import { useNodesStore } from '@/ui/stores/nodes.store'
+import { isPairPeer } from '@/shared/utils/node-record-key'
+import type { ModelItem } from '@/ui/types/engine-info'
 import { Button, Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import type { BackendInfo } from '@/ui/types/engine-info'
 import { EngineCapabilities } from '@/ui/constants/engine-capabilities'
@@ -12,6 +17,7 @@ import { noEngineCapabilities } from '@/shared/utils/engines'
 import { ConfirmModal } from '@/ui/components/ConfirmModal'
 import { ModelHubModal } from '@/ui/components/ModelHub/ModelHubModal'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
+import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { usePendingActionsStore } from '@/ui/stores/pending-actions.store'
 import { isEnginePullInProgress } from '@/shared/utils/engine-progress'
@@ -40,8 +46,40 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
         useEngineStatusStore(
             state => state.statusByNode.get(nodeId)?.get(backend.type)?.capabilities
         ) ?? noEngineCapabilities()
+    const local = useConnectionStore(state => state.selfId === nodeId)
+    const peer = useNodesStore(state => {
+        const node = state.nodes.get(nodeId)
+        return !!node && isPairPeer(node)
+    })
+    const downloadError = useEngineModelsStore(
+        state => state.models.get(`${nodeId}:${backend.type}`)?.downloadError
+    )
+    const eligible = local || peer
+    const installed = useLlamaInstalledModels(
+        nodeId,
+        backend.type === 'llamacpp' && local && reported.listModels
+    )
+    const hasDownloadError =
+        backend.type === 'llamacpp' && !!(local ? installed.error : downloadError)
+    const sourceModels: ModelItem[] =
+        backend.type === 'llamacpp' && local
+            ? installed.models.map(model => ({
+                  name: model.id,
+                  size: model.size,
+                  downloaded: true,
+                  status: 'idle',
+                  parameterSize: '',
+                  quantization: 'Q4_K_M',
+                  family: '',
+                  digest: model.sha256,
+                  sizeVram: null,
+                  expiresAt: null,
+                  expiry: '-1',
+                  capabilities: []
+              }))
+            : backend.models
     const models = reported.listModels
-        ? [...backend.models].sort((a, b) =>
+        ? [...sourceModels].sort((a, b) =>
               formatModelDisplayName(a.name, backend.type).localeCompare(
                   formatModelDisplayName(b.name, backend.type)
               )
@@ -113,6 +151,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             }
 
             results.push({
+                engineType: backend.type,
                 opId: p.opId,
                 canCancel: p.canCancel,
                 rawModel: p.model,
@@ -145,7 +184,12 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                     window.pairApi.engines.unloadModel(backendType, nodeId, modelName)
                     break
                 case 'delete':
-                    if (!reported.deleteModel) break
+                    if (
+                        (backendType === 'llamacpp' && !eligible) ||
+                        !reported.deleteModel ||
+                        (backendType === 'llamacpp' && backend.processStatus !== 'stopped')
+                    )
+                        break
                     if (confirmBeforeDelete) {
                         setModelPendingDelete({
                             nodeId,
@@ -156,16 +200,26 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                         })
                         break
                     }
-                    window.pairApi.engines.deleteModel(backendType, nodeId, modelName)
+                    if (backendType === 'llamacpp') {
+                        void window.pairApi.engines
+                            .deleteModel(backendType, nodeId, modelName)
+                            .then(
+                                () => installed.reload(),
+                                () => installed.reload()
+                            )
+                    } else window.pairApi.engines.deleteModel(backendType, nodeId, modelName)
                     break
             }
         },
         [
             backendType,
+            backend.processStatus,
+            eligible,
             backend.displayName,
             confirmBeforeDelete,
             nodeId,
             reported.deleteModel,
+            installed,
             displayName
         ]
     )
@@ -205,8 +259,8 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
     )
     const isRunning = useMemo(() => backend.processStatus === 'running', [backend.processStatus])
     const supportsSearch = useMemo(
-        () => reported.pullModel && (!hasModelSearchOnlyWhenRunning || isRunning),
-        [reported.pullModel, hasModelSearchOnlyWhenRunning, isRunning]
+        () => eligible && reported.pullModel && (!hasModelSearchOnlyWhenRunning || isRunning),
+        [eligible, reported.pullModel, hasModelSearchOnlyWhenRunning, isRunning]
     )
 
     const handleDownload = useCallback(
@@ -226,6 +280,24 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
 
     return (
         <Stack gap="4">
+            {backendType === 'llamacpp' && (
+                <>
+                    {hasDownloadError && (
+                        <Text kind="body/regular/sm" role="status">
+                            {"Couldn't read llama.cpp's downloaded models"}
+                        </Text>
+                    )}
+                    {local && (
+                        <Button
+                            size="small"
+                            kind="secondary"
+                            onClick={() => void installed.reload()}
+                        >
+                            Refresh installed models
+                        </Button>
+                    )}
+                </>
+            )}
             {transientModel && (
                 <TransientModelStatusRow
                     transientModel={transientModel}
@@ -249,6 +321,9 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                 <IncomingSyncPullRow
                     key={p.rawModel}
                     row={p}
+                    onRetry={() =>
+                        window.pairApi.engines.pullModel(backendType, nodeId, p.rawModel)
+                    }
                     onCancel={
                         p.opId
                             ? () =>
@@ -266,6 +341,7 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
             {!isBusy && (
                 <>
                     {reported.listModels &&
+                        !hasDownloadError &&
                         (isRunning || modelOpsWhenStopped) &&
                         models.length === 0 &&
                         incomingSyncs.length === 0 && (
@@ -310,7 +386,11 @@ export function ModelManager({ backend, nodeId }: { backend: BackendInfo; nodeId
                                     }
                                     isRunning={isRunning}
                                     capabilities={caps}
-                                    reported={reported}
+                                    reported={
+                                        backendType === 'llamacpp' && !model.digest
+                                            ? { ...reported, deleteModel: false }
+                                            : reported
+                                    }
                                     progress={getProgress(nodeId, backend.type, 'pull', model.name)}
                                     pendingAction={usePendingActionsStore
                                         .getState()

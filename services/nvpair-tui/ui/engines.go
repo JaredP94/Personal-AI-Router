@@ -162,6 +162,10 @@ func (v *enginesView) SetSize(w, h int) {
 func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case epochChangedMsg:
+		v.models.selectionGeneration++
+		if v.selectedEngine() == "llamacpp" {
+			v.confirm = nil
+		}
 		v.interruptDownloads(nil)
 		v.downloadWorker = nil
 		return nil
@@ -210,6 +214,19 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 			return v.loadModelsCmd()
 		}
 		return nil
+
+	case llamaModelsMsg:
+		if msg.node != v.target || msg.generation != v.models.generation || v.selectedEngine() != "llamacpp" {
+			return nil
+		}
+		v.models.loading = false
+		v.models.err, v.models.catalog, v.models.llama = msg.err, msg.catalog, msg.models
+		v.refreshModels()
+		return nil
+	case llamaSettingsMsg:
+		return v.previewLlamaStartup(msg)
+	case llamaPreviewMsg:
+		return v.confirmLlamaStartup(msg)
 
 	case modelsLoadedMsg:
 		if msg.node == v.target && msg.generation == v.models.generation {
@@ -298,6 +315,12 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		}
 		switch msg.Msg.Method {
 		case "engine:models-changed":
+			if v.models.open && v.selectedEngine() == "llamacpp" {
+				if v.models.catalog {
+					return nil
+				}
+				return v.loadModelsCmd()
+			}
 			var p struct {
 				Models modelSnapshot `json:"models"`
 			}
@@ -338,7 +361,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *enginesView) CapturingInput() bool {
-	return v.pulling || v.editingPort || v.confirm.open()
+	return v.pulling || v.editingPort || v.models.searching || v.confirm.open()
 }
 
 func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
@@ -347,6 +370,22 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if v.confirm.open() {
 		return v.confirm.Update(msg)
+	}
+	if v.models.searching {
+		switch msg.String() {
+		case "enter":
+			v.models.searching = false
+			v.input.Blur()
+			v.models.query = v.input.Value()
+			return v.loadLlamaModelsCmd()
+		case "esc":
+			v.models.searching = false
+			v.input.Blur()
+			return nil
+		}
+		var cmd tea.Cmd
+		v.input, cmd = v.input.Update(msg)
+		return cmd
 	}
 	if v.editingPort {
 		switch msg.String() {
@@ -373,6 +412,37 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		var cmd tea.Cmd
 		v.input, cmd = v.input.Update(msg)
 		return cmd
+	}
+	if v.selectedEngine() == "llamacpp" {
+		switch {
+		case key.Matches(msg, engCatalogKey):
+			if !v.byName["llamacpp"].Capabilities.PullModel {
+				return nil
+			}
+			v.models.open, v.models.catalog = true, !v.models.catalog
+			v.models.err, v.models.query = nil, ""
+			v.models.generation++
+			v.models.loading = false
+			v.models.llama = nil
+			if !v.models.catalog && v.target != "" {
+				v.refreshModels()
+				return nil
+			}
+			return v.loadLlamaModelsCmd()
+		case key.Matches(msg, engCatalogSearchKey):
+			if !v.models.catalog || !v.byName["llamacpp"].Capabilities.PullModel {
+				return nil
+			}
+			v.models.searching = true
+			v.input.Placeholder = "Public catalog query (up to 100 characters)"
+			v.input.SetValue(v.models.query)
+			v.input.Focus()
+			return textinput.Blink
+		case key.Matches(msg, engSelectModelKey):
+			return v.selectLlamaStartup(false)
+		case key.Matches(msg, engRouterKey):
+			return v.selectLlamaStartup(true)
+		}
 	}
 	if key.Matches(msg, engTargetKey) {
 		return v.cycleTarget()
@@ -412,6 +482,15 @@ func (v *enginesView) handleKey(msg tea.KeyMsg) tea.Cmd {
 		engine := v.selectedEngine()
 		if engine == "" || !v.byName[engine].Capabilities.PullModel {
 			return nil
+		}
+		if engine == "llamacpp" && v.models.open && v.models.catalog {
+			entry, ok := v.selectedLlamaEntry()
+			if !ok {
+				return nil
+			}
+			v.pullEngine, v.pullNode = engine, v.target
+			v.input.SetValue(entry.ID)
+			return v.submitPull()
 		}
 		v.pullEngine = engine
 		v.pullNode = v.target
@@ -624,13 +703,16 @@ func (v *enginesView) View() string {
 		out = v.modelsView()
 	}
 	if v.selectedEngine() == "llamacpp" {
-		out += "\n" + footerStyle.Render("llama.cpp is not notarized, like PAIR itself.")
+		out += "\n" + footerStyle.Render("llama.cpp: macOS arm64 only; not notarized, like PAIR. Single-file Q4_K_M GGUF catalog.")
 	}
 	if v.confirm.open() {
 		out += "\n" + v.confirm.View()
 	}
 	if downloads := v.downloadsView(); downloads != "" {
 		out += "\n" + downloads
+	}
+	if v.models.searching {
+		out += "\nsearch catalog: " + v.input.View()
 	}
 	if v.pulling {
 		out += "\npull model: " + v.input.View()
@@ -677,6 +759,20 @@ func (v *enginesView) Help() []key.Binding {
 			bindings = append(bindings, engUpdateKey)
 		}
 	}
+	if v.selectedEngine() == "llamacpp" {
+		if e.Capabilities.PullModel {
+			bindings = append(bindings, engCatalogKey)
+			if v.models.catalog {
+				bindings = append(bindings, engCatalogSearchKey)
+			}
+		}
+		if v.target == "" && e.Capabilities.ListModels {
+			bindings = append(bindings, engRouterKey)
+			if v.models.open && !v.models.catalog {
+				bindings = append(bindings, engSelectModelKey)
+			}
+		}
+	}
 	if e.Capabilities.PullModel {
 		bindings = append(bindings, engPullKey)
 	}
@@ -713,6 +809,12 @@ func (v *enginesView) cycleTarget() tea.Cmd {
 		}
 	}
 	v.target = next
+	v.models.loading = false
+	v.models.searching = false
+	v.models.query = ""
+	v.models.catalog = false
+	v.models.llama = nil
+	v.models.selectionGeneration++
 	v.models.generation++
 	v.models.inventory = modelSnapshot{}
 	v.models.err = nil

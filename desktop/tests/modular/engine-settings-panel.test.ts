@@ -18,6 +18,7 @@ import type {
 } from '@/shared/types/engine-settings'
 import type { EngineType } from '@/shared/types/engines'
 import type { NodeItem } from '@/shared/types/nodes'
+import type { DownloadedModel } from '@/shared/types/engine-api'
 
 const baseline: EngineSettingsSnapshot = {
     nodeId: 'local',
@@ -51,6 +52,7 @@ const peer: NodeItem = {
     os: 'Linux',
     topology: { gpus: [], cpu: { model: '', cores: 0, threads: 0 }, ram: 0, storage: [] }
 }
+const downloadedModels = vi.fn<(nodeId: string) => Promise<DownloadedModel[]>>()
 const getSettings = vi.fn<(target: EngineSettingsTarget) => Promise<EngineSettingsSnapshot>>()
 const previewSettings = vi.fn<(request: EngineSettingsRequest) => Promise<EngineSettingsPreview>>()
 const applySettings = vi.fn<(request: EngineSettingsRequest) => Promise<EngineSettingsReceipt>>()
@@ -93,6 +95,113 @@ async function click(label: string): Promise<void> {
     await act(async () => button(label).click())
 }
 
+it('selects a llama.cpp cache-relative file through preview/apply', async () => {
+    await render('llamacpp')
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')
+    expect(select?.textContent).toContain('ggml-org/Demo:Q4_K_M')
+    expect(select?.textContent).toContain('No model')
+    await act(async () => {
+        if (select) {
+            select.value = 'cache.gguf'
+            select.dispatchEvent(new Event('change', { bubbles: true }))
+        }
+    })
+    await click('Apply')
+    expect(previewSettings.mock.calls[0]?.[0].settings.launchText).toBe('--model "cache.gguf"')
+    expect(applySettings.mock.calls[0]?.[0].settings.launchText).toBe('--model "cache.gguf"')
+    expect(container.innerHTML).not.toContain('/dev/fd/')
+})
+
+it('selects No model and removes the saved llama.cpp model through preview/apply', async () => {
+    getSettings.mockImplementation(async target => ({
+        ...baseline,
+        ...target,
+        settings: {
+            ...baseline.settings,
+            launchText: '--threads 4 --model "cache.gguf" --ctx-size 4096'
+        }
+    }))
+    await render('llamacpp')
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')
+    if (!select) throw new Error('Missing startup model picker')
+    expect(select.value).toBe('cache.gguf')
+    await act(async () => {
+        select.value = ''
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(select.selectedOptions[0]?.textContent).toBe('No model (router mode)')
+    expect(field('Engine arguments').value).toBe('--threads 4 --ctx-size 4096')
+    await click('Apply')
+    expect(previewSettings.mock.calls[0]?.[0].settings.launchText).toBe(
+        '--threads 4 --ctx-size 4096'
+    )
+    expect(applySettings.mock.calls[0]?.[0].settings.launchText).toBe('--threads 4 --ctx-size 4096')
+})
+
+it('shows a deleted llama.cpp startup model and its preview rejection without applying', async () => {
+    downloadedModels.mockResolvedValue([])
+    getSettings.mockImplementation(async target => ({
+        ...baseline,
+        ...target,
+        settings: { ...baseline.settings, launchText: '--model deleted.gguf --threads 4' }
+    }))
+    previewSettings.mockImplementation(async request => ({
+        settings: request.settings,
+        revision: 1,
+        errors: { launchText: 'Selected model is no longer installed. Download it again.' },
+        restart: false,
+        rebind: false
+    }))
+    await render('llamacpp')
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')
+    expect(select?.value).toBe('deleted.gguf')
+    expect(select?.selectedOptions[0]?.textContent).toBe('deleted.gguf')
+    await change('Engine arguments', '--model deleted.gguf --threads 8')
+    await click('Apply')
+    expect(previewSettings.mock.calls[0]?.[0].settings.launchText).toBe(
+        '--model deleted.gguf --threads 8'
+    )
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        'Selected model is no longer installed. Download it again.'
+    )
+    expect(applySettings).not.toHaveBeenCalled()
+})
+
+it('ignores delayed llama.cpp inventory after switching devices and returning', async () => {
+    let finish = (_models: DownloadedModel[]): void => {}
+    downloadedModels.mockImplementationOnce(
+        () =>
+            new Promise(resolve => {
+                finish = resolve
+            })
+    )
+    await render('llamacpp')
+    await render('llamacpp', 'peer')
+    await render('llamacpp')
+    expect(container.textContent).toContain('ggml-org/Demo:Q4_K_M')
+    await act(async () =>
+        finish([{ id: 'ggml-org/Stale:Q4_K_M', file: 'stale.gguf', size: 42, sha256: 'old' }])
+    )
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')
+    expect(select?.textContent).toContain('ggml-org/Demo:Q4_K_M')
+    expect(select?.textContent).not.toContain('ggml-org/Stale:Q4_K_M')
+    expect(select?.value).toBe('')
+    expect(field('Engine arguments').value).toBe('')
+    expect(button('Apply').disabled).toBe(true)
+})
+
+it('shows the installed catalog name when saved arguments select its catalog ID', async () => {
+    getSettings.mockImplementation(async target => ({
+        ...baseline,
+        ...target,
+        settings: { ...baseline.settings, launchText: '--model ggml-org/Demo:Q4_K_M' }
+    }))
+    await render('llamacpp')
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Startup model"]')?.value).toBe(
+        'cache.gguf'
+    )
+})
+
 beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
@@ -107,6 +216,11 @@ beforeEach(() => {
             this.open = false
         }
     })
+    downloadedModels
+        .mockReset()
+        .mockResolvedValue([
+            { id: 'ggml-org/Demo:Q4_K_M', file: 'cache.gguf', size: 42, sha256: 'verified' }
+        ])
     getSettings.mockReset().mockImplementation(async target => ({ ...baseline, ...target }))
     previewSettings.mockReset().mockImplementation(async request => ({
         settings: request.settings,
@@ -130,6 +244,7 @@ beforeEach(() => {
     vi.stubGlobal('pairApi', {
         engines: {
             getSettings,
+            downloadedModels,
             previewSettings,
             applySettings,
             onSettingsChanged: (callback: typeof deliver) => {

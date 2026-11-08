@@ -105,6 +105,8 @@ func (d *daemon) publishVerified(node noderec.DirectoryNode, candidateKey string
 	if prior, exists := d.dir.get(node.HostUUID); exists && prior.PeerRecordID == node.PeerRecordID {
 		if node.Models == nil {
 			node.Models, node.ModelsByEngine, node.LoadedByEngine = prior.Models, prior.ModelsByEngine, prior.LoadedByEngine
+			node.DownloadedByEngine = prior.DownloadedByEngine
+			node.DownloadErrorsByEngine = prior.DownloadErrorsByEngine
 		}
 		if node.EngineNative == nil {
 			node.EngineNative = prior.EngineNative
@@ -137,5 +139,7 @@ func withdrawPeer(node *noderec.DirectoryNode) {
 	node.IdentityVerification = "unverified"
 	node.GPUs, node.CPU, node.Memory = nil, nil, nil
 	node.Models, node.ModelsByEngine, node.LoadedByEngine = nil, nil, nil
+	node.DownloadedByEngine = nil
+	node.DownloadErrorsByEngine = nil
 	node.EngineNative = nil
 }

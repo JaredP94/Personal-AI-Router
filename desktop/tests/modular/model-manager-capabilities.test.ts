@@ -5,11 +5,12 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { EngineCapabilityFlags, EngineType } from '@/shared/types/engines'
+import type { EngineCapabilityFlags, EngineType, EngineProcessStatus } from '@/shared/types/engines'
 import type { BackendInfo, ModelItem } from '@/ui/types/engine-info'
 import { ModelManager } from '@/ui/components/ModelManager/ModelManager'
 import { useEngineProgressStore } from '@/ui/stores/engine-progress.store'
 import type { EngineProgress } from '@/shared/types/engines'
+import { useEngineModelsStore } from '@/ui/stores/engine-models.store'
 import { useEngineStatusStore } from '@/ui/stores/engine-status.store'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
@@ -43,6 +44,9 @@ let container: HTMLDivElement
 let root: Root
 const deleteModel = vi.fn()
 const pullModel = vi.fn()
+const downloadedModels = vi.fn(async () => [
+    { id: MODEL.name, file: 'cache.gguf', size: 42, sha256: 'verified' }
+])
 
 function report(nodeId: string, engineType: EngineType, flags: EngineCapabilityFlags): void {
     const statusByNode = new Map(useEngineStatusStore.getState().statusByNode)
@@ -65,15 +69,22 @@ function report(nodeId: string, engineType: EngineType, flags: EngineCapabilityF
     act(() => useEngineStatusStore.setState({ statusByNode }))
 }
 
-function render(nodeId = 'local', engineType: EngineType = 'lm-studio', downloaded = true): void {
+function render(
+    nodeId = 'local',
+    engineType: EngineType = 'lm-studio',
+    downloaded = true,
+    processStatus: EngineProcessStatus = 'running',
+    digest = '',
+    models: ModelItem[] = [{ ...MODEL, downloaded, digest }]
+): void {
     const backend: BackendInfo = {
         type: engineType,
         displayName: engineType === 'lm-studio' ? 'LM Studio' : 'oMLX',
         source: 'installed',
-        processStatus: 'running',
+        processStatus,
         port: 1234,
         proxyPort: 54301,
-        models: [{ ...MODEL, downloaded }]
+        models
     }
     act(() => root.render(createElement(ModelManager, { backend, nodeId })))
 }
@@ -110,7 +121,7 @@ describe('ModelManager reported capability gates', () => {
                 this.dispatchEvent(new Event('close'))
             }
         })
-        vi.stubGlobal('pairApi', { engines: { deleteModel, pullModel } })
+        vi.stubGlobal('pairApi', { engines: { deleteModel, pullModel, downloadedModels } })
         useEngineStatusStore.setState({ statusByNode: new Map() })
         useConnectionStore.setState({ connected: true, selfId: 'local' })
         container = document.createElement('div')
@@ -125,9 +136,111 @@ describe('ModelManager reported capability gates', () => {
         Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
         useEngineStatusStore.setState({ statusByNode: new Map() })
         useEngineProgressStore.setState({ progress: new Map() })
+        useEngineModelsStore.setState({ models: new Map() })
         useConnectionStore.setState({ connected: false, selfId: null })
         useNodesStore.setState({ nodes: new Map() })
         vi.unstubAllGlobals()
+    })
+
+    it('shows a peer cache error calmly on llama.cpp only', () => {
+        report('peer', 'llamacpp', supported)
+        act(() =>
+            useEngineModelsStore.setState({
+                models: new Map([
+                    [
+                        'peer:llamacpp',
+                        {
+                            nodeId: 'peer',
+                            engineType: 'llamacpp',
+                            models: [],
+                            downloadError: "Couldn't read llama.cpp's downloaded models"
+                        }
+                    ]
+                ])
+            })
+        )
+        render('peer', 'llamacpp', true, 'stopped', '', [])
+        expect(container.textContent).toContain("Couldn't read llama.cpp's downloaded models")
+        expect(container.textContent).not.toContain('No model/weight files downloaded')
+        report('peer', 'lm-studio', supported)
+        render('peer', 'lm-studio')
+        expect(container.textContent).not.toContain("Couldn't read llama.cpp's downloaded models")
+        expect(container.textContent).toContain('demo')
+        report('peer', 'llamacpp', supported)
+        render('peer', 'llamacpp', true, 'stopped', '', [])
+        act(() => useEngineModelsStore.setState({ models: new Map() }))
+        expect(container.textContent).not.toContain("Couldn't read llama.cpp's downloaded models")
+        expect(container.textContent).toContain('No model/weight files downloaded')
+    })
+
+    it('refreshes the stopped llama.cpp installed list only after deletion finishes', async () => {
+        let finish = (): void => {}
+        let removed = false
+        downloadedModels.mockImplementation(async () =>
+            removed ? [] : [{ id: MODEL.name, file: 'cache.gguf', size: 42, sha256: 'verified' }]
+        )
+        deleteModel.mockImplementation(
+            () =>
+                new Promise<void>(resolve => {
+                    finish = () => {
+                        removed = true
+                        resolve()
+                    }
+                })
+        )
+        report('local', 'llamacpp', { ...supported, deleteRestartsEngine: false })
+        await act(async () => render('local', 'llamacpp', true, 'stopped'))
+        expect(container.textContent).toContain(MODEL.name)
+        click('Delete')
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(container.textContent).toContain(MODEL.name)
+        await act(async () => finish())
+        expect(container.textContent).not.toContain(MODEL.name)
+        expect(container.textContent).toContain('No model/weight files downloaded')
+    })
+
+    it('offers owned peer llama.cpp deletion and explains the running gate', async () => {
+        useNodesStore.setState({
+            nodes: new Map([
+                [
+                    'peer',
+                    {
+                        id: 'peer',
+                        hostUuid: 'peer',
+                        peerRecordId: 'proof',
+                        identityVerification: 'verified',
+                        name: 'Peer',
+                        ipAddress: '192.0.2.10',
+                        port: 14318,
+                        allIpAddresses: [],
+                        status: 'active',
+                        os: 'Linux',
+                        topology: {
+                            gpus: [],
+                            cpu: { model: '', cores: 0, threads: 0 },
+                            ram: 0,
+                            storage: []
+                        }
+                    }
+                ]
+            ])
+        })
+        deleteModel.mockResolvedValue(undefined)
+        report('peer', 'llamacpp', { ...supported, deleteRestartsEngine: false })
+        await act(async () => render('peer', 'llamacpp', true, 'stopped', 'verified'))
+        expect(container.textContent).toContain(MODEL.name)
+        expect(container.textContent).not.toContain('Only served')
+        await act(async () => click('Delete'))
+        expect(deleteModel).toHaveBeenCalledWith('llamacpp', 'peer', MODEL.name)
+        render('peer', 'llamacpp', true, 'running', 'verified')
+        const gate = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+            button => button.textContent === 'Delete (stop engine first)'
+        )
+        expect(gate?.disabled).toBe(true)
+        render('peer', 'llamacpp', true, 'stopped')
+        expect(labels()).not.toContain('Delete')
     })
 
     it('includes Load options in downloaded local LM Studio model rows only', () => {

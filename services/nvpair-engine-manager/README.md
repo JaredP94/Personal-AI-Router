@@ -5,6 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-engine-manager
 
+### Downloaded llama.cpp inventory
+
+The existing engine-manager `/v1/models` inventory adds `downloadedByEngine`:
+`{"llamacpp":[{"id":"catalog ID or file name","file":"cache-relative.gguf","size":24,"sha256":"…","owned":true}]}`.
+This cache list is available while stopped and remains separate from served
+`models`/`modelsByEngine`, which continue to drive routing. The cache scan is
+limited to 4096 entries and uses the existing bounded inventory response.
+Scanner enrichment and verified manual peers carry it over pinned cluster mTLS;
+the broker preserves it in discovery snapshots. Unverified previews receive none.
+A cache-validation/read failure does not fail the served inventory: HTTP remains
+200 and `engine:models` still returns all served/loaded engine models.
+`downloadErrorsByEngine: {"llamacpp":"cache_unavailable"}` reports that the
+llama.cpp cache is unknown (its downloaded list is omitted). This fixed public
+code never contains paths or underlying error text. Manual-node updates and
+scanner/broker discovery snapshots preserve it separately from engine liveness;
+a successful cache read clears it. Genuine whole-inventory failures still fail
+the HTTP request with 503 and retain their existing consumer behavior.
+Deletion reuses `engine:remote-delete-model` and authenticated ec
+`POST /v1/models/delete`, ending in engine-manager's identity-checked
+`delete_model`. Unrecorded files are not deletable; a running/busy llama.cpp
+engine refuses deletion with its stop-engine reason.
+
+
 A config-driven control plane for local inference engines (Ollama today;
 Intel/others via a dropped-in manifest). It manages everything about an
 engine **except serving inference**: detect, user-mode install,
@@ -25,7 +48,11 @@ to 4 MiB. Existing `engine:action` supports llama.cpp `pull_model`,
 `list_downloaded` and `delete_model`, including existing operation-ID progress,
 asynchronous cancel and verified-peer remote management. See [the owned-cache
 contract](LLAMACPP.md#go-model-hub-and-owned-cache) for checks, inventory and
-cleanup. Desktop/TUI catalog screens are deferred to PR 4.
+cleanup. Desktop/TUI catalog and local/verified-peer installed-cache controls are
+documented in the [engine guide](../../docs/engine-lifecycle.mdx#llamacpp-preview).
+Peer cache inventory travels in `downloadedByEngine` on the existing model
+inventory and discovery path; deletion uses the existing authenticated remote
+operation, not a separate cache-control endpoint.
 
 The bundled manifests under `manifests/` are the working reference for manifest
 authoring. [Pinned archive installs](MANIFEST.md#pinned-macos-archive-installs)

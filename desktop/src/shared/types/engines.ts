@@ -123,6 +123,8 @@ export interface EngineUpdateAvailable {
 }
 
 export interface EngineModels {
+    /** Engine-scoped, non-sensitive downloaded inventory diagnostic. */
+    downloadError?: string
     engineType: EngineType
     nodeId: string
     models: ModelItem[]

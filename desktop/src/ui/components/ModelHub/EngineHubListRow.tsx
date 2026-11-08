@@ -28,8 +28,8 @@ const EngineHubListRow = memo(function EngineHubListRow({
     }, [disabled, model.id, onToggleSelectModel])
 
     const displayName = useMemo(
-        () => formatModelName(model.name, model.author),
-        [model.name, model.author]
+        () => model.displayName ?? formatModelName(model.name, model.author),
+        [model.name, model.author, model.displayName]
     )
 
     const openExternal = useCallback((evt: React.MouseEvent, url: string) => {

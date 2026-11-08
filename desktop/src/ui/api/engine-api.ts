@@ -70,11 +70,12 @@ export interface IEngineApi {
     /** Unload a model from memory on a node. */
     unloadModel(engineType: EngineType, nodeId: string, model: string): void
     /** Delete a downloaded model from a node. */
-    deleteModel(engineType: EngineType, nodeId: string, model: string): void
+    deleteModel(engineType: EngineType, nodeId: string, model: string): Promise<void>
     /** Set the model keep-alive expiry duration on a node. */
     setModelExpiry(engineType: EngineType, nodeId: string, model: string, expiry: string): void
     /** Search the model registry/hub for available models. */
-    searchHub(engineType: EngineType): Promise<EngineHubSearchResponse>
+    searchHub(engineType: EngineType, query?: string): Promise<EngineHubSearchResponse>
+    downloadedModels(nodeId: string): Promise<import('@/shared/types/engine-api').DownloadedModel[]>
     /** Resolve one exact model name the hub catalog does not list. */
     lookupHubModel(engineType: EngineType, name: string): Promise<EngineHubLookupResponse>
 
@@ -132,8 +133,24 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
             fireCommand(transport, { command: 'loadModel', engineType, nodeId, model }),
         unloadModel: (engineType, nodeId, model) =>
             fireCommand(transport, { command: 'unloadModel', engineType, nodeId, model }),
-        deleteModel: (engineType, nodeId, model) =>
-            fireCommand(transport, { command: 'deleteModel', engineType, nodeId, model }),
+        deleteModel: async (engineType, nodeId, model) => {
+            if (engineType !== 'llamacpp') {
+                fireCommand(transport, { command: 'deleteModel', engineType, nodeId, model })
+                return
+            }
+            const payload: EngineCommandPayload = {
+                command: 'deleteModel',
+                engineType,
+                nodeId,
+                model
+            }
+            usePendingActionsStore.getState().begin(payload)
+            try {
+                await transport.invoke('engine:command', payload)
+            } finally {
+                usePendingActionsStore.getState().completeModelAction(nodeId, engineType, model)
+            }
+        },
         setModelExpiry: (engineType, nodeId, model, expiry) =>
             fireCommand(transport, {
                 command: 'setModelExpiry',
@@ -142,7 +159,9 @@ export function createEngineApi(transport: ServiceTransport): IEngineApi {
                 model,
                 expiry
             }),
-        searchHub: engineType => transport.invoke('engine:search-hub', { engineType }),
+        searchHub: (engineType, query) =>
+            transport.invoke('engine:search-hub', { engineType, query }),
+        downloadedModels: nodeId => transport.invoke('engine:downloaded-models', { nodeId }),
         lookupHubModel: (engineType, name) =>
             transport.invoke('engine:lookup-hub-model', { engineType, name }),
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomUUID } from 'node:crypto'
-import type { EngineInitialState } from '@/shared/types/engine-api'
+import type { DownloadedModel, EngineInitialState } from '@/shared/types/engine-api'
 import type {
     EngineModels,
     EngineProcessStatus,
@@ -197,6 +197,11 @@ interface ModularNode extends NodeRecordIdentity {
     // empty object means no successful attribution (or a peer that predates
     // per-engine attribution) and falls back to {@link models}. Mirrors
     // noderec.DirectoryNode.EngineModels.
+    downloadError: string | undefined
+    downloadedByEngine: Record<
+        string,
+        { id: string; file: string; size: number; sha256: string; owned: boolean }[]
+    >
     modelsByEngine: Record<string, string[]>
     // Per-engine set of models currently loaded in memory, keyed by
     // engine-manager engine name ("ollama", "lmstudio"), carried on
@@ -1319,6 +1324,8 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // proxy-sourced node contributes engine presence only, never models.
         models: [],
         modelsByEngine: {},
+        downloadError: undefined,
+        downloadedByEngine: {},
         // A proxy `node/*` event carries no loaded-model state either; the
         // broker-enriched value is preserved across the proxy merge (see mergeNode).
         loadedByEngine: {},
@@ -1340,6 +1347,29 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         engines,
         lastSeen: Date.now()
     }
+}
+
+function parseDownloadedByEngine(value: JsonValue | undefined): ModularNode['downloadedByEngine'] {
+    const engines = objectValue(value)
+    const result: ModularNode['downloadedByEngine'] = {}
+    if (!engines) return result
+    for (const [engine, rows] of Object.entries(engines)) {
+        if (!Array.isArray(rows) || rows.length > 4096) continue
+        result[engine] = rows.flatMap(row => {
+            const model = objectValue(row)
+            if (!model || !stringValue(model.id) || !stringValue(model.file)) return []
+            return [
+                {
+                    id: stringValue(model.id),
+                    file: stringValue(model.file),
+                    size: numberValue(model.size),
+                    sha256: stringValue(model.sha256),
+                    owned: booleanValue(model.owned)
+                }
+            ]
+        })
+    }
+    return result
 }
 
 function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
@@ -1393,6 +1423,17 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         // peer that predates per-engine attribution) drives the
         // {@link modelsForEngine} fallback to the flat union.
         modelsByEngine: parseModelsByEngine(obj.modelsByEngine),
+        downloadError:
+            (identity.identityVerification === 'verified' ||
+                identity.identityVerification === 'local') &&
+            objectValue(obj.downloadErrorsByEngine)?.llamacpp === 'cache_unavailable'
+                ? "Couldn't read llama.cpp's downloaded models"
+                : undefined,
+        downloadedByEngine:
+            identity.identityVerification === 'verified' ||
+            identity.identityVerification === 'local'
+                ? parseDownloadedByEngine(obj.downloadedByEngine)
+                : {},
         // Broker `AvailableNode.loadedByEngine`: the per-engine set of models
         // loaded in memory, enriched from the peer's engine-manager
         // `/v1/models`. `omitempty` on the wire — absent for a peer that reports
@@ -1454,6 +1495,8 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         sameTelemetry(left, right.gpus, right.cpu, right.memory, right.inferenceHardwareIds) &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
+        left.downloadError === right.downloadError &&
+        JSON.stringify(left.downloadedByEngine) === JSON.stringify(right.downloadedByEngine) &&
         // A residency-only change (a model loaded/evicted with the installed set
         // unchanged) must still count as a node change so the loaded dot updates.
         sameModelsByEngine(left.loadedByEngine, right.loadedByEngine) &&
@@ -1785,6 +1828,12 @@ class ModularBridgeState {
             activeProgress: Array.from(this.activePulls.values()),
             updateAvailable: []
         }
+    }
+
+    getPeerDownloadedModels(nodeId: string): DownloadedModel[] {
+        const node = this.nodes.get(nodeId)
+        if (!node || !isPairPeer(node)) throw new Error('Installed models require a verified peer.')
+        return node.downloadedByEngine.llamacpp ?? []
     }
 
     getAvailableNodes(): WsInvokeResponse<'discovery:get-nodes'> {
@@ -2671,9 +2720,17 @@ class ModularBridgeState {
         return {
             engineType: engine,
             nodeId: node.id,
-            models: this.modelsForEngine(node, engine).map(name =>
-                modelItem(name, loaded.has(name))
-            )
+            ...(engine === 'llamacpp' ? { downloadError: node.downloadError } : {}),
+            models:
+                engine === 'llamacpp'
+                    ? (node.downloadedByEngine.llamacpp ?? []).map(model => ({
+                          ...modelItem(model.id, false),
+                          size: model.size,
+                          digest: model.owned ? model.sha256 : ''
+                      }))
+                    : this.modelsForEngine(node, engine).map(name =>
+                          modelItem(name, loaded.has(name))
+                      )
         }
     }
 
@@ -3313,6 +3370,8 @@ class ModularBridgeState {
             // loaded set) we already merged.
             models: existing.models,
             modelsByEngine: existing.modelsByEngine,
+            downloadedByEngine: existing.downloadedByEngine,
+            downloadError: existing.downloadError,
             loadedByEngine: existing.loadedByEngine,
             // A proxy event carries no engine-native view; keep the
             // broker-enriched one we already merged.

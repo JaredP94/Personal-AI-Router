@@ -320,10 +320,14 @@ Client surface: requests are sent to the broker; notifications are consumed from
 | `discovery:get-nodes` | request (TUI sends) | ✅ yes |
 | `discovery:subscribe` | request (TUI sends) | ✅ yes |
 | `engine:action` | request (TUI sends) | ✅ yes |
+| `engine:apply-settings` | request (TUI sends) | ✅ yes |
 | `engine:cancel-pull` | request (TUI sends) | ✅ yes |
 | `engine:get-installed` | request (TUI sends) | ✅ yes |
+| `engine:get-settings` | request (TUI sends) | ✅ yes |
 | `engine:install` | request (TUI sends) | ✅ yes |
+| `engine:model-catalog` | request (TUI sends) | ✅ yes |
 | `engine:models` | request (TUI sends) | ✅ yes |
+| `engine:preview-settings` | request (TUI sends) | ✅ yes |
 | `engine:remote-cancel-pull` | request (TUI sends) | ✅ yes |
 | `engine:remote-delete-model` | request (TUI sends) | ✅ yes |
 | `engine:remote-get-installed` | request (TUI sends) | ✅ yes |

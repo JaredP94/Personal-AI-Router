@@ -4,7 +4,9 @@
 /**
  * Engine command and initial state types for the frontend API.
  *
- * Commands are fire-and-forget (void). Errors arrive via errors:update push events.
+ * Commands generally fire-and-forget. Local llama.cpp delete waits for its
+ * acknowledgement so the installed cache can refresh. Errors arrive via
+ * errors:update push events.
  * All state flows via push events, not command responses.
  */
 import type { EngineStatusData, EngineType } from '@/shared/types/engines'
@@ -44,6 +46,13 @@ export interface EngineHubSearchResponse {
  */
 export interface EngineHubLookupResponse {
     model: EngineHubModel | null
+}
+
+export interface DownloadedModel {
+    id: string
+    file: string
+    size: number
+    sha256: string
 }
 
 /** Engine command discriminator. */

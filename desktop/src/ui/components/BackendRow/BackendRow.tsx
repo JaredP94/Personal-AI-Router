@@ -188,7 +188,7 @@ export function BackendRow({
                 onUpdate={handleUpdate}
             />
 
-            {canShowAccordions && backend.type !== 'llamacpp' && (
+            {canShowAccordions && (
                 <ModelSection backend={displayBackend} nodeId={nodeId} disabled={isTransitioning} />
             )}
 
@@ -228,7 +228,10 @@ export function BackendRow({
                         onInstall={handleInstall}
                     />
                     {backend.type === 'llamacpp' && (
-                        <Text kind="body/regular/sm">Not notarized, like PAIR itself.</Text>
+                        <Text kind="body/regular/sm">
+                            macOS arm64 only. Not notarized, like PAIR itself. Catalog models are
+                            single-file Q4_K_M GGUF.
+                        </Text>
                     )}
                     {expanded && <Divider />}
                     {content}

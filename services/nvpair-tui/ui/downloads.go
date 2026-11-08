@@ -72,8 +72,11 @@ func (v *enginesView) applyDownloadProgress(p downloadProgress) tea.Cmd {
 		v.status = fmt.Sprintf("pull %s %s: %s", p.Engine, p.Model, status)
 		if p.Stage == "interrupted" {
 			v.status = "Download interrupted — retry to resume"
+			if p.Engine == "llamacpp" {
+				v.status = "Download interrupted — retry the download"
+			}
 		}
-		if p.Stage == "cancelled" {
+		if p.Stage == "cancelled" && p.Engine != "llamacpp" {
 			v.status += ". Partial data is kept so the download can resume."
 		}
 		if p.Stage == "error" && p.Message != "" {
@@ -94,8 +97,12 @@ func (v *enginesView) applyDownloadProgress(p downloadProgress) tea.Cmd {
 func (v *enginesView) interruptDownloads(node *string) {
 	for i := len(v.downloads) - 1; i >= 0; i-- {
 		if node == nil || v.downloads[i].node == *node {
+			engine := v.downloads[i].engine
 			v.retireDownload(i)
 			v.status = "Download interrupted — retry to resume"
+			if engine == "llamacpp" {
+				v.status = "Download interrupted — retry the download"
+			}
 		}
 	}
 }

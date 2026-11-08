@@ -12,6 +12,7 @@ export interface ModelEntry {
     id: string
     name: string
     author: string
+    displayName?: string
     url: string
     size?: number
     /**

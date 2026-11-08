@@ -5,6 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # nvpair-node-scanner
 
+### Downloaded llama.cpp inventory
+
+The existing engine-manager `/v1/models` inventory adds `downloadedByEngine`:
+`{"llamacpp":[{"id":"catalog ID or file name","file":"cache-relative.gguf","size":24,"sha256":"…","owned":true}]}`.
+This cache list is available while stopped and remains separate from served
+`models`/`modelsByEngine`, which continue to drive routing. The cache scan is
+limited to 4096 entries and uses the existing bounded inventory response.
+Scanner enrichment and verified manual peers carry it over pinned cluster mTLS;
+the broker preserves it in discovery snapshots. Unverified previews receive none.
+A cache-validation/read failure does not fail the served inventory: HTTP remains
+200 and `engine:models` still returns all served/loaded engine models.
+`downloadErrorsByEngine: {"llamacpp":"cache_unavailable"}` reports that the
+llama.cpp cache is unknown (its downloaded list is omitted). This fixed public
+code never contains paths or underlying error text. Manual-node updates and
+scanner/broker discovery snapshots preserve it separately from engine liveness;
+a successful cache read clears it. Genuine whole-inventory failures still fail
+the HTTP request with 503 and retain their existing consumer behavior.
+Deletion reuses `engine:remote-delete-model` and authenticated ec
+`POST /v1/models/delete`, ending in engine-manager's identity-checked
+`delete_model`. Unrecorded files are not deletable; a running/busy llama.cpp
+engine refuses deletion with its stop-engine reason.
+
+
 **The consolidated discovery daemon.** Promoted from a plain node-info browser: it is now the single place this host advertises itself on and discovers the LAN through. Every other service registers its port with this daemon instead of advertising its own mDNS service, and consumers query/subscribe to it instead of browsing themselves.
 
 Concretely, the daemon:

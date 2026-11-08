@@ -10,9 +10,10 @@ run models. PAIR supports Ollama, LM Studio and oMLX. It can install and run
 those engines for you, or work with a copy you already have. A macOS arm64
 **llama.cpp engine** also appears in Engine settings: it can be installed,
 started, stopped and configured, and is served by its own routing proxy on
-**1237** (engine listener **127.0.0.1:8082**). Select a regular GGUF inside PAIR's
-llama.cpp model cache with allowlisted `--model`/`-m`; the Go service now
-provides catalog/download/cancel/delete RPCs, with desktop/TUI hub screens deferred. Its official b12171 macOS build is **not notarized**, like PAIR itself.
+**1237** (engine listener **127.0.0.1:8082**). Use **Models → Add model** to browse its catalog and download a model,
+then **Settings → Startup model** to choose the catalog ID and preview/apply the
+cache-relative selection. Desktop and TUI expose the existing Go catalog,
+download, cancel and delete operations. Its official b12171 macOS build is **not notarized**, like PAIR itself.
 This page explains what you can expect when you install, start, stop, update, or
 remove an engine.
 
@@ -72,7 +73,8 @@ Refer also to [Getting started](getting-started.mdx).
 
 Install llama.cpp from its node row (not first-run automatic selection). The
 managed listener defaults to `127.0.0.1:8082`; Settings exposes the server port
-and proxy ports and launch arguments/environment. PAIR protects all listener
+and proxy ports and allowlisted launch arguments (environment assignments are
+not supported for this engine). PAIR protects all listener
 controls, including Unix-socket host values and port-changing presets. Readiness
 requires the `/props` router identity (or the inherited model descriptor in
 single-model mode), not merely HTTP success. Non-loopback
@@ -80,7 +82,29 @@ binding still requires the existing explicit `engine_allow_lan_bind` permission.
 The Go model hub supplies a bounded public Q4_K_M catalog and PAIR-owned
 verified downloads, asynchronous cancel and manifest-owned delete. See the
 [model hub contract](../services/nvpair-engine-manager/LLAMACPP.md#go-model-hub-and-owned-cache).
-The dedicated proxy routes inference; model hub screens and load profiles remain deferred.
+The dedicated proxy routes inference. The desktop's **Models** section groups
+the catalog by publisher and displays the service's bounded search errors.
+Downloads reuse the ordinary progress/cancel rows. Cancellation acceptance is
+not transfer release: wait for **Cancelled**. Interrupted downloads offer
+retry, not a promise of resume. Only single-file Q4_K_M GGUF catalog downloads
+are supported. Delete requires a stopped engine and a PAIR-owned entry.
+
+**Settings → Startup model** writes `--model <cache-relative file>` through the
+existing preview/apply editor and confirms required restarts. Names remain the
+catalog IDs; **No model (router mode)** removes the model option. A separately
+configured known installed catalog ID is also accepted by the service. Launch
+descriptors are never model names.
+
+Verified peers publish installed llama.cpp cache inventory through the existing
+pinned-mTLS discovery path, separate from served-model routing. Desktop and TUI
+show owned and unrecorded files, with owned deletion through the existing remote
+operation. Stop the peer's engine first; identity checks and refusal reasons are
+the same as local deletion. Previews receive no inventory. Startup dropdown
+selection remains local; a peer's known installed ID can still be set in its
+launch arguments.
+Per-model load profiles remain out of scope. See the
+[terminal keys](terminal-interface.mdx#llamacpp-model-hub) and
+[known limitations](known-issues.mdx#llamacpp-model-hub-limitations).
 
 Installation verifies the pinned SHA-256, bounded contained extraction, expected
 server/libraries/Metal layout, absence of quarantine and existing signature
