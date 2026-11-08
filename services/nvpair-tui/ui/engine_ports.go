@@ -42,6 +42,11 @@ func (v *enginesView) loadEnginePortsCmd() tea.Cmd {
 }
 
 func (v *enginesView) receiveEnginePorts(snapshot settings.Snapshot) {
+	// The broker uses the stable host UUID, as does local exclusion in targets().
+	// Peer streams carry their own nodeId and independent epoch/sequence values.
+	if v.identity.NodeUUID == "" || snapshot.NodeID != v.identity.NodeUUID {
+		return
+	}
 	if v.enginePorts == nil {
 		v.enginePorts = enginePortSnapshots{}
 	}

@@ -127,6 +127,8 @@ port and explains that PAIR will retry the configured port next start. Matching
 or unknown effective ports and stopped servers show no note; no fallback is
 offered for saving. The server-port editor uses the configured value, or starts
 empty if its settings snapshot has not arrived; it never suggests a runtime port.
+Settings pushes are accepted only for the local host UUID; peer snapshots never
+replace local notes or prefill the local port editor.
 Peer engine status has only a single port, so these notes are local-only in the
 TUI; the desktop's paired-device settings panels receive both ports.
 

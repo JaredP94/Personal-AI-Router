@@ -165,6 +165,7 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 	case epochChangedMsg:
 		v.loadGeneration++
 		v.enginePorts = nil
+		v.identity = clusterIdentity{}
 		v.models.selectionGeneration++
 		if v.selectedEngine() == "llamacpp" {
 			v.confirm = nil
@@ -188,6 +189,11 @@ func (v *enginesView) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case clusterIdentityMsg:
+		if msg.err == nil && v.identity.NodeUUID != msg.id.NodeUUID {
+			v.identity = msg.id
+			v.enginePorts = nil
+			return v.loadEnginePortsCmd()
+		}
 		if msg.err == nil {
 			v.identity = msg.id
 		}

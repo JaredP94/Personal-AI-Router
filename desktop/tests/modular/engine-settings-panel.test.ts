@@ -276,6 +276,38 @@ afterEach(async () => {
 })
 
 describe('engine launch settings panel', () => {
+    it.each([false, true])(
+        'isolates peer pushes from the local note and editor (dirty: %s)',
+        async dirty => {
+            getSettings.mockImplementation(async target => ({
+                ...baseline,
+                ...target,
+                effectiveServerPort: 11501,
+                effectiveProxyPort: 11500
+            }))
+            await render()
+            if (dirty) await change('Server port', '12000')
+            const before = container.textContent
+            await act(async () =>
+                deliver({
+                    ...baseline,
+                    nodeId: 'peer',
+                    sequence: 99,
+                    settings: { serverPort: 22000, proxyPort: 22002, launchText: '' },
+                    effectiveServerPort: 22001,
+                    effectiveProxyPort: 22003
+                })
+            )
+            expect(container.textContent).toBe(before)
+            expect(field('Server port').value).toBe(dirty ? '12000' : '11435')
+            expect(field('Proxy port').value).toBe('11434')
+            expect(container.textContent).not.toContain('22001')
+            await act(async () => deliver({ ...baseline, sequence: 2, effectiveProxyPort: 11502 }))
+            expect(container.textContent).toContain('Running on port 11502')
+            expect(field('Server port').value).toBe(dirty ? '12000' : '11435')
+        }
+    )
+
     describe.each<EngineType>(['ollama', 'lm-studio', 'omlx', 'llamacpp'])(
         '%s effective ports',
         engineType => {
