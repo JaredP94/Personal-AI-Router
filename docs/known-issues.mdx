@@ -29,7 +29,9 @@ can reach this machine.
 ## llama.cpp Model Hub Limitations
 
 **Unreleased source, not certification of a published package.** The managed
-b12171 engine supports macOS arm64 only and is not notarized, like PAIR.
+b12171 engine supports macOS arm64 only. Its existing ad-hoc signatures are
+checked for integrity, but it is not notarized; a checksum does not establish
+publisher trust.
 PAIR's catalog currently admits only public, ungated, single-file Q4_K_M GGUF
 text-generation models. Search allows 100 characters and up to 50 results;
 service timeouts or validation errors are displayed rather than treated as an
@@ -47,8 +49,18 @@ Verified peers expose installed llama.cpp cache files in desktop and TUI,
 including while stopped. Unrecorded files are visible but not deletable;
 owned deletion uses the existing authenticated remote operation and refuses
 while llama.cpp is running. Unverified previews receive no inventory.
-Downloaded-model startup pickers remain local, as with the other engines.
-The desktop Settings arguments can select a known installed peer catalog ID.
+There is **no peer startup-model picker**: downloaded-model startup pickers
+remain local, as with the other engines. The desktop Settings arguments can
+select a known installed peer catalog ID. Peer inventory can take a discovery
+refresh to reflect a mutation. An unreadable cache shows a llama.cpp-specific
+error, not an empty installed list, and does not withdraw other engines' healthy
+served-model inventory.
+
+Deletion can leave the empty ownership manifest in the cache; engine uninstall
+preserves that cache rather than promising an empty directory. A crash can also
+leave an unrecorded generated-name file or transfer temp: these are not
+reclaimed automatically. Recorded identity/size checks are not a fresh full-file
+checksum scan on every inventory read.
 
 PAIR downloads the engine and models at runtime; they are not bundled and have
 their own upstream terms. Packaged install/update/rollback, real downloads,
@@ -140,13 +152,18 @@ second-machine reproduction is still needed before choosing a remedy; no
 speculative fix has been made. Until then, restart PAIR on the affected Mac.
 This remains open in [release readiness](release-readiness.mdx#known-limitations-spec-9).
 
-## Roaming Peers Need a Saved Address
+## Roaming Peers Still Need a Reachable Address
 
-A cluster member keeps the LAN address recorded when it paired. If that machine
-changes networks, its peer may no longer reach it without a saved address.
-On the peer that needs to connect, add a reachable IP address or hostname as
-**PAIR machine**, such as its Tailscale address; a saved address does not replace
-pairing or verification.
+**Improved in unreleased source (#55), pending combined live validation.** PAIR
+remembers a bounded set of addresses learned only from pin-verified cluster
+connections and keeps the pairing-time address as a fallback. Public discovery
+and relayed third-party address claims do not teach that set. User-saved manual
+addresses keep their precedence.
+
+Recovery still needs one authenticated rendezvous path. If both machines lose
+every known address, add a reachable IP address or hostname as **PAIR machine**
+on the peer that needs to connect, such as its Tailscale address. A saved address
+does not replace pairing or verification.
 
 ## The Terminal Interface Cannot Do Everything the Desktop App Can
 
@@ -188,6 +205,11 @@ An external HTTP service with no local executable cannot provide a CLI.
 
 ## Platform Limits Worth Knowing
 
+- **Windows engine process ownership is not runtime-validated.** Unreleased
+  engine-manager uses kill-on-close jobs for owned servers/downloads/helpers;
+  command-mode controls intentionally preserve independent vendor daemons.
+  Unix CI, cross-compilation and injected-job tests do not prove Windows job
+  nesting, console or installer behavior.
 - **The Linux desktop installer is a `.deb` only.** On RPM-based distributions,
   [build from source](building.mdx).
 - **Windows on ARM is experimental.** Refer to
